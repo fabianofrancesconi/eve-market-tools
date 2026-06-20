@@ -128,6 +128,94 @@ class TestGetNpcCorps:
 
 
 # ---------------------------------------------------------------------------
+# _resolve_corp_names() — binary-split around bad IDs
+# ---------------------------------------------------------------------------
+
+def _fake_esi_post(valid_ids, corp_ids):
+    """Build a SESSION.post replacement mimicking ESI /universe/names/.
+
+    Mirrors real ESI: the whole batch 404s if ANY id is not resolvable.
+    Resolvable ids return category 'corporation' if in corp_ids, else 'character'.
+    """
+    valid_ids = set(valid_ids)
+    corp_ids = set(corp_ids)
+
+    def _post(url, json=None, **kwargs):
+        ids = json
+        resp = MagicMock()
+        if all(i in valid_ids for i in ids):
+            resp.status_code = 200
+            resp.json.return_value = [
+                {"id": i, "name": f"Corp {i}",
+                 "category": "corporation" if i in corp_ids else "character"}
+                for i in ids
+            ]
+        else:
+            resp.status_code = 404
+            resp.json.return_value = {"error": "Ensure all IDs are valid before resolving."}
+        return resp
+
+    return _post
+
+
+class TestResolveCorpNames:
+    """Bug: a single unresolvable id 404'd the whole batch, the code then
+    iterated over the error dict's keys and crashed → /api/corps returned []."""
+
+    def test_all_valid_returns_all_corps(self):
+        ids = [1, 2, 3, 4]
+        post = _fake_esi_post(valid_ids=ids, corp_ids=ids)
+        with patch.object(lp_web.SESSION, "post", side_effect=post):
+            result = lp_web._resolve_corp_names(ids)
+        assert {c["id"] for c in result} == {1, 2, 3, 4}
+
+    def test_one_bad_id_does_not_lose_the_batch(self):
+        """The key regression: id 3 is unresolvable; 1,2,4 must still come back."""
+        ids = [1, 2, 3, 4]
+        post = _fake_esi_post(valid_ids={1, 2, 4}, corp_ids={1, 2, 4})
+        with patch.object(lp_web.SESSION, "post", side_effect=post):
+            result = lp_web._resolve_corp_names(ids)
+        assert {c["id"] for c in result} == {1, 2, 4}
+
+    def test_filters_non_corporation_categories(self):
+        ids = [1, 2, 3]
+        post = _fake_esi_post(valid_ids=ids, corp_ids={1, 3})  # 2 is a character
+        with patch.object(lp_web.SESSION, "post", side_effect=post):
+            result = lp_web._resolve_corp_names(ids)
+        assert {c["id"] for c in result} == {1, 3}
+
+    def test_error_dict_response_does_not_crash(self):
+        """Single bad id returns a 404 dict — must be skipped, not crash."""
+        post = _fake_esi_post(valid_ids=set(), corp_ids=set())
+        with patch.object(lp_web.SESSION, "post", side_effect=post):
+            result = lp_web._resolve_corp_names([999])
+        assert result == []
+
+    def test_empty_input_returns_empty(self):
+        with patch.object(lp_web.SESSION, "post",
+                          side_effect=AssertionError("must not POST for empty input")):
+            assert lp_web._resolve_corp_names([]) == []
+
+    def test_load_npc_corps_recovers_around_bad_id(self):
+        """End-to-end: /npccorps/ lists a bad id; loader still returns the rest."""
+        lp_web.NPC_CORPS.clear()
+        all_ids = [1000180, 1000181, 9999999]  # last one is dead
+        get_resp = MagicMock()
+        get_resp.status_code = 200
+        get_resp.json.return_value = all_ids
+        post = _fake_esi_post(valid_ids={1000180, 1000181}, corp_ids={1000180, 1000181})
+        import tempfile
+        cache = Path(tempfile.mkdtemp())
+        lp_web.CACHE_DIR = cache
+        with patch.object(lp_web.SESSION, "get", return_value=get_resp), \
+             patch.object(lp_web.SESSION, "post", side_effect=post):
+            result = lp_web._load_npc_corps()
+        assert {c["id"] for c in result} == {1000180, 1000181}
+        # and the recovered list was cached to disk
+        assert (cache / "npc_corps.json").exists()
+
+
+# ---------------------------------------------------------------------------
 # /api/corps HTTP endpoint
 # ---------------------------------------------------------------------------
 

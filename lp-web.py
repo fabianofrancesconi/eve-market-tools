@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 import argparse
 import base64
@@ -186,21 +186,46 @@ def do_scan(q):
     }
 
 
+def _resolve_corp_names(ids):
+    """POST ids to /universe/names/ → list of corporation entries.
+
+    ESI returns 404 for the *entire* batch if even one id is unresolvable
+    (some ids from /npccorps/ are stale). Binary-split on failure so a single
+    bad id only drops itself instead of poisoning the whole batch.
+    """
+    if not ids:
+        return []
+    nr = SESSION.post(f"{ESI}/universe/names/", json=ids, headers=HEADERS, timeout=30)
+    if nr.status_code == 200:
+        body = nr.json()
+        if isinstance(body, list):
+            return [{"id": e["id"], "name": e["name"]}
+                    for e in body
+                    if isinstance(e, dict) and e.get("category") == "corporation"]
+        return []
+    if len(ids) == 1:
+        print(f"[corps] dropping unresolvable id {ids[0]} "
+              f"({nr.status_code})", file=sys.stderr)
+        return []
+    mid = len(ids) // 2
+    return _resolve_corp_names(ids[:mid]) + _resolve_corp_names(ids[mid:])
+
+
 def _load_npc_corps():
     path = CACHE_DIR / "npc_corps.json"
     cached = load_json(path, None)
     if cached:
         return cached
+    print("[corps] fetching NPC corporation list from ESI…", file=sys.stderr)
     r = SESSION.get(f"{ESI}/corporations/npccorps/", headers=HEADERS, timeout=15)
     r.raise_for_status()
     ids = r.json()
     corps = []
     for i in range(0, len(ids), 1000):
-        nr = SESSION.post(f"{ESI}/universe/names/", json=ids[i:i+1000],
-                         headers=HEADERS, timeout=30)
-        corps.extend({"id": e["id"], "name": e["name"]}
-                     for e in nr.json() if e.get("category") == "corporation")
+        corps.extend(_resolve_corp_names(ids[i:i + 1000]))
     corps.sort(key=lambda c: c["name"])
+    print(f"[corps] resolved {len(corps)} of {len(ids)} NPC corporations",
+          file=sys.stderr)
     save_json(path, corps)
     return corps
 
@@ -213,7 +238,9 @@ def get_npc_corps():
     if not NPC_CORPS:
         try:
             NPC_CORPS = _load_npc_corps()
-        except Exception:
+        except Exception as e:  # noqa: BLE001
+            print(f"[corps] failed to load NPC corporations: "
+                  f"{type(e).__name__}: {e}", file=sys.stderr)
             return []
     return NPC_CORPS
 

@@ -561,9 +561,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     color:var(--dim); font-size:13px; pointer-events:none; user-select:none;
   }
   .corp-drop {
-    position:absolute; top:calc(100% + 3px); left:0; min-width:100%; z-index:200;
+    position:fixed; z-index:200;
     background:var(--panel2); border:1px solid var(--cyan2);
-    border-radius:4px; overflow:hidden;
+    border-radius:4px;
     box-shadow:0 8px 28px rgba(0,0,0,.6);
     max-height:240px; overflow-y:auto;
   }
@@ -1221,6 +1221,10 @@ function _corpOpen(q){
     });
   }
   _corpHi=-1;
+  const r=_corpInput.getBoundingClientRect();
+  _corpDrop.style.top=(r.bottom+3)+"px";
+  _corpDrop.style.left=r.left+"px";
+  _corpDrop.style.width=Math.max(220,r.width)+"px";
   _corpDrop.style.display="block";
 }
 

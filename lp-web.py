@@ -10,6 +10,8 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
+__version__ = "1.0.0"
+
 import argparse
 import json
 import sys
@@ -522,6 +524,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     border-right:1px solid var(--line2);
   }
   .logo span { color:var(--gold); }
+  .logo .ver { font-size:10px; font-weight:400; color:var(--dim2);
+    letter-spacing:.5px; margin-left:6px; vertical-align:middle; }
   .tabs { display:flex; gap:0; }
   .tab {
     background:transparent; border:none; border-bottom:2px solid transparent;
@@ -758,7 +762,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <body>
 
 <header>
-  <div class="logo">EVE <span>MARKET</span></div>
+  <div class="logo">EVE <span>MARKET TOOLS</span><span class="ver">v__VERSION__</span></div>
   <nav class="tabs">
     <button class="tab active" data-tab="lp">LP Store</button>
     <button class="tab" data-tab="arb">Arbitrage</button>
@@ -1540,7 +1544,7 @@ async function loadSettings(){
 loadSettings();
 </script>
 </body>
-</html>"""
+</html>""".replace("__VERSION__", __version__)
 
 
 def main():

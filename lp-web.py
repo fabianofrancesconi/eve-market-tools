@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 import argparse
 import json
@@ -197,7 +197,10 @@ NPC_CORPS = []
 def get_npc_corps():
     global NPC_CORPS
     if not NPC_CORPS:
-        NPC_CORPS = _load_npc_corps()
+        try:
+            NPC_CORPS = _load_npc_corps()
+        except Exception:
+            return []
     return NPC_CORPS
 
 
@@ -1194,7 +1197,10 @@ $("#go").onclick = ()=>scan(false);
 $("#refresh").onclick = ()=>scan(true);
 let ALL_CORPS=[];
 (async()=>{
-  try{ ALL_CORPS=await (await fetch("/api/corps")).json(); }catch(e){}
+  try{
+    const r=await (await fetch("/api/corps")).json();
+    if(Array.isArray(r)) ALL_CORPS=r;
+  }catch(e){}
 })();
 
 // ── Corp search dropdown ──────────────────────────────────────────────────

@@ -775,7 +775,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="corp-wrap">
       <span class="corp-icon">⌕</span>
       <input id="corp" placeholder="Search corporation…" autocomplete="off" spellcheck="false">
-      <div id="corp-drop" class="corp-drop" style="display:none"></div>
     </div>
   </div>
   <div class="field"><label>LP budget</label><input id="lp" type="number" value="500000"></div>
@@ -1199,37 +1198,40 @@ let ALL_CORPS=[];
 })();
 
 // ── Corp search dropdown ──────────────────────────────────────────────────
+// Appended to <body> so no parent CSS interferes.
+const _corpInput=$("#corp");
 let _corpHi=-1;
-const _corpInput=$("#corp"), _corpDrop=$("#corp-drop");
+const _corpDrop=document.createElement("div");
+_corpDrop.className="corp-drop";
+_corpDrop.style.display="none";
+document.body.appendChild(_corpDrop);
 
 function _corpClose(){ _corpDrop.style.display="none"; _corpHi=-1; }
 function _corpItems(){ return _corpDrop.querySelectorAll(".corp-drop-item"); }
+
+function _corpSelect(name){
+  _corpInput.value=name; _corpClose();
+  clearTimeout(lpScanTimer); scan(false);
+}
 
 function _corpOpen(q){
   if(!q||q.length<2){ _corpClose(); return; }
   const lower=q.toLowerCase();
   const hits=ALL_CORPS.filter(c=>c.name.toLowerCase().includes(lower)).slice(0,20);
-  if(!hits.length){
-    _corpDrop.innerHTML=`<div class="corp-drop-empty">No match</div>`;
-  } else {
-    _corpDrop.innerHTML=hits.map(c=>
-      `<div class="corp-drop-item">${c.name.replace(/</g,"&lt;")}</div>`
-    ).join("");
-    _corpDrop.querySelectorAll(".corp-drop-item").forEach(el=>{
-      el.addEventListener("mousedown", e=>{
-        e.preventDefault();
-        _corpInput.value=el.textContent;
-        _corpClose();
-        clearTimeout(lpScanTimer); scan(false);
-      });
-    });
-  }
+  _corpDrop.innerHTML = hits.length
+    ? hits.map(c=>`<div class="corp-drop-item">${c.name.replace(/</g,"&lt;")}</div>`).join("")
+    : `<div class="corp-drop-empty">${ALL_CORPS.length?'No match':'Loading…'}</div>`;
+  _corpDrop.querySelectorAll(".corp-drop-item").forEach(el=>{
+    el.addEventListener("mousedown",e=>{ e.preventDefault(); _corpSelect(el.textContent); });
+  });
   _corpHi=-1;
   const r=_corpInput.getBoundingClientRect();
-  _corpDrop.style.top=(r.bottom+3)+"px";
-  _corpDrop.style.left=r.left+"px";
-  _corpDrop.style.width=Math.max(220,r.width)+"px";
-  _corpDrop.style.display="block";
+  Object.assign(_corpDrop.style,{
+    top:(r.bottom+window.scrollY+3)+"px",
+    left:(r.left+window.scrollX)+"px",
+    width:Math.max(240,r.width)+"px",
+    display:"block"
+  });
 }
 
 function _corpHighlight(idx){
@@ -1246,11 +1248,12 @@ _corpInput.addEventListener("keydown",e=>{
   if(e.key==="ArrowDown"){ e.preventDefault(); _corpHighlight(_corpHi+1); }
   else if(e.key==="ArrowUp"){ e.preventDefault(); _corpHighlight(_corpHi-1); }
   else if(e.key==="Enter"){
-    if(_corpHi>=0&&items[_corpHi]){ _corpInput.value=items[_corpHi].textContent; _corpClose(); }
-    clearTimeout(lpScanTimer); scan(false);
+    if(_corpHi>=0&&items[_corpHi]){ _corpSelect(items[_corpHi].textContent); }
+    else{ clearTimeout(lpScanTimer); scan(false); }
   }
   else if(e.key==="Escape"){ _corpClose(); }
 });
+document.addEventListener("click",e=>{ if(!_corpInput.contains(e.target)&&!_corpDrop.contains(e.target)) _corpClose(); });
 let lpScanTimer;
 function scheduleScan(delay=800){ clearTimeout(lpScanTimer); lpScanTimer=setTimeout(()=>scan(false),delay); }
 ["#lp","#instant","#maxspread","#tax","#broker"].forEach(sel=>{

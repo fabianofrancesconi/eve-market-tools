@@ -1,0 +1,4 @@
+__pycache__/
+*.py[cod]
+.eve_scanner_cache/
+.claude/

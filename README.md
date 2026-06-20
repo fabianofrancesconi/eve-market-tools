@@ -67,6 +67,7 @@ docker compose up -d
         tag: latest
         source: pull
         force_source: true
+      register: image_pull
 
     - name: Run container
       community.docker.docker_container:
@@ -77,8 +78,11 @@ docker compose up -d
         volumes:
           - eve-scanner-cache:/app/.eve_scanner_cache
         restart_policy: unless-stopped
+        recreate: "{{ image_pull.changed }}"
         state: started
 ```
+
+`recreate: "{{ image_pull.changed }}"` ensures the container is only restarted when a newer image was actually downloaded — repeated runs with no new release are a no-op.
 
 Requires the `community.docker` collection (`ansible-galaxy collection install community.docker`).
 

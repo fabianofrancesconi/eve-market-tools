@@ -10,9 +10,10 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 import argparse
+import base64
 import json
 import sys
 import threading
@@ -20,6 +21,19 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+_FAVICON_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    b'<rect width="32" height="32" rx="4" fill="#080d11"/>'
+    b'<rect x="3" y="21" width="7" height="8" rx="1" fill="#4fc3f7"/>'
+    b'<rect x="12.5" y="15" width="7" height="14" rx="1" fill="#4fc3f7"/>'
+    b'<rect x="22" y="8" width="7" height="21" rx="1" fill="#c8a040"/>'
+    b'<polyline points="6.5,19 16,13 25.5,6" stroke="#4caf76"'
+    b' stroke-width="2.5" fill="none" stroke-linecap="round"'
+    b' stroke-linejoin="round"/>'
+    b'</svg>'
+)
+_FAVICON_B64 = base64.b64encode(_FAVICON_SVG).decode()
 
 import requests
 
@@ -462,6 +476,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/":
                 self._send_html(INDEX_HTML)
+            elif parsed.path == "/favicon.ico":
+                self.send_response(200)
+                self.send_header("Content-Type", "image/svg+xml")
+                self.send_header("Content-Length", str(len(_FAVICON_SVG)))
+                self.end_headers()
+                self.wfile.write(_FAVICON_SVG)
             elif parsed.path == "/api/corps":
                 self._send_json(get_npc_corps())
             elif parsed.path == "/api/settings":
@@ -494,6 +514,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EVE Market Tools</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,__FAVICON__">
 <style>
   :root {
     --bg:#080d11; --panel:#0f1923; --panel2:#162130; --panel3:#1c2a3a;
@@ -1565,7 +1586,7 @@ async function loadSettings(){
 loadSettings();
 </script>
 </body>
-</html>""".replace("__VERSION__", __version__)
+</html>""".replace("__VERSION__", __version__).replace("__FAVICON__", _FAVICON_B64)
 
 
 def main():

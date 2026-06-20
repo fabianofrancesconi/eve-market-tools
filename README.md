@@ -3,6 +3,7 @@
 A local web app with two market utilities for EVE Online, served from a single Python script with no framework dependencies beyond `requests`.
 
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)
+[![Docker](https://img.shields.io/badge/ghcr.io-eve--market--tools-blue?logo=docker)](https://ghcr.io/fabianofrancesconi/eve-market-tools)
 
 ---
 
@@ -16,7 +17,92 @@ Downloads the full public order book for a region and finds cross-station negati
 
 ---
 
-## Requirements
+## Docker
+
+Pre-built images are published to the GitHub Container Registry on every release.
+
+### Quick start
+
+```bash
+docker run -p 8765:8765 \
+  -v eve-scanner-cache:/app/.eve_scanner_cache \
+  ghcr.io/fabianofrancesconi/eve-market-tools:latest
+```
+
+Then open `http://localhost:8765`.
+
+The named volume `eve-scanner-cache` keeps the order book and LP store cache across container restarts so you don't re-download everything each run.
+
+### Docker Compose
+
+```yaml
+services:
+  eve-market-tools:
+    image: ghcr.io/fabianofrancesconi/eve-market-tools:latest
+    ports:
+      - "8765:8765"
+    volumes:
+      - eve-scanner-cache:/app/.eve_scanner_cache
+    restart: unless-stopped
+
+volumes:
+  eve-scanner-cache:
+```
+
+Save as `docker-compose.yml` and run:
+
+```bash
+docker compose up -d
+```
+
+### Ansible
+
+```yaml
+- name: Deploy EVE Market Tools
+  hosts: your_host
+  tasks:
+    - name: Pull latest image
+      community.docker.docker_image:
+        name: ghcr.io/fabianofrancesconi/eve-market-tools
+        tag: latest
+        source: pull
+        force_source: true
+
+    - name: Run container
+      community.docker.docker_container:
+        name: eve-market-tools
+        image: ghcr.io/fabianofrancesconi/eve-market-tools:latest
+        ports:
+          - "8765:8765"
+        volumes:
+          - eve-scanner-cache:/app/.eve_scanner_cache
+        restart_policy: unless-stopped
+        state: started
+```
+
+Requires the `community.docker` collection (`ansible-galaxy collection install community.docker`).
+
+### Releases
+
+A new GitHub Release and versioned image tag are created whenever a `v*` tag is pushed:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+This publishes:
+- `ghcr.io/fabianofrancesconi/eve-market-tools:1.0.0`
+- `ghcr.io/fabianofrancesconi/eve-market-tools:1.0`
+- `ghcr.io/fabianofrancesconi/eve-market-tools:latest`
+
+Pushes to `master` without a tag update `:latest` only.
+
+---
+
+## Running from source
+
+### Requirements
 
 ```
 pip install requests
@@ -24,9 +110,7 @@ pip install requests
 
 Python 3.8 or later. No other dependencies.
 
----
-
-## Usage
+### Usage
 
 ```bash
 python lp-web.py
@@ -85,7 +169,7 @@ ESI excludes most player-built Upwell structure markets, so prices can differ sl
 
 ## Cache
 
-All cached data lives in `.eve_scanner_cache/` next to the script:
+All cached data lives in `.eve_scanner_cache/` next to the script (or in the Docker volume):
 
 | File | Contents |
 |------|----------|
@@ -97,6 +181,8 @@ All cached data lives in `.eve_scanner_cache/` next to the script:
 | `npc_corps.json` | NPC corporation list |
 | `lp_web_settings.json` | Last-used LP scanner form values |
 | `arb_settings.json` | Last-used Arbitrage form values |
+
+Form preferences (corporation, LP budget, arb settings, column widths, sort order) are also saved in the browser's `localStorage` and restored automatically on the next visit.
 
 ---
 

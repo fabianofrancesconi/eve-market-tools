@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.0.3"
+__version__ = "1.0.4"
 
 import argparse
 import json
@@ -1195,13 +1195,24 @@ function renderBody(){
 // LP control wiring
 $("#go").onclick = ()=>scan(false);
 $("#refresh").onclick = ()=>scan(true);
-let ALL_CORPS=[];
-(async()=>{
+let ALL_CORPS=[], _corpsLoading=false, _corpsRetry=0;
+async function _fetchCorps(){
+  if(_corpsLoading||_corpsRetry>8) return;
+  _corpsLoading=true;
   try{
     const r=await (await fetch("/api/corps")).json();
-    if(Array.isArray(r)) ALL_CORPS=r;
-  }catch(e){}
-})();
+    if(Array.isArray(r)&&r.length){
+      ALL_CORPS=r; _corpsRetry=0;
+      if(document.activeElement===_corpInput&&_corpInput.value.length>=2)
+        _corpOpen(_corpInput.value);
+    } else {
+      _corpsRetry++;
+      setTimeout(_fetchCorps, 3000);
+    }
+  }catch(e){ _corpsRetry++; setTimeout(_fetchCorps,3000); }
+  _corpsLoading=false;
+}
+_fetchCorps();
 
 // ── Corp search dropdown ──────────────────────────────────────────────────
 // Appended to <body> so no parent CSS interferes.
@@ -1222,11 +1233,12 @@ function _corpSelect(name){
 
 function _corpOpen(q){
   if(!q||q.length<2){ _corpClose(); return; }
+  if(!ALL_CORPS.length){ _fetchCorps(); }
   const lower=q.toLowerCase();
   const hits=ALL_CORPS.filter(c=>c.name.toLowerCase().includes(lower)).slice(0,20);
   _corpDrop.innerHTML = hits.length
     ? hits.map(c=>`<div class="corp-drop-item">${c.name.replace(/</g,"&lt;")}</div>`).join("")
-    : `<div class="corp-drop-empty">${ALL_CORPS.length?'No match':'Loading…'}</div>`;
+    : `<div class="corp-drop-empty">${ALL_CORPS.length?'No match':'Loading corp list — retrying…'}</div>`;
   _corpDrop.querySelectorAll(".corp-drop-item").forEach(el=>{
     el.addEventListener("mousedown",e=>{ e.preventDefault(); _corpSelect(el.textContent); });
   });
@@ -1565,6 +1577,7 @@ def main():
 
     url = f"http://{args.host if args.host != '0.0.0.0' else 'localhost'}:{args.port}"
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    threading.Thread(target=get_npc_corps, daemon=True).start()
     print(f"EVE Market Tools running at {url}", file=sys.stderr)
     print("Press Ctrl+C to stop.", file=sys.stderr)
     if not args.no_browser:

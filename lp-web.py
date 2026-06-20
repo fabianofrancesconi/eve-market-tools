@@ -1164,12 +1164,16 @@ $("#go").onclick = ()=>scan(false);
 $("#refresh").onclick = ()=>scan(true);
 let ALL_CORPS=[];
 (async()=>{
-  try{
-    ALL_CORPS=await (await fetch("/api/corps")).json();
-    const dl=$("#corp-list");
-    dl.innerHTML=ALL_CORPS.map(c=>`<option value="${c.name.replace(/"/g,'&quot;')}"></option>`).join("");
-  }catch(e){}
+  try{ ALL_CORPS=await (await fetch("/api/corps")).json(); }catch(e){}
 })();
+function _updateCorpList(q){
+  const dl=$("#corp-list");
+  if(!q||q.length<2){ dl.innerHTML=""; return; }
+  const lower=q.toLowerCase();
+  const hits=ALL_CORPS.filter(c=>c.name.toLowerCase().includes(lower)).slice(0,20);
+  dl.innerHTML=hits.map(c=>`<option value="${c.name.replace(/"/g,'&quot;')}"></option>`).join("");
+}
+$("#corp").addEventListener("input",e=>_updateCorpList(e.target.value));
 $("#corp").addEventListener("change",()=>{ clearTimeout(lpScanTimer); scan(false); });
 $("#corp").addEventListener("keydown",e=>{ if(e.key==="Enter"){ clearTimeout(lpScanTimer); scan(false); } });
 let lpScanTimer;

@@ -854,6 +854,26 @@ function setStatus(html,err){
   const s=$("#statusbar"); s.innerHTML=html; s.className=err?"err":"";
 }
 
+// ── localStorage persistence ──────────────────────────────────────────────
+const LS_KEY='eve-scanner';
+function saveLS(){
+  try{
+    localStorage.setItem(LS_KEY,JSON.stringify({
+      corp:$("#corp").value,lp:$("#lp").value,instant:$("#instant").value,
+      maxspread:$("#maxspread").value,tax:$("#tax").value,broker:$("#broker").value,
+      sort_key:STATE.sort.key,sort_dir:STATE.sort.dir,
+      col_widths:STATE.colw,col_layout_v:COL_LAYOUT_VERSION,
+      hide_illiquid:STATE.hideIlliquid?'1':'0',
+      hide_unaffordable:STATE.hideUnaffordable?'1':'0',
+      active_tab:ACTIVE_TAB,
+      arb:{region:$("#arb-region").value,cross_station:$("#arb-cross").value,
+        sales_tax:$("#arb-tax").value,min_isk:$("#arb-minisk").value,
+        max_jumps:$("#arb-maxjumps").value,route_flag:$("#arb-route").value,
+        avoid_lowsec:ARB.avoidLowsec?'1':'0'}
+    }));
+  }catch(e){}
+}
+
 // ── Tab switching ─────────────────────────────────────────────────────────
 let ACTIVE_TAB = "lp";
 function switchTab(tab){
@@ -866,7 +886,7 @@ function switchTab(tab){
   if(tab!=="lp") closeDetail();
   setStatus("");
   document.title = tab==="lp" ? "EVE LP Store Scanner" : "EVE Arbitrage Scanner";
-  fetch(`/api/prefs?active_tab=${tab}`).catch(()=>{});
+  fetch(`/api/prefs?active_tab=${tab}`).catch(()=>{}); saveLS();
 }
 document.querySelectorAll(".tab").forEach(t=>{
   t.onclick = ()=>switchTab(t.dataset.tab);
@@ -1008,10 +1028,10 @@ function renderLPStatus(){
 
 function saveLPSort(){
   const s=STATE.sort;
-  fetch(`/api/prefs?sort_key=${encodeURIComponent(s.key)}&sort_dir=${s.dir}`).catch(()=>{});
+  fetch(`/api/prefs?sort_key=${encodeURIComponent(s.key)}&sort_dir=${s.dir}`).catch(()=>{}); saveLS();
 }
 function saveLPColWidths(){
-  fetch(`/api/prefs?col_widths=${encodeURIComponent(JSON.stringify(STATE.colw))}&col_layout_v=${COL_LAYOUT_VERSION}`).catch(()=>{});
+  fetch(`/api/prefs?col_widths=${encodeURIComponent(JSON.stringify(STATE.colw))}&col_layout_v=${COL_LAYOUT_VERSION}`).catch(()=>{}); saveLS();
 }
 
 // ── LP detail panel ───────────────────────────────────────────────────────
@@ -1163,14 +1183,14 @@ $("#toggleIlliquid").onclick=()=>{
   STATE.hideIlliquid=!STATE.hideIlliquid;
   $("#toggleIlliquid").classList.toggle("active",STATE.hideIlliquid);
   $("#toggleIlliquid").textContent=STATE.hideIlliquid?"Show illiquid !":"Hide illiquid !";
-  fetch(`/api/prefs?hide_illiquid=${STATE.hideIlliquid?1:0}`).catch(()=>{});
+  fetch(`/api/prefs?hide_illiquid=${STATE.hideIlliquid?1:0}`).catch(()=>{}); saveLS();
   renderTable();
 };
 $("#toggleAffordable").onclick=()=>{
   STATE.hideUnaffordable=!STATE.hideUnaffordable;
   $("#toggleAffordable").classList.toggle("active",STATE.hideUnaffordable);
   $("#toggleAffordable").textContent=STATE.hideUnaffordable?"Show unaffordable":"Hide unaffordable";
-  fetch(`/api/prefs?hide_unaffordable=${STATE.hideUnaffordable?1:0}`).catch(()=>{});
+  fetch(`/api/prefs?hide_unaffordable=${STATE.hideUnaffordable?1:0}`).catch(()=>{}); saveLS();
   renderTable();
 };
 setInterval(renderLPStatus, 30000);
@@ -1369,7 +1389,7 @@ function saveArbPrefs(){
     route_flag:   $("#arb-route").value,
     avoid_lowsec: ARB.avoidLowsec?"1":"0",
   });
-  fetch("/api/arb/prefs?"+p).catch(()=>{});
+  fetch("/api/arb/prefs?"+p).catch(()=>{}); saveLS();
 }
 function updateArbJumpsVisibility(){
   const cross=$("#arb-cross").value==="1";
@@ -1396,19 +1416,22 @@ setInterval(renderArbStatus, 30000);
 // ══════════════════════════════════════════════════════════════════════════
 updateArbJumpsVisibility();  // reflect default cross-station selection before settings load
 async function loadSettings(){
-  try{
-    const s=await (await fetch("/api/settings")).json();
-    if(s && Object.keys(s).length){
+  let s=null;
+  try{ s=JSON.parse(localStorage.getItem(LS_KEY)); }catch(e){}
+  if(!s){ try{ s=await (await fetch("/api/settings")).json(); }catch(e){} }
+  if(s && Object.keys(s).length){
       if(s.corp) $("#corp").value=s.corp;
       if(s.lp)   $("#lp").value=s.lp;
       if(s.instant==="0"||s.instant==="1") $("#instant").value=s.instant;
-      if(s.max_spread!=null) $("#maxspread").value=s.max_spread;
+      const _ms=s.maxspread??s.max_spread; if(_ms!=null) $("#maxspread").value=_ms;
       if(s.tax)   $("#tax").value=s.tax;
       if(s.broker) $("#broker").value=s.broker;
       if(s.sort_key && COLS.some(c=>c.k===s.sort_key))
         STATE.sort={key:s.sort_key, dir:Number(s.sort_dir)===1?1:-1};
       if(s.col_widths && s.col_layout_v==COL_LAYOUT_VERSION){
-        try{ STATE.colw=JSON.parse(s.col_widths)||{}; }catch(e){}
+        try{
+          STATE.colw=(typeof s.col_widths==="string"?JSON.parse(s.col_widths):s.col_widths)||{};
+        }catch(e){}
       }
       if(s.hide_illiquid==="1"){
         STATE.hideIlliquid=true;
@@ -1435,8 +1458,7 @@ async function loadSettings(){
       updateArbJumpsVisibility();
       // Restore last active tab
       if(s.active_tab==="arb") switchTab("arb");
-    }
-  }catch(e){}
+  }
   // Auto-run LP scanner if corp is set
   if(ACTIVE_TAB==="lp" && $("#corp").value.trim()) scan(false);
 }

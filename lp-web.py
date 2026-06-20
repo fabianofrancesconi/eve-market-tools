@@ -552,8 +552,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
     box-shadow:0 0 0 2px rgba(41,182,246,.15);
   }
   input[type=number] { width:90px; }
-  input#corp { width:190px; }
+  input#corp { width:210px; }
   input#arb-minisk { width:110px; }
+  .corp-wrap { position:relative; }
+  .corp-wrap input { padding-left:28px; width:100%; }
+  .corp-icon {
+    position:absolute; left:8px; top:50%; transform:translateY(-50%);
+    color:var(--dim); font-size:13px; pointer-events:none; user-select:none;
+  }
+  .corp-drop {
+    position:absolute; top:calc(100% + 3px); left:0; min-width:100%; z-index:200;
+    background:var(--panel2); border:1px solid var(--cyan2);
+    border-radius:4px; overflow:hidden;
+    box-shadow:0 8px 28px rgba(0,0,0,.6);
+    max-height:240px; overflow-y:auto;
+  }
+  .corp-drop-item {
+    padding:7px 12px; cursor:pointer; font-size:14px; color:var(--fg);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    transition:background .08s;
+  }
+  .corp-drop-item:hover, .corp-drop-item.hi {
+    background:var(--accent); color:#fff;
+  }
+  .corp-drop-empty {
+    padding:8px 12px; font-size:13px; color:var(--dim); font-style:italic;
+  }
   .btn-group { display:flex; gap:6px; align-self:center; }
   button {
     border:none; border-radius:4px; cursor:pointer; font:inherit; font-size:14px;
@@ -744,8 +768,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <!-- LP controls -->
 <div id="lp-controls" class="ctrlbar">
   <div class="field"><label>Corporation</label>
-    <input id="corp" list="corp-list" placeholder="Search corporation…" autocomplete="off">
-    <datalist id="corp-list"></datalist>
+    <div class="corp-wrap">
+      <span class="corp-icon">⌕</span>
+      <input id="corp" placeholder="Search corporation…" autocomplete="off" spellcheck="false">
+      <div id="corp-drop" class="corp-drop" style="display:none"></div>
+    </div>
   </div>
   <div class="field"><label>LP budget</label><input id="lp" type="number" value="500000"></div>
   <div class="field"><label>Sell mode</label>
@@ -1166,16 +1193,56 @@ let ALL_CORPS=[];
 (async()=>{
   try{ ALL_CORPS=await (await fetch("/api/corps")).json(); }catch(e){}
 })();
-function _updateCorpList(q){
-  const dl=$("#corp-list");
-  if(!q||q.length<2){ dl.innerHTML=""; return; }
+
+// ── Corp search dropdown ──────────────────────────────────────────────────
+let _corpHi=-1;
+const _corpInput=$("#corp"), _corpDrop=$("#corp-drop");
+
+function _corpClose(){ _corpDrop.style.display="none"; _corpHi=-1; }
+function _corpItems(){ return _corpDrop.querySelectorAll(".corp-drop-item"); }
+
+function _corpOpen(q){
+  if(!q||q.length<2){ _corpClose(); return; }
   const lower=q.toLowerCase();
   const hits=ALL_CORPS.filter(c=>c.name.toLowerCase().includes(lower)).slice(0,20);
-  dl.innerHTML=hits.map(c=>`<option value="${c.name.replace(/"/g,'&quot;')}"></option>`).join("");
+  if(!hits.length){
+    _corpDrop.innerHTML=`<div class="corp-drop-empty">No match</div>`;
+  } else {
+    _corpDrop.innerHTML=hits.map(c=>
+      `<div class="corp-drop-item">${c.name.replace(/</g,"&lt;")}</div>`
+    ).join("");
+    _corpDrop.querySelectorAll(".corp-drop-item").forEach(el=>{
+      el.addEventListener("mousedown", e=>{
+        e.preventDefault();
+        _corpInput.value=el.textContent;
+        _corpClose();
+        clearTimeout(lpScanTimer); scan(false);
+      });
+    });
+  }
+  _corpHi=-1;
+  _corpDrop.style.display="block";
 }
-$("#corp").addEventListener("input",e=>_updateCorpList(e.target.value));
-$("#corp").addEventListener("change",()=>{ clearTimeout(lpScanTimer); scan(false); });
-$("#corp").addEventListener("keydown",e=>{ if(e.key==="Enter"){ clearTimeout(lpScanTimer); scan(false); } });
+
+function _corpHighlight(idx){
+  const items=_corpItems();
+  items.forEach(el=>el.classList.remove("hi"));
+  _corpHi=Math.max(-1,Math.min(idx,items.length-1));
+  if(_corpHi>=0){ items[_corpHi].classList.add("hi"); items[_corpHi].scrollIntoView({block:"nearest"}); }
+}
+
+_corpInput.addEventListener("input",e=>_corpOpen(e.target.value));
+_corpInput.addEventListener("blur",()=>setTimeout(_corpClose,150));
+_corpInput.addEventListener("keydown",e=>{
+  const items=_corpItems();
+  if(e.key==="ArrowDown"){ e.preventDefault(); _corpHighlight(_corpHi+1); }
+  else if(e.key==="ArrowUp"){ e.preventDefault(); _corpHighlight(_corpHi-1); }
+  else if(e.key==="Enter"){
+    if(_corpHi>=0&&items[_corpHi]){ _corpInput.value=items[_corpHi].textContent; _corpClose(); }
+    clearTimeout(lpScanTimer); scan(false);
+  }
+  else if(e.key==="Escape"){ _corpClose(); }
+});
 let lpScanTimer;
 function scheduleScan(delay=800){ clearTimeout(lpScanTimer); lpScanTimer=setTimeout(()=>scan(false),delay); }
 ["#lp","#instant","#maxspread","#tax","#broker"].forEach(sel=>{

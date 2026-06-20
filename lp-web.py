@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.0.0"
+__version__ = "1.0.2"
 
 import argparse
 import json
@@ -1227,8 +1227,8 @@ function _corpOpen(q){
   _corpHi=-1;
   const r=_corpInput.getBoundingClientRect();
   Object.assign(_corpDrop.style,{
-    top:(r.bottom+window.scrollY+3)+"px",
-    left:(r.left+window.scrollX)+"px",
+    top:(r.bottom+3)+"px",
+    left:r.left+"px",
     width:Math.max(240,r.width)+"px",
     display:"block"
   });

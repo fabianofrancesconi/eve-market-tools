@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.0.7"
+__version__ = "1.0.8"
 
 import argparse
 import base64
@@ -589,10 +589,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   /* ── Control bar ─────────────────────────────────────────────────── */
   .ctrlbar {
-    padding:0 18px; height:52px; flex-shrink:0;
+    padding:0 18px 7px; height:56px; flex-shrink:0;
     border-bottom:1px solid var(--line);
     background:var(--panel);
-    display:flex; gap:10px; align-items:center; flex-wrap:nowrap; overflow:hidden;
+    display:flex; gap:10px; align-items:flex-end; flex-wrap:nowrap; overflow:hidden;
   }
   .field { display:flex; flex-direction:column; gap:1px; }
   .field label { font-size:10px; text-transform:uppercase; letter-spacing:.7px;
@@ -633,7 +633,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .corp-drop-empty {
     padding:8px 12px; font-size:13px; color:var(--dim); font-style:italic;
   }
-  .btn-group { display:flex; gap:6px; align-self:center; }
+  .btn-group { display:flex; gap:6px; align-self:flex-end; margin-left:6px; }
   button {
     border:none; border-radius:4px; cursor:pointer; font:inherit; font-size:14px;
     font-weight:600; padding:5px 14px; transition:filter .12s, background .12s;
@@ -671,7 +671,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #statusbar .pill b { color:var(--fg); font-weight:600; }
 
   /* ── Layout ──────────────────────────────────────────────────────── */
-  main { display:flex; height:calc(100vh - 127px); position:relative; overflow:hidden; }
+  main { display:flex; height:calc(100vh - 131px); position:relative; overflow:hidden; }
   .tablewrap { flex:1; overflow:auto; }
 
   /* ── Tables ──────────────────────────────────────────────────────── */

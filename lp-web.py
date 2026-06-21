@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.0.8"
+__version__ = "1.0.9"
 
 import argparse
 import base64
@@ -633,7 +633,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .corp-drop-empty {
     padding:8px 12px; font-size:13px; color:var(--dim); font-style:italic;
   }
-  .btn-group { display:flex; gap:6px; align-self:flex-end; margin-left:6px; }
+  .btn-group { display:flex; gap:12px; align-self:flex-end; margin-left:6px; align-items:center; }
+  .check-field {
+    display:inline-flex; align-items:center; gap:5px;
+    font-size:13px; color:var(--dim); cursor:pointer; white-space:nowrap; user-select:none;
+  }
+  .check-field:hover { color:var(--fg); }
+  .check-field input[type=checkbox] {
+    accent-color:var(--cyan2); width:14px; height:14px; cursor:pointer; flex-shrink:0;
+  }
   button {
     border:none; border-radius:4px; cursor:pointer; font:inherit; font-size:14px;
     font-weight:600; padding:5px 14px; transition:filter .12s, background .12s;
@@ -650,10 +658,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     color:var(--dim); font-weight:500;
   }
   button.secondary:hover { border-color:var(--cyan2); color:var(--fg); }
-  button.toggle.active {
-    background:rgba(32,128,208,.18); border-color:var(--cyan2);
-    color:var(--cyan); font-weight:600;
-  }
 
   /* ── Status bar ──────────────────────────────────────────────────── */
   #statusbar {
@@ -841,8 +845,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div class="btn-group">
     <button id="go" class="primary">Scan</button>
     <button id="refresh" class="secondary" title="Re-fetch offers + prices from ESI">⟳ Refresh</button>
-    <button id="toggleIlliquid" class="secondary toggle" title="Show/hide illiquid rows">Hide illiquid !</button>
-    <button id="toggleAffordable" class="secondary toggle" title="Hide offers you can't afford">Hide unaffordable</button>
+    <label class="check-field" title="Show/hide illiquid rows"><input type="checkbox" id="toggleIlliquid"> Hide illiquid !</label>
+    <label class="check-field" title="Hide offers you can't afford"><input type="checkbox" id="toggleAffordable"> Hide unaffordable</label>
   </div>
 </div>
 
@@ -1327,17 +1331,13 @@ function scheduleScan(delay=800){ clearTimeout(lpScanTimer); lpScanTimer=setTime
   el.addEventListener("change",()=>{ saveLS(); scheduleScan(sel==="#instant"?0:800); });
   if(sel!=="#instant") el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); });
 });
-$("#toggleIlliquid").onclick=()=>{
-  STATE.hideIlliquid=!STATE.hideIlliquid;
-  $("#toggleIlliquid").classList.toggle("active",STATE.hideIlliquid);
-  $("#toggleIlliquid").textContent=STATE.hideIlliquid?"Show illiquid !":"Hide illiquid !";
+$("#toggleIlliquid").onchange=()=>{
+  STATE.hideIlliquid=$("#toggleIlliquid").checked;
   fetch(`/api/prefs?hide_illiquid=${STATE.hideIlliquid?1:0}`).catch(()=>{}); saveLS();
   renderTable();
 };
-$("#toggleAffordable").onclick=()=>{
-  STATE.hideUnaffordable=!STATE.hideUnaffordable;
-  $("#toggleAffordable").classList.toggle("active",STATE.hideUnaffordable);
-  $("#toggleAffordable").textContent=STATE.hideUnaffordable?"Show unaffordable":"Hide unaffordable";
+$("#toggleAffordable").onchange=()=>{
+  STATE.hideUnaffordable=$("#toggleAffordable").checked;
   fetch(`/api/prefs?hide_unaffordable=${STATE.hideUnaffordable?1:0}`).catch(()=>{}); saveLS();
   renderTable();
 };
@@ -1581,16 +1581,8 @@ async function loadSettings(){
           STATE.colw=(typeof s.col_widths==="string"?JSON.parse(s.col_widths):s.col_widths)||{};
         }catch(e){}
       }
-      if(s.hide_illiquid==="1"){
-        STATE.hideIlliquid=true;
-        $("#toggleIlliquid").classList.add("active");
-        $("#toggleIlliquid").textContent="Show illiquid !";
-      }
-      if(s.hide_unaffordable==="1"){
-        STATE.hideUnaffordable=true;
-        $("#toggleAffordable").classList.add("active");
-        $("#toggleAffordable").textContent="Show unaffordable";
-      }
+      if(s.hide_illiquid==="1"){ STATE.hideIlliquid=true; $("#toggleIlliquid").checked=true; }
+      if(s.hide_unaffordable==="1"){ STATE.hideUnaffordable=true; $("#toggleAffordable").checked=true; }
       // Arb settings
       const a=s.arb||{};
       if(a.region) $("#arb-region").value=a.region;

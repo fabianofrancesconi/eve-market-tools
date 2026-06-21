@@ -1246,11 +1246,12 @@ function renderBody(){
     <h3>Shopping list — ${n}× redemption${n>1?'s':''}</h3>
     ${d.required_items.length?`<table class="mini"><thead><tr>
         <th style="text-align:left">Required item</th><th>Total qty</th><th>Avg unit</th><th>Line cost</th><th>Volume</th></tr></thead>
-        <tbody>${reqRows}</tbody></table>`
+        <tbody>${reqRows}
+        <tr class="total"><td>Total</td><td></td><td></td><td>${fmtISK(reqCost)}</td><td></td></tr></tbody></table>`
       :`<div class="muted">No required items — just LP + ISK.</div>`}
     <table class="mini" style="margin-top:8px"><tbody>
-      <tr><td>Store ISK fee</td><td>${fmtISK(isk_fee)}</td></tr>
       <tr><td>Required items total</td><td>${fmtISK(reqCost)}</td></tr>
+      <tr><td>Store ISK fee</td><td>${fmtISK(isk_fee)}</td></tr>
       <tr class="total"><td>Total acquisition cost</td><td>${fmtISK(cost)}</td></tr>
     </tbody></table>
     <h3>Cargo volume</h3>

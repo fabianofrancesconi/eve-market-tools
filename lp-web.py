@@ -633,7 +633,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .corp-drop-empty {
     padding:8px 12px; font-size:13px; color:var(--dim); font-style:italic;
   }
-  .btn-group { display:flex; gap:12px; align-self:flex-end; margin-left:6px; align-items:center; }
+  .btn-group { display:flex; gap:6px; align-self:flex-end; align-items:center; }
   .check-field {
     display:inline-flex; align-items:center; gap:5px;
     font-size:13px; color:var(--dim); cursor:pointer; white-space:nowrap; user-select:none;

@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.0.6"
+__version__ = "1.0.7"
 
 import argparse
 import base64
@@ -1276,7 +1276,7 @@ function _corpItems(){ return _corpDrop.querySelectorAll(".corp-drop-item"); }
 
 function _corpSelect(name){
   _corpInput.value=name; _corpClose();
-  clearTimeout(lpScanTimer); scan(false);
+  saveLS(); clearTimeout(lpScanTimer); scan(false);
 }
 
 function _corpOpen(q){
@@ -1324,8 +1324,8 @@ let lpScanTimer;
 function scheduleScan(delay=800){ clearTimeout(lpScanTimer); lpScanTimer=setTimeout(()=>scan(false),delay); }
 ["#lp","#instant","#maxspread","#tax","#broker"].forEach(sel=>{
   const el=$(sel); if(!el) return;
-  el.addEventListener("change",()=>scheduleScan(sel==="#instant"?0:800));
-  if(sel!=="#instant") el.addEventListener("input",()=>scheduleScan(800));
+  el.addEventListener("change",()=>{ saveLS(); scheduleScan(sel==="#instant"?0:800); });
+  if(sel!=="#instant") el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); });
 });
 $("#toggleIlliquid").onclick=()=>{
   STATE.hideIlliquid=!STATE.hideIlliquid;

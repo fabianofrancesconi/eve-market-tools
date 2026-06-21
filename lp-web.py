@@ -1198,7 +1198,7 @@ function renderBody(){
   const n=Math.max(1,parseInt($("#reds").value||"1"));
   const tax=parseFloat(STATE.ctx.tax)||0.045, broker=parseFloat(STATE.ctx.broker)||0.015;
   const pn=v=>v>0?"pos":(v<0?"neg":"");
-  let reqCost=0, anyShort=false;
+  let reqCost=0, anyShort=false, reqVol=0, reqVolMissing=false;
   const reqRows=d.required_items.map(it=>{
     const need=it.quantity*n;
     const w=walkBook(it.book,need);
@@ -1207,6 +1207,7 @@ function renderBody(){
     const noPrice=(it.unit_price===null&&w.filled===0);
     if(!noPrice) reqCost+=line;
     const short=w.shortBy>0; if(short) anyShort=true;
+    if(it.line_volume===null) reqVolMissing=true; else reqVol+=it.line_volume*n;
     const vol=it.line_volume===null?'?':fmtVol(it.line_volume*n);
     return `<tr><td>${it.name}${short?' <span class="flag" title="not enough on market">!</span>':''}</td>
       <td>${fmtNum(need)}</td>
@@ -1247,7 +1248,7 @@ function renderBody(){
     ${d.required_items.length?`<table class="mini"><thead><tr>
         <th style="text-align:left">Required item</th><th>Total qty</th><th>Avg unit</th><th>Line cost</th><th>Volume</th></tr></thead>
         <tbody>${reqRows}
-        <tr class="total"><td>Total</td><td></td><td></td><td>${fmtISK(reqCost)}</td><td></td></tr></tbody></table>`
+        <tr class="total"><td>Total</td><td></td><td></td><td>${fmtISK(reqCost)}</td><td>${reqVolMissing?'?':fmtVol(reqVol)}</td></tr></tbody></table>`
       :`<div class="muted">No required items — just LP + ISK.</div>`}
     <table class="mini" style="margin-top:8px"><tbody>
       <tr><td>Required items total</td><td>${fmtISK(reqCost)}</td></tr>

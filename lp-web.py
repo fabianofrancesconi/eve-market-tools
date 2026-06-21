@@ -825,6 +825,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
     border-radius:3px; transition:width .35s ease;
   }
   .prog-sub { font-size:12px; color:var(--dim); text-align:center; min-height:16px; }
+
+  /* ── Lot tracker ─────────────────────────────────────────────────── */
+  .lot-tracker { display:flex; flex-direction:column; gap:5px; }
+  .lot-row {
+    background:var(--panel2); border:1px solid var(--line2); border-radius:5px;
+    padding:7px 10px;
+  }
+  .lot-label { font-size:12px; color:var(--dim); margin-bottom:5px; }
+  .lot-label .lot-need { color:var(--fg); font-weight:600; }
+  .lot-controls { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .lot-tags { display:flex; flex-wrap:wrap; gap:3px; }
+  .lot-tag {
+    background:var(--panel3); border:1px solid var(--line2); border-radius:3px;
+    padding:1px 7px; font-size:12px; display:inline-flex; align-items:center; gap:5px;
+  }
+  .lot-tag .rm { cursor:pointer; color:var(--dim); font-size:10px; line-height:1; }
+  .lot-tag .rm:hover { color:var(--red); }
+  .lot-num { width:70px; font-size:13px; padding:3px 6px; }
+  .lot-sum { font-size:13px; font-weight:600; }
 </style>
 </head>
 <body>
@@ -1004,7 +1023,7 @@ document.querySelectorAll(".tab").forEach(t=>{
 // LP TAB
 // ══════════════════════════════════════════════════════════════════════════
 let STATE = {rows:[], sort:{key:"isk_per_lp", dir:-1}, ctx:{}, selOffer:null,
-             colw:{}, hideIlliquid:false, hideUnaffordable:false, lastScanData:null};
+             colw:{}, hideIlliquid:false, hideUnaffordable:false, lastScanData:null, lotTrackerOpen:false};
 let LP_RESIZING = false;
 
 const COLS = [
@@ -1193,11 +1212,53 @@ function walkBook(book, qty){
   return {cost, filled, avg:filled>0?cost/filled:null, shortBy:Math.max(0,qty-filled), lastPrice:last};
 }
 
+function bindLotCalcs(savedLots){
+  document.querySelectorAll(".lot-row[data-tid]").forEach(row=>{
+    const tid=row.dataset.tid;
+    const need=parseInt(row.dataset.need)||0;
+    const tagsEl=row.querySelector(".lot-tags");
+    const numEl=row.querySelector(".lot-num");
+    const sumEl=row.querySelector(".lot-sum");
+    row._lotNums=(savedLots&&savedLots[tid])?[...savedLots[tid]]:[];
+
+    function renderChips(){
+      tagsEl.innerHTML=row._lotNums.map((v,i)=>
+        `<span class="lot-tag">${fmtNum(v)}<span class="rm" data-i="${i}">×</span></span>`
+      ).join("");
+      tagsEl.querySelectorAll(".rm").forEach(rm=>{
+        rm.onclick=()=>{ row._lotNums.splice(+rm.dataset.i,1); renderChips(); };
+      });
+      const tot=row._lotNums.reduce((a,b)=>a+b,0);
+      if(!row._lotNums.length){ sumEl.textContent=""; return; }
+      const rem=need-tot;
+      if(rem<=0){ sumEl.textContent=`${fmtNum(tot)} ✓`; sumEl.style.color="var(--green2)"; }
+      else { sumEl.textContent=`${fmtNum(tot)} · ${fmtNum(rem)} more`; sumEl.style.color="var(--yellow)"; }
+    }
+
+    numEl.addEventListener("keydown",e=>{
+      if(e.key==="Enter"||e.key===" "){
+        e.preventDefault();
+        const v=parseInt(numEl.value);
+        if(v>0){ row._lotNums.push(v); numEl.value=""; renderChips(); }
+      }
+    });
+    renderChips();
+  });
+  const toggle=document.getElementById("lotTrackerToggle");
+  if(toggle) toggle.onclick=()=>{
+    STATE.lotTrackerOpen=!STATE.lotTrackerOpen;
+    toggle.textContent=(STATE.lotTrackerOpen?"▼":"▶")+" Lot tracker";
+    document.querySelector(".lot-tracker").style.display=STATE.lotTrackerOpen?"":"none";
+  };
+}
+
 function renderBody(){
   const d=STATE.detail;
   const n=Math.max(1,parseInt($("#reds").value||"1"));
   const tax=parseFloat(STATE.ctx.tax)||0.045, broker=parseFloat(STATE.ctx.broker)||0.015;
   const pn=v=>v>0?"pos":(v<0?"neg":"");
+  const savedLots={};
+  document.querySelectorAll(".lot-row[data-tid]").forEach(row=>{ if(row._lotNums&&row._lotNums.length) savedLots[row.dataset.tid]=[...row._lotNums]; });
   let reqCost=0, anyShort=false, reqVol=0, reqVolMissing=false;
   const reqRows=d.required_items.map(it=>{
     const need=it.quantity*n;
@@ -1248,7 +1309,18 @@ function renderBody(){
     ${d.required_items.length?`<table class="mini"><thead><tr>
         <th style="text-align:left">Required item</th><th>Total qty</th><th>Avg unit</th><th>Line cost</th><th>Volume</th></tr></thead>
         <tbody>${reqRows}
-        <tr class="total"><td>Total</td><td></td><td></td><td>${fmtISK(reqCost)}</td><td>${reqVolMissing?'?':fmtVol(reqVol)}</td></tr></tbody></table>`
+        <tr class="total"><td>Total</td><td></td><td></td><td>${fmtISK(reqCost)}</td><td>${reqVolMissing?'?':fmtVol(reqVol)}</td></tr></tbody></table>
+    <h3 id="lotTrackerToggle" style="cursor:pointer;user-select:none">${STATE.lotTrackerOpen?'▼':'▶'} Lot tracker</h3>
+    <div class="lot-tracker" style="${STATE.lotTrackerOpen?'':'display:none'}">${d.required_items.map(it=>`
+      <div class="lot-row" data-tid="${it.type_id}" data-need="${it.quantity*n}">
+        <div class="lot-label">${it.name} <span class="lot-need">× ${fmtNum(it.quantity*n)} needed</span></div>
+        <div class="lot-controls">
+          <input type="number" class="lot-num" min="1" placeholder="qty" title="Type a quantity, press Enter or Space to add">
+          <div class="lot-tags"></div>
+          <span class="lot-sum"></span>
+        </div>
+      </div>`).join("")}
+    </div>`
       :`<div class="muted">No required items — just LP + ISK.</div>`}
     <table class="mini" style="margin-top:8px"><tbody>
       <tr><td>Required items total</td><td>${fmtISK(reqCost)}</td></tr>
@@ -1268,6 +1340,7 @@ function renderBody(){
     </tbody></table>
     <p class="muted" style="margin-top:14px">Costs use the live Jita 4-4 order book.
       ${d.instant?'Revenue walks down buy orders.':'Reward valued at the lowest sell order.'}</p>`;
+  bindLotCalcs(savedLots);
 }
 
 // LP control wiring

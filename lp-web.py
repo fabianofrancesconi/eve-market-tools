@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 import argparse
 import base64
@@ -39,7 +39,7 @@ import requests
 
 import arb_core
 from lp_core import (
-    ESI, HEADERS, HIGH_SPREAD_PCT, LPError, build_detail, default_cache_dir,
+    ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
     TRADE_HUBS, evaluate, fetch_orderbook_jita, fetch_prices, get_offers, load_json,
     resolve_corp_id, resolve_corp_name, resolve_names, resolve_volumes, save_json,
 )

@@ -19,6 +19,13 @@ ESI = "https://esi.evetech.net"
 FUZZWORK_AGG = "https://market.fuzzwork.co.uk/aggregates/"
 JITA_STATION_ID = 60003760  # Jita IV - Moon 4 - Caldari Navy Assembly Plant
 JITA_REGION_ID = 10000002   # The Forge (region that contains Jita)
+TRADE_HUBS = {
+    60003760: {"name": "Jita 4-4",     "region_id": 10000002},
+    60008494: {"name": "Amarr 8-20",   "region_id": 10000043},
+    60004588: {"name": "Rens 6-8",     "region_id": 10000030},
+    60011866: {"name": "Dodixie 9-20", "region_id": 10000032},
+    60005686: {"name": "Hek 8-12",     "region_id": 10000042},
+}
 COMPAT_DATE = "2025-08-26"
 USER_AGENT = "lp-store-scanner/1.0 (fabiano.francesconi@gmail.com)"
 HEADERS = {
@@ -100,15 +107,15 @@ def get_offers(corp_id, session, cache_dir, refresh=False):
     return offers
 
 
-def fetch_prices(type_ids, session):
-    """Best sell (min) / best buy (max) and depth at Jita IV-4 per type_id, via
-    Fuzzwork's station aggregate (batched). 0/missing prices -> None."""
+def fetch_prices(type_ids, session, station_id=JITA_STATION_ID):
+    """Best sell (min) / best buy (max) and depth at the given station per type_id,
+    via Fuzzwork's station aggregate (batched). 0/missing prices -> None."""
     out = {}
     ids = sorted(set(type_ids))
     for i in range(0, len(ids), 100):
         chunk = ids[i:i + 100]
         r = session.get(FUZZWORK_AGG,
-                        params={"station": JITA_STATION_ID, "types": ",".join(map(str, chunk))},
+                        params={"station": station_id, "types": ",".join(map(str, chunk))},
                         headers={"User-Agent": USER_AGENT}, timeout=30)
         r.raise_for_status()
         for tid_str, d in r.json().items():
@@ -122,17 +129,19 @@ def fetch_prices(type_ids, session):
     return out
 
 
-def fetch_orderbook_jita(type_id, side, session, max_levels=200):
-    """Live Jita IV-4 order book for one type, as aggregated price levels so a
-    caller can walk it to get the true cost/revenue of a multi-unit fill (the
-    cheapest seller rarely stocks everything you need).
+def fetch_orderbook_jita(type_id, side, session,
+                         station_id=JITA_STATION_ID, region_id=JITA_REGION_ID,
+                         max_levels=200):
+    """Live order book for one type at the given station, as aggregated price
+    levels so a caller can walk it to get the true cost/revenue of a multi-unit
+    fill (the cheapest seller rarely stocks everything you need).
 
     side: "sell" (asks, cheapest first) or "buy" (bids, highest first).
-    Returns [[price, volume], ...] for the Jita 4-4 station only, sorted in the
-    order you'd consume it. Not cached (the book moves constantly)."""
+    Returns [[price, volume], ...] filtered to station_id, sorted in the order
+    you'd consume it. Not cached (the book moves constantly)."""
     orders, page = [], 1
     while page <= 5:  # a single type at one station is almost always 1 page
-        r = session.get(f"{ESI}/markets/{JITA_REGION_ID}/orders/",
+        r = session.get(f"{ESI}/markets/{region_id}/orders/",
                         params={"type_id": type_id, "order_type": side, "page": page},
                         headers=HEADERS, timeout=30)
         if r.status_code != 200:
@@ -146,7 +155,7 @@ def fetch_orderbook_jita(type_id, side, session, max_levels=200):
         page += 1
     levels = {}
     for o in orders:
-        if o.get("location_id") != JITA_STATION_ID:
+        if o.get("location_id") != station_id:
             continue
         levels[o["price"]] = levels.get(o["price"], 0) + o["volume_remain"]
     book = [[p, v] for p, v in levels.items()]

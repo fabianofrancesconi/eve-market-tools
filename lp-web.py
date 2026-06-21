@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.0.9"
+__version__ = "1.1.0"
 
 import argparse
 import base64
@@ -40,7 +40,7 @@ import requests
 import arb_core
 from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, LPError, build_detail, default_cache_dir,
-    evaluate, fetch_orderbook_jita, fetch_prices, get_offers, load_json,
+    TRADE_HUBS, evaluate, fetch_orderbook_jita, fetch_prices, get_offers, load_json,
     resolve_corp_id, resolve_corp_name, resolve_names, resolve_volumes, save_json,
 )
 
@@ -113,6 +113,10 @@ def do_scan(q):
     min_profit = q.get("min_profit", [""])[0].strip()
     min_profit = float(min_profit) if min_profit else None
 
+    station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
+    if station_id not in TRADE_HUBS:
+        station_id = JITA_STATION_ID
+
     s = load_settings()
     s.update({
         "corp": corp_arg,
@@ -121,6 +125,7 @@ def do_scan(q):
         "max_spread": str(max_spread) if max_spread is not None else "",
         "tax": str(tax),
         "broker": str(broker),
+        "station": str(station_id),
     })
     save_settings(s)
 
@@ -140,7 +145,7 @@ def do_scan(q):
     offers = get_offers(corp_id, SESSION, CACHE_DIR, refresh=fresh)
     REFRESHED_CORPS.add(corp_id)
     offers_meta = load_json(CACHE_DIR / f"lpstore_{corp_id}.json", {})
-    prices = fetch_prices(_all_type_ids(offers), SESSION)
+    prices = fetch_prices(_all_type_ids(offers), SESSION, station_id=station_id)
     sellable, unsellable = evaluate(offers, prices, lp, tax, broker, instant)
     if min_profit is not None:
         sellable = [r for r in sellable if r["profit_per"] >= min_profit]
@@ -177,6 +182,8 @@ def do_scan(q):
         "instant": instant,
         "tax": tax,
         "broker": broker,
+        "station_id": station_id,
+        "station_name": TRADE_HUBS[station_id]["name"],
         "high_spread_pct": HIGH_SPREAD_PCT,
         "count": len(rows),
         "unsellable": len(unsellable),
@@ -262,6 +269,10 @@ def do_detail(q):
     instant = q.get("instant", ["0"])[0] in ("1", "true", "on")
     tax = float(q.get("tax", ["0.045"])[0] or 0.045)
     broker = float(q.get("broker", ["0.015"])[0] or 0.015)
+    station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
+    if station_id not in TRADE_HUBS:
+        station_id = JITA_STATION_ID
+    region_id = TRADE_HUBS[station_id]["region_id"]
 
     offers = get_offers(corp_id, SESSION, CACHE_DIR)
     offer = next((o for o in offers if o.get("offer_id") == offer_id), None)
@@ -269,17 +280,19 @@ def do_detail(q):
         raise LPError(f"Offer {offer_id} not found for corp {corp_id}.")
 
     tids = {offer["type_id"]} | {r["type_id"] for r in offer.get("required_items", [])}
-    prices = fetch_prices(tids, SESSION)
+    prices = fetch_prices(tids, SESSION, station_id=station_id)
     names = resolve_names(tids, SESSION, CACHE_DIR)
     volumes = resolve_volumes(tids, SESSION, CACHE_DIR)
     detail = build_detail(offer, prices, names, volumes, lp, tax, broker, instant)
     detail["high_spread_pct"] = HIGH_SPREAD_PCT
 
     for it in detail["required_items"]:
-        it["book"] = fetch_orderbook_jita(it["type_id"], "sell", SESSION)
+        it["book"] = fetch_orderbook_jita(it["type_id"], "sell", SESSION,
+                                          station_id=station_id, region_id=region_id)
     if instant:
         detail["output"]["buy_book"] = fetch_orderbook_jita(
-            detail["output"]["type_id"], "buy", SESSION)
+            detail["output"]["type_id"], "buy", SESSION,
+            station_id=station_id, region_id=region_id)
     return detail
 
 
@@ -842,6 +855,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div class="field"><label>Max spread %</label><input id="maxspread" type="number" placeholder="off" value="20"></div>
   <div class="field"><label>Sales tax</label><input id="tax" type="number" step="0.001" value="0.045"></div>
   <div class="field"><label>Broker fee</label><input id="broker" type="number" step="0.001" value="0.015"></div>
+  <div class="field"><label>Market</label>
+    <select id="market">
+      <option value="60003760">Jita 4-4</option>
+      <option value="60008494">Amarr 8-20</option>
+      <option value="60004588">Rens 6-8</option>
+      <option value="60011866">Dodixie 9-20</option>
+      <option value="60005686">Hek 8-12</option>
+    </select>
+  </div>
   <div class="btn-group">
     <button id="go" class="primary">Scan</button>
     <button id="refresh" class="secondary" title="Re-fetch offers + prices from ESI">⟳ Refresh</button>
@@ -946,6 +968,7 @@ function saveLS(){
     localStorage.setItem(LS_KEY,JSON.stringify({
       corp:$("#corp").value,lp:$("#lp").value,instant:$("#instant").value,
       maxspread:$("#maxspread").value,tax:$("#tax").value,broker:$("#broker").value,
+      market:$("#market").value,
       sort_key:STATE.sort.key,sort_dir:STATE.sort.dir,
       col_widths:STATE.colw,col_layout_v:COL_LAYOUT_VERSION,
       hide_illiquid:STATE.hideIlliquid?'1':'0',
@@ -1087,7 +1110,7 @@ async function scan(forceRefresh=false){
   const btn=$("#refresh");
   if(forceRefresh){ btn.disabled=true; btn.textContent="⟳ Fetching…"; }
   setStatus("Scanning "+corp+(forceRefresh?" (refreshing from ESI)":"")+" …");
-  STATE.ctx={lp:$("#lp").value, instant:$("#instant").value, tax:$("#tax").value, broker:$("#broker").value};
+  STATE.ctx={lp:$("#lp").value, instant:$("#instant").value, tax:$("#tax").value, broker:$("#broker").value, station:$("#market").value};
   const p=new URLSearchParams({corp, ...STATE.ctx});
   const ms=$("#maxspread").value.trim(); if(ms) p.set("max_spread",ms);
   if(forceRefresh) p.set("refresh","1");
@@ -1123,7 +1146,8 @@ function saveLPColWidths(){
 async function openDetail(offerId){
   STATE.selOffer=offerId; renderTable();
   const p=new URLSearchParams({corp_id:STATE.ctx.corp_id, offer_id:offerId,
-    lp:STATE.ctx.lp, instant:STATE.ctx.instant, tax:STATE.ctx.tax, broker:STATE.ctx.broker});
+    lp:STATE.ctx.lp, instant:STATE.ctx.instant, tax:STATE.ctx.tax, broker:STATE.ctx.broker,
+    station:STATE.ctx.station});
   const inner=$("#detail .inner");
   inner.innerHTML="<div class='muted'>Loading volumes…</div>";
   $("#detail").classList.add("open");
@@ -1326,10 +1350,10 @@ _corpInput.addEventListener("keydown",e=>{
 document.addEventListener("click",e=>{ if(!_corpInput.contains(e.target)&&!_corpDrop.contains(e.target)) _corpClose(); });
 let lpScanTimer;
 function scheduleScan(delay=800){ clearTimeout(lpScanTimer); lpScanTimer=setTimeout(()=>scan(false),delay); }
-["#lp","#instant","#maxspread","#tax","#broker"].forEach(sel=>{
+["#lp","#instant","#maxspread","#tax","#broker","#market"].forEach(sel=>{
   const el=$(sel); if(!el) return;
   el.addEventListener("change",()=>{ saveLS(); scheduleScan(sel==="#instant"?0:800); });
-  if(sel!=="#instant") el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); });
+  if(sel!=="#instant"&&sel!=="#market") el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); });
 });
 $("#toggleIlliquid").onchange=()=>{
   STATE.hideIlliquid=$("#toggleIlliquid").checked;
@@ -1570,6 +1594,7 @@ async function loadSettings(){
   if(s && Object.keys(s).length){
       if(s.corp) $("#corp").value=s.corp;
       if(s.lp)   $("#lp").value=s.lp;
+      if(s.market) $("#market").value=s.market;
       if(s.instant==="0"||s.instant==="1") $("#instant").value=s.instant;
       const _ms=s.maxspread??s.max_spread; if(_ms!=null) $("#maxspread").value=_ms;
       if(s.tax)   $("#tax").value=s.tax;

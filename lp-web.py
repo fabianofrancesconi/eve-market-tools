@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.1.1"
+__version__ = "1.1.5"
 
 import argparse
 import base64
@@ -18,6 +18,7 @@ import json
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -321,7 +322,6 @@ def do_arb_scan(q, emit=None):
     max_jumps = int(q.get("max_jumps", ["6"])[0])
     avoid_lowsec = q.get("avoid_lowsec", ["0"])[0] in ("1", "true", "on")
     route_flag = q.get("route_flag", ["shortest"])[0]
-    refresh = q.get("refresh", ["0"])[0] in ("1", "true", "on")
 
     s = load_arb_settings()
     s.update({
@@ -337,45 +337,56 @@ def do_arb_scan(q, emit=None):
 
     _ensure_arb_caches()
 
-    def book_progress(stage, **kw):
+    # Phase 1 — type list
+    def types_progress(stage, **kw):
         if stage == "cache":
-            _emit({"type": "progress", "pct": 65,
-                   "msg": f"Using cached order book ({kw['orders']:,} orders)",
-                   "sub": "Analyzing spreads…"})
-        elif stage == "revalidate":
-            _emit({"type": "progress", "pct": 2,
-                   "msg": "Checking ESI for a newer snapshot…", "sub": ""})
-        elif stage == "stale":
-            _emit({"type": "progress", "pct": 65,
-                   "msg": f"ESI unreachable — reusing {kw['orders']:,} cached orders",
-                   "sub": ""})
+            _emit({"type": "progress", "pct": 8,
+                   "msg": f"Type list cached ({kw['count']:,} types)", "sub": ""})
         elif stage == "page":
-            pages = kw.get("pages") or 1
-            page = kw.get("page", 0)
-            orders = kw.get("orders", 0)
-            if page == 0:
-                _emit({"type": "progress", "pct": 2,
-                       "msg": "Downloading order book from ESI…",
-                       "sub": "First run for this region can take ~30 s"})
-            else:
-                pct = max(5, min(62, round(5 + (page / pages) * 57)))
-                _emit({"type": "progress", "pct": pct,
-                       "msg": f"Downloading order book — page {page} of {pages}",
-                       "sub": f"{orders:,} orders received so far"})
+            pages = kw.get("pages", 1)
+            pct = max(2, min(8, round(2 + kw["page"] / pages * 6)))
+            _emit({"type": "progress", "pct": pct,
+                   "msg": f"Fetching type list — page {kw['page']} of {pages}",
+                   "sub": f"{kw['count']:,} types found"})
 
-    orders, snap_meta = arb_core.get_orders(region, SESSION, CACHE_DIR, refresh,
-                                            progress_cb=book_progress)
+    all_types = arb_core.fetch_region_types(region, SESSION, CACHE_DIR,
+                                            progress_cb=types_progress)
 
-    _emit({"type": "progress", "pct": 68,
-           "msg": f"Analyzing {len(orders):,} orders…", "sub": "Finding profitable spreads"})
+    # Phase 2 — Fuzzwork region aggregates → candidate types
+    def fuzzwork_progress(stage, **kw):
+        pct = 8 + round(kw["chunk"] / kw["total"] * 52)
+        _emit({"type": "progress", "pct": pct,
+               "msg": f"Price aggregates — batch {kw['chunk']} of {kw['total']}",
+               "sub": f"{kw['types_done']:,} of {len(all_types):,} types priced"})
 
-    results = [r for r in arb_core.find_spreads(orders, sales_tax, not cross_station)
+    _emit({"type": "progress", "pct": 8,
+           "msg": f"Querying price aggregates for {len(all_types):,} types…", "sub": ""})
+    prices = arb_core.fetch_fuzzwork_region(all_types, region, SESSION,
+                                            progress_cb=fuzzwork_progress)
+    candidates = arb_core.arb_candidates(prices, sales_tax)
+
+    # Phase 3 — per-candidate orders from ESI
+    _emit({"type": "progress", "pct": 60,
+           "msg": f"Found {len(candidates)} candidate types — fetching orders…", "sub": ""})
+    all_orders = []
+    for i, type_id in enumerate(candidates):
+        all_orders.extend(arb_core.fetch_type_orders(region, type_id, SESSION))
+        if i % 10 == 0 or i == len(candidates) - 1:
+            pct = 60 + round((i + 1) / max(len(candidates), 1) * 25)
+            _emit({"type": "progress", "pct": pct,
+                   "msg": f"Fetching orders — {i + 1} of {len(candidates)} types",
+                   "sub": f"{len(all_orders):,} orders collected"})
+
+    _emit({"type": "progress", "pct": 85,
+           "msg": f"Analyzing {len(all_orders):,} orders…", "sub": "Finding profitable spreads"})
+
+    results = [r for r in arb_core.find_spreads(all_orders, sales_tax, not cross_station)
                if r["isk_opportunity"] >= min_isk]
 
     if cross_station:
         # Enrich all results (capped) then filter to Jita-leg deals within max_jumps.
         # round_trip=True so jumps counts the haul both ways.
-        _emit({"type": "progress", "pct": 72,
+        _emit({"type": "progress", "pct": 87,
                "msg": f"Found {len(results):,} cross-station spreads — resolving stations…",
                "sub": f"Filtering to Jita legs ≤{max_jumps} jumps round-trip"})
         enriched = arb_core.enrich_locations(
@@ -383,7 +394,7 @@ def do_arb_scan(q, emit=None):
             session=SESSION, station_cache=_ARB_STATION_CACHE, route_cache=_ARB_ROUTE_CACHE,
         )
         from_jita = arb_core.filter_from_jita(enriched, max_jumps)
-        _emit({"type": "progress", "pct": 82,
+        _emit({"type": "progress", "pct": 92,
                "msg": f"{len(from_jita)} deals within {max_jumps} jumps of Jita — checking security…",
                "sub": ""})
         shown = []
@@ -395,7 +406,7 @@ def do_arb_scan(q, emit=None):
         shown.sort(key=lambda r: r["isk_opportunity"], reverse=True)
     else:
         # Same-station: just take the top 40 by ISK opportunity
-        _emit({"type": "progress", "pct": 72,
+        _emit({"type": "progress", "pct": 87,
                "msg": f"Found {len(results):,} same-station spreads — resolving stations…",
                "sub": "Looking up station names and security status"})
         shown = arb_core.build_shown(
@@ -457,10 +468,9 @@ def do_arb_scan(q, emit=None):
         "sales_tax": sales_tax,
         "count": len(rows),
         "total_spreads": len(results),
-        "total_orders": len(orders),
-        "snap_last_modified": snap_meta.get("last_modified"),
-        "snap_expires": snap_meta.get("expires"),
-        "snap_fetched_at": snap_meta.get("fetched_at"),
+        "total_orders": len(all_orders),
+        "snap_expires": None,
+        "snap_fetched_at": time.time(),
         "scanned_at": time.time(),
         "rows": rows,
     }
@@ -506,8 +516,10 @@ class Handler(BaseHTTPRequestHandler):
             result = do_arb_scan(q, emit=emit)
             emit({"type": "result", **result})
         except LPError as e:
+            print(f"[arb] LPError: {e}", file=sys.stderr)
             emit({"type": "error", "error": str(e)})
         except Exception as e:  # noqa: BLE001
+            traceback.print_exc(file=sys.stderr)
             emit({"type": "error", "error": f"{type(e).__name__}: {e}"})
 
     def do_GET(self):
@@ -926,7 +938,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="btn-group">
     <button id="arb-go" class="primary">Scan</button>
-    <button id="arb-refresh" class="secondary" title="Force fresh order book from ESI">⟳ Refresh</button>
     <button id="arb-toggleLowsec" class="secondary toggle" title="Hide deals touching lowsec/nullsec">Highsec only</button>
   </div>
 </div>
@@ -1567,13 +1578,12 @@ function hideArbProgress(){
   $("#arb-tbl").classList.remove("hidden");
 }
 
-function scanArb(forceRefresh=false){
+function scanArb(){
   // Close any in-flight scan.
   if(ARB.es){ ARB.es.close(); ARB.es=null; }
 
-  const btn=$("#arb-go"), rbtn=$("#arb-refresh");
+  const btn=$("#arb-go");
   btn.disabled=true; btn.textContent="Scanning…";
-  if(forceRefresh){ rbtn.disabled=true; rbtn.textContent="⟳ Fetching…"; }
 
   const p=new URLSearchParams({
     region:       $("#arb-region").value,
@@ -1584,7 +1594,6 @@ function scanArb(forceRefresh=false){
     route_flag:   $("#arb-route").value,
     avoid_lowsec: ARB.avoidLowsec?"1":"0",
   });
-  if(forceRefresh) p.set("refresh","1");
 
   showArbProgress("Connecting to ESI…", "", 1);
   setStatus("Scanning…");
@@ -1603,7 +1612,6 @@ function scanArb(forceRefresh=false){
     } else if(data.type==="result"){
       es.close(); ARB.es=null;
       btn.disabled=false; btn.textContent="Scan";
-      rbtn.disabled=false; rbtn.textContent="⟳ Refresh";
       ARB.rows=data.rows; ARB.lastData=data;
       hideArbProgress();
       renderArbStatus(); renderArbTable();
@@ -1611,7 +1619,6 @@ function scanArb(forceRefresh=false){
     } else if(data.type==="error"){
       es.close(); ARB.es=null;
       btn.disabled=false; btn.textContent="Scan";
-      rbtn.disabled=false; rbtn.textContent="⟳ Refresh";
       hideArbProgress();
       setStatus(data.error, true);
     }
@@ -1620,7 +1627,6 @@ function scanArb(forceRefresh=false){
   es.onerror = () => {
     es.close(); ARB.es=null;
     btn.disabled=false; btn.textContent="Scan";
-    rbtn.disabled=false; rbtn.textContent="⟳ Refresh";
     hideArbProgress();
     setStatus("Connection error — server may have stopped.", true);
   };
@@ -1648,8 +1654,7 @@ $("#arb-cross").addEventListener("change",()=>{ updateArbJumpsVisibility(); save
   el.addEventListener("change", saveArbPrefs);
   el.addEventListener("input", saveArbPrefs);
 });
-$("#arb-go").onclick=()=>scanArb(false);
-$("#arb-refresh").onclick=()=>scanArb(true);
+$("#arb-go").onclick=()=>scanArb();
 $("#arb-toggleLowsec").onclick=()=>{
   ARB.avoidLowsec=!ARB.avoidLowsec;
   $("#arb-toggleLowsec").classList.toggle("active",ARB.avoidLowsec);

@@ -388,3 +388,100 @@ class TestHttpRouting:
         base, _ = tmp_server
         data, _ = http_get(f"{base}/api/doesnotexist")
         assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# /api/history endpoint
+# ---------------------------------------------------------------------------
+
+_FAKE_HISTORY = [
+    {"date": "2024-01-01", "average": 100.0, "highest": 110.0, "lowest": 90.0,
+     "order_count": 5, "volume": 200},
+    {"date": "2024-01-03", "average": 105.0, "highest": 115.0, "lowest": 95.0,
+     "order_count": 6, "volume": 300},
+    {"date": "2024-01-02", "average": 102.0, "highest": 112.0, "lowest": 92.0,
+     "order_count": 4, "volume": 150},
+]
+
+
+class TestDoHistory:
+    def test_fetches_from_esi_and_returns_sorted(self, tmp_path):
+        lp_web.CACHE_DIR = tmp_path
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = _FAKE_HISTORY
+        with patch.object(lp_web.SESSION, "get", return_value=mock_resp):
+            result = lp_web.do_history({"type_id": ["34"], "region_id": ["10000002"]})
+        assert "history" in result
+        dates = [d["date"] for d in result["history"]]
+        assert dates == sorted(dates)
+
+    def test_uses_disk_cache(self, tmp_path):
+        lp_web.CACHE_DIR = tmp_path
+        import time as _t
+        cache_data = {"_ts": _t.time(), "data": _FAKE_HISTORY[:2]}
+        import json as _j
+        (tmp_path / "mhist_10000002_34.json").write_text(_j.dumps(cache_data))
+        with patch.object(lp_web.SESSION, "get",
+                          side_effect=AssertionError("must not call ESI when cached")):
+            result = lp_web.do_history({"type_id": ["34"], "region_id": ["10000002"]})
+        assert len(result["history"]) == 2
+
+    def test_refetches_when_cache_stale(self, tmp_path):
+        lp_web.CACHE_DIR = tmp_path
+        import json as _j
+        stale = {"_ts": 0.0, "data": []}
+        (tmp_path / "mhist_10000002_34.json").write_text(_j.dumps(stale))
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = _FAKE_HISTORY
+        with patch.object(lp_web.SESSION, "get", return_value=mock_resp):
+            result = lp_web.do_history({"type_id": ["34"], "region_id": ["10000002"]})
+        assert len(result["history"]) == 3
+
+    def test_defaults_to_forge_region(self, tmp_path):
+        lp_web.CACHE_DIR = tmp_path
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = []
+        with patch.object(lp_web.SESSION, "get", return_value=mock_resp) as m:
+            lp_web.do_history({"type_id": ["34"]})
+        url = m.call_args[0][0]
+        assert "10000002" in url
+
+    def test_writes_cache_file(self, tmp_path):
+        lp_web.CACHE_DIR = tmp_path
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = _FAKE_HISTORY
+        with patch.object(lp_web.SESSION, "get", return_value=mock_resp):
+            lp_web.do_history({"type_id": ["34"], "region_id": ["10000002"]})
+        assert (tmp_path / "mhist_10000002_34.json").exists()
+
+
+class TestApiHistoryEndpoint:
+    def test_returns_200_with_history_key(self, tmp_server):
+        base, _ = tmp_server
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = _FAKE_HISTORY
+        with patch.object(lp_web.SESSION, "get", return_value=mock_resp):
+            data, status = http_get(f"{base}/api/history?type_id=34&region_id=10000002")
+        assert status == 200
+        assert "history" in data
+        assert isinstance(data["history"], list)
+
+    def test_missing_type_id_returns_500(self, tmp_server):
+        base, _ = tmp_server
+        _, status = http_get(f"{base}/api/history")
+        assert status == 500
+
+    def test_history_sorted_by_date(self, tmp_server):
+        base, _ = tmp_server
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = _FAKE_HISTORY
+        with patch.object(lp_web.SESSION, "get", return_value=mock_resp):
+            data, _ = http_get(f"{base}/api/history?type_id=34&region_id=10000002")
+        dates = [d["date"] for d in data["history"]]
+        assert dates == sorted(dates)

@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.2.4"
+__version__ = "1.3.0"
 
 import argparse
 import base64
@@ -300,6 +300,25 @@ def do_detail(q):
     return detail
 
 
+def do_history(q):
+    type_id = int(q["type_id"][0])
+    region_id = int(q.get("region_id", ["10000002"])[0])
+    cache_path = CACHE_DIR / f"mhist_{region_id}_{type_id}.json"
+    cached = load_json(cache_path, None)
+    if cached and time.time() - cached.get("_ts", 0) < 43200:  # 12-hour cache
+        return {"history": cached["data"]}
+    r = SESSION.get(
+        f"{ESI}/markets/{region_id}/history/",
+        params={"type_id": type_id},
+        headers=HEADERS,
+        timeout=20,
+    )
+    r.raise_for_status()
+    data = sorted(r.json(), key=lambda x: x["date"])
+    save_json(cache_path, {"_ts": time.time(), "data": data})
+    return {"history": data}
+
+
 # ── Arbitrage scanner ───────────────────────────────────────────────────────
 
 def do_arb_prefs(q):
@@ -549,6 +568,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(do_scan(q))
             elif parsed.path == "/api/detail":
                 self._send_json(do_detail(q))
+            elif parsed.path == "/api/history":
+                self._send_json(do_history(q))
             elif parsed.path == "/api/arb/prefs":
                 self._send_json(do_arb_prefs(q))
             elif parsed.path == "/api/arb/scan":
@@ -901,6 +922,38 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .col-picker label:hover { background:var(--panel3); }
   .col-picker input[type=checkbox] { margin:0; accent-color:var(--cyan2); }
+
+  /* ── Price history chart ─────────────────────────────────────────── */
+  .chart-wrap { position:relative; width:100%; height:160px; margin:8px 0 4px; }
+  .chart-canvas { width:100%; height:100%; display:block; border-radius:4px;
+    cursor:crosshair; background:var(--panel2); }
+  .chart-tip {
+    position:absolute; pointer-events:none; display:none;
+    background:rgba(8,13,17,.96); border:1px solid var(--line2);
+    border-radius:4px; padding:5px 9px; font-size:11px; white-space:nowrap;
+    z-index:10; color:var(--fg);
+  }
+  .chart-stats {
+    font-size:11px; color:var(--dim); margin-bottom:6px;
+    display:flex; flex-wrap:wrap; gap:5px;
+  }
+  .chart-stats span { background:var(--panel3); border:1px solid var(--line2);
+    border-radius:3px; padding:1px 7px; }
+  /* ARB chart modal */
+  #arbChartModal {
+    position:fixed; inset:0; z-index:500; background:rgba(0,0,0,.72);
+    display:flex; align-items:center; justify-content:center;
+  }
+  #arbChartModal.hidden { display:none; }
+  .arb-chart-box {
+    background:var(--panel2); border:1px solid var(--line2); border-radius:8px;
+    padding:20px 22px; width:620px; max-width:95vw;
+    box-shadow:0 20px 60px rgba(0,0,0,.7);
+  }
+  .arb-chart-head {
+    display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;
+  }
+  .arb-chart-head h3 { font-size:16px; font-weight:700; color:var(--cyan); margin:0; }
 </style>
 </head>
 <body>
@@ -1009,6 +1062,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div id="recipe"><div class="rinner"></div></div>
   <!-- LP detail panel -->
   <div id="detail"><div class="inner"></div></div>
+  <!-- Price history modal (ARB rows) -->
+  <div id="arbChartModal" class="hidden">
+    <div class="arb-chart-box">
+      <div class="arb-chart-head">
+        <h3 id="arbChartTitle"></h3>
+        <span class="close" id="arbChartClose">✕</span>
+      </div>
+      <div class="chart-wrap" style="height:200px">
+        <canvas class="chart-canvas" id="arbChartCanvas"></canvas>
+        <div class="chart-tip" id="arbChartTip"></div>
+      </div>
+      <div class="chart-stats" id="arbChartStats" style="margin-top:6px"></div>
+    </div>
+  </div>
 </main>
 
 <script>
@@ -1278,6 +1345,8 @@ function renderDetail(){
           ${d.instant?"instant (buy orders)":"patient (sell orders)"}</div></div>
       <span class="close" id="closeBtn">✕</span>
     </div>
+    <div class="chart-wrap"><canvas class="chart-canvas" id="detailChart"></canvas><div class="chart-tip" id="detailChartTip"></div></div>
+    <div class="chart-stats" id="detailChartStats"></div>
     <div class="redrow">
       <label>Redemptions</label>
       <input id="reds" type="number" min="1" value="${def}">
@@ -1290,6 +1359,11 @@ function renderDetail(){
   const ml=$("#maxLink");
   if(ml) ml.onclick=e=>{ e.preventDefault(); $("#reds").value=Math.max(d.max_units,1); renderBody(); };
   renderBody();
+  const regionId=_STATION_TO_REGION[parseInt(STATE.ctx.station)]||10000002;
+  requestAnimationFrame(()=>{
+    const c=document.getElementById('detailChart');
+    if(c) _attachChart(c,document.getElementById('detailChartTip'),document.getElementById('detailChartStats'),d.output.type_id,regionId,d.ask||d.bid||null);
+  });
 }
 
 function walkBook(book, qty){
@@ -1533,6 +1607,177 @@ $("#toggleAffordable").onchange=()=>{
 setInterval(renderLPStatus, 30000);
 
 // ══════════════════════════════════════════════════════════════════════════
+// PRICE HISTORY CHART
+// ══════════════════════════════════════════════════════════════════════════
+const _STATION_TO_REGION = {
+  60003760:10000002, 60008494:10000043,
+  60004588:10000030, 60011866:10000032, 60005686:10000042,
+};
+const _histCache = {};
+
+function _sma(vals, n){
+  return vals.map((_,i)=>i<n-1?null:vals.slice(i-n+1,i+1).reduce((s,v)=>s+v,0)/n);
+}
+
+function _drawChart(canvas, hist, currentPrice){
+  const dpr=window.devicePixelRatio||1;
+  const W=canvas.offsetWidth||560, H=canvas.offsetHeight||160;
+  canvas.width=W*dpr; canvas.height=H*dpr;
+  const ctx=canvas.getContext('2d');
+  ctx.scale(dpr,dpr);
+  ctx.clearRect(0,0,W,H);
+
+  if(!hist.length){
+    ctx.fillStyle='#5a7a95'; ctx.font='12px system-ui'; ctx.textAlign='center';
+    ctx.fillText('No market history for this region',W/2,H/2); return;
+  }
+
+  const PAD={t:18,r:76,b:20,l:6};
+  const volH=Math.floor(H*.22);
+  const priceH=H-PAD.t-PAD.b-volH-2;
+  const cW=W-PAD.l-PAD.r;
+  const n=hist.length;
+
+  const avgs=hist.map(d=>d.average);
+  const vols=hist.map(d=>d.volume);
+  const maArr=_sma(avgs,30);
+  const ath=Math.max(...avgs);
+  const allP=[...avgs,...hist.map(d=>d.highest),...hist.map(d=>d.lowest)].filter(Boolean);
+  if(currentPrice) allP.push(currentPrice);
+  const pMin=Math.min(...allP)*.99, pMax=Math.max(...allP)*1.01;
+  const vMax=Math.max(...vols)||1;
+
+  const px=i=>PAD.l+(i/Math.max(n-1,1))*cW;
+  const py=v=>PAD.t+priceH*(1-(v-pMin)/(pMax-pMin));
+  const vy=v=>H-PAD.b-(v/vMax)*volH;
+
+  // Grid
+  ctx.strokeStyle='rgba(31,48,68,.9)'; ctx.lineWidth=.5;
+  for(let i=0;i<=3;i++){
+    const y=PAD.t+(priceH/3)*i;
+    ctx.beginPath(); ctx.moveTo(PAD.l,y); ctx.lineTo(W-PAD.r,y); ctx.stroke();
+  }
+
+  // Reference lines (ATH and current price)
+  ctx.save(); ctx.lineWidth=1;
+  ctx.setLineDash([3,3]);
+  ctx.strokeStyle='rgba(224,85,85,.55)';
+  ctx.beginPath(); ctx.moveTo(PAD.l,py(ath)); ctx.lineTo(W-PAD.r,py(ath)); ctx.stroke();
+  if(currentPrice&&currentPrice>=pMin&&currentPrice<=pMax){
+    ctx.strokeStyle='rgba(76,175,118,.55)';
+    ctx.beginPath(); ctx.moveTo(PAD.l,py(currentPrice)); ctx.lineTo(W-PAD.r,py(currentPrice)); ctx.stroke();
+  }
+  ctx.restore();
+
+  // Volume bars (green above MA, red below)
+  const bw=Math.max(1,cW/n*.7);
+  hist.forEach((d,i)=>{
+    const above=maArr[i]===null||d.average>=maArr[i];
+    ctx.fillStyle=above?'rgba(76,175,118,.28)':'rgba(224,85,85,.18)';
+    const yTop=vy(d.volume);
+    ctx.fillRect(px(i)-bw/2,yTop,bw,H-PAD.b-yTop);
+  });
+
+  // 30-day MA line
+  ctx.save(); ctx.strokeStyle='#f0c040'; ctx.lineWidth=1.2;
+  ctx.beginPath(); let maFirst=true;
+  maArr.forEach((v,i)=>{
+    if(v===null) return;
+    if(maFirst){ctx.moveTo(px(i),py(v));maFirst=false;}
+    else ctx.lineTo(px(i),py(v));
+  });
+  ctx.stroke(); ctx.restore();
+
+  // Price area gradient fill
+  const grad=ctx.createLinearGradient(0,PAD.t,0,PAD.t+priceH);
+  grad.addColorStop(0,'rgba(79,195,247,.18)');
+  grad.addColorStop(1,'rgba(79,195,247,.01)');
+  ctx.beginPath();
+  avgs.forEach((v,i)=>i===0?ctx.moveTo(px(i),py(v)):ctx.lineTo(px(i),py(v)));
+  ctx.lineTo(px(n-1),PAD.t+priceH); ctx.lineTo(px(0),PAD.t+priceH);
+  ctx.closePath(); ctx.fillStyle=grad; ctx.fill();
+
+  // Price line
+  ctx.beginPath(); ctx.strokeStyle='#4fc3f7'; ctx.lineWidth=1.5;
+  avgs.forEach((v,i)=>i===0?ctx.moveTo(px(i),py(v)):ctx.lineTo(px(i),py(v)));
+  ctx.stroke();
+
+  // Right-side labels
+  ctx.font='9px system-ui'; ctx.textAlign='left';
+  ctx.fillStyle='#e05555';
+  ctx.fillText('ATH '+fmtISK(ath),W-PAD.r+3,py(ath)+3);
+  if(currentPrice&&currentPrice>=pMin&&currentPrice<=pMax){
+    ctx.fillStyle='#4caf76';
+    ctx.fillText(fmtISK(currentPrice),W-PAD.r+3,py(currentPrice)+3);
+  }
+  const lastMA=maArr[n-1];
+  if(lastMA){ ctx.fillStyle='#f0c040'; ctx.fillText('MA '+fmtISK(lastMA),W-PAD.r+3,py(lastMA)+3); }
+
+  // X-axis date labels
+  ctx.fillStyle='#3d5a70'; ctx.font='8px system-ui'; ctx.textAlign='center';
+  const step=Math.ceil(n/5);
+  for(let i=0;i<n;i+=step) ctx.fillText(hist[i].date.slice(5),px(i),H-PAD.b+10);
+  if((n-1)%step!==0) ctx.fillText(hist[n-1].date.slice(5),px(n-1),H-PAD.b+10);
+}
+
+function _chartStats(hist, currentPrice){
+  if(!hist.length) return '';
+  const avgs=hist.map(d=>d.average);
+  const ath=Math.max(...avgs);
+  const lastMA=_sma(avgs,30).at(-1);
+  const price=currentPrice||avgs.at(-1);
+  const pctAth=ath>0?((price-ath)/ath*100):null;
+  const pctMA=lastMA?((price-lastMA)/lastMA*100):null;
+  let s=`<span>Current <b style="color:var(--cyan)">${fmtISK(price)}</b></span>`;
+  if(pctAth!==null){
+    const col=pctAth>=-3?'var(--red)':pctAth>=-15?'var(--yellow)':'var(--dim)';
+    s+=`<span>ATH ${fmtISK(ath)} <span style="color:${col}">(${pctAth.toFixed(1)}%)</span></span>`;
+  }
+  if(pctMA!==null){
+    const col=pctMA>=0?'var(--green2)':'var(--red)';
+    s+=`<span>vs 30d MA ${fmtISK(lastMA)} <span style="color:${col}">${pctMA>=0?'+':''}${pctMA.toFixed(1)}% ${pctMA>=0?'▲':'▼'}</span></span>`;
+  }
+  return s;
+}
+
+async function _loadHistory(typeId, regionId){
+  const k=`${typeId}_${regionId}`;
+  if(!_histCache[k]){
+    try{
+      const d=await (await fetch(`/api/history?type_id=${typeId}&region_id=${regionId}`)).json();
+      _histCache[k]=(d.history||[]).slice(-90);
+    }catch{ _histCache[k]=[]; }
+  }
+  return _histCache[k];
+}
+
+async function _attachChart(canvas, tipEl, statsEl, typeId, regionId, currentPrice){
+  canvas.style.opacity='.4';
+  const hist=await _loadHistory(typeId, regionId);
+  canvas.style.opacity='1';
+  _drawChart(canvas, hist, currentPrice);
+  if(statsEl) statsEl.innerHTML=_chartStats(hist, currentPrice);
+  if(!tipEl) return;
+  canvas.onmousemove=e=>{
+    if(!hist.length) return;
+    const r=canvas.getBoundingClientRect();
+    const idx=Math.round(Math.max(0,Math.min(hist.length-1,(e.clientX-r.left)/r.width*(hist.length-1))));
+    const d=hist[idx];
+    const ma=_sma(hist.map(h=>h.average),30)[idx];
+    const pctMA=ma?((d.average-ma)/ma*100):null;
+    const tx=Math.min(e.clientX-r.left+12, r.width-158);
+    const ty=Math.max(2,e.clientY-r.top-75);
+    tipEl.style.cssText=`display:block;left:${tx}px;top:${ty}px`;
+    tipEl.innerHTML=`<div style="color:var(--dim);margin-bottom:2px">${d.date}</div>`
+      +`<div>Avg <b style="color:var(--cyan)">${fmtISK(d.average)}</b></div>`
+      +`<div>H/L ${fmtISK(d.highest)} / ${fmtISK(d.lowest)}</div>`
+      +(ma?`<div>MA30 ${fmtISK(ma)} <span style="color:${pctMA>=0?'var(--green2)':'var(--red)'}">${pctMA>=0?'+':''}${pctMA.toFixed(1)}%</span></div>`:'')
+      +`<div style="color:var(--dim)">Vol ${fmtNum(d.volume)}</div>`;
+  };
+  canvas.onmouseleave=()=>{tipEl.style.display='none';};
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // ARB TAB
 // ══════════════════════════════════════════════════════════════════════════
 let ARB = {rows:[], sort:{key:"isk_opportunity", dir:-1}, colw:{}, lastData:null, avoidLowsec:false, es:null};
@@ -1617,7 +1862,7 @@ function renderArbTable(){
     if(x===null) x=-Infinity; if(y===null) y=-Infinity;
     return (x-y)*d;
   });
-  tbody.innerHTML=rows.map(r=>{
+  tbody.innerHTML=rows.map((r,i)=>{
     const tds=ARB_COLS.map(c=>{
       let v=r[c.k], txt=c.f?c.f(v):(v===null||v===undefined?"-":v);
       let cls=c.cls||"";
@@ -1627,8 +1872,14 @@ function renderArbTable(){
       const titleAttr=(c.k==="sell_station"||c.k==="buy_station")&&v?` title="${String(v).replace(/"/g,'&quot;')}"` :"";
       return `<td class="${cls.trim()}"${titleAttr}>${txt}</td>`;
     }).join("");
-    return `<tr>${tds}</tr>`;
+    return `<tr style="cursor:pointer" data-ridx="${i}">${tds}</tr>`;
   }).join("");
+  tbody.querySelectorAll("tr").forEach((tr,i)=>{
+    tr.onclick=()=>{
+      if(ARB_RESIZING){ARB_RESIZING=false;return;}
+      openArbChart(rows[i]);
+    };
+  });
 }
 
 function renderArbStatus(){
@@ -1741,6 +1992,23 @@ $("#arb-toggleLowsec").onclick=()=>{
   if(ARB.rows.length) scanArb(false);
 };
 setInterval(renderArbStatus, 30000);
+
+function openArbChart(row){
+  const regionId=parseInt($("#arb-region").value)||10000002;
+  document.getElementById('arbChartTitle').textContent=row.name;
+  document.getElementById('arbChartStats').textContent='';
+  document.getElementById('arbChartModal').classList.remove('hidden');
+  requestAnimationFrame(()=>{
+    const c=document.getElementById('arbChartCanvas');
+    if(c) _attachChart(c,document.getElementById('arbChartTip'),document.getElementById('arbChartStats'),row.type_id,regionId,row.sell_price||null);
+  });
+}
+(()=>{
+  const modal=document.getElementById('arbChartModal');
+  document.getElementById('arbChartClose').onclick=()=>modal.classList.add('hidden');
+  document.addEventListener('keydown',e=>{if(e.key==='Escape') modal.classList.add('hidden');});
+  modal.onclick=e=>{if(e.target===modal) modal.classList.add('hidden');};
+})();
 
 // ══════════════════════════════════════════════════════════════════════════
 // Init

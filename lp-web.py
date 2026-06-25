@@ -703,8 +703,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #statusbar .pill b { color:var(--fg); font-weight:600; }
 
   /* ── Layout ──────────────────────────────────────────────────────── */
-  main { display:flex; height:calc(100vh - 131px); position:relative; overflow:hidden; }
-  .tablewrap { flex:1; overflow:auto; }
+  main { display:flex; height:calc(100vh - 131px); overflow:hidden; }
+  .tablewrap { flex:1; overflow:auto; min-width:0; }
 
   /* ── Tables ──────────────────────────────────────────────────────── */
   table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; font-size:14px; }
@@ -770,9 +770,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   /* ── Detail panel (LP) ───────────────────────────────────────────── */
   #recipe {
-    position:absolute; top:0; right:580px; height:100%; width:0; overflow:hidden;
+    flex-shrink:0; width:0; overflow:hidden;
     transition:width .18s cubic-bezier(.4,0,.2,1);
-    z-index:4; background:var(--panel2);
+    background:var(--panel2);
   }
   #recipe.open { width:210px; border-left:1px solid var(--line2); }
   #recipe .rinner { width:210px; padding:18px 16px; height:100%; overflow-y:auto; box-sizing:border-box; }
@@ -790,11 +790,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-weight:600; color:var(--cyan); padding:4px 0; }
   .recipe-out-qty { color:var(--cyan2); white-space:nowrap; }
   #detail {
-    position:absolute; top:0; right:0; height:100%; width:0; overflow:hidden;
+    flex-shrink:0; width:0; overflow:hidden;
     transition:width .18s cubic-bezier(.4,0,.2,1);
-    z-index:5; background:var(--panel);
+    background:var(--panel);
   }
-  #detail.open { width:580px; max-width:96vw; border-left:1px solid var(--line2);
+  #detail.open { width:580px; border-left:1px solid var(--line2);
     box-shadow:-16px 0 40px rgba(0,0,0,.6); }
   #detail .inner { width:580px; max-width:96vw; padding:20px 22px;
     overflow-y:auto; overflow-x:hidden; height:100%; }

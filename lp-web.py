@@ -1098,7 +1098,7 @@ const COLS = [
   {k:"bid",          t:"Jita Bid",      w: 95, defvis:false, tip:"Highest Jita IV-4 buy order price — what someone will pay right now.", f:fmtISK},
   {k:"buy_volume",   t:"Buy Demand",    w: 95, defvis:false, tip:"Units on Jita buy orders — how many you could sell instantly.", f:fmtNum},
   {k:"qty",          t:"Units",         w: 55, defvis:false, tip:"Units per redemption.", f:fmtNum},
-  {k:"output_volume",t:"Vol m³",        w: 75, defvis:false, tip:"Packaged m³ per redemption (reward item only).", f:v=>v===null?"?":fmtVol(v)},
+  {k:"output_volume",t:"Vol m³",        w:140, defvis:false, tip:"Packaged m³ per redemption, and total for all runs in parentheses.", f:(v,r)=>{ if(v===null) return "?"; const per=fmtVol(v); return r.max_units>0?`${per} (${fmtVol(v*r.max_units)})`:per; }, rowCtx:true},
 ];
 COLS.forEach(c=>{ STATE.colVis[c.k]=c.defvis; STATE.colw[c.k]=c.w; });
 function visCols(){ return COLS.filter(c=>STATE.colVis[c.k]!==false); }

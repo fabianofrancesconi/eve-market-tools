@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 
 import argparse
 import base64
@@ -939,6 +939,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .chart-stats span { background:var(--panel3); border:1px solid var(--line2);
     border-radius:3px; padding:1px 7px; }
+  .chart-cross {
+    position:absolute; top:0; bottom:20px; width:1px;
+    background:rgba(200,216,232,.3); pointer-events:none; display:none;
+  }
+  .chart-expand-btn {
+    position:absolute; top:4px; right:4px; z-index:5;
+    background:rgba(8,13,17,.78); border:1px solid var(--line2);
+    color:var(--dim); font-size:13px; padding:1px 6px; line-height:1.5;
+    border-radius:3px; cursor:pointer;
+  }
+  .chart-expand-btn:hover { color:var(--fg); border-color:var(--cyan2); }
+  /* Expand chart modal */
+  #chartExpandModal {
+    position:fixed; inset:0; z-index:600; background:rgba(0,0,0,.78);
+    display:flex; align-items:center; justify-content:center;
+  }
+  #chartExpandModal.hidden { display:none; }
+  .chart-expand-box {
+    background:var(--panel2); border:1px solid var(--line2); border-radius:8px;
+    padding:20px 22px; width:880px; max-width:97vw;
+    box-shadow:0 20px 60px rgba(0,0,0,.7);
+  }
+  .chart-expand-head {
+    display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;
+  }
+  .chart-expand-head h3 { font-size:16px; font-weight:700; color:var(--cyan); margin:0; }
   /* ARB chart modal */
   #arbChartModal {
     position:fixed; inset:0; z-index:500; background:rgba(0,0,0,.72);
@@ -1072,8 +1098,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="chart-wrap" style="height:200px">
         <canvas class="chart-canvas" id="arbChartCanvas"></canvas>
         <div class="chart-tip" id="arbChartTip"></div>
+        <div class="chart-cross"></div>
+        <button class="chart-expand-btn" title="Expand chart">⤢</button>
       </div>
       <div class="chart-stats" id="arbChartStats" style="margin-top:6px"></div>
+    </div>
+  </div>
+  <!-- Expanded chart modal (LP + ARB) -->
+  <div id="chartExpandModal" class="hidden">
+    <div class="chart-expand-box">
+      <div class="chart-expand-head">
+        <h3 id="chartExpandTitle"></h3>
+        <span class="close" id="chartExpandClose">✕</span>
+      </div>
+      <div class="chart-wrap" style="height:320px">
+        <canvas class="chart-canvas" id="chartExpandCanvas"></canvas>
+        <div class="chart-tip" id="chartExpandTip"></div>
+        <div class="chart-cross"></div>
+      </div>
+      <div class="chart-stats" id="chartExpandStats" style="margin-top:6px"></div>
     </div>
   </div>
 </main>
@@ -1345,7 +1388,7 @@ function renderDetail(){
           ${d.instant?"instant (buy orders)":"patient (sell orders)"}</div></div>
       <span class="close" id="closeBtn">✕</span>
     </div>
-    <div class="chart-wrap"><canvas class="chart-canvas" id="detailChart"></canvas><div class="chart-tip" id="detailChartTip"></div></div>
+    <div class="chart-wrap"><canvas class="chart-canvas" id="detailChart"></canvas><div class="chart-tip" id="detailChartTip"></div><div class="chart-cross"></div><button class="chart-expand-btn" title="Expand chart">⤢</button></div>
     <div class="chart-stats" id="detailChartStats"></div>
     <div class="redrow">
       <label>Redemptions</label>
@@ -1362,7 +1405,7 @@ function renderDetail(){
   const regionId=_STATION_TO_REGION[parseInt(STATE.ctx.station)]||10000002;
   requestAnimationFrame(()=>{
     const c=document.getElementById('detailChart');
-    if(c) _attachChart(c,document.getElementById('detailChartTip'),document.getElementById('detailChartStats'),d.output.type_id,regionId,d.ask||d.bid||null);
+    if(c) _attachChart(c,document.getElementById('detailChartTip'),document.getElementById('detailChartStats'),d.output.type_id,regionId,d.ask||d.bid||null,d.output.name);
   });
 }
 
@@ -1614,6 +1657,7 @@ const _STATION_TO_REGION = {
   60004588:10000030, 60011866:10000032, 60005686:10000042,
 };
 const _histCache = {};
+const _CHART_PAD = {t:18,r:76,b:20,l:6};
 
 function _sma(vals, n){
   return vals.map((_,i)=>i<n-1?null:vals.slice(i-n+1,i+1).reduce((s,v)=>s+v,0)/n);
@@ -1632,7 +1676,7 @@ function _drawChart(canvas, hist, currentPrice){
     ctx.fillText('No market history for this region',W/2,H/2); return;
   }
 
-  const PAD={t:18,r:76,b:20,l:6};
+  const PAD=_CHART_PAD;
   const volH=Math.floor(H*.22);
   const priceH=H-PAD.t-PAD.b-volH-2;
   const cW=W-PAD.l-PAD.r;
@@ -1751,21 +1795,32 @@ async function _loadHistory(typeId, regionId){
   return _histCache[k];
 }
 
-async function _attachChart(canvas, tipEl, statsEl, typeId, regionId, currentPrice){
+async function _attachChart(canvas, tipEl, statsEl, typeId, regionId, currentPrice, title=''){
   canvas.style.opacity='.4';
   const hist=await _loadHistory(typeId, regionId);
   canvas.style.opacity='1';
   _drawChart(canvas, hist, currentPrice);
   if(statsEl) statsEl.innerHTML=_chartStats(hist, currentPrice);
+  // Wire expand button if the parent wrap has one
+  const expandBtn=canvas.parentElement&&canvas.parentElement.querySelector('.chart-expand-btn');
+  if(expandBtn) expandBtn.onclick=()=>openExpandChart(typeId,regionId,currentPrice,title);
   if(!tipEl) return;
+  const crossEl=canvas.parentElement&&canvas.parentElement.querySelector('.chart-cross');
   canvas.onmousemove=e=>{
     if(!hist.length) return;
     const r=canvas.getBoundingClientRect();
-    const idx=Math.round(Math.max(0,Math.min(hist.length-1,(e.clientX-r.left)/r.width*(hist.length-1))));
+    const W=canvas.offsetWidth||r.width;
+    // Map mouse X into the data drawing area (accounts for left/right padding)
+    const drawW=W-_CHART_PAD.l-_CHART_PAD.r;
+    const xInDraw=Math.max(0,Math.min(drawW,(e.clientX-r.left)-_CHART_PAD.l));
+    const idx=Math.round(xInDraw/Math.max(drawW,1)*(hist.length-1));
+    // Snap crosshair to the exact data-point x
+    const crossX=_CHART_PAD.l+idx/Math.max(hist.length-1,1)*drawW;
+    if(crossEl){crossEl.style.left=crossX+'px';crossEl.style.display='block';}
     const d=hist[idx];
     const ma=_sma(hist.map(h=>h.average),30)[idx];
     const pctMA=ma?((d.average-ma)/ma*100):null;
-    const tx=Math.min(e.clientX-r.left+12, r.width-158);
+    const tx=Math.min(crossX+12,W-158);
     const ty=Math.max(2,e.clientY-r.top-75);
     tipEl.style.cssText=`display:block;left:${tx}px;top:${ty}px`;
     tipEl.innerHTML=`<div style="color:var(--dim);margin-bottom:2px">${d.date}</div>`
@@ -1774,7 +1829,10 @@ async function _attachChart(canvas, tipEl, statsEl, typeId, regionId, currentPri
       +(ma?`<div>MA30 ${fmtISK(ma)} <span style="color:${pctMA>=0?'var(--green2)':'var(--red)'}">${pctMA>=0?'+':''}${pctMA.toFixed(1)}%</span></div>`:'')
       +`<div style="color:var(--dim)">Vol ${fmtNum(d.volume)}</div>`;
   };
-  canvas.onmouseleave=()=>{tipEl.style.display='none';};
+  canvas.onmouseleave=()=>{
+    tipEl.style.display='none';
+    if(crossEl) crossEl.style.display='none';
+  };
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1993,6 +2051,17 @@ $("#arb-toggleLowsec").onclick=()=>{
 };
 setInterval(renderArbStatus, 30000);
 
+function openExpandChart(typeId, regionId, currentPrice, title){
+  document.getElementById('arbChartModal').classList.add('hidden');
+  document.getElementById('chartExpandTitle').textContent=title||'';
+  document.getElementById('chartExpandStats').textContent='';
+  document.getElementById('chartExpandModal').classList.remove('hidden');
+  requestAnimationFrame(()=>{
+    const c=document.getElementById('chartExpandCanvas');
+    if(c) _attachChart(c,document.getElementById('chartExpandTip'),document.getElementById('chartExpandStats'),typeId,regionId,currentPrice,title);
+  });
+}
+
 function openArbChart(row){
   const regionId=parseInt($("#arb-region").value)||10000002;
   document.getElementById('arbChartTitle').textContent=row.name;
@@ -2000,14 +2069,19 @@ function openArbChart(row){
   document.getElementById('arbChartModal').classList.remove('hidden');
   requestAnimationFrame(()=>{
     const c=document.getElementById('arbChartCanvas');
-    if(c) _attachChart(c,document.getElementById('arbChartTip'),document.getElementById('arbChartStats'),row.type_id,regionId,row.sell_price||null);
+    if(c) _attachChart(c,document.getElementById('arbChartTip'),document.getElementById('arbChartStats'),row.type_id,regionId,row.sell_price||null,row.name);
   });
 }
 (()=>{
-  const modal=document.getElementById('arbChartModal');
-  document.getElementById('arbChartClose').onclick=()=>modal.classList.add('hidden');
-  document.addEventListener('keydown',e=>{if(e.key==='Escape') modal.classList.add('hidden');});
-  modal.onclick=e=>{if(e.target===modal) modal.classList.add('hidden');};
+  const arbModal=document.getElementById('arbChartModal');
+  const expModal=document.getElementById('chartExpandModal');
+  document.getElementById('arbChartClose').onclick=()=>arbModal.classList.add('hidden');
+  document.getElementById('chartExpandClose').onclick=()=>expModal.classList.add('hidden');
+  document.addEventListener('keydown',e=>{
+    if(e.key==='Escape'){arbModal.classList.add('hidden');expModal.classList.add('hidden');}
+  });
+  arbModal.onclick=e=>{if(e.target===arbModal) arbModal.classList.add('hidden');};
+  expModal.onclick=e=>{if(e.target===expModal) expModal.classList.add('hidden');};
 })();
 
 // ══════════════════════════════════════════════════════════════════════════

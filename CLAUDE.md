@@ -2,20 +2,21 @@
 
 ## Releases
 
-When shipping a new version, **always update `__version__`** in [`lp-web.py`](lp-web.py) (line 13) to match the version in the commit message. The HTML template substitutes `__VERSION__` at runtime via `.replace("__VERSION__", __version__)`, so the badge in the UI comes directly from this string.
+**Every commit that changes behaviour must bump the version.** The UI reads `__version__` directly — if it is not updated, the version badge in the browser will not change.
 
-Do this automatically on every commit — do not wait for the user to ask:
-1. Update `__version__ = "x.y.z"` in `lp-web.py`
-2. Commit with message `vx.y.z: <description>`
-3. `git tag vx.y.z <commit-hash>`
-4. Push commits and tag together in one command: `git push origin master --tags` (via WSL)
-   — never push a tag alone (`git push origin vX.Y.Z`); that can silently skip CI
+### Mandatory steps on every commit (do not wait for the user to ask):
 
-The Docker image is **only built on tag pushes** (not on every master commit). Pushing a `v*` tag is what triggers the CI build and publishes the image to GHCR with `latest`, `v1.x.y`, and `1.x` tags. Commits pushed without a tag will not produce a Docker image.
+1. **Update `__version__ = "x.y.z"`** in `lp-web.py` line 13 — this is what the UI displays
+2. Run `pytest tests/` — all tests must pass
+3. Commit with message `vx.y.z: <description>`
+4. `git tag vx.y.z` (after the commit, use the commit hash if tagging retroactively)
+5. `git push origin master --tags` via WSL — always push branch and tags together in one command
+
+**Never** push a tag alone (`git push origin vX.Y.Z`) — it can silently skip CI.
+
+The Docker image is only built on `v*` tag pushes. Each published image gets `latest`, `v1.x.y`, and `1.x` tags.
 
 ## Tests
-
-Run before every commit:
 
 ```
 pytest tests/

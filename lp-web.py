@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 import argparse
 import base64
@@ -939,21 +939,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .chart-stats span { background:var(--panel3); border:1px solid var(--line2);
     border-radius:3px; padding:1px 7px; }
-  /* ARB chart modal */
-  #arbChartModal {
-    position:fixed; inset:0; z-index:500; background:rgba(0,0,0,.72);
-    display:flex; align-items:center; justify-content:center;
-  }
-  #arbChartModal.hidden { display:none; }
-  .arb-chart-box {
-    background:var(--panel2); border:1px solid var(--line2); border-radius:8px;
-    padding:20px 22px; width:620px; max-width:95vw;
-    box-shadow:0 20px 60px rgba(0,0,0,.7);
-  }
-  .arb-chart-head {
-    display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;
-  }
-  .arb-chart-head h3 { font-size:16px; font-weight:700; color:var(--cyan); margin:0; }
 </style>
 </head>
 <body>
@@ -1062,20 +1047,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div id="recipe"><div class="rinner"></div></div>
   <!-- LP detail panel -->
   <div id="detail"><div class="inner"></div></div>
-  <!-- Price history modal (ARB rows) -->
-  <div id="arbChartModal" class="hidden">
-    <div class="arb-chart-box">
-      <div class="arb-chart-head">
-        <h3 id="arbChartTitle"></h3>
-        <span class="close" id="arbChartClose">✕</span>
-      </div>
-      <div class="chart-wrap" style="height:200px">
-        <canvas class="chart-canvas" id="arbChartCanvas"></canvas>
-        <div class="chart-tip" id="arbChartTip"></div>
-      </div>
-      <div class="chart-stats" id="arbChartStats" style="margin-top:6px"></div>
-    </div>
-  </div>
 </main>
 
 <script>
@@ -1862,7 +1833,7 @@ function renderArbTable(){
     if(x===null) x=-Infinity; if(y===null) y=-Infinity;
     return (x-y)*d;
   });
-  tbody.innerHTML=rows.map((r,i)=>{
+  tbody.innerHTML=rows.map(r=>{
     const tds=ARB_COLS.map(c=>{
       let v=r[c.k], txt=c.f?c.f(v):(v===null||v===undefined?"-":v);
       let cls=c.cls||"";
@@ -1872,14 +1843,8 @@ function renderArbTable(){
       const titleAttr=(c.k==="sell_station"||c.k==="buy_station")&&v?` title="${String(v).replace(/"/g,'&quot;')}"` :"";
       return `<td class="${cls.trim()}"${titleAttr}>${txt}</td>`;
     }).join("");
-    return `<tr style="cursor:pointer" data-ridx="${i}">${tds}</tr>`;
+    return `<tr>${tds}</tr>`;
   }).join("");
-  tbody.querySelectorAll("tr").forEach((tr,i)=>{
-    tr.onclick=()=>{
-      if(ARB_RESIZING){ARB_RESIZING=false;return;}
-      openArbChart(rows[i]);
-    };
-  });
 }
 
 function renderArbStatus(){
@@ -1992,23 +1957,6 @@ $("#arb-toggleLowsec").onclick=()=>{
   if(ARB.rows.length) scanArb(false);
 };
 setInterval(renderArbStatus, 30000);
-
-function openArbChart(row){
-  const regionId=parseInt($("#arb-region").value)||10000002;
-  document.getElementById('arbChartTitle').textContent=row.name;
-  document.getElementById('arbChartStats').textContent='';
-  document.getElementById('arbChartModal').classList.remove('hidden');
-  requestAnimationFrame(()=>{
-    const c=document.getElementById('arbChartCanvas');
-    if(c) _attachChart(c,document.getElementById('arbChartTip'),document.getElementById('arbChartStats'),row.type_id,regionId,row.sell_price||null);
-  });
-}
-(()=>{
-  const modal=document.getElementById('arbChartModal');
-  document.getElementById('arbChartClose').onclick=()=>modal.classList.add('hidden');
-  document.addEventListener('keydown',e=>{if(e.key==='Escape') modal.classList.add('hidden');});
-  modal.onclick=e=>{if(e.target===modal) modal.classList.add('hidden');};
-})();
 
 // ══════════════════════════════════════════════════════════════════════════
 // Init

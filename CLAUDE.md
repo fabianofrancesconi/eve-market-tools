@@ -10,6 +10,8 @@ Checklist:
 3. `git tag vx.y.z`
 4. Push with `--tags`
 
+The Docker image is **only built on tag pushes** (not on every master commit). Pushing a `v*` tag is what triggers the CI build and publishes the image to GHCR with `latest`, `v1.x.y`, and `1.x` tags. Commits pushed without a tag will not produce a Docker image.
+
 ## Tests
 
 Run before every commit:

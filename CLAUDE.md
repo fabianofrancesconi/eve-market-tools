@@ -8,7 +8,8 @@ Do this automatically on every commit — do not wait for the user to ask:
 1. Update `__version__ = "x.y.z"` in `lp-web.py`
 2. Commit with message `vx.y.z: <description>`
 3. `git tag vx.y.z <commit-hash>`
-4. Push commits and tag: `git push origin master --tags` (via WSL)
+4. Push commits and tag together in one command: `git push origin master --tags` (via WSL)
+   — never push a tag alone (`git push origin vX.Y.Z`); that can silently skip CI
 
 The Docker image is **only built on tag pushes** (not on every master commit). Pushing a `v*` tag is what triggers the CI build and publishes the image to GHCR with `latest`, `v1.x.y`, and `1.x` tags. Commits pushed without a tag will not produce a Docker image.
 

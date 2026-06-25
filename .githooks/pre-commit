@@ -1,0 +1,17 @@
+#!/bin/sh
+# Enforce __version__ bump whenever lp-web.py is staged.
+
+if git diff --cached --name-only | grep -q "^lp-web\.py$"; then
+    staged=$(git show :lp-web.py | grep "^__version__" | sed 's/__version__ = "//;s/"//')
+    head=$(git show HEAD:lp-web.py 2>/dev/null | grep "^__version__" | sed 's/__version__ = "//;s/"//')
+
+    if [ "$staged" = "$head" ]; then
+        echo ""
+        echo "  COMMIT BLOCKED: lp-web.py is staged but __version__ was not updated."
+        echo "  Current: $head"
+        echo "  Update __version__ in lp-web.py (line 13) before committing."
+        echo ""
+        exit 1
+    fi
+fi
+exit 0

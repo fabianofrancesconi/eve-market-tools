@@ -155,9 +155,11 @@ def do_scan(q):
                     if r["spread_pct"] is not None and r["spread_pct"] <= max_spread]
 
     names = resolve_names(_all_type_ids(offers), SESSION, CACHE_DIR)
+    volumes = resolve_volumes({r["name_id"] for r in sellable}, SESSION, CACHE_DIR)
     rows = []
     for r in sellable:
         sp = r["spread_pct"]
+        _vol = volumes.get(r["name_id"])
         rows.append({
             "offer_id": r["offer_id"],
             "name": names.get(r["name_id"], str(r["name_id"])),
@@ -172,6 +174,7 @@ def do_scan(q):
             "max_units": r["max_units"],
             "total_profit": r["total_profit"],
             "buy_volume": r["buy_volume"],
+            "output_volume": None if _vol is None else _vol * r["qty"],
             "req_missing": r["req_missing"],
             "ak_cost": r["ak_cost"],
             "illiquid": sp is None or sp >= HIGH_SPREAD_PCT,
@@ -757,6 +760,27 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .flag { color:var(--red); font-weight:700; font-size:12px; margin-left:2px; }
 
   /* ── Detail panel (LP) ───────────────────────────────────────────── */
+  #recipe {
+    position:absolute; top:0; right:580px; height:100%; width:0; overflow:hidden;
+    transition:width .18s cubic-bezier(.4,0,.2,1);
+    border-left:1px solid var(--line2); z-index:4;
+    background:var(--panel2);
+  }
+  #recipe.open { width:210px; }
+  #recipe .rinner { width:210px; padding:18px 16px; height:100%; overflow-y:auto; box-sizing:border-box; }
+  .recipe-title { font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--dim); margin-bottom:14px; }
+  .recipe-section { margin-bottom:10px; }
+  .recipe-row { display:flex; align-items:baseline; gap:6px; font-size:13px;
+    padding:3px 0; border-bottom:1px solid var(--line2); }
+  .recipe-row:last-child { border-bottom:none; }
+  .recipe-icon { color:var(--dim); flex-shrink:0; font-size:11px; }
+  .recipe-name { color:var(--fg); flex:1; min-width:0; word-break:break-word; line-height:1.3; }
+  .recipe-qty { color:var(--dim); font-size:12px; white-space:nowrap; }
+  .recipe-arrow { text-align:center; color:var(--dim); font-size:18px; margin:8px 0; }
+  .recipe-out-row { display:flex; align-items:baseline; gap:6px; font-size:14px;
+    font-weight:600; color:var(--cyan); padding:4px 0; }
+  .recipe-out-qty { color:var(--cyan2); white-space:nowrap; }
   #detail {
     position:absolute; top:0; right:0; height:100%; width:0; overflow:hidden;
     transition:width .18s cubic-bezier(.4,0,.2,1);
@@ -958,6 +982,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
     <table id="arb-tbl"><colgroup id="arb-cg"></colgroup><thead></thead><tbody></tbody></table>
   </div>
+  <!-- LP recipe panel (slides in to the left of #detail) -->
+  <div id="recipe"><div class="rinner"></div></div>
   <!-- LP detail panel -->
   <div id="detail"><div class="inner"></div></div>
 </main>
@@ -1049,6 +1075,7 @@ const COLS = [
   {k:"max_units",    t:"Redemptions",   w:105, tip:"How many times you can redeem with your LP budget.", f:v=>v===0?"—":fmtNum(v)},
   {k:"total_profit", t:"Total Profit",  w:115, tip:"Total profit if you spend your entire LP budget on this offer.", f:(v,r)=>r.max_units===0?"—":fmtISK(v), pn:true, rowCtx:true},
   {k:"buy_volume",   t:"Buy Demand",    w:105, tip:"Units on Jita buy orders — how many you could sell instantly.", f:fmtNum},
+  {k:"output_volume",t:"Vol m³",        w: 90, tip:"Packaged m³ per redemption (reward item only).", f:v=>v===null?"?":fmtVol(v)},
 ];
 
 function lpSetColgroup(){
@@ -1180,14 +1207,28 @@ async function openDetail(offerId){
     station:STATE.ctx.station});
   const inner=$("#detail .inner");
   inner.innerHTML="<div class='muted'>Loading volumes…</div>";
-  $("#detail").classList.add("open");
+  $("#detail").classList.add("open"); $("#recipe").classList.add("open");
   try{
     const d=await (await fetch("/api/detail?"+p)).json();
     if(d.error){ inner.innerHTML=`<span style='color:var(--red)'>${d.error}</span>`; return; }
     STATE.detail=d; renderDetail();
   }catch(e){ inner.innerHTML=`<span style='color:var(--red)'>${e}</span>`; }
 }
-function closeDetail(){ $("#detail").classList.remove("open"); STATE.selOffer=null; }
+function closeDetail(){ $("#detail").classList.remove("open"); $("#recipe").classList.remove("open"); STATE.selOffer=null; }
+
+function renderRecipe(){
+  const d=STATE.detail;
+  const rows=[];
+  rows.push(`<div class="recipe-row"><span class="recipe-icon">▸</span><span class="recipe-name">${fmtNum(d.lp_cost)} LP</span></div>`);
+  if(d.isk_fee>0) rows.push(`<div class="recipe-row"><span class="recipe-icon">▸</span><span class="recipe-name">${fmtISK(d.isk_fee)} ISK</span></div>`);
+  for(const it of d.required_items)
+    rows.push(`<div class="recipe-row"><span class="recipe-icon">▸</span><span class="recipe-name">${it.name}</span><span class="recipe-qty">×${fmtNum(it.quantity)}</span></div>`);
+  $("#recipe .rinner").innerHTML=`
+    <div class="recipe-title">Recipe</div>
+    <div class="recipe-section">${rows.join("")}</div>
+    <div class="recipe-arrow">↓</div>
+    <div class="recipe-out-row"><span class="recipe-out-qty">${fmtNum(d.output.quantity)}×</span><span>${d.output.name}</span></div>`;
+}
 
 function renderDetail(){
   const d=STATE.detail;
@@ -1206,6 +1247,7 @@ function renderDetail(){
       <span class="maxlink">max LP affords: <a href="#" id="maxLink">${fmtNum(d.max_units)}</a></span>
     </div>
     <div id="dbody"></div>`;
+  renderRecipe();
   $("#closeBtn").onclick=closeDetail;
   $("#reds").oninput=renderBody;
   const ml=$("#maxLink");

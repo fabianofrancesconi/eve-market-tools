@@ -278,6 +278,59 @@ class TestApiScanEndpoint:
         with pytest.raises(LPError):
             lp_web.do_scan({"corp": [""], "corp_id": [""]})
 
+    def test_do_scan_includes_output_volume_in_rows(self, tmp_path):
+        """output_volume = packaged m³/unit × qty is present in every scan row."""
+        lp_web.CACHE_DIR = tmp_path
+        fake_offers = [{"type_id": 101, "quantity": 5, "lp_cost": 1000}]
+        fake_sellable = [{
+            "offer_id": 1, "name_id": 101, "qty": 5, "lp_cost": 1000,
+            "isk_cost": 0, "req_cost": 0, "ask": 100.0, "bid": 90.0,
+            "spread_pct": 10.0, "profit_per": 450.0, "isk_per_lp": 0.45,
+            "max_units": 10, "total_profit": 4500.0, "buy_volume": 1000,
+            "req_missing": False, "ak_cost": 0,
+        }]
+        q = {"corp_id": ["1000"], "lp": ["10000"], "tax": ["0.08"],
+             "broker": ["0.03"], "instant": ["0"], "station": ["60003760"]}
+        with patch.object(lp_web, "load_settings", return_value={}), \
+             patch.object(lp_web, "save_settings"), \
+             patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
+             patch.object(lp_web, "get_offers", return_value=fake_offers), \
+             patch.object(lp_web, "load_json", return_value={}), \
+             patch.object(lp_web, "fetch_prices", return_value={}), \
+             patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
+             patch.object(lp_web, "resolve_names", return_value={101: "Test Item"}), \
+             patch.object(lp_web, "resolve_volumes", return_value={101: 10.0}):
+            result = lp_web.do_scan(q)
+        assert len(result["rows"]) == 1
+        row = result["rows"][0]
+        assert "output_volume" in row
+        assert row["output_volume"] == 50.0  # 10.0 m³/unit × 5 qty
+
+    def test_do_scan_output_volume_none_when_unavailable(self, tmp_path):
+        """output_volume is None when the ESI volume lookup fails."""
+        lp_web.CACHE_DIR = tmp_path
+        fake_offers = [{"type_id": 202, "quantity": 1, "lp_cost": 500}]
+        fake_sellable = [{
+            "offer_id": 2, "name_id": 202, "qty": 1, "lp_cost": 500,
+            "isk_cost": 0, "req_cost": 0, "ask": 50.0, "bid": 45.0,
+            "spread_pct": 10.0, "profit_per": 45.0, "isk_per_lp": 0.09,
+            "max_units": 20, "total_profit": 900.0, "buy_volume": 500,
+            "req_missing": False, "ak_cost": 0,
+        }]
+        q = {"corp_id": ["2000"], "lp": ["10000"], "tax": ["0.08"],
+             "broker": ["0.03"], "instant": ["0"], "station": ["60003760"]}
+        with patch.object(lp_web, "load_settings", return_value={}), \
+             patch.object(lp_web, "save_settings"), \
+             patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
+             patch.object(lp_web, "get_offers", return_value=fake_offers), \
+             patch.object(lp_web, "load_json", return_value={}), \
+             patch.object(lp_web, "fetch_prices", return_value={}), \
+             patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
+             patch.object(lp_web, "resolve_names", return_value={202: "Other Item"}), \
+             patch.object(lp_web, "resolve_volumes", return_value={202: None}):
+            result = lp_web.do_scan(q)
+        assert result["rows"][0]["output_volume"] is None
+
 
 # ---------------------------------------------------------------------------
 # /api/settings endpoint

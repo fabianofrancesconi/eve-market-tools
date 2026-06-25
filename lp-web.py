@@ -721,8 +721,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   th:hover { color:var(--cyan); }
   th.sorted { color:var(--cyan2); }
-  .resizer { position:absolute; top:0; right:0; width:6px; height:100%; cursor:col-resize; }
-  .resizer:hover, .resizer.active { background:var(--accent2); }
+  .resizer {
+    position:absolute; top:0; right:0; width:12px; height:100%;
+    cursor:col-resize; z-index:3;
+  }
+  .resizer::after {
+    content:""; position:absolute;
+    top:18%; right:3px; width:2px; height:64%;
+    background:var(--line2); border-radius:1px; pointer-events:none;
+    transition:background .12s, width .12s;
+  }
+  .resizer:hover::after, .resizer.active::after { background:var(--cyan); width:3px; }
   body.col-resizing { cursor:col-resize; user-select:none; }
 
   /* LP table */
@@ -763,10 +772,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #recipe {
     position:absolute; top:0; right:580px; height:100%; width:0; overflow:hidden;
     transition:width .18s cubic-bezier(.4,0,.2,1);
-    border-left:1px solid var(--line2); z-index:4;
-    background:var(--panel2);
+    z-index:4; background:var(--panel2);
   }
-  #recipe.open { width:210px; }
+  #recipe.open { width:210px; border-left:1px solid var(--line2); }
   #recipe .rinner { width:210px; padding:18px 16px; height:100%; overflow-y:auto; box-sizing:border-box; }
   .recipe-title { font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
     color:var(--dim); margin-bottom:14px; }
@@ -784,11 +792,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #detail {
     position:absolute; top:0; right:0; height:100%; width:0; overflow:hidden;
     transition:width .18s cubic-bezier(.4,0,.2,1);
-    border-left:1px solid var(--line2); z-index:5;
-    background:var(--panel);
-    box-shadow:-16px 0 40px rgba(0,0,0,.6);
+    z-index:5; background:var(--panel);
   }
-  #detail.open { width:580px; max-width:96vw; }
+  #detail.open { width:580px; max-width:96vw; border-left:1px solid var(--line2);
+    box-shadow:-16px 0 40px rgba(0,0,0,.6); }
   #detail .inner { width:580px; max-width:96vw; padding:20px 22px;
     overflow-y:auto; overflow-x:hidden; height:100%; }
   #detail .dheader { display:flex; align-items:flex-start; justify-content:space-between;
@@ -1093,13 +1100,11 @@ const COLS = [
   {k:"qty",          t:"Units",         w: 55, defvis:false, tip:"Units per redemption.", f:fmtNum},
   {k:"output_volume",t:"Vol m³",        w: 75, defvis:false, tip:"Packaged m³ per redemption (reward item only).", f:v=>v===null?"?":fmtVol(v)},
 ];
-COLS.forEach(c=>{ STATE.colVis[c.k]=c.defvis; });
+COLS.forEach(c=>{ STATE.colVis[c.k]=c.defvis; STATE.colw[c.k]=c.w; });
 function visCols(){ return COLS.filter(c=>STATE.colVis[c.k]!==false); }
 
 function lpSetColgroup(){
-  $("#cg").innerHTML=visCols().map(c=>{
-    const w=STATE.colw[c.k]; return `<col${w?` style="width:${w}px"`:""}>`;
-  }).join("");
+  $("#cg").innerHTML=visCols().map(c=>`<col style="width:${STATE.colw[c.k]||c.w}px">`).join("");
 }
 
 function startLPResize(e, key){
@@ -1125,8 +1130,7 @@ function startLPResize(e, key){
 function renderTable(){
   const thead=$("#tbl thead"), tbody=$("#tbl tbody");
   const vc=visCols();
-  const haveW=vc.every(c=>STATE.colw[c.k]);
-  $("#tbl").style.tableLayout=haveW?"fixed":"auto";
+  $("#tbl").style.tableLayout="fixed";
   lpSetColgroup();
   thead.innerHTML="<tr>"+vc.map(c=>{
     const active=STATE.sort.key===c.k;
@@ -1144,15 +1148,6 @@ function renderTable(){
     };
     th.querySelector(".resizer").addEventListener("mousedown",e=>startLPResize(e,vc[i].k));
   });
-  if(!haveW){
-    requestAnimationFrame(()=>{
-      thead.querySelectorAll("th").forEach((th,i)=>{
-        const c=vc[i];
-        STATE.colw[c.k]=STATE.colw[c.k]||c.w||Math.ceil(th.getBoundingClientRect().width);
-      });
-      $("#tbl").style.tableLayout="fixed"; lpSetColgroup();
-    });
-  }
   const rows=[...STATE.rows]
     .filter(r=>!STATE.hideIlliquid||!r.illiquid)
     .filter(r=>!STATE.hideUnaffordable||r.max_units>0)

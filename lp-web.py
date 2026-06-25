@@ -880,6 +880,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .lot-tag .rm:hover { color:var(--red); }
   .lot-num { width:70px; font-size:13px; padding:3px 6px; }
   .lot-sum { font-size:13px; font-weight:600; }
+
+  /* ── Column picker ───────────────────────────────────────────────── */
+  .col-picker {
+    position:fixed; z-index:300;
+    background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
+    padding:6px 0; box-shadow:0 6px 24px rgba(0,0,0,.55); min-width:170px;
+  }
+  .col-picker.hidden { display:none; }
+  .col-picker label {
+    display:flex; align-items:center; gap:8px;
+    padding:5px 14px; cursor:pointer; font-size:13px; user-select:none;
+  }
+  .col-picker label:hover { background:var(--panel3); }
+  .col-picker input[type=checkbox] { margin:0; accent-color:var(--cyan2); }
 </style>
 </head>
 <body>
@@ -924,8 +938,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <button id="refresh" class="secondary" title="Re-fetch offers + prices from ESI">⟳ Refresh</button>
     <label class="check-field" title="Show/hide illiquid rows"><input type="checkbox" id="toggleIlliquid"> Hide illiquid !</label>
     <label class="check-field" title="Hide offers you can't afford"><input type="checkbox" id="toggleAffordable"> Hide unaffordable</label>
+    <button id="colPickerBtn" class="secondary" title="Choose visible columns">Columns ▾</button>
   </div>
 </div>
+<div id="colPicker" class="col-picker hidden"></div>
 
 <!-- ARB controls -->
 <div id="arb-controls" class="ctrlbar hidden">
@@ -990,7 +1006,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <script>
 const $ = s => document.querySelector(s);
-const COL_LAYOUT_VERSION = 2;
+const COL_LAYOUT_VERSION = 3;
 
 // ── Shared utils ─────────────────────────────────────────────────────────
 function fmtISK(n){
@@ -1026,7 +1042,7 @@ function saveLS(){
       maxspread:$("#maxspread").value,tax:$("#tax").value,broker:$("#broker").value,
       market:$("#market").value,
       sort_key:STATE.sort.key,sort_dir:STATE.sort.dir,
-      col_widths:STATE.colw,col_layout_v:COL_LAYOUT_VERSION,
+      col_widths:STATE.colw,col_layout_v:COL_LAYOUT_VERSION,col_vis:STATE.colVis,
       hide_illiquid:STATE.hideIlliquid?'1':'0',
       hide_unaffordable:STATE.hideUnaffordable?'1':'0',
       active_tab:ACTIVE_TAB,
@@ -1060,26 +1076,28 @@ document.querySelectorAll(".tab").forEach(t=>{
 // LP TAB
 // ══════════════════════════════════════════════════════════════════════════
 let STATE = {rows:[], sort:{key:"isk_per_lp", dir:-1}, ctx:{}, selOffer:null,
-             colw:{}, hideIlliquid:false, hideUnaffordable:false, lastScanData:null, lotTrackerOpen:false};
+             colw:{}, colVis:{}, hideIlliquid:false, hideUnaffordable:false, lastScanData:null, lotTrackerOpen:false};
 let LP_RESIZING = false;
 
 const COLS = [
-  {k:"name",         t:"Reward Item",   w:280, tip:"Name of the item the LP offer rewards you with. * = a required input has no Jita price. ^ = offer costs Analysis Kredits. ! = illiquid (spread ≥25%)."},
-  {k:"qty",          t:"Units",         w: 60, tip:"Units per redemption.", f:fmtNum},
-  {k:"lp_cost",      t:"LP / Run",      w: 95, tip:"Loyalty Points per redemption.", f:fmtNum},
-  {k:"cost_ea",      t:"ISK / Run",     w:105, tip:"ISK + required input costs per redemption.", f:fmtISK},
-  {k:"ask",          t:"Jita Ask",      w:105, tip:"Lowest Jita IV-4 sell order price.", f:fmtISK},
-  {k:"bid",          t:"Jita Bid",      w:105, tip:"Highest Jita IV-4 buy order price — what someone will pay right now.", f:fmtISK},
-  {k:"spread_pct",   t:"Spread",        w: 75, tip:"Ask/bid spread. ≥25% (!) means the ask isn't backed by real buyers.", f:fmtSpread, cls:"spread"},
-  {k:"isk_per_lp",   t:"ISK / LP",      w: 90, tip:"Profit per Loyalty Point — the headline efficiency metric.", f:v=>v.toLocaleString(undefined,{maximumFractionDigits:1}), pn:true},
-  {k:"max_units",    t:"Redemptions",   w:105, tip:"How many times you can redeem with your LP budget.", f:v=>v===0?"—":fmtNum(v)},
-  {k:"total_profit", t:"Total Profit",  w:115, tip:"Total profit if you spend your entire LP budget on this offer.", f:(v,r)=>r.max_units===0?"—":fmtISK(v), pn:true, rowCtx:true},
-  {k:"buy_volume",   t:"Buy Demand",    w:105, tip:"Units on Jita buy orders — how many you could sell instantly.", f:fmtNum},
-  {k:"output_volume",t:"Vol m³",        w: 90, tip:"Packaged m³ per redemption (reward item only).", f:v=>v===null?"?":fmtVol(v)},
+  {k:"name",         t:"Reward Item",   w:220, defvis:true,  tip:"Name of the item the LP offer rewards you with. * = a required input has no Jita price. ^ = offer costs Analysis Kredits. ! = illiquid (spread ≥25%)."},
+  {k:"isk_per_lp",   t:"ISK / LP",      w: 90, defvis:true,  tip:"Profit per Loyalty Point — the headline efficiency metric.", f:v=>v.toLocaleString(undefined,{maximumFractionDigits:1}), pn:true},
+  {k:"total_profit", t:"Total Profit",  w:110, defvis:true,  tip:"Total profit if you spend your entire LP budget on this offer.", f:(v,r)=>r.max_units===0?"—":fmtISK(v), pn:true, rowCtx:true},
+  {k:"spread_pct",   t:"Spread",        w: 70, defvis:true,  tip:"Ask/bid spread. ≥25% (!) means the ask isn't backed by real buyers.", f:fmtSpread, cls:"spread"},
+  {k:"max_units",    t:"Max Runs",      w: 80, defvis:true,  tip:"How many times you can redeem with your LP budget.", f:v=>v===0?"—":fmtNum(v)},
+  {k:"lp_cost",      t:"LP / Run",      w: 80, defvis:true,  tip:"Loyalty Points per redemption.", f:fmtNum},
+  {k:"cost_ea",      t:"ISK / Run",     w: 95, defvis:true,  tip:"ISK + required input costs per redemption.", f:fmtISK},
+  {k:"ask",          t:"Jita Ask",      w: 95, defvis:false, tip:"Lowest Jita IV-4 sell order price.", f:fmtISK},
+  {k:"bid",          t:"Jita Bid",      w: 95, defvis:false, tip:"Highest Jita IV-4 buy order price — what someone will pay right now.", f:fmtISK},
+  {k:"buy_volume",   t:"Buy Demand",    w: 95, defvis:false, tip:"Units on Jita buy orders — how many you could sell instantly.", f:fmtNum},
+  {k:"qty",          t:"Units",         w: 55, defvis:false, tip:"Units per redemption.", f:fmtNum},
+  {k:"output_volume",t:"Vol m³",        w: 75, defvis:false, tip:"Packaged m³ per redemption (reward item only).", f:v=>v===null?"?":fmtVol(v)},
 ];
+COLS.forEach(c=>{ STATE.colVis[c.k]=c.defvis; });
+function visCols(){ return COLS.filter(c=>STATE.colVis[c.k]!==false); }
 
 function lpSetColgroup(){
-  $("#cg").innerHTML=COLS.map(c=>{
+  $("#cg").innerHTML=visCols().map(c=>{
     const w=STATE.colw[c.k]; return `<col${w?` style="width:${w}px"`:""}>`;
   }).join("");
 }
@@ -1106,10 +1124,11 @@ function startLPResize(e, key){
 
 function renderTable(){
   const thead=$("#tbl thead"), tbody=$("#tbl tbody");
-  const haveW=COLS.every(c=>STATE.colw[c.k]);
+  const vc=visCols();
+  const haveW=vc.every(c=>STATE.colw[c.k]);
   $("#tbl").style.tableLayout=haveW?"fixed":"auto";
   lpSetColgroup();
-  thead.innerHTML="<tr>"+COLS.map(c=>{
+  thead.innerHTML="<tr>"+vc.map(c=>{
     const active=STATE.sort.key===c.k;
     const arrow=active?(STATE.sort.dir<0?" ▼":" ▲"):"";
     const tip=c.tip?` title="${c.tip.replace(/"/g,'&quot;')}"`: "";
@@ -1123,12 +1142,12 @@ function renderTable(){
       else STATE.sort={key:k, dir:k==="name"?1:-1};
       saveLPSort(); renderTable();
     };
-    th.querySelector(".resizer").addEventListener("mousedown",e=>startLPResize(e,COLS[i].k));
+    th.querySelector(".resizer").addEventListener("mousedown",e=>startLPResize(e,vc[i].k));
   });
   if(!haveW){
     requestAnimationFrame(()=>{
       thead.querySelectorAll("th").forEach((th,i)=>{
-        const c=COLS[i];
+        const c=vc[i];
         STATE.colw[c.k]=STATE.colw[c.k]||c.w||Math.ceil(th.getBoundingClientRect().width);
       });
       $("#tbl").style.tableLayout="fixed"; lpSetColgroup();
@@ -1145,7 +1164,7 @@ function renderTable(){
       return (x-y)*d;
     });
   tbody.innerHTML=rows.map(r=>{
-    const tds=COLS.map(c=>{
+    const tds=vc.map(c=>{
       let v=r[c.k], txt=c.f?(c.rowCtx?c.f(v,r):c.f(v)):v;
       let cls=c.cls||"";
       if(c.k==="spread_pct"&&v!==null) cls+=v<10?" tight":v<25?" mid":"";
@@ -1198,6 +1217,29 @@ function saveLPSort(){
 function saveLPColWidths(){
   fetch(`/api/prefs?col_widths=${encodeURIComponent(JSON.stringify(STATE.colw))}&col_layout_v=${COL_LAYOUT_VERSION}`).catch(()=>{}); saveLS();
 }
+
+// ── Column picker ─────────────────────────────────────────────────────────
+(function(){
+  const btn=document.getElementById("colPickerBtn");
+  const picker=document.getElementById("colPicker");
+  function renderPicker(){
+    picker.innerHTML=COLS.map(c=>`<label><input type="checkbox" data-k="${c.k}"${STATE.colVis[c.k]!==false?' checked':''}> ${c.t}</label>`).join("");
+    picker.querySelectorAll("input").forEach(cb=>{
+      cb.onchange=()=>{ STATE.colVis[cb.dataset.k]=cb.checked; renderTable(); saveLS(); };
+    });
+  }
+  btn.onclick=e=>{
+    e.stopPropagation();
+    if(!picker.classList.contains("hidden")){ picker.classList.add("hidden"); return; }
+    renderPicker();
+    const r=btn.getBoundingClientRect();
+    picker.style.top=(r.bottom+4)+"px";
+    picker.style.left=r.left+"px";
+    picker.classList.remove("hidden");
+  };
+  document.addEventListener("click",()=>picker.classList.add("hidden"));
+  picker.addEventListener("click",e=>e.stopPropagation());
+})();
 
 // ── LP detail panel ───────────────────────────────────────────────────────
 async function openDetail(offerId){
@@ -1730,6 +1772,8 @@ async function loadSettings(){
       }
       if(s.hide_illiquid==="1"){ STATE.hideIlliquid=true; $("#toggleIlliquid").checked=true; }
       if(s.hide_unaffordable==="1"){ STATE.hideUnaffordable=true; $("#toggleAffordable").checked=true; }
+      if(s.col_vis && typeof s.col_vis==="object")
+        COLS.forEach(c=>{ if(c.k in s.col_vis) STATE.colVis[c.k]=!!s.col_vis[c.k]; });
       // Arb settings
       const a=s.arb||{};
       if(a.region) $("#arb-region").value=a.region;

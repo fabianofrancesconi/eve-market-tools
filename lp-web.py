@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.3.3"
+__version__ = "1.3.4"
 
 import argparse
 import base64
@@ -789,27 +789,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
   td.spread.mid { color:var(--yellow); }
   .flag { color:var(--red); font-weight:700; font-size:12px; margin-left:2px; }
 
-  /* ── Detail panel (LP) ───────────────────────────────────────────── */
-  #recipe {
-    flex-shrink:0; width:0; overflow:hidden;
-    transition:width .18s cubic-bezier(.4,0,.2,1);
-    background:var(--panel2);
+  /* ── Dedicated Recipe List Section ───────────────────────────────── */
+  .recipe-list {
+    background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
+    padding:4px 14px; margin-bottom:14px;
   }
-  #recipe.open { width:210px; border-left:1px solid var(--line2); }
-  #recipe .rinner { width:210px; padding:18px 16px; height:100%; overflow-y:auto; box-sizing:border-box; }
-  .recipe-title { font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
-    color:var(--dim); margin-bottom:14px; }
-  .recipe-section { margin-bottom:10px; }
-  .recipe-row { display:flex; align-items:baseline; gap:6px; font-size:13px;
-    padding:3px 0; border-bottom:1px solid var(--line2); }
-  .recipe-row:last-child { border-bottom:none; }
-  .recipe-icon { color:var(--dim); flex-shrink:0; font-size:11px; }
-  .recipe-name { color:var(--fg); flex:1; min-width:0; word-break:break-word; line-height:1.3; }
-  .recipe-qty { color:var(--dim); font-size:12px; white-space:nowrap; }
-  .recipe-arrow { text-align:center; color:var(--dim); font-size:18px; margin:8px 0; }
-  .recipe-out-row { display:flex; align-items:baseline; gap:6px; font-size:14px;
-    font-weight:600; color:var(--cyan); padding:4px 0; }
-  .recipe-out-qty { color:var(--cyan2); white-space:nowrap; }
+  .recipe-list-item {
+    display:flex; justify-content:space-between; align-items:center;
+    padding:8px 0; border-bottom:1px solid var(--line); font-size:13px;
+  }
+  .recipe-list-item:last-child { border-bottom:none; }
+  .recipe-list-item .name { color:var(--dim); }
+  .recipe-list-item .val { color:var(--fg); font-weight:600; }
+  .recipe-list-item .val.lp { color:#81d4fa; }
+  .recipe-list-item .val.isk { color:#a5d6a7; }
   #detail {
     flex-shrink:0; width:0; overflow:hidden;
     transition:width .18s cubic-bezier(.4,0,.2,1);
@@ -1084,8 +1077,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
     <table id="arb-tbl"><colgroup id="arb-cg"></colgroup><thead></thead><tbody></tbody></table>
   </div>
-  <!-- LP recipe panel (slides in to the left of #detail) -->
-  <div id="recipe"><div class="rinner"></div></div>
   <!-- LP detail panel -->
   <div id="detail"><div class="inner"></div></div>
   <!-- Price history modal (ARB rows) -->
@@ -1193,7 +1184,9 @@ document.querySelectorAll(".tab").forEach(t=>{
 // LP TAB
 // ══════════════════════════════════════════════════════════════════════════
 let STATE = {rows:[], sort:{key:"isk_per_lp", dir:-1}, ctx:{}, selOffer:null,
-             colw:{}, colVis:{}, hideIlliquid:false, hideUnaffordable:false, lastScanData:null, lotTrackerOpen:false};
+             colw:{}, colVis:{}, hideIlliquid:false, hideUnaffordable:false, lastScanData:null,
+             lotTrackerOpen:false, recipeOpen:false,
+             shoppingOpen:true, costOpen:false, cargoOpen:false, saleOpen:false};
 let LP_RESIZING = false;
 
 const COLS = [
@@ -1348,34 +1341,20 @@ function saveLPColWidths(){
 
 // ── LP detail panel ───────────────────────────────────────────────────────
 async function openDetail(offerId){
-  STATE.selOffer=offerId; renderTable();
+  STATE.selOffer=offerId; STATE.recipeOpen=false; renderTable();
   const p=new URLSearchParams({corp_id:STATE.ctx.corp_id, offer_id:offerId,
     lp:STATE.ctx.lp, instant:STATE.ctx.instant, tax:STATE.ctx.tax, broker:STATE.ctx.broker,
     station:STATE.ctx.station});
   const inner=$("#detail .inner");
   inner.innerHTML="<div class='muted'>Loading volumes…</div>";
-  $("#detail").classList.add("open"); $("#recipe").classList.add("open");
+  $("#detail").classList.add("open");
   try{
     const d=await (await fetch("/api/detail?"+p)).json();
     if(d.error){ inner.innerHTML=`<span style='color:var(--red)'>${d.error}</span>`; return; }
     STATE.detail=d; renderDetail();
   }catch(e){ inner.innerHTML=`<span style='color:var(--red)'>${e}</span>`; }
 }
-function closeDetail(){ $("#detail").classList.remove("open"); $("#recipe").classList.remove("open"); STATE.selOffer=null; }
-
-function renderRecipe(){
-  const d=STATE.detail;
-  const rows=[];
-  rows.push(`<div class="recipe-row"><span class="recipe-icon">▸</span><span class="recipe-name">${fmtNum(d.lp_cost)} LP</span></div>`);
-  if(d.isk_fee>0) rows.push(`<div class="recipe-row"><span class="recipe-icon">▸</span><span class="recipe-name">${fmtISK(d.isk_fee)} ISK</span></div>`);
-  for(const it of d.required_items)
-    rows.push(`<div class="recipe-row"><span class="recipe-icon">▸</span><span class="recipe-name">${it.name}</span><span class="recipe-qty">×${fmtNum(it.quantity)}</span></div>`);
-  $("#recipe .rinner").innerHTML=`
-    <div class="recipe-title">Recipe</div>
-    <div class="recipe-section">${rows.join("")}</div>
-    <div class="recipe-arrow">↓</div>
-    <div class="recipe-out-row"><span class="recipe-out-qty">${fmtNum(d.output.quantity)}×</span><span>${d.output.name}</span></div>`;
-}
+function closeDetail(){ $("#detail").classList.remove("open"); STATE.selOffer=null; }
 
 function renderDetail(){
   const d=STATE.detail;
@@ -1385,7 +1364,8 @@ function renderDetail(){
     <div class="dheader">
       <div><h2>${d.output.name}</h2>
         <div class="sub">${d.output.quantity}× per redemption · offer #${d.offer_id} ·
-          ${d.instant?"instant (buy orders)":"patient (sell orders)"}</div></div>
+          ${d.instant?"instant (buy orders)":"patient (sell orders)"}</div>
+      </div>
       <span class="close" id="closeBtn">✕</span>
     </div>
     <div class="chart-wrap"><canvas class="chart-canvas" id="detailChart"></canvas><div class="chart-tip" id="detailChartTip"></div><div class="chart-cross"></div><button class="chart-expand-btn" title="Expand chart">⤢</button></div>
@@ -1396,7 +1376,6 @@ function renderDetail(){
       <span class="maxlink">max LP affords: <a href="#" id="maxLink">${fmtNum(d.max_units)}</a></span>
     </div>
     <div id="dbody"></div>`;
-  renderRecipe();
   $("#closeBtn").onclick=closeDetail;
   $("#reds").oninput=renderBody;
   const ml=$("#maxLink");
@@ -1457,6 +1436,24 @@ function bindLotCalcs(savedLots){
     toggle.textContent=(STATE.lotTrackerOpen?"▼":"▶")+" Lot tracker";
     document.querySelector(".lot-tracker").style.display=STATE.lotTrackerOpen?"":"none";
   };
+  const recipeToggle=document.getElementById("recipeToggle");
+  if(recipeToggle) recipeToggle.onclick=()=>{
+    STATE.recipeOpen=!STATE.recipeOpen;
+    recipeToggle.textContent=(STATE.recipeOpen?"▼":"▶")+" Base Recipe (1× redemption)";
+    document.querySelector(".recipe-list").style.display=STATE.recipeOpen?"":"none";
+  };
+  ["shoppingToggle","costToggle","cargoToggle","saleToggle"].forEach((id,i)=>{
+    const keys=["shoppingOpen","costOpen","cargoOpen","saleOpen"];
+    const el=document.getElementById(id);
+    if(!el) return;
+    const labelText=el.textContent.replace(/^[▼▶] /,"");
+    el.onclick=()=>{
+      const key=keys[i];
+      STATE[key]=!STATE[key];
+      el.textContent=(STATE[key]?"▼":"▶")+" "+labelText;
+      document.querySelector(`[data-sec="${id}"]`).style.display=STATE[key]?"":"none";
+    };
+  });
 }
 
 function renderBody(){
@@ -1504,6 +1501,37 @@ function renderBody(){
     else if(d.spread_pct>=d.high_spread_pct) warn+=`<div class="note">${Math.round(d.spread_pct)}% spread — ask isn't backed by real demand.</div>`;
   }
   if(d.req_missing_price) warn+=`<div class="note">* A required item has no Jita price — true cost is higher.</div>`;
+
+  const recipeItems=[];
+  recipeItems.push(`
+    <div class="recipe-list-item">
+      <span class="name">Loyalty Points (LP)</span>
+      <span class="val lp">${fmtNum(d.lp_cost)} LP</span>
+    </div>`);
+  if(d.isk_fee>0) {
+    recipeItems.push(`
+      <div class="recipe-list-item">
+        <span class="name">Store ISK Fee</span>
+        <span class="val isk">${fmtISK(d.isk_fee)} ISK</span>
+      </div>`);
+  }
+  for(const it of d.required_items) {
+    recipeItems.push(`
+      <div class="recipe-list-item">
+        <span class="name">${it.name}</span>
+        <span class="val">× ${fmtNum(it.quantity)}</span>
+      </div>`);
+  }
+  const recipeHTML = `
+    <h3 id="recipeToggle" style="cursor:pointer;user-select:none">${STATE.recipeOpen?'▼':'▶'} Base Recipe (1× redemption)</h3>
+    <div class="recipe-list" style="${STATE.recipeOpen?'':'display:none'}">
+      ${recipeItems.join("")}
+    </div>`;
+
+  const sec=(id, stateKey, label, content)=>`
+    <h3 id="${id}" style="cursor:pointer;user-select:none">${STATE[stateKey]?'▼':'▶'} ${label}</h3>
+    <div class="detail-section" data-sec="${id}" style="${STATE[stateKey]?'':'display:none'}">${content}</div>`;
+
   $("#dbody").innerHTML=`
     <div class="kpis">
       <div class="kpi accent"><div class="l">Total profit</div><div class="v ${pn(profit)}">${fmtISK(profit)}</div></div>
@@ -1512,41 +1540,43 @@ function renderBody(){
       <div class="kpi"><div class="l">ISK cost</div><div class="v">${fmtISK(cost)}</div></div>
     </div>
     ${warn}
-    <h3>Shopping list — ${n}× redemption${n>1?'s':''}</h3>
-    ${d.required_items.length?`<table class="mini"><thead><tr>
-        <th style="text-align:left">Required item</th><th>Total qty</th><th>Avg unit</th><th>Line cost</th><th>Volume</th></tr></thead>
-        <tbody>${reqRows}
-        <tr class="total"><td>Total</td><td></td><td></td><td>${fmtISK(reqCost)}</td><td>${reqVolMissing?'?':fmtVol(reqVol)}</td></tr></tbody></table>
-    <h3 id="lotTrackerToggle" style="cursor:pointer;user-select:none">${STATE.lotTrackerOpen?'▼':'▶'} Lot tracker</h3>
-    <div class="lot-tracker" style="${STATE.lotTrackerOpen?'':'display:none'}">${d.required_items.map(it=>`
-      <div class="lot-row" data-tid="${it.type_id}" data-need="${it.quantity*n}">
-        <div class="lot-label">${it.name} <span class="lot-need">× ${fmtNum(it.quantity*n)} needed</span></div>
-        <div class="lot-controls">
-          <input type="number" class="lot-num" min="1" placeholder="qty" title="Type a quantity, press Enter or Space to add">
-          <div class="lot-tags"></div>
-          <span class="lot-sum"></span>
-        </div>
-      </div>`).join("")}
-    </div>`
-      :`<div class="muted">No required items — just LP + ISK.</div>`}
-    <table class="mini" style="margin-top:8px"><tbody>
-      <tr><td>Required items total</td><td>${fmtISK(reqCost)}</td></tr>
-      <tr><td>Store ISK fee</td><td>${fmtISK(isk_fee)}</td></tr>
-      <tr class="total"><td>Total acquisition cost</td><td>${fmtISK(cost)}</td></tr>
-    </tbody></table>
-    <h3>Cargo volume</h3>
-    <table class="mini"><tbody>
-      <tr><td style="text-align:left">Required items → LP corp station</td><td>${fmtVol(inVol)}</td></tr>
-      <tr><td style="text-align:left">Reward (${fmtNum(d.output.quantity*n)}× ${d.output.name}) → Jita</td><td>${fmtVol(outVol)}</td></tr>
-      <tr class="total"><td style="text-align:left">Ship cargo needed (larger leg)</td><td>${fmtVol(Math.max(inVol||0,outVol||0))}</td></tr>
-    </tbody></table>
-    <h3>Sale</h3>
-    <table class="mini"><tbody>
-      <tr><td style="text-align:left">Jita ask / bid</td><td>${fmtISK(d.ask)} / ${fmtISK(d.bid)}</td></tr>
-      <tr><td style="text-align:left">${d.instant?'Revenue (walking buy orders, after tax)':'Net revenue (listed at ask, after fees)'}</td><td>${fmtISK(revenue)}</td></tr>
-    </tbody></table>
-    <p class="muted" style="margin-top:14px">Costs use the live Jita 4-4 order book.
-      ${d.instant?'Revenue walks down buy orders.':'Reward valued at the lowest sell order.'}</p>`;
+    ${sec("shoppingToggle","shoppingOpen",`Shopping list — ${n}× redemption${n>1?'s':''}`,
+      d.required_items.length?`<table class="mini"><thead><tr>
+          <th style="text-align:left">Required item</th><th>Total qty</th><th>Avg unit</th><th>Line cost</th><th>Volume</th></tr></thead>
+          <tbody>${reqRows}
+          <tr class="total"><td>Total</td><td></td><td></td><td>${fmtISK(reqCost)}</td><td>${reqVolMissing?'?':fmtVol(reqVol)}</td></tr></tbody></table>
+      <h3 id="lotTrackerToggle" style="cursor:pointer;user-select:none">${STATE.lotTrackerOpen?'▼':'▶'} Lot tracker</h3>
+      <div class="lot-tracker" style="${STATE.lotTrackerOpen?'':'display:none'}">${d.required_items.map(it=>`
+        <div class="lot-row" data-tid="${it.type_id}" data-need="${it.quantity*n}">
+          <div class="lot-label">${it.name} <span class="lot-need">× ${fmtNum(it.quantity*n)} needed</span></div>
+          <div class="lot-controls">
+            <input type="number" class="lot-num" min="1" placeholder="qty" title="Type a quantity, press Enter or Space to add">
+            <div class="lot-tags"></div>
+            <span class="lot-sum"></span>
+          </div>
+        </div>`).join("")}
+      </div>`
+        :`<div class="muted">No required items — just LP + ISK.</div>`)}
+    ${recipeHTML}
+    ${sec("costToggle","costOpen","Cost breakdown",`
+      <table class="mini"><tbody>
+        <tr><td>Required items total</td><td>${fmtISK(reqCost)}</td></tr>
+        <tr><td>Store ISK fee</td><td>${fmtISK(isk_fee)}</td></tr>
+        <tr class="total"><td>Total acquisition cost</td><td>${fmtISK(cost)}</td></tr>
+      </tbody></table>`)}
+    ${sec("cargoToggle","cargoOpen","Cargo volume",`
+      <table class="mini"><tbody>
+        <tr><td style="text-align:left">Required items → LP corp station</td><td>${fmtVol(inVol)}</td></tr>
+        <tr><td style="text-align:left">Reward (${fmtNum(d.output.quantity*n)}× ${d.output.name}) → Jita</td><td>${fmtVol(outVol)}</td></tr>
+        <tr class="total"><td style="text-align:left">Ship cargo needed (larger leg)</td><td>${fmtVol(Math.max(inVol||0,outVol||0))}</td></tr>
+      </tbody></table>`)}
+    ${sec("saleToggle","saleOpen","Sale",`
+      <table class="mini"><tbody>
+        <tr><td style="text-align:left">Jita ask / bid</td><td>${fmtISK(d.ask)} / ${fmtISK(d.bid)}</td></tr>
+        <tr><td style="text-align:left">${d.instant?'Revenue (walking buy orders, after tax)':'Net revenue (listed at ask, after fees)'}</td><td>${fmtISK(revenue)}</td></tr>
+      </tbody></table>
+      <p class="muted" style="margin-top:14px">Costs use the live Jita 4-4 order book.
+        ${d.instant?'Revenue walks down buy orders.':'Reward valued at the lowest sell order.'}</p>`)}`);
   bindLotCalcs(savedLots);
 }
 

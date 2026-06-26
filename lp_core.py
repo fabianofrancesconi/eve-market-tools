@@ -10,6 +10,7 @@ Pipeline: corp name -> corp_id -> LP offers (ESI) -> Jita IV-4 prices
 """
 import json
 import math
+import statistics
 import time
 from pathlib import Path
 
@@ -39,6 +40,15 @@ OFFERS_TTL_SECONDS = 24 * 3600
 # Ask/bid spread (%) at/above which an item is treated as illiquid: the sell
 # price isn't backed by real buyers, so profit projected off it is unreliable.
 HIGH_SPREAD_PCT = 25.0
+# Market-saturation tuning. Daily traded volume (region history) is the real
+# absorption rate; standing buy orders are just a snapshot.
+HISTORY_DAYS = 30          # how many recent days of history feed the median
+HISTORY_TTL_SECONDS = 12 * 3600   # reuse the price-chart cache window
+# Fraction of one day's traded volume you can realistically offload before your
+# own selling starts to move the price. The "capped" profit only counts the
+# redemptions whose output fits inside this slice -- profit you can likely keep
+# even if everyone else is dumping the same LP offer.
+ABSORB_FRACTION = 0.10
 
 
 def default_cache_dir():
@@ -197,6 +207,87 @@ def resolve_volumes(type_ids, session, cache_dir):
     if changed:
         save_json(path, {str(k): v for k, v in cache.items()})
     return cache
+
+
+def _median_daily_volume(history, days=HISTORY_DAYS):
+    """Median of the last `days` daily traded volumes from an ESI history list.
+    Median (not mean) so a single whale day doesn't inflate the rate. None when
+    there's no usable history."""
+    vols = [d.get("volume") for d in history[-days:]]
+    vols = [v for v in vols if v is not None]
+    if not vols:
+        return None
+    return statistics.median(vols)
+
+
+def fetch_history_volumes(type_ids, region_id, session, cache_dir, refresh=False):
+    """type_id -> median daily traded volume (last HISTORY_DAYS) in `region_id`,
+    via ESI market history. One HTTP round-trip per uncached type -- this is the
+    expensive call, so resolve it off the main scan path / in the background.
+
+    Shares the `mhist_{region}_{type}.json` cache files the price-chart endpoint
+    uses (same format, HISTORY_TTL_SECONDS window). None for a type with no
+    recorded history (the market never traded it) or on fetch failure."""
+    out = {}
+    now = time.time()
+    for tid in sorted(set(type_ids)):
+        path = Path(cache_dir) / f"mhist_{region_id}_{tid}.json"
+        data = None
+        if not refresh:
+            cached = load_json(path, None)
+            if cached and now - cached.get("_ts", 0) < HISTORY_TTL_SECONDS:
+                data = cached["data"]
+        if data is None:
+            try:
+                r = session.get(f"{ESI}/markets/{region_id}/history/",
+                                params={"type_id": tid}, headers=HEADERS, timeout=20)
+                if r.status_code != 200:
+                    out[tid] = None
+                    continue
+                data = sorted(r.json(), key=lambda x: x["date"])
+                save_json(path, {"_ts": now, "data": data})
+            except requests.RequestException:
+                out[tid] = None
+                continue
+        out[tid] = _median_daily_volume(data)
+    return out
+
+
+def enrich_liquidity(sellable, daily_vols, absorb_fraction=ABSORB_FRACTION):
+    """Annotate evaluate()'s sellable rows with market-saturation figures, keyed
+    by offer_id so a front-end can patch rows in place after a background fetch.
+
+      daily_vol      median units traded per day in the hub's region (or None).
+      days_to_clear  units currently listed on sell orders / daily_vol -- how long
+                     the competing supply ALREADY on the market takes to absorb.
+                     None when there's no history; None when daily_vol is 0 (the
+                     market never trades it, so it effectively never clears -- the
+                     caller distinguishes the two via daily_vol).
+      capped_units   redemptions whose output fits inside `absorb_fraction` of one
+                     day's volume -- what you can offload before moving the price.
+      capped_profit  profit_per * capped_units -- the crowding-robust profit. The
+                     gap to total_profit is how much the tide can wash away.
+    """
+    out = {}
+    for r in sellable:
+        tid = r["name_id"]
+        dv = daily_vols.get(tid)
+        sell_vol = r.get("sell_volume") or 0
+        qty = r.get("qty", 1) or 1
+        if dv and dv > 0:
+            days = sell_vol / dv
+            capped_units = min(r.get("max_units", 0),
+                               math.floor(absorb_fraction * dv / qty))
+        else:
+            days = None
+            capped_units = 0
+        out[r["offer_id"]] = {
+            "daily_vol": dv,
+            "days_to_clear": days,
+            "capped_units": capped_units,
+            "capped_profit": r.get("profit_per", 0) * capped_units,
+        }
+    return out
 
 
 # --- evaluation ------------------------------------------------------------

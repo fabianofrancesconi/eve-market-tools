@@ -331,6 +331,78 @@ class TestApiScanEndpoint:
             result = lp_web.do_scan(q)
         assert result["rows"][0]["output_volume"] is None
 
+    def test_do_scan_rows_carry_liquidity_placeholders(self, tmp_path):
+        """Scan rows expose type_id/sell_volume + null saturation fields so the
+        background /api/liquidity fill can patch them in place."""
+        lp_web.CACHE_DIR = tmp_path
+        fake_offers = [{"type_id": 101, "quantity": 5, "lp_cost": 1000}]
+        fake_sellable = [{
+            "offer_id": 1, "name_id": 101, "qty": 5, "lp_cost": 1000,
+            "isk_cost": 0, "req_cost": 0, "ask": 100.0, "bid": 90.0,
+            "spread_pct": 10.0, "profit_per": 450.0, "isk_per_lp": 0.45,
+            "max_units": 10, "total_profit": 4500.0, "buy_volume": 1000,
+            "sell_volume": 8000, "req_missing": False, "ak_cost": 0,
+        }]
+        q = {"corp_id": ["1000"], "lp": ["10000"], "tax": ["0.08"],
+             "broker": ["0.03"], "instant": ["0"], "station": ["60003760"]}
+        with patch.object(lp_web, "load_settings", return_value={}), \
+             patch.object(lp_web, "save_settings"), \
+             patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
+             patch.object(lp_web, "get_offers", return_value=fake_offers), \
+             patch.object(lp_web, "load_json", return_value={}), \
+             patch.object(lp_web, "fetch_prices", return_value={}), \
+             patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
+             patch.object(lp_web, "resolve_names", return_value={101: "Test Item"}), \
+             patch.object(lp_web, "resolve_volumes", return_value={101: 10.0}):
+            row = lp_web.do_scan(q)["rows"][0]
+        assert row["type_id"] == 101
+        assert row["sell_volume"] == 8000
+        assert row["daily_vol"] is None
+        assert row["days_to_clear"] is None
+        assert row["capped_profit"] is None
+
+
+# ---------------------------------------------------------------------------
+# /api/liquidity endpoint (market-saturation background fill)
+# ---------------------------------------------------------------------------
+
+class TestDoLiquidity:
+    def test_returns_saturation_keyed_by_offer(self, tmp_path):
+        lp_web.CACHE_DIR = tmp_path
+        fake_offers = [{"type_id": 101, "quantity": 5, "lp_cost": 1000}]
+        fake_sellable = [{
+            "offer_id": 1, "name_id": 101, "qty": 5, "max_units": 10,
+            "profit_per": 450.0, "sell_volume": 1000,
+        }]
+        q = {"corp_id": ["1000"], "lp": ["10000"], "tax": ["0.08"],
+             "broker": ["0.03"], "instant": ["0"], "station": ["60003760"]}
+        with patch.object(lp_web, "get_offers", return_value=fake_offers), \
+             patch.object(lp_web, "fetch_prices", return_value={}), \
+             patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
+             patch.object(lp_web, "fetch_history_volumes", return_value={101: 200}):
+            result = lp_web.do_liquidity(q)
+        assert "liquidity" in result
+        entry = result["liquidity"][1]
+        assert entry["daily_vol"] == 200
+        assert entry["days_to_clear"] == 5.0
+        assert entry["capped_units"] == 4
+        assert entry["capped_profit"] == 450.0 * 4
+
+    def test_history_fetched_for_hub_region(self, tmp_path):
+        """Amarr station → daily volume pulled from the Domain region, not Forge."""
+        lp_web.CACHE_DIR = tmp_path
+        fake_offers = [{"type_id": 101, "quantity": 1, "lp_cost": 1000}]
+        fake_sellable = [{"offer_id": 1, "name_id": 101, "qty": 1,
+                          "max_units": 1, "profit_per": 1.0, "sell_volume": 0}]
+        q = {"corp_id": ["1000"], "lp": ["1000"], "station": ["60008494"]}
+        with patch.object(lp_web, "get_offers", return_value=fake_offers), \
+             patch.object(lp_web, "fetch_prices", return_value={}), \
+             patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
+             patch.object(lp_web, "fetch_history_volumes",
+                          return_value={101: 5}) as m:
+            lp_web.do_liquidity(q)
+        assert m.call_args[0][1] == 10000043  # Domain region id
+
 
 # ---------------------------------------------------------------------------
 # /api/settings endpoint

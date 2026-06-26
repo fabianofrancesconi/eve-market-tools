@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.3.7"
+__version__ = "1.4.0"
 
 import argparse
 import base64
@@ -41,8 +41,9 @@ import requests
 import arb_core
 from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
-    TRADE_HUBS, evaluate, fetch_orderbook_jita, fetch_prices, get_offers, load_json,
-    resolve_corp_id, resolve_corp_name, resolve_names, resolve_volumes, save_json,
+    TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_volumes, fetch_orderbook_jita,
+    fetch_prices, get_offers, load_json, resolve_corp_id, resolve_corp_name, resolve_names,
+    resolve_volumes, save_json,
 )
 
 SESSION = requests.Session()
@@ -178,6 +179,14 @@ def do_scan(q):
             "req_missing": r["req_missing"],
             "ak_cost": r["ak_cost"],
             "illiquid": sp is None or sp >= HIGH_SPREAD_PCT,
+            # Market-saturation columns are filled in lazily by /api/liquidity
+            # (one history call per type) so the initial scan stays fast.
+            "type_id": r["name_id"],
+            "sell_volume": r.get("sell_volume"),
+            "daily_vol": None,
+            "days_to_clear": None,
+            "capped_units": None,
+            "capped_profit": None,
         })
     return {
         "corp_id": corp_id,
@@ -195,6 +204,33 @@ def do_scan(q):
         "scanned_at": time.time(),
         "offers_fetched_at": offers_meta.get("fetched_at"),
     }
+
+
+def do_liquidity(q):
+    """Background fill for the market-saturation columns. Recomputes the same
+    sellable rows as /api/scan (so capped figures use the identical LP budget /
+    fees), fetches daily traded volume per reward type from region history, and
+    returns {offer_id: {daily_vol, days_to_clear, capped_units, capped_profit}}.
+
+    Split out from the scan because it costs one history call per type -- the
+    front end fires it after the table is already on screen and patches rows in
+    place as the answer arrives."""
+    corp_id = int(q["corp_id"][0])
+    lp = float(q.get("lp", ["0"])[0] or 0)
+    instant = q.get("instant", ["0"])[0] in ("1", "true", "on")
+    tax = float(q.get("tax", ["0.045"])[0] or 0.045)
+    broker = float(q.get("broker", ["0.015"])[0] or 0.015)
+    station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
+    if station_id not in TRADE_HUBS:
+        station_id = JITA_STATION_ID
+    region_id = TRADE_HUBS[station_id]["region_id"]
+
+    offers = get_offers(corp_id, SESSION, CACHE_DIR, refresh=False)
+    prices = fetch_prices(_all_type_ids(offers), SESSION, station_id=station_id)
+    sellable, _ = evaluate(offers, prices, lp, tax, broker, instant)
+    daily_vols = fetch_history_volumes({r["name_id"] for r in sellable},
+                                       region_id, SESSION, CACHE_DIR)
+    return {"liquidity": enrich_liquidity(sellable, daily_vols)}
 
 
 def _resolve_corp_names(ids):
@@ -289,6 +325,13 @@ def do_detail(q):
     volumes = resolve_volumes(tids, SESSION, CACHE_DIR)
     detail = build_detail(offer, prices, names, volumes, lp, tax, broker, instant)
     detail["high_spread_pct"] = HIGH_SPREAD_PCT
+
+    # Market saturation for the reward item (one cached history call).
+    out_tid = offer["type_id"]
+    daily_vol = fetch_history_volumes({out_tid}, region_id, SESSION, CACHE_DIR).get(out_tid)
+    detail["daily_vol"] = daily_vol
+    detail["days_to_clear"] = (
+        detail["sell_volume"] / daily_vol if daily_vol and daily_vol > 0 else None)
 
     for it in detail["required_items"]:
         it["book"] = fetch_orderbook_jita(it["type_id"], "sell", SESSION,
@@ -566,6 +609,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(do_prefs(q))
             elif parsed.path == "/api/scan":
                 self._send_json(do_scan(q))
+            elif parsed.path == "/api/liquidity":
+                self._send_json(do_liquidity(q))
             elif parsed.path == "/api/detail":
                 self._send_json(do_detail(q))
             elif parsed.path == "/api/history":
@@ -1114,7 +1159,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <script>
 const $ = s => document.querySelector(s);
-const COL_LAYOUT_VERSION = 3;
+const COL_LAYOUT_VERSION = 4;
 
 // ── Shared utils ─────────────────────────────────────────────────────────
 function fmtISK(n){
@@ -1128,6 +1173,24 @@ function fmtISK(n){
 function fmtNum(n){ return (n===null||n===undefined)? "-" : Math.round(n).toLocaleString(); }
 function fmtVol(n){ return (n===null||n===undefined)? "?" : n.toLocaleString(undefined,{maximumFractionDigits:1})+" m³"; }
 function fmtSpread(s){ return s===null? "no bid" : Math.round(s)+"%"; }
+// Days-to-clear. capped_profit===null is the "not fetched yet" sentinel (the
+// background /api/liquidity call hasn't landed); daily_vol distinguishes "never
+// traded" (null) from "history exists but no recent volume" (0).
+function fmtDays(v,r){
+  if(r.capped_profit===null) return "…";
+  if(r.daily_vol===null) return "no data";
+  if(r.daily_vol===0) return "∞";
+  return v<1 ? "<1 d" : Math.round(v)+" d";
+}
+function fmtCapped(v,r){
+  if(r.capped_profit===null) return "…";
+  return r.max_units===0 ? "—" : fmtISK(v);
+}
+function fmtDetailDays(d){
+  if(d.daily_vol===null||d.daily_vol===undefined) return "no data";
+  if(d.daily_vol===0) return "∞";
+  return d.days_to_clear<1 ? "<1 d" : Math.round(d.days_to_clear)+" d";
+}
 function fmtTs(epoch){
   if(!epoch) return "unknown";
   const sec=Math.round((Date.now()/1000)-epoch);
@@ -1193,6 +1256,8 @@ const COLS = [
   {k:"name",         t:"Reward Item",   w:220, defvis:true,  tip:"Name of the item the LP offer rewards you with. * = a required input has no Jita price. ^ = offer costs Analysis Kredits. ! = illiquid (spread ≥25%)."},
   {k:"isk_per_lp",   t:"ISK / LP",      w: 90, defvis:true,  tip:"Profit per Loyalty Point — the headline efficiency metric.", f:v=>v.toLocaleString(undefined,{maximumFractionDigits:1}), pn:true},
   {k:"total_profit", t:"Total Profit",  w:110, defvis:true,  tip:"Total profit if you spend your entire LP budget on this offer.", f:(v,r)=>r.max_units===0?"—":fmtISK(v), pn:true, rowCtx:true},
+  {k:"capped_profit",t:"Capped Profit", w:115, defvis:true,  tip:"Profit you can realistically capture before your own selling moves the price — only counts runs whose output fits inside ~10% of one day's traded volume. A big gap below Total Profit means the offer is fragile if many people redeem it.", f:fmtCapped, pn:true, rowCtx:true},
+  {k:"days_to_clear",t:"Days to Clear", w: 95, defvis:true,  tip:"Units already on Jita sell orders ÷ median daily traded volume — how long the competing supply takes to absorb. Higher = more saturated. ∞ = the market barely trades it.", f:fmtDays, rowCtx:true, cls:"spread"},
   {k:"spread_pct",   t:"Spread",        w: 70, defvis:true,  tip:"Ask/bid spread. ≥25% (!) means the ask isn't backed by real buyers.", f:fmtSpread, cls:"spread"},
   {k:"max_units",    t:"Max Runs",      w: 80, defvis:true,  tip:"How many times you can redeem with your LP budget.", f:v=>v===0?"—":fmtNum(v)},
   {k:"lp_cost",      t:"LP / Run",      w: 80, defvis:true,  tip:"Loyalty Points per redemption.", f:fmtNum},
@@ -1294,8 +1359,31 @@ async function scan(forceRefresh=false){
     if(data.error){ setStatus(data.error,true); return; }
     STATE.rows=data.rows; STATE.ctx.corp_id=data.corp_id; STATE.selOffer=null;
     STATE.lastScanData=data; closeDetail(); renderLPStatus(); renderTable();
+    fillLiquidity();
   }catch(e){ setStatus("Request failed: "+e,true); }
   finally{ btn.disabled=false; btn.textContent="⟳ Refresh"; }
+}
+
+// Background-fill the market-saturation columns (Days to Clear / Capped Profit)
+// after the table is already on screen. One history call per type server-side,
+// so this can take a few seconds on a fresh corp; rows show "…" until it lands.
+async function fillLiquidity(){
+  const corpId=STATE.ctx.corp_id; if(!corpId) return;
+  const p=new URLSearchParams({corp_id:corpId, lp:STATE.ctx.lp, instant:STATE.ctx.instant,
+    tax:STATE.ctx.tax, broker:STATE.ctx.broker, station:STATE.ctx.station});
+  try{
+    const d=await (await fetch("/api/liquidity?"+p)).json();
+    if(d.error||!d.liquidity) return;
+    if(STATE.ctx.corp_id!==corpId) return;  // user re-scanned; drop stale fill
+    const liq=d.liquidity;
+    for(const r of STATE.rows){
+      const e=liq[r.offer_id];
+      if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear;
+             r.capped_units=e.capped_units; r.capped_profit=e.capped_profit; }
+    }
+    renderTable();
+    if(STATE.detail&&STATE.selOffer) renderDetail();
+  }catch(e){ /* leave the "…" placeholders; non-fatal */ }
 }
 
 function renderLPStatus(){
@@ -1538,6 +1626,7 @@ function renderBody(){
       <div class="kpi accent"><div class="l">LP cost</div><div class="v">${fmtNum(lpTot)} LP</div></div>
       <div class="kpi"><div class="l">ISK fee</div><div class="v">${fmtISK(isk_fee)}</div></div>
       <div class="kpi"><div class="l">Volume</div><div class="v">${fmtVol(Math.max(inVol||0,outVol||0))}</div></div>
+      <div class="kpi"><div class="l">Days to clear</div><div class="v">${fmtDetailDays(d)}</div></div>
     </div>
     ${warn}
     ${sec("shoppingToggle","shoppingOpen",`Shopping list — ${n}× redemption${n>1?'s':''}`,

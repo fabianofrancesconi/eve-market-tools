@@ -359,7 +359,8 @@ class TestApiScanEndpoint:
         assert row["sell_volume"] == 8000
         assert row["daily_vol"] is None
         assert row["days_to_clear"] is None
-        assert row["capped_profit"] is None
+        assert row["tradeability"] is None
+        assert row["liq_loaded"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -385,8 +386,7 @@ class TestDoLiquidity:
         entry = result["liquidity"][1]
         assert entry["daily_vol"] == 200
         assert entry["days_to_clear"] == 5.0
-        assert entry["capped_units"] == 4
-        assert entry["capped_profit"] == 450.0 * 4
+        assert set(entry) == {"daily_vol", "days_to_clear"}
 
     def test_history_fetched_for_hub_region(self, tmp_path):
         """Amarr station → daily volume pulled from the Domain region, not Forge."""

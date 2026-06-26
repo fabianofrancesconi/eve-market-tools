@@ -44,11 +44,6 @@ HIGH_SPREAD_PCT = 25.0
 # absorption rate; standing buy orders are just a snapshot.
 HISTORY_DAYS = 30          # how many recent days of history feed the median
 HISTORY_TTL_SECONDS = 12 * 3600   # reuse the price-chart cache window
-# Fraction of one day's traded volume you can realistically offload before your
-# own selling starts to move the price. The "capped" profit only counts the
-# redemptions whose output fits inside this slice -- profit you can likely keep
-# even if everyone else is dumping the same LP offer.
-ABSORB_FRACTION = 0.10
 
 
 def default_cache_dir():
@@ -253,40 +248,27 @@ def fetch_history_volumes(type_ids, region_id, session, cache_dir, refresh=False
     return out
 
 
-def enrich_liquidity(sellable, daily_vols, absorb_fraction=ABSORB_FRACTION):
-    """Annotate evaluate()'s sellable rows with market-saturation figures, keyed
-    by offer_id so a front-end can patch rows in place after a background fetch.
+def enrich_liquidity(sellable, daily_vols):
+    """Annotate evaluate()'s sellable rows with the two raw market signals the
+    Tradeability score blends, keyed by offer_id so a front-end can patch rows in
+    place after the background history fetch.
 
-      daily_vol      median units traded per day in the hub's region (or None).
-      days_to_clear  units currently listed on sell orders / daily_vol -- how long
-                     the competing supply ALREADY on the market takes to absorb.
-                     None when there's no history; None when daily_vol is 0 (the
-                     market never trades it, so it effectively never clears -- the
-                     caller distinguishes the two via daily_vol).
-      capped_units   redemptions whose output fits inside `absorb_fraction` of one
-                     day's volume -- what you can offload before moving the price.
-      capped_profit  profit_per * capped_units -- the crowding-robust profit. The
-                     gap to total_profit is how much the tide can wash away.
-    """
+      daily_vol      median units traded per day in the hub's region (or None) --
+                     the LIQUIDITY signal: high = you can sell at your price.
+      days_to_clear  units currently listed on sell orders / daily_vol -- the
+                     COMPETITION signal: how long the supply ALREADY on the market
+                     takes to absorb. None when there's no history; None when
+                     daily_vol is 0 (the market never trades it, so it effectively
+                     never clears -- the caller distinguishes the two via daily_vol).
+
+    Both are raw counts -- no invented constant. The score that blends them (in a
+    user-chosen proportion) is computed client-side."""
     out = {}
     for r in sellable:
-        tid = r["name_id"]
-        dv = daily_vols.get(tid)
+        dv = daily_vols.get(r["name_id"])
         sell_vol = r.get("sell_volume") or 0
-        qty = r.get("qty", 1) or 1
-        if dv and dv > 0:
-            days = sell_vol / dv
-            capped_units = min(r.get("max_units", 0),
-                               math.floor(absorb_fraction * dv / qty))
-        else:
-            days = None
-            capped_units = 0
-        out[r["offer_id"]] = {
-            "daily_vol": dv,
-            "days_to_clear": days,
-            "capped_units": capped_units,
-            "capped_profit": r.get("profit_per", 0) * capped_units,
-        }
+        days = (sell_vol / dv) if (dv and dv > 0) else None
+        out[r["offer_id"]] = {"daily_vol": dv, "days_to_clear": days}
     return out
 
 

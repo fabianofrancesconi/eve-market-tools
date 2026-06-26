@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 
 import argparse
 import base64
@@ -179,14 +179,16 @@ def do_scan(q):
             "req_missing": r["req_missing"],
             "ak_cost": r["ak_cost"],
             "illiquid": sp is None or sp >= HIGH_SPREAD_PCT,
-            # Market-saturation columns are filled in lazily by /api/liquidity
+            # Market-saturation signals are filled in lazily by /api/liquidity
             # (one history call per type) so the initial scan stays fast.
+            # liq_loaded flips true once the fill lands; tradeability is the
+            # client-computed blend of daily_vol + days_to_clear.
             "type_id": r["name_id"],
             "sell_volume": r.get("sell_volume"),
             "daily_vol": None,
             "days_to_clear": None,
-            "capped_units": None,
-            "capped_profit": None,
+            "tradeability": None,
+            "liq_loaded": False,
         })
     return {
         "corp_id": corp_id,
@@ -295,7 +297,7 @@ def get_npc_corps():
 def do_prefs(q):
     s = load_settings()
     for k in ("sort_key", "sort_dir", "col_widths", "col_layout_v", "hide_illiquid",
-              "hide_unaffordable", "active_tab"):
+              "hide_unaffordable", "active_tab", "trade_weight"):
         if k in q:
             s[k] = q[k][0]
     save_settings(s)
@@ -757,6 +759,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
     color:var(--dim); font-weight:500;
   }
   button.secondary:hover { border-color:var(--cyan2); color:var(--fg); }
+  /* Tradeability balance presets (segmented control). */
+  .balance-group { display:inline-flex; align-items:center; gap:0; white-space:nowrap; }
+  .balance-label { font-size:13px; color:var(--dim); margin-right:7px; }
+  .balance-btn {
+    background:var(--panel2); border:1px solid var(--line2); border-left-width:0;
+    color:var(--dim); font-weight:500; font-size:13px; padding:5px 11px; border-radius:0;
+  }
+  .balance-btn:first-of-type { border-left-width:1px; border-radius:4px 0 0 4px; }
+  .balance-btn:last-of-type { border-radius:0 4px 4px 0; }
+  .balance-btn:hover { color:var(--fg); }
+  .balance-btn.on { background:var(--accent); color:#fff; border-color:var(--accent2); }
 
   /* ── Status bar ──────────────────────────────────────────────────── */
   #statusbar {
@@ -1067,6 +1080,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <button id="refresh" class="secondary" title="Re-fetch offers + prices from ESI">⟳ Refresh</button>
     <label class="check-field" title="Show/hide illiquid rows"><input type="checkbox" id="toggleIlliquid"> Hide illiquid !</label>
     <label class="check-field" title="Hide offers you can't afford"><input type="checkbox" id="toggleAffordable"> Hide unaffordable</label>
+    <span class="balance-group" title="How the Tradeability score weights liquidity vs competition">
+      <span class="balance-label">Tradeability:</span>
+      <button class="balance-btn" data-w="0.5">Balanced</button>
+      <button class="balance-btn" data-w="0.75">Favor liquidity</button>
+      <button class="balance-btn" data-w="0.25">Favor quiet markets</button>
+    </span>
     <button id="colPickerBtn" class="secondary" title="Choose visible columns">Columns ▾</button>
   </div>
 </div>
@@ -1164,7 +1183,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <script>
 const $ = s => document.querySelector(s);
-const COL_LAYOUT_VERSION = 4;
+const COL_LAYOUT_VERSION = 5;
 
 // ── Shared utils ─────────────────────────────────────────────────────────
 function fmtISK(n){
@@ -1183,14 +1202,20 @@ function fmtSpread(s){ return s===null? "no bid" : Math.round(s)+"%"; }
 // traded" (null) from "history exists but no recent volume" (0).
 const _SPIN = "<span class='spin'></span>";
 function fmtDays(v,r){
-  if(r.capped_profit===null) return _SPIN;
+  if(!r.liq_loaded) return _SPIN;
   if(r.daily_vol===null) return "no data";
   if(r.daily_vol===0) return "∞";
   return v<1 ? "<1 d" : Math.round(v)+" d";
 }
-function fmtCapped(v,r){
-  if(r.capped_profit===null) return _SPIN;
-  return r.max_units===0 ? "—" : fmtISK(v);
+function fmtVolPerDay(v,r){
+  if(!r.liq_loaded) return _SPIN;
+  return v===null ? "no data" : fmtNum(v)+"/d";
+}
+// Tradeability: 0–100 blend of liquidity + low-competition, color-graded red→green.
+function fmtTrade(v,r){
+  if(!r.liq_loaded) return _SPIN;
+  if(v===null||v===undefined) return "—";
+  return `<span style="color:hsl(${Math.round(v*1.2)},70%,58%);font-weight:600">${Math.round(v)}</span>`;
 }
 function fmtDetailDays(d){
   if(d.daily_vol===null||d.daily_vol===undefined) return "no data";
@@ -1222,6 +1247,7 @@ function saveLS(){
       col_widths:STATE.colw,col_layout_v:COL_LAYOUT_VERSION,col_vis:STATE.colVis,
       hide_illiquid:STATE.hideIlliquid?'1':'0',
       hide_unaffordable:STATE.hideUnaffordable?'1':'0',
+      trade_weight:STATE.tradeWeight,
       active_tab:ACTIVE_TAB,
       arb:{region:$("#arb-region").value,cross_station:$("#arb-cross").value,
         sales_tax:$("#arb-tax").value,min_isk:$("#arb-minisk").value,
@@ -1254,15 +1280,42 @@ document.querySelectorAll(".tab").forEach(t=>{
 // ══════════════════════════════════════════════════════════════════════════
 let STATE = {rows:[], sort:{key:"isk_per_lp", dir:-1}, ctx:{}, selOffer:null,
              colw:{}, colVis:{}, hideIlliquid:false, hideUnaffordable:false, lastScanData:null,
+             tradeWeight:0.5,  // liquidity↔competition blend: 0=all competition, 1=all liquidity
              lotTrackerOpen:false, recipeOpen:false,
              shoppingOpen:true, costOpen:false, cargoOpen:false, saleOpen:false};
+
+// Tradeability = a 0–100 blend of two raw signals, each scored by its rank
+// against the other offers in this store (so there's no invented "good volume"
+// constant): liquidity (higher daily_vol = better) and low competition (lower
+// days_to_clear = better). STATE.tradeWeight sets the proportion. Recomputed
+// here on every render and whenever the user changes the balance preset.
+function computeTradeability(){
+  const loaded=STATE.rows.filter(r=>r.liq_loaded && r.daily_vol!==null);
+  if(!loaded.length){ STATE.rows.forEach(r=>r.tradeability=null); return; }
+  const vols=loaded.map(r=>r.daily_vol);
+  const days=loaded.map(r=> r.days_to_clear===null ? Infinity : r.days_to_clear);
+  const w=STATE.tradeWeight;
+  const pctRank=(arr,v,higherBetter)=>{
+    const n=arr.length; if(n<=1) return 100;
+    let beats=0;
+    for(const x of arr){ if(x===v) continue; if(higherBetter? v>x : v<x) beats++; }
+    return beats/(n-1)*100;
+  };
+  for(const r of STATE.rows){
+    if(!r.liq_loaded || r.daily_vol===null){ r.tradeability=null; continue; }
+    const liq=pctRank(vols, r.daily_vol, true);
+    const comp=pctRank(days, r.days_to_clear===null?Infinity:r.days_to_clear, false);
+    r.tradeability=w*liq + (1-w)*comp;
+  }
+}
 let LP_RESIZING = false;
 
 const COLS = [
   {k:"name",         t:"Reward Item",   w:220, defvis:true,  tip:"Name of the item the LP offer rewards you with. * = a required input has no Jita price. ^ = offer costs Analysis Kredits. ! = illiquid (spread ≥25%)."},
   {k:"isk_per_lp",   t:"ISK / LP",      w: 90, defvis:true,  tip:"Profit per Loyalty Point — the headline efficiency metric.", f:v=>v.toLocaleString(undefined,{maximumFractionDigits:1}), pn:true},
   {k:"total_profit", t:"Total Profit",  w:110, defvis:true,  tip:"Total profit if you spend your entire LP budget on this offer.", f:(v,r)=>r.max_units===0?"—":fmtISK(v), pn:true, rowCtx:true},
-  {k:"capped_profit",t:"Capped Profit", w:115, defvis:true,  tip:"Profit you can realistically capture before your own selling moves the price — only counts runs whose output fits inside ~10% of one day's traded volume. A big gap below Total Profit means the offer is fragile if many people redeem it.", f:fmtCapped, pn:true, rowCtx:true},
+  {k:"tradeability", t:"Tradeability",  w: 95, defvis:true,  tip:"0–100 score for how realistically you can sell this at your price, blending two raw signals in the proportion you pick (Balance buttons above the table): liquidity (Daily Vol — high = you can make the price) and low competition (Days to Clear — low = little backlog ahead of you). Higher is better. Ranked against the other offers in this store; no invented constants.", f:fmtTrade, rowCtx:true, cls:"spread"},
+  {k:"daily_vol",    t:"Daily Vol",     w: 90, defvis:true,  tip:"Units of this item that actually trade per day at the hub (median of the last 30 days). The liquidity signal: high = a deep market where you can sell at your price; low = thin, hard to offload.", f:fmtVolPerDay, rowCtx:true},
   {k:"days_to_clear",t:"Days to Clear", w: 95, defvis:true,  tip:"How crowded the sell side already is = units currently listed on Jita sell orders ÷ units that actually trade per day. '5 d' means there's already 5 days of sales sitting unsold ahead of you. <1 d = sells fast; high = many sellers competing before you even list; ∞ = the market barely trades it. (About the market, not your budget.)", f:fmtDays, rowCtx:true, cls:"spread"},
   {k:"spread_pct",   t:"Spread",        w: 70, defvis:true,  tip:"Ask/bid spread. ≥25% (!) means the ask isn't backed by real buyers.", f:fmtSpread, cls:"spread"},
   {k:"max_units",    t:"Max Runs",      w: 80, defvis:true,  tip:"How many times your LP budget lets you redeem this offer (LP budget ÷ LP per run). Pure affordability — it does NOT check whether the market can absorb that many units. Days to Clear and Capped Profit are what tell you if you can actually sell them.", f:v=>v===0?"—":fmtNum(v)},
@@ -1302,6 +1355,7 @@ function startLPResize(e, key){
 }
 
 function renderTable(){
+  computeTradeability();
   const thead=$("#tbl thead"), tbody=$("#tbl tbody");
   const vc=visCols();
   $("#tbl").style.tableLayout="fixed";
@@ -1384,8 +1438,7 @@ async function fillLiquidity(){
     const liq=d.liquidity;
     for(const r of STATE.rows){
       const e=liq[r.offer_id];
-      if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear;
-             r.capped_units=e.capped_units; r.capped_profit=e.capped_profit; }
+      if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear; r.liq_loaded=true; }
     }
     renderTable();
     if(STATE.detail&&STATE.selOffer) renderDetail();
@@ -1772,6 +1825,20 @@ $("#toggleAffordable").onchange=()=>{
   fetch(`/api/prefs?hide_unaffordable=${STATE.hideUnaffordable?1:0}`).catch(()=>{}); saveLS();
   renderTable();
 };
+// Tradeability balance presets — set the liquidity↔competition weight, re-rank.
+function syncBalanceButtons(){
+  document.querySelectorAll(".balance-btn").forEach(b=>
+    b.classList.toggle("on", parseFloat(b.dataset.w)===STATE.tradeWeight));
+}
+document.querySelectorAll(".balance-btn").forEach(b=>{
+  b.onclick=()=>{
+    STATE.tradeWeight=parseFloat(b.dataset.w);
+    syncBalanceButtons();
+    fetch(`/api/prefs?trade_weight=${STATE.tradeWeight}`).catch(()=>{}); saveLS();
+    renderTable();
+  };
+});
+syncBalanceButtons();
 setInterval(renderLPStatus, 30000);
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -2234,6 +2301,10 @@ async function loadSettings(){
       }
       if(s.hide_illiquid==="1"){ STATE.hideIlliquid=true; $("#toggleIlliquid").checked=true; }
       if(s.hide_unaffordable==="1"){ STATE.hideUnaffordable=true; $("#toggleAffordable").checked=true; }
+      if(s.trade_weight!==undefined && s.trade_weight!==""){
+        const tw=parseFloat(s.trade_weight);
+        if([0.25,0.5,0.75].includes(tw)){ STATE.tradeWeight=tw; syncBalanceButtons(); }
+      }
       if(s.col_vis && typeof s.col_vis==="object")
         COLS.forEach(c=>{ if(c.k in s.col_vis) STATE.colVis[c.k]=!!s.col_vis[c.k]; });
       // Arb settings

@@ -114,32 +114,22 @@ class TestEnrichLiquidity:
     def test_days_to_clear_is_supply_over_daily_volume(self):
         out = lp_core.enrich_liquidity([_row()], {101: 200})
         assert out[1]["days_to_clear"] == 1000 / 200  # 5 days
+        assert out[1]["daily_vol"] == 200
 
-    def test_capped_units_limited_by_absorb_fraction(self):
-        # absorb 10% of 200/day = 20 units/day; qty 5 → 4 redemptions fit,
-        # which is below the 10-run LP budget, so the cap binds.
-        out = lp_core.enrich_liquidity([_row()], {101: 200}, absorb_fraction=0.10)
-        assert out[1]["capped_units"] == 4
-        assert out[1]["capped_profit"] == 450.0 * 4
-
-    def test_capped_units_limited_by_budget(self):
-        # Plenty of daily volume → the LP budget (max_units) is the binding cap.
-        out = lp_core.enrich_liquidity([_row(max_units=3)], {101: 100_000})
-        assert out[1]["capped_units"] == 3
-        assert out[1]["capped_profit"] == 450.0 * 3
-
-    def test_no_history_gives_no_days_and_zero_cap(self):
+    def test_no_history_gives_no_days(self):
         out = lp_core.enrich_liquidity([_row()], {101: None})
         assert out[1]["daily_vol"] is None
         assert out[1]["days_to_clear"] is None
-        assert out[1]["capped_units"] == 0
-        assert out[1]["capped_profit"] == 0
 
     def test_zero_volume_market_never_clears(self):
         out = lp_core.enrich_liquidity([_row()], {101: 0})
         assert out[1]["daily_vol"] == 0
         assert out[1]["days_to_clear"] is None
-        assert out[1]["capped_units"] == 0
+
+    def test_only_raw_signals_returned(self):
+        # No invented constants leak through: just the two raw market signals.
+        out = lp_core.enrich_liquidity([_row()], {101: 200})
+        assert set(out[1]) == {"daily_vol", "days_to_clear"}
 
     def test_keyed_by_offer_id(self):
         rows = [_row(offer_id=7, name_id=1), _row(offer_id=8, name_id=2)]

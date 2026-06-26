@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 import argparse
 import base64
@@ -651,6 +651,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   a { color:var(--cyan); text-decoration:none; }
   a:hover { text-decoration:underline; }
   .hidden { display:none !important; }
+  /* Inline spinner shown in saturation cells while the background fetch runs. */
+  .spin { display:inline-block; width:11px; height:11px; vertical-align:-1px;
+    border:2px solid var(--dim2); border-top-color:var(--cyan);
+    border-radius:50%; animation:spin .7s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
 
   /* ── Top bar ─────────────────────────────────────────────────────── */
   header {
@@ -1176,14 +1181,15 @@ function fmtSpread(s){ return s===null? "no bid" : Math.round(s)+"%"; }
 // Days-to-clear. capped_profit===null is the "not fetched yet" sentinel (the
 // background /api/liquidity call hasn't landed); daily_vol distinguishes "never
 // traded" (null) from "history exists but no recent volume" (0).
+const _SPIN = "<span class='spin'></span>";
 function fmtDays(v,r){
-  if(r.capped_profit===null) return "…";
+  if(r.capped_profit===null) return _SPIN;
   if(r.daily_vol===null) return "no data";
   if(r.daily_vol===0) return "∞";
   return v<1 ? "<1 d" : Math.round(v)+" d";
 }
 function fmtCapped(v,r){
-  if(r.capped_profit===null) return "…";
+  if(r.capped_profit===null) return _SPIN;
   return r.max_units===0 ? "—" : fmtISK(v);
 }
 function fmtDetailDays(d){
@@ -1257,9 +1263,9 @@ const COLS = [
   {k:"isk_per_lp",   t:"ISK / LP",      w: 90, defvis:true,  tip:"Profit per Loyalty Point — the headline efficiency metric.", f:v=>v.toLocaleString(undefined,{maximumFractionDigits:1}), pn:true},
   {k:"total_profit", t:"Total Profit",  w:110, defvis:true,  tip:"Total profit if you spend your entire LP budget on this offer.", f:(v,r)=>r.max_units===0?"—":fmtISK(v), pn:true, rowCtx:true},
   {k:"capped_profit",t:"Capped Profit", w:115, defvis:true,  tip:"Profit you can realistically capture before your own selling moves the price — only counts runs whose output fits inside ~10% of one day's traded volume. A big gap below Total Profit means the offer is fragile if many people redeem it.", f:fmtCapped, pn:true, rowCtx:true},
-  {k:"days_to_clear",t:"Days to Clear", w: 95, defvis:true,  tip:"Units already on Jita sell orders ÷ median daily traded volume — how long the competing supply takes to absorb. Higher = more saturated. ∞ = the market barely trades it.", f:fmtDays, rowCtx:true, cls:"spread"},
+  {k:"days_to_clear",t:"Days to Clear", w: 95, defvis:true,  tip:"How crowded the sell side already is = units currently listed on Jita sell orders ÷ units that actually trade per day. '5 d' means there's already 5 days of sales sitting unsold ahead of you. <1 d = sells fast; high = many sellers competing before you even list; ∞ = the market barely trades it. (About the market, not your budget.)", f:fmtDays, rowCtx:true, cls:"spread"},
   {k:"spread_pct",   t:"Spread",        w: 70, defvis:true,  tip:"Ask/bid spread. ≥25% (!) means the ask isn't backed by real buyers.", f:fmtSpread, cls:"spread"},
-  {k:"max_units",    t:"Max Runs",      w: 80, defvis:true,  tip:"How many times you can redeem with your LP budget.", f:v=>v===0?"—":fmtNum(v)},
+  {k:"max_units",    t:"Max Runs",      w: 80, defvis:true,  tip:"How many times your LP budget lets you redeem this offer (LP budget ÷ LP per run). Pure affordability — it does NOT check whether the market can absorb that many units. Days to Clear and Capped Profit are what tell you if you can actually sell them.", f:v=>v===0?"—":fmtNum(v)},
   {k:"lp_cost",      t:"LP / Run",      w: 80, defvis:true,  tip:"Loyalty Points per redemption.", f:fmtNum},
   {k:"cost_ea",      t:"ISK / Run",     w: 95, defvis:true,  tip:"ISK + required input costs per redemption.", f:fmtISK},
   {k:"ask",          t:"Jita Ask",      w: 95, defvis:false, tip:"Lowest Jita IV-4 sell order price.", f:fmtISK},

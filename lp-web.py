@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.3.4"
+__version__ = "1.3.5"
 
 import argparse
 import base64
@@ -1576,7 +1576,7 @@ function renderBody(){
         <tr><td style="text-align:left">${d.instant?'Revenue (walking buy orders, after tax)':'Net revenue (listed at ask, after fees)'}</td><td>${fmtISK(revenue)}</td></tr>
       </tbody></table>
       <p class="muted" style="margin-top:14px">Costs use the live Jita 4-4 order book.
-        ${d.instant?'Revenue walks down buy orders.':'Reward valued at the lowest sell order.'}</p>`)}`);
+        ${d.instant?'Revenue walks down buy orders.':'Reward valued at the lowest sell order.'}</p>`)}\`;
   bindLotCalcs(savedLots);
 }
 

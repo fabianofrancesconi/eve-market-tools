@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.3.6"
+__version__ = "1.3.7"
 
 import argparse
 import base64
@@ -1534,10 +1534,10 @@ function renderBody(){
 
   $("#dbody").innerHTML=`
     <div class="kpis">
-      <div class="kpi accent"><div class="l">Total profit</div><div class="v ${pn(profit)}">${fmtISK(profit)}</div></div>
-      <div class="kpi accent"><div class="l">ISK / LP</div><div class="v ${pn(ipl)}">${ipl===null?'-':ipl.toLocaleString(undefined,{maximumFractionDigits:1})}</div></div>
-      <div class="kpi"><div class="l">LP spent</div><div class="v">${fmtNum(lpTot)}</div></div>
-      <div class="kpi"><div class="l">ISK cost</div><div class="v">${fmtISK(cost)}</div></div>
+      <div class="kpi accent"><div class="l">Total item cost</div><div class="v">${fmtISK(reqCost)}</div></div>
+      <div class="kpi accent"><div class="l">LP cost</div><div class="v">${fmtNum(lpTot)} LP</div></div>
+      <div class="kpi"><div class="l">ISK fee</div><div class="v">${fmtISK(isk_fee)}</div></div>
+      <div class="kpi"><div class="l">Volume</div><div class="v">${fmtVol(Math.max(inVol||0,outVol||0))}</div></div>
     </div>
     ${warn}
     ${sec("shoppingToggle","shoppingOpen",`Shopping list — ${n}× redemption${n>1?'s':''}`,

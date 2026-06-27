@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 import argparse
 import base64
@@ -659,6 +659,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
     border-radius:50%; animation:spin .7s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
 
+  /* ── Custom tooltip (replaces native title=) ─────────────────────── */
+  #tooltip {
+    position:fixed; z-index:9999; max-width:280px;
+    padding:8px 11px;
+    background:linear-gradient(180deg, var(--panel3) 0%, var(--panel2) 100%);
+    border:1px solid var(--line2); border-radius:7px;
+    color:var(--fg); font-size:12.5px; line-height:1.45; letter-spacing:.1px;
+    box-shadow:0 8px 26px rgba(0,0,0,.55);
+    pointer-events:none; opacity:0; transform:translateY(3px);
+    transition:opacity .11s ease, transform .11s ease;
+  }
+  #tooltip.show { opacity:1; transform:translateY(0); }
+  #tooltip b, #tooltip .k { color:var(--cyan); font-weight:600; }
+  [data-tip] { cursor:help; }
+  th[data-tip], button[data-tip], label[data-tip] { cursor:pointer; }
+
   /* ── Top bar ─────────────────────────────────────────────────────── */
   header {
     padding:0 18px;
@@ -1077,16 +1093,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="btn-group">
     <button id="go" class="primary">Scan</button>
-    <button id="refresh" class="secondary" title="Re-fetch offers + prices from ESI">⟳ Refresh</button>
-    <label class="check-field" title="Show/hide illiquid rows"><input type="checkbox" id="toggleIlliquid"> Hide illiquid !</label>
-    <label class="check-field" title="Hide offers you can't afford"><input type="checkbox" id="toggleAffordable"> Hide unaffordable</label>
-    <span class="balance-group" title="How the Tradeability score weights liquidity vs competition">
+    <button id="refresh" class="secondary" data-tip="Re-fetch offers and prices from ESI">⟳ Refresh</button>
+    <label class="check-field" data-tip="Show or hide illiquid rows"><input type="checkbox" id="toggleIlliquid"> Hide illiquid !</label>
+    <label class="check-field" data-tip="Hide offers you can't afford"><input type="checkbox" id="toggleAffordable"> Hide unaffordable</label>
+    <span class="balance-group" data-tip="How the Tradeability score weights liquidity vs competition">
       <span class="balance-label">Tradeability:</span>
       <button class="balance-btn" data-w="0.5">Balanced</button>
       <button class="balance-btn" data-w="0.75">Favor liquidity</button>
       <button class="balance-btn" data-w="0.25">Favor quiet markets</button>
     </span>
-    <button id="colPickerBtn" class="secondary" title="Choose visible columns">Columns ▾</button>
+    <button id="colPickerBtn" class="secondary" data-tip="Choose visible columns">Columns ▾</button>
   </div>
 </div>
 <div id="colPicker" class="col-picker hidden"></div>
@@ -1126,7 +1142,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="btn-group">
     <button id="arb-go" class="primary">Scan</button>
-    <button id="arb-toggleLowsec" class="secondary toggle" title="Hide deals touching lowsec/nullsec">Highsec only</button>
+    <button id="arb-toggleLowsec" class="secondary toggle" data-tip="Hide deals touching lowsec/nullsec">Highsec only</button>
   </div>
 </div>
 
@@ -1159,7 +1175,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <canvas class="chart-canvas" id="arbChartCanvas"></canvas>
         <div class="chart-tip" id="arbChartTip"></div>
         <div class="chart-cross"></div>
-        <button class="chart-expand-btn" title="Expand chart">⤢</button>
+        <button class="chart-expand-btn" data-tip="Expand chart">⤢</button>
       </div>
       <div class="chart-stats" id="arbChartStats" style="margin-top:6px"></div>
     </div>
@@ -1316,14 +1332,14 @@ function computeTradeability(){
 let LP_RESIZING = false;
 
 const COLS = [
-  {k:"name",         t:"Reward Item",   w:220, defvis:true,  tip:"Name of the item the LP offer rewards you with. * = a required input has no Jita price. ^ = offer costs Analysis Kredits. ! = illiquid (spread ≥25%)."},
+  {k:"name",         t:"Reward Item",   w:220, defvis:true,  tip:"The item this LP offer gives you.  * = a required input has no Jita price  ·  ^ = costs Analysis Kredits  ·  ! = illiquid (spread ≥25%)"},
   {k:"isk_per_lp",   t:"ISK / LP",      w: 90, defvis:true,  tip:"Profit per Loyalty Point — the headline efficiency metric.", f:v=>v.toLocaleString(undefined,{maximumFractionDigits:1}), pn:true},
   {k:"total_profit", t:"Total Profit",  w:110, defvis:true,  tip:"Total profit if you spend your entire LP budget on this offer.", f:(v,r)=>r.max_units===0?"—":fmtISK(v), pn:true, rowCtx:true},
-  {k:"tradeability", t:"Tradeability",  w: 95, defvis:true,  tip:"0–100 score for how realistically you can sell this at your price, blending two raw signals in the proportion you pick (Balance buttons above the table): liquidity (Daily Vol — high = you can make the price) and low competition (Days to Clear — low = little backlog ahead of you). Higher is better. Ranked against the other offers in this store; no invented constants.", f:fmtTrade, rowCtx:true, cls:"spread"},
-  {k:"daily_vol",    t:"Daily Vol",     w: 90, defvis:true,  tip:"Units of this item that actually trade per day at the hub (median of the last 30 days). The liquidity signal: high = a deep market where you can sell at your price; low = thin, hard to offload.", f:fmtVolPerDay, rowCtx:true},
-  {k:"days_to_clear",t:"Days to Clear", w: 95, defvis:true,  tip:"How crowded the sell side already is = units currently listed on Jita sell orders ÷ units that actually trade per day. '5 d' means there's already 5 days of sales sitting unsold ahead of you. <1 d = sells fast; high = many sellers competing before you even list; ∞ = the market barely trades it. (About the market, not your budget.)", f:fmtDays, rowCtx:true, cls:"spread"},
-  {k:"spread_pct",   t:"Spread",        w: 70, defvis:true,  tip:"Ask/bid spread. ≥25% (!) means the ask isn't backed by real buyers.", f:fmtSpread, cls:"spread"},
-  {k:"max_units",    t:"Max Runs",      w: 80, defvis:true,  tip:"How many times your LP budget lets you redeem this offer (LP budget ÷ LP per run). Pure affordability — it does NOT check whether the market can absorb that many units. Days to Clear and Capped Profit are what tell you if you can actually sell them.", f:v=>v===0?"—":fmtNum(v)},
+  {k:"tradeability", t:"Tradeability",  w: 95, defvis:true,  tip:"0–100: how realistically you can sell at your price. Blends liquidity (Daily Vol) and low competition (Days to Clear), weighted by the Balance buttons. Higher is better; ranked within this store.", f:fmtTrade, rowCtx:true, cls:"spread"},
+  {k:"daily_vol",    t:"Daily Vol",     w: 90, defvis:true,  tip:"Units traded per day at the hub (30-day median). High = deep market you can sell into; low = thin and hard to offload.", f:fmtVolPerDay, rowCtx:true},
+  {k:"days_to_clear",t:"Days to Clear", w: 95, defvis:true,  tip:"Sell-side backlog: units listed ÷ units sold per day. “5 d” = 5 days of stock ahead of you. <1 d sells fast; ∞ = barely trades.", f:fmtDays, rowCtx:true, cls:"spread"},
+  {k:"spread_pct",   t:"Spread",        w: 70, defvis:true,  tip:"Ask vs bid gap. ≥25% (!) means the ask isn't backed by real buyers.", f:fmtSpread, cls:"spread"},
+  {k:"max_units",    t:"Max Runs",      w: 80, defvis:true,  tip:"Redemptions your LP budget affords (budget ÷ LP per run). Affordability only — it doesn't check whether the market can absorb them.", f:v=>v===0?"—":fmtNum(v)},
   {k:"lp_cost",      t:"LP / Run",      w: 80, defvis:true,  tip:"Loyalty Points per redemption.", f:fmtNum},
   {k:"cost_ea",      t:"ISK / Run",     w: 95, defvis:true,  tip:"ISK + required input costs per redemption.", f:fmtISK},
   {k:"ask",          t:"Jita Ask",      w: 95, defvis:false, tip:"Lowest Jita IV-4 sell order price.", f:fmtISK},
@@ -1368,7 +1384,7 @@ function renderTable(){
   thead.innerHTML="<tr>"+vc.map(c=>{
     const active=STATE.sort.key===c.k;
     const arrow=active?(STATE.sort.dir<0?" ▼":" ▲"):"";
-    const tip=c.tip?` title="${c.tip.replace(/"/g,'&quot;')}"`: "";
+    const tip=c.tip?` data-tip="${c.tip.replace(/"/g,'&quot;')}"`: "";
     return `<th data-k="${c.k}"${tip}${active?' class="sorted"':''}>${c.t}${arrow}<span class="resizer"></span></th>`;
   }).join("")+"</tr>";
   thead.querySelectorAll("th").forEach((th,i)=>{
@@ -1520,7 +1536,7 @@ function renderDetail(){
       </div>
       <span class="close" id="closeBtn">✕</span>
     </div>
-    <div class="chart-wrap"><canvas class="chart-canvas" id="detailChart"></canvas><div class="chart-tip" id="detailChartTip"></div><div class="chart-cross"></div><button class="chart-expand-btn" title="Expand chart">⤢</button></div>
+    <div class="chart-wrap"><canvas class="chart-canvas" id="detailChart"></canvas><div class="chart-tip" id="detailChartTip"></div><div class="chart-cross"></div><button class="chart-expand-btn" data-tip="Expand chart">⤢</button></div>
     <div class="chart-stats" id="detailChartStats"></div>
     <div class="redrow">
       <label>Redemptions</label>
@@ -1626,7 +1642,7 @@ function renderBody(){
     const short=w.shortBy>0; if(short) anyShort=true;
     if(it.line_volume===null) reqVolMissing=true; else reqVol+=it.line_volume*n;
     const vol=it.line_volume===null?'?':fmtVol(it.line_volume*n);
-    return `<tr><td>${it.name}${short?' <span class="flag" title="not enough on market">!</span>':''}</td>
+    return `<tr><td>${it.name}${short?' <span class="flag" data-tip="Not enough on market">!</span>':''}</td>
       <td>${fmtNum(need)}</td>
       <td>${w.avg===null?(it.unit_price===null?'<span class="flag">*</span>':fmtISK(it.unit_price)):fmtISK(w.avg)}</td>
       <td>${noPrice?'<span class="flag">?</span>':fmtISK(line)}</td>
@@ -1703,7 +1719,7 @@ function renderBody(){
         <div class="lot-row" data-tid="${it.type_id}" data-need="${it.quantity*n}">
           <div class="lot-label">${it.name} <span class="lot-need">× ${fmtNum(it.quantity*n)} needed</span></div>
           <div class="lot-controls">
-            <input type="number" class="lot-num" min="1" placeholder="qty" title="Type a quantity, press Enter or Space to add">
+            <input type="number" class="lot-num" min="1" placeholder="qty" data-tip="Type a quantity, then press Enter or Space to add">
             <div class="lot-tags"></div>
             <span class="lot-sum"></span>
           </div>
@@ -2088,7 +2104,7 @@ function renderArbTable(){
   thead.innerHTML="<tr>"+ARB_COLS.map(c=>{
     const active=ARB.sort.key===c.k;
     const arrow=active?(ARB.sort.dir<0?" ▼":" ▲"):"";
-    const tip=c.tip?` title="${c.tip.replace(/"/g,'&quot;')}"`: "";
+    const tip=c.tip?` data-tip="${c.tip.replace(/"/g,'&quot;')}"`: "";
     return `<th data-k="${c.k}"${tip}${active?' class="sorted"':''}>${c.t}${arrow}<span class="resizer"></span></th>`;
   }).join("")+"</tr>";
   thead.querySelectorAll("th").forEach((th,i)=>{
@@ -2124,7 +2140,7 @@ function renderArbTable(){
       if(c.secBand) cls+=" sec-"+r[c.secBand];
       if(c.riskBand) cls+=" risk-"+r[c.riskBand];
       if(c.pn) cls+=(v>0?" pos":(v<0?" neg":""));
-      const titleAttr=(c.k==="sell_station"||c.k==="buy_station")&&v?` title="${String(v).replace(/"/g,'&quot;')}"` :"";
+      const titleAttr=(c.k==="sell_station"||c.k==="buy_station")&&v?` data-tip="${String(v).replace(/"/g,'&quot;')}"` :"";
       return `<td class="${cls.trim()}"${titleAttr}>${txt}</td>`;
     }).join("");
     return `<tr style="cursor:pointer" data-ridx="${i}">${tds}</tr>`;
@@ -2331,6 +2347,29 @@ async function loadSettings(){
   // Auto-run LP scanner if corp is set
   if(ACTIVE_TAB==="lp" && $("#corp").value.trim()) scan(false);
 }
+// ── Custom tooltip engine ──────────────────────────────────────────
+// Reads data-tip on any element and shows a themed, cursor-following
+// tooltip instead of the browser's default title= popup.
+(function(){
+  const tip=document.createElement("div");
+  tip.id="tooltip"; document.body.appendChild(tip);
+  let cur=null;
+  document.addEventListener("mousemove",e=>{
+    const el=e.target.closest?e.target.closest("[data-tip]"):null;
+    if(el){
+      if(el!==cur){ cur=el; tip.textContent=el.getAttribute("data-tip"); tip.classList.add("show"); }
+      const pad=14, w=tip.offsetWidth, h=tip.offsetHeight;
+      let x=e.clientX+pad, y=e.clientY+pad;
+      if(x+w>innerWidth-8)  x=Math.max(8, e.clientX-w-pad);
+      if(y+h>innerHeight-8) y=Math.max(8, e.clientY-h-pad);
+      tip.style.left=x+"px"; tip.style.top=y+"px";
+    } else if(cur){ cur=null; tip.classList.remove("show"); }
+  },{passive:true});
+  document.addEventListener("mouseleave",()=>{ cur=null; tip.classList.remove("show"); });
+  // Hide while scrolling/clicking so it never lingers in a stale spot.
+  document.addEventListener("scroll",()=>{ if(cur){ cur=null; tip.classList.remove("show"); } }, true);
+})();
+
 loadSettings();
 </script>
 </body>

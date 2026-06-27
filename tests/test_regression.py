@@ -463,6 +463,28 @@ class TestHttpRouting:
 
 
 # ---------------------------------------------------------------------------
+# Custom tooltip system (data-tip + tooltip engine replaced native title=)
+# ---------------------------------------------------------------------------
+
+class TestTooltips:
+    def test_tooltip_engine_present(self):
+        # The themed tooltip element + mousemove engine must be wired up.
+        assert 'id="tooltip"' in lp_web.INDEX_HTML
+        assert "#tooltip.show" in lp_web.INDEX_HTML
+        assert "[data-tip]" in lp_web.INDEX_HTML
+
+    def test_uses_data_tip_not_native_title(self):
+        # Column headers and controls now use data-tip, not title=.
+        assert "data-tip=" in lp_web.INDEX_HTML
+        assert 'c.tip?` data-tip=' in lp_web.INDEX_HTML
+
+    def test_no_stale_native_title_on_controls(self):
+        # The refresh/columns controls must not fall back to native title=.
+        assert 'title="Re-fetch' not in lp_web.INDEX_HTML
+        assert 'title="Choose visible columns"' not in lp_web.INDEX_HTML
+
+
+# ---------------------------------------------------------------------------
 # /api/history endpoint
 # ---------------------------------------------------------------------------
 

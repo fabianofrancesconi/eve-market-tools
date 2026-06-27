@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 import argparse
 import base64
@@ -1064,8 +1064,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </select>
   </div>
   <div class="field"><label>Max spread %</label><input id="maxspread" type="number" placeholder="off" value="20"></div>
-  <div class="field"><label>Sales tax</label><input id="tax" type="number" step="0.001" value="0.045"></div>
-  <div class="field"><label>Broker fee</label><input id="broker" type="number" step="0.001" value="0.015"></div>
+  <div class="field"><label>Sales tax %</label><input id="tax" type="number" step="0.1" value="4.5"></div>
+  <div class="field"><label>Broker fee %</label><input id="broker" type="number" step="0.1" value="1.5"></div>
   <div class="field"><label>Market</label>
     <select id="market">
       <option value="60003760">Jita 4-4</option>
@@ -1108,8 +1108,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <option value="0">Same-station (instant flip)</option>
     </select>
   </div>
-  <div class="field"><label>Sales tax</label>
-    <input id="arb-tax" type="number" step="0.001" value="0.075" style="width:80px">
+  <div class="field"><label>Sales tax %</label>
+    <input id="arb-tax" type="number" step="0.1" value="7.5" style="width:80px">
   </div>
   <div class="field"><label>Min ISK opp</label>
     <input id="arb-minisk" type="number" placeholder="0">
@@ -1185,6 +1185,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
 const $ = s => document.querySelector(s);
 const COL_LAYOUT_VERSION = 5;
 
+// Tax / broker are shown to the user as percent (4.5) but stored & sent to the
+// backend as fractions (0.045). Convert at the input boundary only.
+function pctToFrac(v){ const n=parseFloat(v); return isNaN(n)?"":String(n/100); }
+function fracToPct(v){ const n=parseFloat(v); return isNaN(n)?"":String(+(n*100).toFixed(4)); }
+
 // ── Shared utils ─────────────────────────────────────────────────────────
 function fmtISK(n){
   if(n===null||n===undefined) return "-";
@@ -1241,7 +1246,7 @@ function saveLS(){
   try{
     localStorage.setItem(LS_KEY,JSON.stringify({
       corp:$("#corp").value,lp:$("#lp").value,instant:$("#instant").value,
-      maxspread:$("#maxspread").value,tax:$("#tax").value,broker:$("#broker").value,
+      maxspread:$("#maxspread").value,tax:pctToFrac($("#tax").value),broker:pctToFrac($("#broker").value),
       market:$("#market").value,
       sort_key:STATE.sort.key,sort_dir:STATE.sort.dir,
       col_widths:STATE.colw,col_layout_v:COL_LAYOUT_VERSION,col_vis:STATE.colVis,
@@ -1250,7 +1255,7 @@ function saveLS(){
       trade_weight:STATE.tradeWeight,
       active_tab:ACTIVE_TAB,
       arb:{region:$("#arb-region").value,cross_station:$("#arb-cross").value,
-        sales_tax:$("#arb-tax").value,min_isk:$("#arb-minisk").value,
+        sales_tax:pctToFrac($("#arb-tax").value),min_isk:$("#arb-minisk").value,
         max_jumps:$("#arb-maxjumps").value,route_flag:$("#arb-route").value,
         avoid_lowsec:ARB.avoidLowsec?'1':'0'}
     }));
@@ -1409,7 +1414,7 @@ async function scan(forceRefresh=false){
   const btn=$("#refresh");
   if(forceRefresh){ btn.disabled=true; btn.textContent="⟳ Fetching…"; }
   setStatus("Scanning "+corp+(forceRefresh?" (refreshing from ESI)":"")+" …");
-  STATE.ctx={lp:$("#lp").value, instant:$("#instant").value, tax:$("#tax").value, broker:$("#broker").value, station:$("#market").value};
+  STATE.ctx={lp:$("#lp").value, instant:$("#instant").value, tax:pctToFrac($("#tax").value), broker:pctToFrac($("#broker").value), station:$("#market").value};
   const p=new URLSearchParams({corp, ...STATE.ctx});
   const ms=$("#maxspread").value.trim(); if(ms) p.set("max_spread",ms);
   if(forceRefresh) p.set("refresh","1");
@@ -2168,7 +2173,7 @@ function scanArb(){
   const p=new URLSearchParams({
     region:       $("#arb-region").value,
     cross_station: $("#arb-cross").value,
-    sales_tax:    $("#arb-tax").value,
+    sales_tax:    pctToFrac($("#arb-tax").value),
     min_isk:      $("#arb-minisk").value||"0",
     max_jumps:    $("#arb-maxjumps").value||"6",
     route_flag:   $("#arb-route").value,
@@ -2216,7 +2221,7 @@ function saveArbPrefs(){
   const p=new URLSearchParams({
     region:       $("#arb-region").value,
     cross_station: $("#arb-cross").value,
-    sales_tax:    $("#arb-tax").value,
+    sales_tax:    pctToFrac($("#arb-tax").value),
     min_isk:      $("#arb-minisk").value||"",
     max_jumps:    $("#arb-maxjumps").value||"6",
     route_flag:   $("#arb-route").value,
@@ -2290,8 +2295,8 @@ async function loadSettings(){
       if(s.market) $("#market").value=s.market;
       if(s.instant==="0"||s.instant==="1") $("#instant").value=s.instant;
       const _ms=s.maxspread??s.max_spread; if(_ms!=null) $("#maxspread").value=_ms;
-      if(s.tax)   $("#tax").value=s.tax;
-      if(s.broker) $("#broker").value=s.broker;
+      if(s.tax)   $("#tax").value=fracToPct(s.tax);
+      if(s.broker) $("#broker").value=fracToPct(s.broker);
       if(s.sort_key && COLS.some(c=>c.k===s.sort_key))
         STATE.sort={key:s.sort_key, dir:Number(s.sort_dir)===1?1:-1};
       if(s.col_widths && s.col_layout_v==COL_LAYOUT_VERSION){
@@ -2311,7 +2316,7 @@ async function loadSettings(){
       const a=s.arb||{};
       if(a.region) $("#arb-region").value=a.region;
       if(a.cross_station==="0"||a.cross_station==="1") $("#arb-cross").value=a.cross_station;
-      if(a.sales_tax) $("#arb-tax").value=a.sales_tax;
+      if(a.sales_tax) $("#arb-tax").value=fracToPct(a.sales_tax);
       if(a.min_isk)   $("#arb-minisk").value=a.min_isk;
       if(a.max_jumps) $("#arb-maxjumps").value=a.max_jumps;
       if(a.route_flag) $("#arb-route").value=a.route_flag;

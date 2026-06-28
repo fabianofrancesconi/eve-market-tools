@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.10.0"
+__version__ = "1.10.1"
 
 import argparse
 import base64
@@ -1708,7 +1708,6 @@ function renderBody(){
   $("#dbody").innerHTML=`
     <div class="kpis">
       <div class="kpi accent"><div class="l">Total profit</div><div class="v ${profit===null?'':profit>=0?'pos':'neg'}">${profit===null?'—':fmtISK(profit)}</div></div>
-      <div class="kpi accent"><div class="l">Revenue</div><div class="v">${revenue===null?'—':fmtISK(revenue)}</div></div>
       <div class="kpi"><div class="l">Total item cost</div><div class="v">${fmtISK(reqCost)}</div></div>
       <div class="kpi"><div class="l">LP cost</div><div class="v">${fmtNum(lpTot)} LP</div></div>
       <div class="kpi"><div class="l">Redemption ISK</div><div class="v">${fmtISK(isk_fee)}</div></div>

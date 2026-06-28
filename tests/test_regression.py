@@ -487,7 +487,8 @@ class TestTooltips:
         # The detail-panel KPI grid shows profit metrics and lays out 3 per row.
         assert "repeat(3,1fr)" in lp_web.INDEX_HTML
         assert '<div class="l">Total profit</div>' in lp_web.INDEX_HTML
-        assert '<div class="l">Revenue</div>' in lp_web.INDEX_HTML
+        # Revenue is covered by the profit-breakdown waterfall, not a KPI card.
+        assert '<div class="l">Revenue</div>' not in lp_web.INDEX_HTML
         # The store ISK charge is labelled "Redemption ISK", not "ISK fee".
         assert '<div class="l">Redemption ISK</div>' in lp_web.INDEX_HTML
         assert '<div class="l">ISK fee</div>' not in lp_web.INDEX_HTML

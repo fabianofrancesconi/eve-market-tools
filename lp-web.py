@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.11.0"
+__version__ = "1.11.1"
 
 import argparse
 import base64
@@ -864,7 +864,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   td.pos { color:var(--green2); font-weight:500; }
   td.neg { color:var(--red); }
-  /* The better of the two sell-mode columns (ISK/LP · sell vs · buy). */
+  /* The better of the two sell-mode columns (list vs instant sell). */
   td.win { background:rgba(79,195,247,.10); box-shadow:inset 2px 0 0 var(--cyan2); font-weight:700; }
   td.spread.tight { color:var(--green); }
   td.spread.mid { color:var(--yellow); }
@@ -1332,10 +1332,10 @@ let LP_RESIZING = false;
 const fmtIpl = v => (v===null||v===undefined) ? "—" : v.toLocaleString(undefined,{maximumFractionDigits:1});
 const COLS = [
   {k:"name",               t:"Reward Item",     w:220, defvis:true,  tip:"The item this LP offer gives you.  * = a required input has no Jita price  ·  ^ = costs Analysis Kredits  ·  ! = illiquid (spread ≥25%)"},
-  {k:"isk_per_lp_patient", t:"ISK/LP · sell",   w: 95, defvis:true,  tip:"Profit per Loyalty Point if you LIST a sell order at the ask (pay sales tax + broker fee). The patient route.", f:fmtIpl, pn:true},
-  {k:"isk_per_lp_instant", t:"ISK/LP · buy",    w: 95, defvis:true,  tip:"Profit per Loyalty Point if you DUMP into a buy order at the bid (pay sales tax only). The instant route.", f:fmtIpl, pn:true},
-  {k:"total_profit_patient",t:"Profit · sell",  w:110, defvis:true,  tip:"Total profit across your whole LP budget, selling patiently at the ask.", f:(v,r)=>r.max_units===0?"—":(v===null?"—":fmtISK(v)), pn:true, rowCtx:true},
-  {k:"total_profit_instant",t:"Profit · buy",   w:110, defvis:true,  tip:"Total profit across your whole LP budget, dumping instantly into buy orders.", f:(v,r)=>r.max_units===0?"—":(v===null?"—":fmtISK(v)), pn:true, rowCtx:true},
+  {k:"isk_per_lp_patient", t:"List ISK/LP",        w:100, defvis:true,  tip:"Profit per Loyalty Point if you LIST a sell order at the ask and wait (pay sales tax + broker fee).", f:fmtIpl, pn:true},
+  {k:"isk_per_lp_instant", t:"Instant-sell ISK/LP",w:120, defvis:true,  tip:"Profit per Loyalty Point if you INSTANT-SELL into a buy order at the bid (pay sales tax only).", f:fmtIpl, pn:true},
+  {k:"total_profit_patient",t:"List profit",       w:105, defvis:true,  tip:"Total profit across your whole LP budget, listing sell orders at the ask.", f:(v,r)=>r.max_units===0?"—":(v===null?"—":fmtISK(v)), pn:true, rowCtx:true},
+  {k:"total_profit_instant",t:"Instant-sell profit",w:120, defvis:true,  tip:"Total profit across your whole LP budget, instant-selling into buy orders.", f:(v,r)=>r.max_units===0?"—":(v===null?"—":fmtISK(v)), pn:true, rowCtx:true},
   {k:"tradeability", t:"Tradeability",  w: 95, defvis:true,  tip:"0–100: how realistically you can sell at your price. Blends liquidity (Daily Vol) and low competition (Days to Clear), weighted by the Balance buttons. Higher is better; ranked within this store.", f:fmtTrade, rowCtx:true, cls:"spread"},
   {k:"daily_vol",    t:"Daily Vol",     w: 90, defvis:true,  tip:"Units traded per day at the hub (30-day median). High = deep market you can sell into; low = thin and hard to offload.", f:fmtVolPerDay, rowCtx:true},
   {k:"days_to_clear",t:"Days to Clear", w: 95, defvis:true,  tip:"Sell-side backlog: units listed ÷ units sold per day. “5 d” = 5 days of stock ahead of you. <1 d sells fast; ∞ = barely trades.", f:fmtDays, rowCtx:true, cls:"spread"},
@@ -1477,7 +1477,7 @@ function renderLPStatus(){
   setStatus(
     `<span class="pill"><b>${d.corp_name}</b></span>`
     +`<span class="pill"><b>${d.count}</b> offers</span>`
-    +`<span class="pill"><b>${Number(d.lp).toLocaleString()}</b> LP · sell vs buy</span>`
+    +`<span class="pill"><b>${Number(d.lp).toLocaleString()}</b> LP · list vs instant sell</span>`
     +`<span class="ts">offers ${fmtTs(d.offers_fetched_at)} · prices ${fmtTs(d.scanned_at)}</span>`);
 }
 
@@ -1537,7 +1537,7 @@ function renderDetail(){
     <div class="dheader">
       <div><h2>${d.output.name}</h2>
         <div class="sub">${d.output.quantity}× per redemption · offer #${d.offer_id} ·
-          sell order vs buy order</div>
+          list vs instant sell</div>
       </div>
       <span class="close" id="closeBtn">✕</span>
     </div>
@@ -1673,9 +1673,9 @@ function renderBody(){
   const pcls=v=>v===null?'':v>=0?'pos':'neg';
   let warn="";
   if(anyShort) warn+=`<div class="note">! Not enough sell orders at ${hub} for some required items.</div>`;
-  if(sellShort) warn+=`<div class="note">Instant: only ${fmtNum(soldQtyI)} of ${fmtNum(d.output.quantity*n)} can be dumped into current ${hub} buy orders.</div>`;
-  if(d.spread_pct===null) warn+=`<div class="note bad">No buy orders exist — the instant route can't fill and a listed sell order may never clear.</div>`;
-  else if(d.spread_pct>=d.high_spread_pct) warn+=`<div class="note">${Math.round(d.spread_pct)}% spread — the ask isn't backed by real demand; the patient figure is optimistic.</div>`;
+  if(sellShort) warn+=`<div class="note">Instant sell: only ${fmtNum(soldQtyI)} of ${fmtNum(d.output.quantity*n)} fit the current ${hub} buy orders.</div>`;
+  if(d.spread_pct===null) warn+=`<div class="note bad">No buy orders exist — instant-sell can't fill and a listed sell order may never clear.</div>`;
+  else if(d.spread_pct>=d.high_spread_pct) warn+=`<div class="note">${Math.round(d.spread_pct)}% spread — the ask isn't backed by real demand; the list figure is optimistic.</div>`;
   if(d.req_missing_price) warn+=`<div class="note">* A required item has no ${hub} price — true cost is higher.</div>`;
 
   const recipeItems=[];
@@ -1710,8 +1710,8 @@ function renderBody(){
 
   $("#dbody").innerHTML=`
     <div class="kpis">
-      <div class="kpi accent"><div class="l">Profit · sell</div><div class="v ${pcls(profitP)}">${profitP===null?'—':fmtISK(profitP)}</div></div>
-      <div class="kpi accent"><div class="l">Profit · buy</div><div class="v ${pcls(profitI)}">${profitI===null?'—':fmtISK(profitI)}</div></div>
+      <div class="kpi accent"><div class="l">List profit</div><div class="v ${pcls(profitP)}">${profitP===null?'—':fmtISK(profitP)}</div></div>
+      <div class="kpi accent"><div class="l">Instant-sell profit</div><div class="v ${pcls(profitI)}">${profitI===null?'—':fmtISK(profitI)}</div></div>
       <div class="kpi"><div class="l">Item cost</div><div class="v">${fmtISK(reqCost)}</div></div>
       <div class="kpi"><div class="l">LP cost</div><div class="v">${fmtNum(lpTot)} LP</div></div>
       <div class="kpi"><div class="l">Redemption ISK</div><div class="v">${fmtISK(isk_fee)}</div></div>
@@ -1751,8 +1751,8 @@ function renderBody(){
     ${sec("saleToggle","saleOpen","Profit breakdown",`
       <table class="mini"><thead><tr>
         <th style="text-align:left"></th>
-        <th data-tip="Sell value (listed at ask) — list the reward at the lowest sell order and pay sales tax + broker fee.">Patient<br><span style="color:var(--dim);font-weight:400">sell order</span></th>
-        <th data-tip="Sell value (walking buy orders) — dump the reward into the highest buy orders and pay sales tax only.">Instant<br><span style="color:var(--dim);font-weight:400">buy order</span></th>
+        <th data-tip="Sell value (listed at ask) — list the reward at the lowest sell order and pay sales tax + broker fee.">List<br><span style="color:var(--dim);font-weight:400">sell order</span></th>
+        <th data-tip="Sell value (walking buy orders) — instant-sell the reward into the highest buy orders and pay sales tax only.">Instant sell<br><span style="color:var(--dim);font-weight:400">buy order</span></th>
       </tr></thead><tbody>
         <tr><td style="text-align:left">Sell value</td>
           <td>${grossP===null?'—':fmtISK(grossP)}</td>
@@ -1775,8 +1775,8 @@ function renderBody(){
           <td class="${pcls(profitI)}">${profitI===null?'—':fmtISK(profitI)}</td></tr>
       </tbody></table>
       <p class="muted" style="margin-top:14px">Costs use the live ${hub} order book.
-        Patient lists the reward at the lowest sell order (sales tax + broker fee);
-        instant walks down the buy orders (sales tax only).</p>`)}`;
+        List values the reward at the lowest sell order (sales tax + broker fee);
+        instant-sell walks down the buy orders (sales tax only).</p>`)}`;
   bindLotCalcs(savedLots);
 }
 

@@ -496,8 +496,8 @@ class TestTooltips:
         # The detail-panel KPI grid lays out 3 per row and shows BOTH sell-mode
         # profits side by side instead of a single "Total profit" card.
         assert "repeat(3,1fr)" in lp_web.INDEX_HTML
-        assert '<div class="l">Profit · sell</div>' in lp_web.INDEX_HTML
-        assert '<div class="l">Profit · buy</div>' in lp_web.INDEX_HTML
+        assert '<div class="l">List profit</div>' in lp_web.INDEX_HTML
+        assert '<div class="l">Instant-sell profit</div>' in lp_web.INDEX_HTML
         # The old single-mode card is gone.
         assert '<div class="l">Total profit</div>' not in lp_web.INDEX_HTML
         # Revenue is covered by the profit-breakdown comparison, not a KPI card.
@@ -562,6 +562,17 @@ class TestDualModeComparison:
         assert '{k:"total_profit_patient"' in lp_web.INDEX_HTML
         assert '{k:"total_profit_instant"' in lp_web.INDEX_HTML
         assert '{k:"total_profit",' not in lp_web.INDEX_HTML
+
+    def test_mode_labels_are_list_and_instant_sell(self):
+        html = lp_web.INDEX_HTML
+        # Column headers and KPI cards use "List" / "Instant-sell" wording.
+        assert 't:"List ISK/LP"' in html
+        assert 't:"Instant-sell ISK/LP"' in html
+        assert 't:"List profit"' in html
+        assert 't:"Instant-sell profit"' in html
+        # The earlier "· sell" / "· buy" shorthand is gone.
+        assert "ISK/LP · sell" not in html
+        assert "Profit · buy" not in html
 
     def test_default_sort_is_best_of_two(self):
         assert 'sort:{key:"isk_per_lp_best", dir:-1}' in lp_web.INDEX_HTML

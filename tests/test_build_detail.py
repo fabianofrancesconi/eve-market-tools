@@ -1,8 +1,9 @@
 """
 Unit tests for lp_core.build_detail -- the per-offer breakdown used by the
 detail panel. Pins the per-redemption money math (line costs, fee model,
-revenue, profit, isk_per_lp) and the m3 haul figures, and verifies it stays
-consistent with evaluate()'s headline numbers.
+revenue, profit) for BOTH sell modes (patient = list at ask; instant = dump
+into a buy order) and the m3 haul figures, and verifies it stays consistent
+with evaluate()'s headline numbers.
 """
 import pytest
 
@@ -37,11 +38,10 @@ _NAMES = {10: "Reward Item", 20: "Input Item"}
 _VOLUMES = {10: 12.0, 20: 0.5}
 
 
-def _detail(instant=False, prices=None, volumes=None, lp_budget=1000):
+def _detail(prices=None, volumes=None, lp_budget=1000):
     return build_detail(_offer(), prices or _prices(), _NAMES,
                         volumes if volumes is not None else _VOLUMES,
-                        lp_budget=lp_budget, sales_tax=0.05, broker_fee=0.02,
-                        instant=instant)
+                        lp_budget=lp_budget, sales_tax=0.05, broker_fee=0.02)
 
 
 class TestBuildDetailMoney:
@@ -57,28 +57,41 @@ class TestBuildDetailMoney:
         assert d["isk_fee"] == 500
         assert d["total_cost"] == 650.0
 
-    def test_revenue_net_sell_order(self):
+    def test_revenue_patient(self):
         # qty 2 * ask 1000 * (1 - 0.05 - 0.02)
-        assert _detail(instant=False)["revenue_net"] == pytest.approx(1860.0)
+        assert _detail()["revenue_patient"] == pytest.approx(1860.0)
 
-    def test_revenue_net_instant(self):
+    def test_revenue_instant(self):
         # qty 2 * bid 900 * (1 - 0.05)
-        assert _detail(instant=True)["revenue_net"] == pytest.approx(1710.0)
+        assert _detail()["revenue_instant"] == pytest.approx(1710.0)
 
-    def test_profit_sell_order(self):
-        assert _detail(instant=False)["profit"] == pytest.approx(1210.0)  # 1860 - 650
+    def test_profit_both_modes(self):
+        d = _detail()
+        assert d["profit_patient"] == pytest.approx(1210.0)  # 1860 - 650
+        assert d["profit_instant"] == pytest.approx(1060.0)  # 1710 - 650
+        assert d["profit_best"] == pytest.approx(1210.0)
 
-    def test_isk_per_lp(self):
-        assert _detail(instant=False)["isk_per_lp"] == pytest.approx(12.1)
+    def test_isk_per_lp_both_modes(self):
+        d = _detail()
+        assert d["isk_per_lp_patient"] == pytest.approx(12.1)
+        assert d["isk_per_lp_instant"] == pytest.approx(10.6)
+        assert d["isk_per_lp_best"] == pytest.approx(12.1)
+
+    def test_ask_and_bid_exposed(self):
+        d = _detail()
+        assert d["ask"] == 1000.0
+        assert d["bid"] == 900.0
 
     def test_matches_evaluate(self):
         """build_detail and evaluate must agree on profit / isk_per_lp."""
-        d = _detail(instant=False)
+        d = _detail()
         sellable, _ = evaluate([_offer()], _prices(), lp_budget=1000,
-                               sales_tax=0.05, broker_fee=0.02, instant=False)
+                               sales_tax=0.05, broker_fee=0.02)
         row = sellable[0]
-        assert d["profit"] == row["profit_per"]
-        assert d["isk_per_lp"] == row["isk_per_lp"]
+        assert d["profit_patient"] == row["profit_patient"]
+        assert d["profit_instant"] == row["profit_instant"]
+        assert d["isk_per_lp_patient"] == row["isk_per_lp_patient"]
+        assert d["isk_per_lp_instant"] == row["isk_per_lp_instant"]
         assert d["max_units"] == row["max_units"]
 
 
@@ -107,15 +120,29 @@ class TestBuildDetailEdgeCases:
         assert d["req_missing_price"] is True
         assert d["required_items"][0]["line_cost"] is None
         assert d["req_cost"] == 0.0
-        assert d["profit"] == pytest.approx(1360.0)  # 1860 - 500 - 0
+        assert d["profit_patient"] == pytest.approx(1360.0)  # 1860 - 500 - 0
 
     def test_no_output_price_yields_none_revenue_and_profit(self):
         prices = _prices({10: {"sell_min": None, "buy_max": None,
                                "sell_volume": 0, "buy_volume": 0}})
         d = _detail(prices=prices)
-        assert d["revenue_net"] is None
-        assert d["profit"] is None
-        assert d["isk_per_lp"] is None
+        assert d["revenue_patient"] is None
+        assert d["revenue_instant"] is None
+        assert d["profit_patient"] is None
+        assert d["profit_instant"] is None
+        assert d["isk_per_lp_patient"] is None
+        assert d["isk_per_lp_instant"] is None
+        assert d["profit_best"] is None
+
+    def test_one_sided_market_prices_only_that_mode(self):
+        # No bid -> instant has no revenue, patient still computed.
+        prices = _prices({10: {"sell_min": 1000.0, "buy_max": None,
+                               "sell_volume": 5, "buy_volume": 0}})
+        d = _detail(prices=prices)
+        assert d["revenue_patient"] == pytest.approx(1860.0)
+        assert d["revenue_instant"] is None
+        assert d["profit_instant"] is None
+        assert d["profit_best"] == pytest.approx(1210.0)
 
     def test_zero_budget_zero_runs(self):
         assert _detail(lp_budget=0)["max_units"] == 0

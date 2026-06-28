@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.10.2"
+__version__ = "1.11.0"
 
 import argparse
 import base64
@@ -107,7 +107,6 @@ def do_scan(q):
     corp_arg = (q.get("corp", [""])[0] or "").strip()
     corp_id_arg = q.get("corp_id", [""])[0].strip()
     lp = float(q.get("lp", ["0"])[0] or 0)
-    instant = q.get("instant", ["0"])[0] in ("1", "true", "on")
     tax = float(q.get("tax", ["0.045"])[0] or 0.045)
     broker = float(q.get("broker", ["0.015"])[0] or 0.015)
     max_spread = q.get("max_spread", [""])[0].strip()
@@ -123,7 +122,6 @@ def do_scan(q):
     s.update({
         "corp": corp_arg,
         "lp": str(int(lp)),
-        "instant": "1" if instant else "0",
         "max_spread": str(max_spread) if max_spread is not None else "",
         "tax": str(tax),
         "broker": str(broker),
@@ -148,9 +146,10 @@ def do_scan(q):
     REFRESHED_CORPS.add(corp_id)
     offers_meta = load_json(CACHE_DIR / f"lpstore_{corp_id}.json", {})
     prices = fetch_prices(_all_type_ids(offers), SESSION, station_id=station_id)
-    sellable, unsellable = evaluate(offers, prices, lp, tax, broker, instant)
+    sellable, unsellable = evaluate(offers, prices, lp, tax, broker)
     if min_profit is not None:
-        sellable = [r for r in sellable if r["profit_per"] >= min_profit]
+        sellable = [r for r in sellable
+                    if r["profit_best"] is not None and r["profit_best"] >= min_profit]
     if max_spread is not None:
         sellable = [r for r in sellable
                     if r["spread_pct"] is not None and r["spread_pct"] <= max_spread]
@@ -170,10 +169,13 @@ def do_scan(q):
             "ask": r["ask"],
             "bid": r["bid"],
             "spread_pct": sp,
-            "profit_per": r["profit_per"],
-            "isk_per_lp": r["isk_per_lp"],
+            "isk_per_lp_patient": r["isk_per_lp_patient"],
+            "isk_per_lp_instant": r["isk_per_lp_instant"],
+            "isk_per_lp_best": r["isk_per_lp_best"],
             "max_units": r["max_units"],
-            "total_profit": r["total_profit"],
+            "total_profit_patient": r["total_profit_patient"],
+            "total_profit_instant": r["total_profit_instant"],
+            "total_profit_best": r["total_profit_best"],
             "buy_volume": r["buy_volume"],
             "output_volume": None if _vol is None else _vol * r["qty"],
             "req_missing": r["req_missing"],
@@ -194,7 +196,6 @@ def do_scan(q):
         "corp_id": corp_id,
         "corp_name": corp_name,
         "lp": lp,
-        "instant": instant,
         "tax": tax,
         "broker": broker,
         "station_id": station_id,
@@ -219,7 +220,6 @@ def do_liquidity(q):
     place as the answer arrives."""
     corp_id = int(q["corp_id"][0])
     lp = float(q.get("lp", ["0"])[0] or 0)
-    instant = q.get("instant", ["0"])[0] in ("1", "true", "on")
     tax = float(q.get("tax", ["0.045"])[0] or 0.045)
     broker = float(q.get("broker", ["0.015"])[0] or 0.015)
     station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
@@ -229,7 +229,7 @@ def do_liquidity(q):
 
     offers = get_offers(corp_id, SESSION, CACHE_DIR, refresh=False)
     prices = fetch_prices(_all_type_ids(offers), SESSION, station_id=station_id)
-    sellable, _ = evaluate(offers, prices, lp, tax, broker, instant)
+    sellable, _ = evaluate(offers, prices, lp, tax, broker)
     daily_vols = fetch_history_volumes({r["name_id"] for r in sellable},
                                        region_id, SESSION, CACHE_DIR)
     return {"liquidity": enrich_liquidity(sellable, daily_vols)}
@@ -308,7 +308,6 @@ def do_detail(q):
     corp_id = int(q["corp_id"][0])
     offer_id = int(q["offer_id"][0])
     lp = float(q.get("lp", ["0"])[0] or 0)
-    instant = q.get("instant", ["0"])[0] in ("1", "true", "on")
     tax = float(q.get("tax", ["0.045"])[0] or 0.045)
     broker = float(q.get("broker", ["0.015"])[0] or 0.015)
     station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
@@ -325,7 +324,7 @@ def do_detail(q):
     prices = fetch_prices(tids, SESSION, station_id=station_id)
     names = resolve_names(tids, SESSION, CACHE_DIR)
     volumes = resolve_volumes(tids, SESSION, CACHE_DIR)
-    detail = build_detail(offer, prices, names, volumes, lp, tax, broker, instant)
+    detail = build_detail(offer, prices, names, volumes, lp, tax, broker)
     detail["high_spread_pct"] = HIGH_SPREAD_PCT
 
     # Market saturation for the reward item (one cached history call).
@@ -338,10 +337,11 @@ def do_detail(q):
     for it in detail["required_items"]:
         it["book"] = fetch_orderbook_jita(it["type_id"], "sell", SESSION,
                                           station_id=station_id, region_id=region_id)
-    if instant:
-        detail["output"]["buy_book"] = fetch_orderbook_jita(
-            detail["output"]["type_id"], "buy", SESSION,
-            station_id=station_id, region_id=region_id)
+    # Always fetch the output buy-order book so the instant-sell column can walk
+    # it (the patient column values the reward at the lowest sell order / ask).
+    detail["output"]["buy_book"] = fetch_orderbook_jita(
+        detail["output"]["type_id"], "buy", SESSION,
+        station_id=station_id, region_id=region_id)
     return detail
 
 
@@ -864,6 +864,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   td.pos { color:var(--green2); font-weight:500; }
   td.neg { color:var(--red); }
+  /* The better of the two sell-mode columns (ISK/LP · sell vs · buy). */
+  td.win { background:rgba(79,195,247,.10); box-shadow:inset 2px 0 0 var(--cyan2); font-weight:700; }
   td.spread.tight { color:var(--green); }
   td.spread.mid { color:var(--yellow); }
   .flag { color:var(--red); font-weight:700; font-size:12px; margin-left:2px; }
@@ -1080,12 +1082,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
   <div class="field"><label>LP budget</label><input id="lp" type="number" value="500000"></div>
-  <div class="field"><label>Sell mode</label>
-    <select id="instant">
-      <option value="0">Patient (sell order)</option>
-      <option value="1">Instant (buy order)</option>
-    </select>
-  </div>
   <div class="field"><label>Max spread %</label><input id="maxspread" type="number" placeholder="off" value="20"></div>
   <div class="field"><label>Sales tax %</label><input id="tax" type="number" step="0.1" value="4.5"></div>
   <div class="field"><label>Broker fee %</label><input id="broker" type="number" step="0.1" value="1.5"></div>
@@ -1206,7 +1202,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <script>
 const $ = s => document.querySelector(s);
-const COL_LAYOUT_VERSION = 5;
+const COL_LAYOUT_VERSION = 6;
 
 // Tax / broker are shown to the user as percent (4.5) but stored & sent to the
 // backend as fractions (0.045). Convert at the input boundary only.
@@ -1263,7 +1259,7 @@ const LS_KEY='eve-scanner';
 function saveLS(){
   try{
     localStorage.setItem(LS_KEY,JSON.stringify({
-      corp:$("#corp").value,lp:$("#lp").value,instant:$("#instant").value,
+      corp:$("#corp").value,lp:$("#lp").value,
       maxspread:$("#maxspread").value,tax:pctToFrac($("#tax").value),broker:pctToFrac($("#broker").value),
       market:$("#market").value,
       sort_key:STATE.sort.key,sort_dir:STATE.sort.dir,
@@ -1301,7 +1297,7 @@ document.querySelectorAll(".tab").forEach(t=>{
 // ══════════════════════════════════════════════════════════════════════════
 // LP TAB
 // ══════════════════════════════════════════════════════════════════════════
-let STATE = {rows:[], sort:{key:"isk_per_lp", dir:-1}, ctx:{}, selOffer:null,
+let STATE = {rows:[], sort:{key:"isk_per_lp_best", dir:-1}, ctx:{}, selOffer:null,
              colw:{}, colVis:{}, hideIlliquid:false, hideUnaffordable:false, lastScanData:null,
              tradeWeight:0.5,  // liquidity↔competition blend: 0=all competition, 1=all liquidity
              lotTrackerOpen:false, recipeOpen:false,
@@ -1333,20 +1329,23 @@ function computeTradeability(){
 }
 let LP_RESIZING = false;
 
+const fmtIpl = v => (v===null||v===undefined) ? "—" : v.toLocaleString(undefined,{maximumFractionDigits:1});
 const COLS = [
-  {k:"name",         t:"Reward Item",   w:220, defvis:true,  tip:"The item this LP offer gives you.  * = a required input has no Jita price  ·  ^ = costs Analysis Kredits  ·  ! = illiquid (spread ≥25%)"},
-  {k:"isk_per_lp",   t:"ISK / LP",      w: 90, defvis:true,  tip:"Profit per Loyalty Point — the headline efficiency metric.", f:v=>v.toLocaleString(undefined,{maximumFractionDigits:1}), pn:true},
-  {k:"total_profit", t:"Total Profit",  w:110, defvis:true,  tip:"Total profit if you spend your entire LP budget on this offer.", f:(v,r)=>r.max_units===0?"—":fmtISK(v), pn:true, rowCtx:true},
+  {k:"name",               t:"Reward Item",     w:220, defvis:true,  tip:"The item this LP offer gives you.  * = a required input has no Jita price  ·  ^ = costs Analysis Kredits  ·  ! = illiquid (spread ≥25%)"},
+  {k:"isk_per_lp_patient", t:"ISK/LP · sell",   w: 95, defvis:true,  tip:"Profit per Loyalty Point if you LIST a sell order at the ask (pay sales tax + broker fee). The patient route.", f:fmtIpl, pn:true},
+  {k:"isk_per_lp_instant", t:"ISK/LP · buy",    w: 95, defvis:true,  tip:"Profit per Loyalty Point if you DUMP into a buy order at the bid (pay sales tax only). The instant route.", f:fmtIpl, pn:true},
+  {k:"total_profit_patient",t:"Profit · sell",  w:110, defvis:true,  tip:"Total profit across your whole LP budget, selling patiently at the ask.", f:(v,r)=>r.max_units===0?"—":(v===null?"—":fmtISK(v)), pn:true, rowCtx:true},
+  {k:"total_profit_instant",t:"Profit · buy",   w:110, defvis:true,  tip:"Total profit across your whole LP budget, dumping instantly into buy orders.", f:(v,r)=>r.max_units===0?"—":(v===null?"—":fmtISK(v)), pn:true, rowCtx:true},
   {k:"tradeability", t:"Tradeability",  w: 95, defvis:true,  tip:"0–100: how realistically you can sell at your price. Blends liquidity (Daily Vol) and low competition (Days to Clear), weighted by the Balance buttons. Higher is better; ranked within this store.", f:fmtTrade, rowCtx:true, cls:"spread"},
   {k:"daily_vol",    t:"Daily Vol",     w: 90, defvis:true,  tip:"Units traded per day at the hub (30-day median). High = deep market you can sell into; low = thin and hard to offload.", f:fmtVolPerDay, rowCtx:true},
   {k:"days_to_clear",t:"Days to Clear", w: 95, defvis:true,  tip:"Sell-side backlog: units listed ÷ units sold per day. “5 d” = 5 days of stock ahead of you. <1 d sells fast; ∞ = barely trades.", f:fmtDays, rowCtx:true, cls:"spread"},
-  {k:"spread_pct",   t:"Spread",        w: 70, defvis:true,  tip:"Ask vs bid gap. ≥25% (!) means the ask isn't backed by real buyers.", f:fmtSpread, cls:"spread"},
+  {k:"spread_pct",   t:"Spread",        w: 70, defvis:true,  tip:"Ask vs bid gap. ≥25% (!) means the ask isn't backed by real buyers — the patient (sell) figure is unreliable, prefer the buy column.", f:fmtSpread, cls:"spread"},
   {k:"max_units",    t:"Max Runs",      w: 80, defvis:true,  tip:"Redemptions your LP budget affords (budget ÷ LP per run). Affordability only — it doesn't check whether the market can absorb them.", f:v=>v===0?"—":fmtNum(v)},
   {k:"lp_cost",      t:"LP / Run",      w: 80, defvis:true,  tip:"Loyalty Points per redemption.", f:fmtNum},
   {k:"cost_ea",      t:"ISK / Run",     w: 95, defvis:true,  tip:"ISK + required input costs per redemption.", f:fmtISK},
-  {k:"ask",          t:"Jita Ask",      w: 95, defvis:false, tip:"Lowest Jita IV-4 sell order price.", f:fmtISK},
-  {k:"bid",          t:"Jita Bid",      w: 95, defvis:false, tip:"Highest Jita IV-4 buy order price — what someone will pay right now.", f:fmtISK},
-  {k:"buy_volume",   t:"Buy Demand",    w: 95, defvis:false, tip:"Units on Jita buy orders — how many you could sell instantly.", f:fmtNum},
+  {k:"ask",          t:"Ask (sell)",    w: 95, defvis:false, tip:"Lowest sell order price at the hub — what the patient column lists at.", f:fmtISK},
+  {k:"bid",          t:"Bid (buy)",     w: 95, defvis:false, tip:"Highest buy order price at the hub — what the instant column dumps into.", f:fmtISK},
+  {k:"buy_volume",   t:"Buy Demand",    w: 95, defvis:false, tip:"Units on hub buy orders — how many you could sell instantly.", f:fmtNum},
   {k:"qty",          t:"Units",         w: 55, defvis:false, tip:"Units per redemption.", f:fmtNum},
   {k:"output_volume",t:"Vol m³",        w:140, defvis:false, tip:"Packaged m³ per redemption, and total for all runs in parentheses.", f:(v,r)=>{ if(v===null) return "?"; const per=fmtVol(v); return r.max_units>0?`${per} (${fmtVol(v*r.max_units)})`:per; }, rowCtx:true},
 ];
@@ -1419,6 +1418,11 @@ function renderTable(){
         txt=txt+(flag?` <span class="flag">${flag}</span>`:"");
       }
       if(c.pn) cls+=(v>0?" pos":(v<0?" neg":""));
+      // Mark the better of the two sell-mode cells so the comparison reads at a glance.
+      if((c.k==="isk_per_lp_patient"||c.k==="isk_per_lp_instant")
+         && r.isk_per_lp_best!==null && v!==null && v===r.isk_per_lp_best) cls+=" win";
+      if((c.k==="total_profit_patient"||c.k==="total_profit_instant")
+         && r.total_profit_best!==null && v!==null && v===r.total_profit_best && r.max_units>0) cls+=" win";
       return `<td class="${cls}">${txt}</td>`;
     }).join("");
     return `<tr class="${r.illiquid?'illiquid':''} ${r.offer_id===STATE.selOffer?'sel':''}" data-id="${r.offer_id}">${tds}</tr>`;
@@ -1432,7 +1436,7 @@ async function scan(forceRefresh=false){
   const btn=$("#refresh");
   if(forceRefresh){ btn.disabled=true; btn.textContent="⟳ Fetching…"; }
   setStatus("Scanning "+corp+(forceRefresh?" (refreshing from ESI)":"")+" …");
-  STATE.ctx={lp:$("#lp").value, instant:$("#instant").value, tax:pctToFrac($("#tax").value), broker:pctToFrac($("#broker").value), station:$("#market").value};
+  STATE.ctx={lp:$("#lp").value, tax:pctToFrac($("#tax").value), broker:pctToFrac($("#broker").value), station:$("#market").value};
   const p=new URLSearchParams({corp, ...STATE.ctx});
   const ms=$("#maxspread").value.trim(); if(ms) p.set("max_spread",ms);
   if(forceRefresh) p.set("refresh","1");
@@ -1452,7 +1456,7 @@ async function scan(forceRefresh=false){
 // so this can take a few seconds on a fresh corp; rows show "…" until it lands.
 async function fillLiquidity(){
   const corpId=STATE.ctx.corp_id; if(!corpId) return;
-  const p=new URLSearchParams({corp_id:corpId, lp:STATE.ctx.lp, instant:STATE.ctx.instant,
+  const p=new URLSearchParams({corp_id:corpId, lp:STATE.ctx.lp,
     tax:STATE.ctx.tax, broker:STATE.ctx.broker, station:STATE.ctx.station});
   try{
     const d=await (await fetch("/api/liquidity?"+p)).json();
@@ -1470,11 +1474,10 @@ async function fillLiquidity(){
 
 function renderLPStatus(){
   const d=STATE.lastScanData; if(!d||ACTIVE_TAB!=="lp") return;
-  const mode=d.instant?"Instant":"Patient";
   setStatus(
     `<span class="pill"><b>${d.corp_name}</b></span>`
     +`<span class="pill"><b>${d.count}</b> offers</span>`
-    +`<span class="pill"><b>${Number(d.lp).toLocaleString()}</b> LP · ${mode}</span>`
+    +`<span class="pill"><b>${Number(d.lp).toLocaleString()}</b> LP · sell vs buy</span>`
     +`<span class="ts">offers ${fmtTs(d.offers_fetched_at)} · prices ${fmtTs(d.scanned_at)}</span>`);
 }
 
@@ -1513,7 +1516,7 @@ function saveLPColWidths(){
 async function openDetail(offerId){
   STATE.selOffer=offerId; STATE.recipeOpen=false; renderTable();
   const p=new URLSearchParams({corp_id:STATE.ctx.corp_id, offer_id:offerId,
-    lp:STATE.ctx.lp, instant:STATE.ctx.instant, tax:STATE.ctx.tax, broker:STATE.ctx.broker,
+    lp:STATE.ctx.lp, tax:STATE.ctx.tax, broker:STATE.ctx.broker,
     station:STATE.ctx.station});
   const inner=$("#detail .inner");
   inner.innerHTML="<div class='muted'>Loading volumes…</div>";
@@ -1534,7 +1537,7 @@ function renderDetail(){
     <div class="dheader">
       <div><h2>${d.output.name}</h2>
         <div class="sub">${d.output.quantity}× per redemption · offer #${d.offer_id} ·
-          ${d.instant?"instant (buy orders)":"patient (sell orders)"}</div>
+          sell order vs buy order</div>
       </div>
       <span class="close" id="closeBtn">✕</span>
     </div>
@@ -1651,29 +1654,28 @@ function renderBody(){
       <td>${noPrice?'<span class="flag">?</span>':fmtISK(line)}</td>
       <td>${vol}</td></tr>`;
   }).join("");
-  let revenue, gross=null, soldQty, sellShort=false, taxAmt=0, brokerAmt=0;
-  if(d.instant){
-    const need=d.output.quantity*n;
-    const w=walkBook(d.output.buy_book,need);
-    gross=w.cost; taxAmt=gross*tax; brokerAmt=0;
-    revenue=gross-taxAmt; soldQty=w.filled; sellShort=w.shortBy>0;
-  } else {
-    soldQty=d.output.quantity*n;
-    gross=d.ask?soldQty*d.ask:null;
-    if(gross!==null){ taxAmt=gross*tax; brokerAmt=gross*broker; revenue=gross-taxAmt-brokerAmt; }
-    else revenue=null;
-  }
+  // Patient: list the whole reward quantity at the ask, pay sales tax + broker fee.
+  const soldQtyP=d.output.quantity*n;
+  const grossP=d.ask?soldQtyP*d.ask:null;
+  const taxP=grossP===null?0:grossP*tax, brokerP=grossP===null?0:grossP*broker;
+  const revenueP=grossP===null?null:grossP-taxP-brokerP;
+  // Instant: walk down the live buy orders, pay sales tax only.
+  const wI=walkBook(d.output.buy_book,d.output.quantity*n);
+  const soldQtyI=wI.filled, sellShort=wI.shortBy>0;
+  const grossI=(d.bid!==null&&soldQtyI>0)?wI.cost:null;
+  const taxI=grossI===null?0:grossI*tax;
+  const revenueI=grossI===null?null:grossI-taxI;
+
   const lpTot=d.lp_cost*n, isk_fee=d.isk_fee*n, cost=isk_fee+reqCost;
-  const profit=revenue===null?null:revenue-cost;
-  const ipl=(profit===null||lpTot<=0)?null:profit/lpTot;
+  const profitP=revenueP===null?null:revenueP-cost;
+  const profitI=revenueI===null?null:revenueI-cost;
   const inVol=d.input_volume_per_redemption*n, outVol=(d.output_volume_per_redemption||0)*n;
+  const pcls=v=>v===null?'':v>=0?'pos':'neg';
   let warn="";
   if(anyShort) warn+=`<div class="note">! Not enough sell orders at ${hub} for some required items.</div>`;
-  if(d.instant&&sellShort) warn+=`<div class="note bad">Only ${fmtNum(soldQty)} of ${fmtNum(d.output.quantity*n)} can be sold into current ${hub} buy orders.</div>`;
-  if(!d.instant){
-    if(d.spread_pct===null) warn+=`<div class="note bad">No buy orders exist — listing at ask may never fill.</div>`;
-    else if(d.spread_pct>=d.high_spread_pct) warn+=`<div class="note">${Math.round(d.spread_pct)}% spread — ask isn't backed by real demand.</div>`;
-  }
+  if(sellShort) warn+=`<div class="note">Instant: only ${fmtNum(soldQtyI)} of ${fmtNum(d.output.quantity*n)} can be dumped into current ${hub} buy orders.</div>`;
+  if(d.spread_pct===null) warn+=`<div class="note bad">No buy orders exist — the instant route can't fill and a listed sell order may never clear.</div>`;
+  else if(d.spread_pct>=d.high_spread_pct) warn+=`<div class="note">${Math.round(d.spread_pct)}% spread — the ask isn't backed by real demand; the patient figure is optimistic.</div>`;
   if(d.req_missing_price) warn+=`<div class="note">* A required item has no ${hub} price — true cost is higher.</div>`;
 
   const recipeItems=[];
@@ -1708,8 +1710,9 @@ function renderBody(){
 
   $("#dbody").innerHTML=`
     <div class="kpis">
-      <div class="kpi accent"><div class="l">Total profit</div><div class="v ${profit===null?'':profit>=0?'pos':'neg'}">${profit===null?'—':fmtISK(profit)}</div></div>
-      <div class="kpi"><div class="l">Total item cost</div><div class="v">${fmtISK(reqCost)}</div></div>
+      <div class="kpi accent"><div class="l">Profit · sell</div><div class="v ${pcls(profitP)}">${profitP===null?'—':fmtISK(profitP)}</div></div>
+      <div class="kpi accent"><div class="l">Profit · buy</div><div class="v ${pcls(profitI)}">${profitI===null?'—':fmtISK(profitI)}</div></div>
+      <div class="kpi"><div class="l">Item cost</div><div class="v">${fmtISK(reqCost)}</div></div>
       <div class="kpi"><div class="l">LP cost</div><div class="v">${fmtNum(lpTot)} LP</div></div>
       <div class="kpi"><div class="l">Redemption ISK</div><div class="v">${fmtISK(isk_fee)}</div></div>
       <div class="kpi"><div class="l">Volume</div><div class="v">${fmtVol(Math.max(inVol||0,outVol||0))}</div></div>
@@ -1746,18 +1749,34 @@ function renderBody(){
         <tr class="total"><td style="text-align:left">Ship cargo needed (larger leg)</td><td>${fmtVol(Math.max(inVol||0,outVol||0))}</td></tr>
       </tbody></table>`)}
     ${sec("saleToggle","saleOpen","Profit breakdown",`
-      <table class="mini"><tbody>
-        <tr><td style="text-align:left">${hub} ask / bid</td><td data-tip="Ask = lowest sell order (list price to be competitive). Bid = highest buy order (what you get selling instantly).">${fmtISK(d.ask)} / ${fmtISK(d.bid)}</td></tr>
-        <tr><td style="text-align:left">${d.instant?'Sell value (walking buy orders)':'Sell value (listed at ask)'}</td><td>${gross===null?'—':fmtISK(gross)}</td></tr>
-        <tr><td style="text-align:left">− Sales tax (${(tax*100).toFixed(1)}%)</td><td class="neg">${gross===null?'—':'−'+fmtISK(taxAmt)}</td></tr>
-        ${d.instant?'':`<tr><td style="text-align:left">− Broker fee (${(broker*100).toFixed(1)}%)</td><td class="neg">${gross===null?'—':'−'+fmtISK(brokerAmt)}</td></tr>`}
-        <tr class="subtotal"><td style="text-align:left">Net revenue</td><td>${revenue===null?'—':fmtISK(revenue)}</td></tr>
-        <tr><td style="text-align:left">− Items cost</td><td class="neg">−${fmtISK(reqCost)}</td></tr>
-        <tr><td style="text-align:left">− Redemption ISK</td><td class="neg">−${fmtISK(isk_fee)}</td></tr>
-        <tr class="total"><td style="text-align:left">Profit</td><td class="${profit===null?'':profit>=0?'pos':'neg'}">${profit===null?'—':fmtISK(profit)}</td></tr>
+      <table class="mini"><thead><tr>
+        <th style="text-align:left"></th>
+        <th data-tip="Sell value (listed at ask) — list the reward at the lowest sell order and pay sales tax + broker fee.">Patient<br><span style="color:var(--dim);font-weight:400">sell order</span></th>
+        <th data-tip="Sell value (walking buy orders) — dump the reward into the highest buy orders and pay sales tax only.">Instant<br><span style="color:var(--dim);font-weight:400">buy order</span></th>
+      </tr></thead><tbody>
+        <tr><td style="text-align:left">Sell value</td>
+          <td>${grossP===null?'—':fmtISK(grossP)}</td>
+          <td>${grossI===null?'—':fmtISK(grossI)}</td></tr>
+        <tr><td style="text-align:left">− Sales tax (${(tax*100).toFixed(1)}%)</td>
+          <td class="neg">${grossP===null?'—':'−'+fmtISK(taxP)}</td>
+          <td class="neg">${grossI===null?'—':'−'+fmtISK(taxI)}</td></tr>
+        <tr><td style="text-align:left">− Broker fee (${(broker*100).toFixed(1)}%)</td>
+          <td class="neg">${grossP===null?'—':'−'+fmtISK(brokerP)}</td>
+          <td style="color:var(--dim)">n/a</td></tr>
+        <tr class="subtotal"><td style="text-align:left">Net revenue</td>
+          <td>${revenueP===null?'—':fmtISK(revenueP)}</td>
+          <td>${revenueI===null?'—':fmtISK(revenueI)}</td></tr>
+        <tr><td style="text-align:left">− Items cost</td>
+          <td class="neg">−${fmtISK(reqCost)}</td><td class="neg">−${fmtISK(reqCost)}</td></tr>
+        <tr><td style="text-align:left">− Redemption ISK</td>
+          <td class="neg">−${fmtISK(isk_fee)}</td><td class="neg">−${fmtISK(isk_fee)}</td></tr>
+        <tr class="total"><td style="text-align:left">Profit</td>
+          <td class="${pcls(profitP)}">${profitP===null?'—':fmtISK(profitP)}</td>
+          <td class="${pcls(profitI)}">${profitI===null?'—':fmtISK(profitI)}</td></tr>
       </tbody></table>
       <p class="muted" style="margin-top:14px">Costs use the live ${hub} order book.
-        ${d.instant?'Sell value walks down buy orders; immediate sells pay sales tax only.':'Reward valued at the lowest sell order; listing pays sales tax + broker fee.'}</p>`)}`;
+        Patient lists the reward at the lowest sell order (sales tax + broker fee);
+        instant walks down the buy orders (sales tax only).</p>`)}`;
   bindLotCalcs(savedLots);
 }
 
@@ -1843,10 +1862,10 @@ _corpInput.addEventListener("keydown",e=>{
 document.addEventListener("click",e=>{ if(!_corpInput.contains(e.target)&&!_corpDrop.contains(e.target)) _corpClose(); });
 let lpScanTimer;
 function scheduleScan(delay=800){ clearTimeout(lpScanTimer); lpScanTimer=setTimeout(()=>scan(false),delay); }
-["#lp","#instant","#maxspread","#tax","#broker","#market"].forEach(sel=>{
+["#lp","#maxspread","#tax","#broker","#market"].forEach(sel=>{
   const el=$(sel); if(!el) return;
-  el.addEventListener("change",()=>{ saveLS(); scheduleScan(sel==="#instant"?0:800); });
-  if(sel!=="#instant"&&sel!=="#market") el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); });
+  el.addEventListener("change",()=>{ saveLS(); scheduleScan(800); });
+  if(sel!=="#market") el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); });
 });
 $("#toggleIlliquid").onchange=()=>{
   STATE.hideIlliquid=$("#toggleIlliquid").checked;
@@ -2326,7 +2345,6 @@ async function loadSettings(){
       if(s.corp) $("#corp").value=s.corp;
       if(s.lp)   $("#lp").value=s.lp;
       if(s.market) $("#market").value=s.market;
-      if(s.instant==="0"||s.instant==="1") $("#instant").value=s.instant;
       const _ms=s.maxspread??s.max_spread; if(_ms!=null) $("#maxspread").value=_ms;
       if(s.tax)   $("#tax").value=fracToPct(s.tax);
       if(s.broker) $("#broker").value=fracToPct(s.broker);

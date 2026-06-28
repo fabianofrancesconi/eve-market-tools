@@ -281,11 +281,28 @@ def _spread_pct(sell_min, buy_max):
     return None
 
 
-def evaluate(offers, prices, lp_budget, sales_tax, broker_fee, instant):
-    """Annotate offers with profit / ISK-per-LP and budget projections.
-    Returns (sellable_sorted_by_isk_per_lp, unsellable). Each sellable row also
+def _best(*vals):
+    """Highest of the supplied values, ignoring None. None if all are None."""
+    present = [v for v in vals if v is not None]
+    return max(present) if present else None
+
+
+def evaluate(offers, prices, lp_budget, sales_tax, broker_fee):
+    """Annotate offers with profit / ISK-per-LP and budget projections for BOTH
+    sell modes at once:
+
+      patient  — list a sell order at the ask, pay sales tax + broker fee.
+      instant  — dump into a buy order at the bid, pay sales tax only.
+
+    Every sellable row carries the *_patient / *_instant pair plus a *_best
+    convenience field (the better of the two, ignoring an unpriced mode) so a
+    front-end can compare them side by side. An offer is unsellable only when
+    BOTH the ask and the bid are missing. Returns
+    (sellable_sorted_by_isk_per_lp_best, unsellable); each sellable row also
     carries offer_id + required_items so a detail view can be built later."""
     rows = []
+    patient_factor = 1 - sales_tax - broker_fee
+    instant_factor = 1 - sales_tax
     for o in offers:
         lp_cost = o.get("lp_cost") or 0
         if lp_cost <= 0:
@@ -293,14 +310,12 @@ def evaluate(offers, prices, lp_budget, sales_tax, broker_fee, instant):
         qty = o.get("quantity", 1)
         out_tid = o["type_id"]
         p = prices.get(out_tid, {})
-        unit_price = p.get("buy_max") if instant else p.get("sell_min")
-        if not unit_price:
+        ask = p.get("sell_min")
+        bid = p.get("buy_max")
+        if not ask and not bid:
             rows.append({"name_id": out_tid, "lp_cost": lp_cost, "qty": qty,
                          "offer_id": o.get("offer_id"), "unsellable": True})
             continue
-
-        fee_factor = (1 - sales_tax) if instant else (1 - sales_tax - broker_fee)
-        revenue = qty * unit_price * fee_factor
 
         req_cost, req_missing = 0.0, False
         for req in o.get("required_items", []):
@@ -310,8 +325,16 @@ def evaluate(offers, prices, lp_budget, sales_tax, broker_fee, instant):
                 continue
             req_cost += req["quantity"] * rp
         isk_cost = o.get("isk_cost") or 0
+        base_cost = isk_cost + req_cost
 
-        profit = revenue - isk_cost - req_cost
+        rev_patient = (qty * ask * patient_factor) if ask else None
+        rev_instant = (qty * bid * instant_factor) if bid else None
+        profit_patient = (rev_patient - base_cost) if rev_patient is not None else None
+        profit_instant = (rev_instant - base_cost) if rev_instant is not None else None
+        profit_best = _best(profit_patient, profit_instant)
+        ipl_patient = (profit_patient / lp_cost) if profit_patient is not None else None
+        ipl_instant = (profit_instant / lp_cost) if profit_instant is not None else None
+        ipl_best = _best(ipl_patient, ipl_instant)
         max_units = math.floor(lp_budget / lp_cost) if lp_budget else 0
         rows.append({
             "offer_id": o.get("offer_id"),
@@ -323,39 +346,47 @@ def evaluate(offers, prices, lp_budget, sales_tax, broker_fee, instant):
             "req_missing": req_missing,
             "ak_cost": o.get("ak_cost") or 0,
             "required_items": o.get("required_items", []),
-            "unit_price": unit_price,
-            "ask": p.get("sell_min"),
-            "bid": p.get("buy_max"),
-            "spread_pct": _spread_pct(p.get("sell_min"), p.get("buy_max")),
-            "buy_volume": p["buy_volume"],
-            "sell_volume": p["sell_volume"],
-            "profit_per": profit,
-            "isk_per_lp": profit / lp_cost,
+            "ask": ask,
+            "bid": bid,
+            "spread_pct": _spread_pct(ask, bid),
+            "buy_volume": p.get("buy_volume", 0),
+            "sell_volume": p.get("sell_volume", 0),
+            "profit_patient": profit_patient,
+            "profit_instant": profit_instant,
+            "profit_best": profit_best,
+            "isk_per_lp_patient": ipl_patient,
+            "isk_per_lp_instant": ipl_instant,
+            "isk_per_lp_best": ipl_best,
             "max_units": max_units,
-            "total_profit": profit * max_units,
-            "total_isk_in": max_units * (isk_cost + req_cost),
-            "lp_used": max_units * lp_cost,
+            "total_profit_patient": None if profit_patient is None else profit_patient * max_units,
+            "total_profit_instant": None if profit_instant is None else profit_instant * max_units,
+            "total_profit_best": None if profit_best is None else profit_best * max_units,
             "unsellable": False,
         })
     sellable = [r for r in rows if not r["unsellable"]]
-    sellable.sort(key=lambda r: r["isk_per_lp"], reverse=True)
+    sellable.sort(key=lambda r: (r["isk_per_lp_best"] if r["isk_per_lp_best"] is not None
+                                 else float("-inf")), reverse=True)
     return sellable, [r for r in rows if r["unsellable"]]
 
 
-def build_detail(offer, prices, names, volumes, lp_budget, sales_tax, broker_fee, instant):
+def build_detail(offer, prices, names, volumes, lp_budget, sales_tax, broker_fee):
     """Full per-offer breakdown for the detail view: the shopping list of
     required inputs (qty, Jita unit price, line cost, m3) and the output, all
     per single redemption, plus the max redemptions the LP budget allows and
     the m3 each leg of the haul occupies.
 
-    All money/volume figures are PER REDEMPTION so a front-end can multiply by a
-    user-chosen number of redemptions without another round-trip."""
+    Money figures are reported for BOTH sell modes (patient = list at ask, pay
+    sales tax + broker fee; instant = dump into a buy order, pay sales tax only)
+    so the front-end can show them side by side. All money/volume figures are
+    PER REDEMPTION so a front-end can multiply by a user-chosen number of
+    redemptions without another round-trip."""
     out_tid = offer["type_id"]
     qty = offer.get("quantity", 1)
     lp_cost = offer.get("lp_cost") or 0
     isk_fee = offer.get("isk_cost") or 0
     p = prices.get(out_tid, {})
-    unit_price = p.get("buy_max") if instant else p.get("sell_min")
+    ask = p.get("sell_min")
+    bid = p.get("buy_max")
     out_vol_each = volumes.get(out_tid)
 
     required = []
@@ -384,11 +415,13 @@ def build_detail(offer, prices, names, volumes, lp_budget, sales_tax, broker_fee
             "line_volume": line_vol,
         })
 
-    fee_factor = (1 - sales_tax) if instant else (1 - sales_tax - broker_fee)
-    revenue_net = (qty * unit_price * fee_factor) if unit_price else None
     total_cost = isk_fee + req_cost
-    profit = (revenue_net - total_cost) if revenue_net is not None else None
-    isk_per_lp = (profit / lp_cost) if (profit is not None and lp_cost) else None
+    rev_patient = (qty * ask * (1 - sales_tax - broker_fee)) if ask else None
+    rev_instant = (qty * bid * (1 - sales_tax)) if bid else None
+    profit_patient = (rev_patient - total_cost) if rev_patient is not None else None
+    profit_instant = (rev_instant - total_cost) if rev_instant is not None else None
+    ipl_patient = (profit_patient / lp_cost) if (profit_patient is not None and lp_cost) else None
+    ipl_instant = (profit_instant / lp_cost) if (profit_instant is not None and lp_cost) else None
     max_units = math.floor(lp_budget / lp_cost) if (lp_budget and lp_cost) else 0
     out_vol_per_redemption = (out_vol_each * qty) if out_vol_each is not None else None
 
@@ -398,26 +431,29 @@ def build_detail(offer, prices, names, volumes, lp_budget, sales_tax, broker_fee
             "type_id": out_tid,
             "name": names.get(out_tid, str(out_tid)),
             "quantity": qty,
-            "unit_price": unit_price,
             "volume_each": out_vol_each,
             "volume_per_redemption": out_vol_per_redemption,
         },
         "required_items": required,
-        "ask": p.get("sell_min"),
-        "bid": p.get("buy_max"),
-        "spread_pct": _spread_pct(p.get("sell_min"), p.get("buy_max")),
+        "ask": ask,
+        "bid": bid,
+        "spread_pct": _spread_pct(ask, bid),
         "buy_volume": p.get("buy_volume", 0),
         "sell_volume": p.get("sell_volume", 0),
-        "instant": instant,
-        # per single redemption:
+        # per single redemption — both sell modes:
         "lp_cost": lp_cost,
         "isk_fee": isk_fee,
         "req_cost": req_cost,
         "req_missing_price": req_missing_price,
         "total_cost": total_cost,
-        "revenue_net": revenue_net,
-        "profit": profit,
-        "isk_per_lp": isk_per_lp,
+        "revenue_patient": rev_patient,
+        "revenue_instant": rev_instant,
+        "profit_patient": profit_patient,
+        "profit_instant": profit_instant,
+        "profit_best": _best(profit_patient, profit_instant),
+        "isk_per_lp_patient": ipl_patient,
+        "isk_per_lp_instant": ipl_instant,
+        "isk_per_lp_best": _best(ipl_patient, ipl_instant),
         "input_volume_per_redemption": req_vol_each_total,   # m3 you haul TO the LP corp
         "output_volume_per_redemption": out_vol_per_redemption,  # m3 you haul to Jita to sell
         # budget projection:

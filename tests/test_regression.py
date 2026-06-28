@@ -285,12 +285,15 @@ class TestApiScanEndpoint:
         fake_sellable = [{
             "offer_id": 1, "name_id": 101, "qty": 5, "lp_cost": 1000,
             "isk_cost": 0, "req_cost": 0, "ask": 100.0, "bid": 90.0,
-            "spread_pct": 10.0, "profit_per": 450.0, "isk_per_lp": 0.45,
-            "max_units": 10, "total_profit": 4500.0, "buy_volume": 1000,
+            "spread_pct": 10.0,
+            "isk_per_lp_patient": 0.45, "isk_per_lp_instant": 0.40, "isk_per_lp_best": 0.45,
+            "max_units": 10,
+            "total_profit_patient": 4500.0, "total_profit_instant": 4000.0,
+            "total_profit_best": 4500.0, "buy_volume": 1000,
             "req_missing": False, "ak_cost": 0,
         }]
         q = {"corp_id": ["1000"], "lp": ["10000"], "tax": ["0.08"],
-             "broker": ["0.03"], "instant": ["0"], "station": ["60003760"]}
+             "broker": ["0.03"], "station": ["60003760"]}
         with patch.object(lp_web, "load_settings", return_value={}), \
              patch.object(lp_web, "save_settings"), \
              patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
@@ -313,12 +316,15 @@ class TestApiScanEndpoint:
         fake_sellable = [{
             "offer_id": 2, "name_id": 202, "qty": 1, "lp_cost": 500,
             "isk_cost": 0, "req_cost": 0, "ask": 50.0, "bid": 45.0,
-            "spread_pct": 10.0, "profit_per": 45.0, "isk_per_lp": 0.09,
-            "max_units": 20, "total_profit": 900.0, "buy_volume": 500,
+            "spread_pct": 10.0,
+            "isk_per_lp_patient": 0.09, "isk_per_lp_instant": 0.08, "isk_per_lp_best": 0.09,
+            "max_units": 20,
+            "total_profit_patient": 900.0, "total_profit_instant": 800.0,
+            "total_profit_best": 900.0, "buy_volume": 500,
             "req_missing": False, "ak_cost": 0,
         }]
         q = {"corp_id": ["2000"], "lp": ["10000"], "tax": ["0.08"],
-             "broker": ["0.03"], "instant": ["0"], "station": ["60003760"]}
+             "broker": ["0.03"], "station": ["60003760"]}
         with patch.object(lp_web, "load_settings", return_value={}), \
              patch.object(lp_web, "save_settings"), \
              patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
@@ -339,12 +345,15 @@ class TestApiScanEndpoint:
         fake_sellable = [{
             "offer_id": 1, "name_id": 101, "qty": 5, "lp_cost": 1000,
             "isk_cost": 0, "req_cost": 0, "ask": 100.0, "bid": 90.0,
-            "spread_pct": 10.0, "profit_per": 450.0, "isk_per_lp": 0.45,
-            "max_units": 10, "total_profit": 4500.0, "buy_volume": 1000,
+            "spread_pct": 10.0,
+            "isk_per_lp_patient": 0.45, "isk_per_lp_instant": 0.40, "isk_per_lp_best": 0.45,
+            "max_units": 10,
+            "total_profit_patient": 4500.0, "total_profit_instant": 4000.0,
+            "total_profit_best": 4500.0, "buy_volume": 1000,
             "sell_volume": 8000, "req_missing": False, "ak_cost": 0,
         }]
         q = {"corp_id": ["1000"], "lp": ["10000"], "tax": ["0.08"],
-             "broker": ["0.03"], "instant": ["0"], "station": ["60003760"]}
+             "broker": ["0.03"], "station": ["60003760"]}
         with patch.object(lp_web, "load_settings", return_value={}), \
              patch.object(lp_web, "save_settings"), \
              patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
@@ -484,10 +493,14 @@ class TestTooltips:
         assert 'title="Choose visible columns"' not in lp_web.INDEX_HTML
 
     def test_sidebar_kpi_cards(self):
-        # The detail-panel KPI grid shows profit metrics and lays out 3 per row.
+        # The detail-panel KPI grid lays out 3 per row and shows BOTH sell-mode
+        # profits side by side instead of a single "Total profit" card.
         assert "repeat(3,1fr)" in lp_web.INDEX_HTML
-        assert '<div class="l">Total profit</div>' in lp_web.INDEX_HTML
-        # Revenue is covered by the profit-breakdown waterfall, not a KPI card.
+        assert '<div class="l">Profit · sell</div>' in lp_web.INDEX_HTML
+        assert '<div class="l">Profit · buy</div>' in lp_web.INDEX_HTML
+        # The old single-mode card is gone.
+        assert '<div class="l">Total profit</div>' not in lp_web.INDEX_HTML
+        # Revenue is covered by the profit-breakdown comparison, not a KPI card.
         assert '<div class="l">Revenue</div>' not in lp_web.INDEX_HTML
         # The store ISK charge is labelled "Redemption ISK", not "ISK fee".
         assert '<div class="l">Redemption ISK</div>' in lp_web.INDEX_HTML
@@ -512,7 +525,6 @@ class TestTooltips:
         # The detail panel must label prices with the chosen hub, not a
         # hardcoded "Jita" — the market is user-selectable.
         html = lp_web.INDEX_HTML
-        assert "${hub} ask / bid" in html
         assert "Jita ask / bid" not in html
         assert "Costs use the live ${hub} order book." in html
         assert "Reward (${fmtNum(d.output.quantity*n)}× ${d.output.name}) → ${hub}" in html
@@ -526,6 +538,74 @@ class TestTooltips:
         assert "All-time high daily average" in lp_web.INDEX_HTML
         assert "30-day moving average" in lp_web.INDEX_HTML
         assert ".chart-stats .k" in lp_web.INDEX_HTML
+
+
+# ---------------------------------------------------------------------------
+# Dual-mode redesign (v1.11.0): the Sell-mode toggle is gone; patient and
+# instant figures are shown side by side everywhere.
+# ---------------------------------------------------------------------------
+
+class TestDualModeComparison:
+    def test_sell_mode_dropdown_removed(self):
+        # The single-mode <select id="instant"> control is gone.
+        assert 'id="instant"' not in lp_web.INDEX_HTML
+        assert ">Sell mode<" not in lp_web.INDEX_HTML
+
+    def test_paired_isk_per_lp_columns(self):
+        # The table exposes both sell-mode ISK/LP columns.
+        assert '{k:"isk_per_lp_patient"' in lp_web.INDEX_HTML
+        assert '{k:"isk_per_lp_instant"' in lp_web.INDEX_HTML
+        # ...and the old single column is gone.
+        assert '{k:"isk_per_lp",' not in lp_web.INDEX_HTML
+
+    def test_paired_total_profit_columns(self):
+        assert '{k:"total_profit_patient"' in lp_web.INDEX_HTML
+        assert '{k:"total_profit_instant"' in lp_web.INDEX_HTML
+        assert '{k:"total_profit",' not in lp_web.INDEX_HTML
+
+    def test_default_sort_is_best_of_two(self):
+        assert 'sort:{key:"isk_per_lp_best", dir:-1}' in lp_web.INDEX_HTML
+
+    def test_winning_mode_highlight_styled(self):
+        # The better of the two sell-mode cells gets a .win highlight.
+        assert "td.win" in lp_web.INDEX_HTML
+        assert 'cls+=" win"' in lp_web.INDEX_HTML
+
+    def test_scan_response_carries_both_modes(self, tmp_path):
+        """do_scan rows expose patient/instant/best ISK-per-LP and total profit."""
+        lp_web.CACHE_DIR = tmp_path
+        fake_offers = [{"type_id": 101, "quantity": 1, "lp_cost": 1000}]
+        fake_sellable = [{
+            "offer_id": 1, "name_id": 101, "qty": 1, "lp_cost": 1000,
+            "isk_cost": 0, "req_cost": 0, "ask": 100.0, "bid": 90.0,
+            "spread_pct": 10.0,
+            "isk_per_lp_patient": 0.45, "isk_per_lp_instant": 0.40,
+            "isk_per_lp_best": 0.45, "max_units": 5,
+            "total_profit_patient": 2250.0, "total_profit_instant": 2000.0,
+            "total_profit_best": 2250.0, "buy_volume": 1000,
+            "req_missing": False, "ak_cost": 0,
+        }]
+        q = {"corp_id": ["1000"], "lp": ["5000"], "tax": ["0.045"],
+             "broker": ["0.015"], "station": ["60003760"]}
+        with patch.object(lp_web, "load_settings", return_value={}), \
+             patch.object(lp_web, "save_settings"), \
+             patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
+             patch.object(lp_web, "get_offers", return_value=fake_offers), \
+             patch.object(lp_web, "load_json", return_value={}), \
+             patch.object(lp_web, "fetch_prices", return_value={}), \
+             patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
+             patch.object(lp_web, "resolve_names", return_value={101: "Test Item"}), \
+             patch.object(lp_web, "resolve_volumes", return_value={101: 1.0}):
+            result = lp_web.do_scan(q)
+        row = result["rows"][0]
+        assert row["isk_per_lp_patient"] == 0.45
+        assert row["isk_per_lp_instant"] == 0.40
+        assert row["isk_per_lp_best"] == 0.45
+        assert row["total_profit_patient"] == 2250.0
+        assert row["total_profit_instant"] == 2000.0
+        assert row["total_profit_best"] == 2250.0
+        # The deprecated single-mode flag is no longer in the response.
+        assert "instant" not in result
 
 
 # ---------------------------------------------------------------------------

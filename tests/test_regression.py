@@ -483,6 +483,12 @@ class TestTooltips:
         assert 'title="Re-fetch' not in lp_web.INDEX_HTML
         assert 'title="Choose visible columns"' not in lp_web.INDEX_HTML
 
+    def test_sidebar_kpi_cards(self):
+        # The detail-panel KPI grid shows profit metrics and lays out 3 per row.
+        assert "repeat(3,1fr)" in lp_web.INDEX_HTML
+        assert '<div class="l">Total profit</div>' in lp_web.INDEX_HTML
+        assert '<div class="l">Revenue</div>' in lp_web.INDEX_HTML
+
     def test_chart_stat_chips_have_labels_and_tooltips(self):
         # The Current / ATH / vs 30d MA chips use labelled k/v markup and
         # carry data-tip tooltips.

@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 
 import argparse
 import base64
@@ -905,17 +905,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .redrow label { color:var(--dim); font-size:13px; white-space:nowrap; }
   .redrow input { width:90px; font-size:15px; font-weight:600; }
   .redrow .maxlink { font-size:12px; color:var(--dim); }
-  .kpis { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:12px 0; }
+  .kpis { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin:12px 0; }
   .kpi {
     background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
-    padding:10px 14px; position:relative; overflow:hidden;
+    padding:7px 10px; position:relative; overflow:hidden;
   }
   .kpi::before { content:""; position:absolute; top:0; left:0; right:0; height:2px;
     background:var(--line2); }
   .kpi.accent::before { background:linear-gradient(90deg,var(--cyan2),transparent); }
-  .kpi .l { font-size:10px; text-transform:uppercase; letter-spacing:.6px;
+  .kpi .l { font-size:9px; text-transform:uppercase; letter-spacing:.5px;
     color:var(--dim); font-weight:700; }
-  .kpi .v { font-size:20px; font-weight:700; margin-top:3px; }
+  .kpi .v { font-size:16px; font-weight:700; margin-top:2px; }
   .v.pos { color:var(--green2); } .v.neg { color:var(--red); }
   h3 {
     font-size:11px; text-transform:uppercase; letter-spacing:.7px; font-weight:700;
@@ -1702,8 +1702,10 @@ function renderBody(){
 
   $("#dbody").innerHTML=`
     <div class="kpis">
-      <div class="kpi accent"><div class="l">Total item cost</div><div class="v">${fmtISK(reqCost)}</div></div>
-      <div class="kpi accent"><div class="l">LP cost</div><div class="v">${fmtNum(lpTot)} LP</div></div>
+      <div class="kpi accent"><div class="l">Total profit</div><div class="v ${profit===null?'':profit>=0?'pos':'neg'}">${profit===null?'—':fmtISK(profit)}</div></div>
+      <div class="kpi accent"><div class="l">Revenue</div><div class="v">${revenue===null?'—':fmtISK(revenue)}</div></div>
+      <div class="kpi"><div class="l">Total item cost</div><div class="v">${fmtISK(reqCost)}</div></div>
+      <div class="kpi"><div class="l">LP cost</div><div class="v">${fmtNum(lpTot)} LP</div></div>
       <div class="kpi"><div class="l">ISK fee</div><div class="v">${fmtISK(isk_fee)}</div></div>
       <div class="kpi"><div class="l">Volume</div><div class="v">${fmtVol(Math.max(inVol||0,outVol||0))}</div></div>
     </div>

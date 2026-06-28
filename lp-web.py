@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.7.1"
+__version__ = "1.8.0"
 
 import argparse
 import base64
@@ -1010,7 +1010,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display:flex; flex-wrap:wrap; gap:5px;
   }
   .chart-stats span { background:var(--panel3); border:1px solid var(--line2);
-    border-radius:3px; padding:1px 7px; }
+    border-radius:4px; padding:2px 8px; display:inline-flex; align-items:baseline;
+    gap:5px; cursor:help; }
+  .chart-stats .k { text-transform:uppercase; font-size:9px; letter-spacing:.4px;
+    color:var(--dim); }
+  .chart-stats .v { color:var(--fg); font-weight:600; }
+  .chart-stats .d { font-weight:600; }
   .chart-cross {
     position:absolute; top:0; bottom:20px; width:1px;
     background:rgba(200,216,232,.3); pointer-events:none; display:none;
@@ -1979,14 +1984,19 @@ function _chartStats(hist, currentPrice){
   const price=currentPrice||avgs.at(-1);
   const pctAth=ath>0?((price-ath)/ath*100):null;
   const pctMA=lastMA?((price-lastMA)/lastMA*100):null;
-  let s=`<span>Current <b style="color:var(--cyan)">${fmtISK(price)}</b></span>`;
+  let s=`<span data-tip="Latest sell price — the figure used for profit calculations.">`
+    +`<span class="k">Current</span><span class="v" style="color:var(--cyan)">${fmtISK(price)}</span></span>`;
   if(pctAth!==null){
     const col=pctAth>=-3?'var(--red)':pctAth>=-15?'var(--yellow)':'var(--dim)';
-    s+=`<span>ATH ${fmtISK(ath)} <span style="color:${col}">(${pctAth.toFixed(1)}%)</span></span>`;
+    s+=`<span data-tip="All-time high daily average over the chart window, and how far current price sits below it.">`
+      +`<span class="k">ATH</span><span class="v">${fmtISK(ath)}</span>`
+      +`<span class="d" style="color:${col}">${pctAth.toFixed(1)}%</span></span>`;
   }
   if(pctMA!==null){
     const col=pctMA>=0?'var(--green2)':'var(--red)';
-    s+=`<span>vs 30d MA ${fmtISK(lastMA)} <span style="color:${col}">${pctMA>=0?'+':''}${pctMA.toFixed(1)}% ${pctMA>=0?'▲':'▼'}</span></span>`;
+    s+=`<span data-tip="Current price vs the 30-day moving average. Positive means trading above trend.">`
+      +`<span class="k">vs 30d MA</span><span class="v">${fmtISK(lastMA)}</span>`
+      +`<span class="d" style="color:${col}">${pctMA>=0?'+':''}${pctMA.toFixed(1)}% ${pctMA>=0?'▲':'▼'}</span></span>`;
   }
   return s;
 }

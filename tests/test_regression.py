@@ -483,6 +483,16 @@ class TestTooltips:
         assert 'title="Re-fetch' not in lp_web.INDEX_HTML
         assert 'title="Choose visible columns"' not in lp_web.INDEX_HTML
 
+    def test_chart_stat_chips_have_labels_and_tooltips(self):
+        # The Current / ATH / vs 30d MA chips use labelled k/v markup and
+        # carry data-tip tooltips.
+        assert '<span class="k">Current</span>' in lp_web.INDEX_HTML
+        assert '<span class="k">ATH</span>' in lp_web.INDEX_HTML
+        assert '<span class="k">vs 30d MA</span>' in lp_web.INDEX_HTML
+        assert "All-time high daily average" in lp_web.INDEX_HTML
+        assert "30-day moving average" in lp_web.INDEX_HTML
+        assert ".chart-stats .k" in lp_web.INDEX_HTML
+
 
 # ---------------------------------------------------------------------------
 # /api/history endpoint

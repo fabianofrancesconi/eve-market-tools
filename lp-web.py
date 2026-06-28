@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.7.0"
+__version__ = "1.7.1"
 
 import argparse
 import base64
@@ -1238,11 +1238,6 @@ function fmtTrade(v,r){
   if(v===null||v===undefined) return "—";
   return `<span style="color:hsl(${Math.round(v*1.2)},70%,58%);font-weight:600">${Math.round(v)}</span>`;
 }
-function fmtDetailDays(d){
-  if(d.daily_vol===null||d.daily_vol===undefined) return "no data";
-  if(d.daily_vol===0) return "∞";
-  return d.days_to_clear<1 ? "<1 d" : Math.round(d.days_to_clear)+" d";
-}
 function fmtTs(epoch){
   if(!epoch) return "unknown";
   const sec=Math.round((Date.now()/1000)-epoch);
@@ -1706,7 +1701,6 @@ function renderBody(){
       <div class="kpi accent"><div class="l">LP cost</div><div class="v">${fmtNum(lpTot)} LP</div></div>
       <div class="kpi"><div class="l">ISK fee</div><div class="v">${fmtISK(isk_fee)}</div></div>
       <div class="kpi"><div class="l">Volume</div><div class="v">${fmtVol(Math.max(inVol||0,outVol||0))}</div></div>
-      <div class="kpi"><div class="l">Days to clear</div><div class="v">${fmtDetailDays(d)}</div></div>
     </div>
     ${warn}
     ${sec("shoppingToggle","shoppingOpen",`Shopping list — ${n}× redemption${n>1?'s':''}`,

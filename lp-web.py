@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.9.0"
+__version__ = "1.10.0"
 
 import argparse
 import base64
@@ -933,6 +933,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   table.mini tr:hover td { background:var(--panel2); }
   table.mini .total td { font-weight:700; border-top:1px solid var(--line2);
     background:var(--panel3); }
+  table.mini .subtotal td { font-weight:600; border-top:1px solid var(--line);
+    color:var(--fg); }
   .note {
     display:flex; align-items:flex-start; gap:7px;
     background:rgba(240,192,64,.07); border:1px solid rgba(240,192,64,.25);
@@ -1648,14 +1650,17 @@ function renderBody(){
       <td>${noPrice?'<span class="flag">?</span>':fmtISK(line)}</td>
       <td>${vol}</td></tr>`;
   }).join("");
-  let revenue, soldQty, sellShort=false;
+  let revenue, gross=null, soldQty, sellShort=false, taxAmt=0, brokerAmt=0;
   if(d.instant){
     const need=d.output.quantity*n;
     const w=walkBook(d.output.buy_book,need);
-    revenue=w.cost*(1-tax); soldQty=w.filled; sellShort=w.shortBy>0;
+    gross=w.cost; taxAmt=gross*tax; brokerAmt=0;
+    revenue=gross-taxAmt; soldQty=w.filled; sellShort=w.shortBy>0;
   } else {
     soldQty=d.output.quantity*n;
-    revenue=(d.ask?soldQty*d.ask*(1-tax-broker):null);
+    gross=d.ask?soldQty*d.ask:null;
+    if(gross!==null){ taxAmt=gross*tax; brokerAmt=gross*broker; revenue=gross-taxAmt-brokerAmt; }
+    else revenue=null;
   }
   const lpTot=d.lp_cost*n, isk_fee=d.isk_fee*n, cost=isk_fee+reqCost;
   const profit=revenue===null?null:revenue-cost;
@@ -1679,7 +1684,7 @@ function renderBody(){
   if(d.isk_fee>0) {
     recipeItems.push(`
       <div class="recipe-list-item">
-        <span class="name">Store ISK Fee</span>
+        <span class="name">Redemption ISK</span>
         <span class="val isk">${fmtISK(d.isk_fee)} ISK</span>
       </div>`);
   }
@@ -1706,7 +1711,7 @@ function renderBody(){
       <div class="kpi accent"><div class="l">Revenue</div><div class="v">${revenue===null?'—':fmtISK(revenue)}</div></div>
       <div class="kpi"><div class="l">Total item cost</div><div class="v">${fmtISK(reqCost)}</div></div>
       <div class="kpi"><div class="l">LP cost</div><div class="v">${fmtNum(lpTot)} LP</div></div>
-      <div class="kpi"><div class="l">ISK fee</div><div class="v">${fmtISK(isk_fee)}</div></div>
+      <div class="kpi"><div class="l">Redemption ISK</div><div class="v">${fmtISK(isk_fee)}</div></div>
       <div class="kpi"><div class="l">Volume</div><div class="v">${fmtVol(Math.max(inVol||0,outVol||0))}</div></div>
     </div>
     ${warn}
@@ -1731,7 +1736,7 @@ function renderBody(){
     ${sec("costToggle","costOpen","Cost breakdown",`
       <table class="mini"><tbody>
         <tr><td>Required items total</td><td>${fmtISK(reqCost)}</td></tr>
-        <tr><td>Store ISK fee</td><td>${fmtISK(isk_fee)}</td></tr>
+        <tr><td>Redemption ISK</td><td>${fmtISK(isk_fee)}</td></tr>
         <tr class="total"><td>Total acquisition cost</td><td>${fmtISK(cost)}</td></tr>
       </tbody></table>`)}
     ${sec("cargoToggle","cargoOpen","Cargo volume",`
@@ -1740,13 +1745,19 @@ function renderBody(){
         <tr><td style="text-align:left">Reward (${fmtNum(d.output.quantity*n)}× ${d.output.name}) → Jita</td><td>${fmtVol(outVol)}</td></tr>
         <tr class="total"><td style="text-align:left">Ship cargo needed (larger leg)</td><td>${fmtVol(Math.max(inVol||0,outVol||0))}</td></tr>
       </tbody></table>`)}
-    ${sec("saleToggle","saleOpen","Sale",`
+    ${sec("saleToggle","saleOpen","Profit breakdown",`
       <table class="mini"><tbody>
         <tr><td style="text-align:left">Jita ask / bid</td><td>${fmtISK(d.ask)} / ${fmtISK(d.bid)}</td></tr>
-        <tr><td style="text-align:left">${d.instant?'Revenue (walking buy orders, after tax)':'Net revenue (listed at ask, after fees)'}</td><td>${fmtISK(revenue)}</td></tr>
+        <tr><td style="text-align:left">${d.instant?'Sell value (walking buy orders)':'Sell value (listed at ask)'}</td><td>${gross===null?'—':fmtISK(gross)}</td></tr>
+        <tr><td style="text-align:left">− Sales tax (${(tax*100).toFixed(1)}%)</td><td class="neg">${gross===null?'—':'−'+fmtISK(taxAmt)}</td></tr>
+        ${d.instant?'':`<tr><td style="text-align:left">− Broker fee (${(broker*100).toFixed(1)}%)</td><td class="neg">${gross===null?'—':'−'+fmtISK(brokerAmt)}</td></tr>`}
+        <tr class="subtotal"><td style="text-align:left">Net revenue</td><td>${revenue===null?'—':fmtISK(revenue)}</td></tr>
+        <tr><td style="text-align:left">− Items cost</td><td class="neg">−${fmtISK(reqCost)}</td></tr>
+        <tr><td style="text-align:left">− Redemption ISK</td><td class="neg">−${fmtISK(isk_fee)}</td></tr>
+        <tr class="total"><td style="text-align:left">Profit</td><td class="${profit===null?'':profit>=0?'pos':'neg'}">${profit===null?'—':fmtISK(profit)}</td></tr>
       </tbody></table>
       <p class="muted" style="margin-top:14px">Costs use the live Jita 4-4 order book.
-        ${d.instant?'Revenue walks down buy orders.':'Reward valued at the lowest sell order.'}</p>`)}`;
+        ${d.instant?'Sell value walks down buy orders; immediate sells pay sales tax only.':'Reward valued at the lowest sell order; listing pays sales tax + broker fee.'}</p>`)}`;
   bindLotCalcs(savedLots);
 }
 

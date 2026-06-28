@@ -488,6 +488,24 @@ class TestTooltips:
         assert "repeat(3,1fr)" in lp_web.INDEX_HTML
         assert '<div class="l">Total profit</div>' in lp_web.INDEX_HTML
         assert '<div class="l">Revenue</div>' in lp_web.INDEX_HTML
+        # The store ISK charge is labelled "Redemption ISK", not "ISK fee".
+        assert '<div class="l">Redemption ISK</div>' in lp_web.INDEX_HTML
+        assert '<div class="l">ISK fee</div>' not in lp_web.INDEX_HTML
+
+    def test_profit_breakdown_waterfall(self):
+        # The Sale section is a profit waterfall: gross sell value, the fee
+        # deductions, net revenue subtotal, and the final profit line.
+        html = lp_web.INDEX_HTML
+        assert "Profit breakdown" in html
+        assert "Sell value (walking buy orders)" in html
+        assert "Sell value (listed at ask)" in html
+        assert "− Sales tax" in html
+        assert "− Broker fee" in html
+        assert "Net revenue" in html
+        assert "− Items cost" in html
+        assert "− Redemption ISK" in html
+        # The deprecated "Store ISK Fee"/"Store ISK fee" labels are gone.
+        assert "Store ISK" not in html
 
     def test_chart_stat_chips_have_labels_and_tooltips(self):
         # The Current / ATH / vs 30d MA chips use labelled k/v markup and

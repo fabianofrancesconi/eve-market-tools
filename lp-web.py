@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.10.1"
+__version__ = "1.10.2"
 
 import argparse
 import base64
@@ -1630,6 +1630,7 @@ function renderBody(){
   const d=STATE.detail;
   const n=Math.max(1,parseInt($("#reds").value||"1"));
   const tax=parseFloat(STATE.ctx.tax)||0.045, broker=parseFloat(STATE.ctx.broker)||0.015;
+  const hub=(STATE.lastScanData&&STATE.lastScanData.station_name)||"the selected hub";
   const pn=v=>v>0?"pos":(v<0?"neg":"");
   const savedLots={};
   document.querySelectorAll(".lot-row[data-tid]").forEach(row=>{ if(row._lotNums&&row._lotNums.length) savedLots[row.dataset.tid]=[...row._lotNums]; });
@@ -1667,13 +1668,13 @@ function renderBody(){
   const ipl=(profit===null||lpTot<=0)?null:profit/lpTot;
   const inVol=d.input_volume_per_redemption*n, outVol=(d.output_volume_per_redemption||0)*n;
   let warn="";
-  if(anyShort) warn+=`<div class="note">! Not enough sell orders at Jita 4-4 for some required items.</div>`;
-  if(d.instant&&sellShort) warn+=`<div class="note bad">Only ${fmtNum(soldQty)} of ${fmtNum(d.output.quantity*n)} can be sold into current Jita buy orders.</div>`;
+  if(anyShort) warn+=`<div class="note">! Not enough sell orders at ${hub} for some required items.</div>`;
+  if(d.instant&&sellShort) warn+=`<div class="note bad">Only ${fmtNum(soldQty)} of ${fmtNum(d.output.quantity*n)} can be sold into current ${hub} buy orders.</div>`;
   if(!d.instant){
     if(d.spread_pct===null) warn+=`<div class="note bad">No buy orders exist — listing at ask may never fill.</div>`;
     else if(d.spread_pct>=d.high_spread_pct) warn+=`<div class="note">${Math.round(d.spread_pct)}% spread — ask isn't backed by real demand.</div>`;
   }
-  if(d.req_missing_price) warn+=`<div class="note">* A required item has no Jita price — true cost is higher.</div>`;
+  if(d.req_missing_price) warn+=`<div class="note">* A required item has no ${hub} price — true cost is higher.</div>`;
 
   const recipeItems=[];
   recipeItems.push(`
@@ -1741,12 +1742,12 @@ function renderBody(){
     ${sec("cargoToggle","cargoOpen","Cargo volume",`
       <table class="mini"><tbody>
         <tr><td style="text-align:left">Required items → LP corp station</td><td>${fmtVol(inVol)}</td></tr>
-        <tr><td style="text-align:left">Reward (${fmtNum(d.output.quantity*n)}× ${d.output.name}) → Jita</td><td>${fmtVol(outVol)}</td></tr>
+        <tr><td style="text-align:left">Reward (${fmtNum(d.output.quantity*n)}× ${d.output.name}) → ${hub}</td><td>${fmtVol(outVol)}</td></tr>
         <tr class="total"><td style="text-align:left">Ship cargo needed (larger leg)</td><td>${fmtVol(Math.max(inVol||0,outVol||0))}</td></tr>
       </tbody></table>`)}
     ${sec("saleToggle","saleOpen","Profit breakdown",`
       <table class="mini"><tbody>
-        <tr><td style="text-align:left">Jita ask / bid</td><td>${fmtISK(d.ask)} / ${fmtISK(d.bid)}</td></tr>
+        <tr><td style="text-align:left">${hub} ask / bid</td><td data-tip="Ask = lowest sell order (list price to be competitive). Bid = highest buy order (what you get selling instantly).">${fmtISK(d.ask)} / ${fmtISK(d.bid)}</td></tr>
         <tr><td style="text-align:left">${d.instant?'Sell value (walking buy orders)':'Sell value (listed at ask)'}</td><td>${gross===null?'—':fmtISK(gross)}</td></tr>
         <tr><td style="text-align:left">− Sales tax (${(tax*100).toFixed(1)}%)</td><td class="neg">${gross===null?'—':'−'+fmtISK(taxAmt)}</td></tr>
         ${d.instant?'':`<tr><td style="text-align:left">− Broker fee (${(broker*100).toFixed(1)}%)</td><td class="neg">${gross===null?'—':'−'+fmtISK(brokerAmt)}</td></tr>`}
@@ -1755,7 +1756,7 @@ function renderBody(){
         <tr><td style="text-align:left">− Redemption ISK</td><td class="neg">−${fmtISK(isk_fee)}</td></tr>
         <tr class="total"><td style="text-align:left">Profit</td><td class="${profit===null?'':profit>=0?'pos':'neg'}">${profit===null?'—':fmtISK(profit)}</td></tr>
       </tbody></table>
-      <p class="muted" style="margin-top:14px">Costs use the live Jita 4-4 order book.
+      <p class="muted" style="margin-top:14px">Costs use the live ${hub} order book.
         ${d.instant?'Sell value walks down buy orders; immediate sells pay sales tax only.':'Reward valued at the lowest sell order; listing pays sales tax + broker fee.'}</p>`)}`;
   bindLotCalcs(savedLots);
 }

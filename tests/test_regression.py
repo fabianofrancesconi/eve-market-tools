@@ -508,6 +508,15 @@ class TestTooltips:
         # The deprecated "Store ISK Fee"/"Store ISK fee" labels are gone.
         assert "Store ISK" not in html
 
+    def test_detail_panel_uses_selected_hub_not_hardcoded_jita(self):
+        # The detail panel must label prices with the chosen hub, not a
+        # hardcoded "Jita" — the market is user-selectable.
+        html = lp_web.INDEX_HTML
+        assert "${hub} ask / bid" in html
+        assert "Jita ask / bid" not in html
+        assert "Costs use the live ${hub} order book." in html
+        assert "Reward (${fmtNum(d.output.quantity*n)}× ${d.output.name}) → ${hub}" in html
+
     def test_chart_stat_chips_have_labels_and_tooltips(self):
         # The Current / ATH / vs 30d MA chips use labelled k/v markup and
         # carry data-tip tooltips.

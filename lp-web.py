@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.13.0"
+__version__ = "1.14.0"
 
 import argparse
 import base64
@@ -42,8 +42,9 @@ import arb_core
 from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
     TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_prices, fetch_history_volumes,
-    fetch_orderbook_jita, fetch_prices, get_offers, load_json, resolve_corp_id,
-    resolve_corp_name, resolve_names, resolve_volumes, save_json, suggested_list_price,
+    fetch_orderbook_jita, fetch_prices, fetch_sell_order_stats, get_offers, load_json,
+    resolve_corp_id, resolve_corp_name, resolve_names, resolve_volumes, save_json,
+    suggested_list_price,
 )
 
 SESSION = requests.Session()
@@ -348,6 +349,9 @@ def do_detail(q):
     fair = fetch_history_prices({out_tid}, region_id, SESSION, CACHE_DIR).get(out_tid)
     detail["fair_price"] = fair
     detail["suggested_list"] = suggested_list_price(detail["ask"], fair)
+    # Freshness of the current cheapest sell order (one live order-book call).
+    detail["sell_order_stats"] = fetch_sell_order_stats(
+        out_tid, SESSION, station_id=station_id, region_id=region_id)
 
     for it in detail["required_items"]:
         it["book"] = fetch_orderbook_jita(it["type_id"], "sell", SESSION,
@@ -1270,7 +1274,12 @@ function fmtTrade(v,r){
 }
 function fmtTs(epoch){
   if(!epoch) return "unknown";
-  const sec=Math.round((Date.now()/1000)-epoch);
+  return fmtAgo(Math.round((Date.now()/1000)-epoch));
+}
+// A raw age in seconds → "8h ago" / "3d ago".
+function fmtAgo(sec){
+  if(sec===null||sec===undefined) return "unknown";
+  sec=Math.round(sec);
   if(sec<5) return "just now";
   if(sec<60) return `${sec}s ago`;
   if(sec<3600) return `${Math.floor(sec/60)}m ago`;
@@ -1804,6 +1813,16 @@ function renderBody(){
     <h3 id="${id}" style="cursor:pointer;user-select:none">${STATE[stateKey]?'▼':'▶'} ${label}</h3>
     <div class="detail-section" data-sec="${id}" style="${STATE[stateKey]?'':'display:none'}">${content}</div>`;
 
+  // Freshness of the current cheapest sell order — how recently the floor was
+  // set and how thin the sell side is (fresh floor + few sellers = price moving).
+  let freshHTML="";
+  const sos=d.sell_order_stats;
+  if(sos){
+    const sellers=sos.sell_orders_total;
+    const tie=sos.orders_at_best>1?` · ${sos.orders_at_best} orders tied at the floor`:"";
+    freshHTML=`<p class="muted" style="margin:-4px 0 12px" data-tip="From each order's issued timestamp. The cheapest price has held for at least this long; later sellers undercut to match it.">Cheapest sell listed <b style="color:var(--fg)">${fmtAgo(sos.age_seconds)}</b>${tie} · ${fmtNum(sellers)} sell order${sellers===1?'':'s'} at ${hub}.</p>`;
+  }
+
   $("#dbody").innerHTML=`
     <div class="kpis">
       <div class="kpi accent"><div class="l">List profit</div><div class="v ${pcls(profitP)}">${profitP===null?'—':fmtISK(profitP)}</div></div>
@@ -1849,7 +1868,8 @@ function renderBody(){
         <span class="name" data-tip="Per-unit price to put on your sell order. The lowest current sell, unless that's below the 30-day fair value (someone's dumping) — then it holds at fair value.">Suggested list price <span style="color:var(--dim2)">/ unit</span></span>
         <span class="val isk">${d.suggested_list===null?'—':fmtISK(d.suggested_list)}</span>
       </div>
-      ${d.suggested_list===null?'':`<p class="muted" style="margin:-4px 0 12px">Lowest sell ${d.ask===null?'—':fmtISK(d.ask)} · 30-day fair value ${d.fair_price===null?'—':fmtISK(d.fair_price)}.</p>`}
+      ${d.suggested_list===null?'':`<p class="muted" style="margin:-4px 0 6px">Lowest sell ${d.ask===null?'—':fmtISK(d.ask)} · 30-day fair value ${d.fair_price===null?'—':fmtISK(d.fair_price)}.</p>`}
+      ${freshHTML}
       <table class="mini"><thead><tr>
         <th style="text-align:left"></th>
         <th data-tip="Sell value (listed at ask) — list the reward at the lowest sell order and pay sales tax + broker fee.">List<br><span style="color:var(--dim);font-weight:400">sell order</span></th>

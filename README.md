@@ -1,6 +1,6 @@
 # EVE Market Tools
 
-A local web app with two market utilities for EVE Online, served from a single Python script with no framework dependencies beyond `requests`.
+A local web app with three market utilities for EVE Online, served from a single Python script with no framework dependencies beyond `requests`.
 
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)
 [![Docker](https://img.shields.io/badge/ghcr.io-eve--market--tools-blue?logo=docker)](https://ghcr.io/fabianofrancesconi/eve-market-tools)
@@ -14,6 +14,9 @@ Ranks LP store offers for any NPC corporation by ISK/LP efficiency. Enter your c
 
 ### Arbitrage Scanner
 Downloads the full public order book for a region and finds cross-station negative-spread opportunities — items where you can buy a sell order in one station and resell into a buy order in another at a profit after sales tax. Filters to deals with a Jita leg within a configurable round-trip jump range.
+
+### Industry Planner
+Ranks manufacturable items by how worthwhile they are to build, after material cost (bought at a selectable hub), job install cost (a manual, remembered job-cost % per named tax profile) and blueprint cost. Covers T1 manufacturing and T2 invention (datacores, success probability, runs-per-BPC). Sorts by ISK/hour using real build times, layers in required skills, market-history "days to sell", and input/output cargo m³ for a chosen batch size. Click any row for a full per-item breakdown. Blueprint data comes from a local SQLite copy of the Fuzzwork SDE dump, rebuilt on demand.
 
 ---
 

@@ -2,15 +2,17 @@
 """
 EVE Market Tools — unified web UI.
 
-Two apps in one local server:
+Three apps in one local server:
   • LP Store  — ranks LP-store offers by ISK/LP with drill-down shopping lists.
   • Arbitrage — scans a region for negative-spread (instant-flip) opportunities.
+  • Industry  — ranks manufacturable items (T1 + T2 invention) by ISK/hour after
+                material, job-install and blueprint cost, from a local SDE copy.
 
     pip install requests
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.20.0"
+__version__ = "1.20.1"
 
 import argparse
 import base64

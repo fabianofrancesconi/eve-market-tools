@@ -508,9 +508,17 @@ class TestTooltips:
         assert '<div class="l">Total profit</div>' not in lp_web.INDEX_HTML
         # Revenue is covered by the profit-breakdown comparison, not a KPI card.
         assert '<div class="l">Revenue</div>' not in lp_web.INDEX_HTML
-        # The store ISK charge is labelled "Redemption ISK", not "ISK fee".
-        assert '<div class="l">Redemption ISK</div>' in lp_web.INDEX_HTML
-        assert '<div class="l">ISK fee</div>' not in lp_web.INDEX_HTML
+        # Item cost and redemption ISK are combined into one card; the separate
+        # "Item cost" / "Redemption ISK" cards are gone (they live in the cost
+        # breakdown table). A suggested-list-price card takes the freed slot.
+        assert '<div class="l">Item + ISK cost</div>' in lp_web.INDEX_HTML
+        assert '<div class="l">Suggested list / unit</div>' in lp_web.INDEX_HTML
+        assert '<div class="l">Item cost</div>' not in lp_web.INDEX_HTML
+        assert '<div class="l">Redemption ISK</div>' not in lp_web.INDEX_HTML
+        # The store ISK charge is still labelled "Redemption ISK" (cost
+        # breakdown / recipe), never the deprecated "ISK fee".
+        assert "Redemption ISK" in lp_web.INDEX_HTML
+        assert "ISK fee" not in lp_web.INDEX_HTML
 
     def test_profit_breakdown_waterfall(self):
         # The Sale section is a profit waterfall: gross sell value, the fee

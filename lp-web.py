@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.14.1"
+__version__ = "1.15.0"
 
 import argparse
 import base64
@@ -1827,9 +1827,11 @@ function renderBody(){
     <div class="kpis">
       <div class="kpi accent"><div class="l">List profit</div><div class="v ${pcls(profitP)}">${profitP===null?'—':fmtISK(profitP)}</div></div>
       <div class="kpi accent"><div class="l">Instant-sell profit</div><div class="v ${pcls(profitI)}">${profitI===null?'—':fmtISK(profitI)}</div></div>
-      <div class="kpi"><div class="l">Item cost</div><div class="v">${fmtISK(reqCost)}</div></div>
+      <div class="kpi" data-tip="Item cost + redemption ISK per ${n}× run${n>1?'s':''} (the LP cost is shown separately).">
+        <div class="l">Item + ISK cost</div><div class="v">${fmtISK(cost)}</div></div>
       <div class="kpi"><div class="l">LP cost</div><div class="v">${fmtNum(lpTot)} LP</div></div>
-      <div class="kpi"><div class="l">Redemption ISK</div><div class="v">${fmtISK(isk_fee)}</div></div>
+      <div class="kpi" data-tip="Suggested per-unit sell-order price: the lowest current sell, unless that's below the 30-day fair value (someone's dumping) — then it holds at fair value.">
+        <div class="l">Suggested list / unit</div><div class="v">${d.suggested_list===null?'—':fmtISK(d.suggested_list)}</div></div>
       <div class="kpi"><div class="l">Volume</div><div class="v">${fmtVol(Math.max(inVol||0,outVol||0))}</div></div>
     </div>
     ${warn}

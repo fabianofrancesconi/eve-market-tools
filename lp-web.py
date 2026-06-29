@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.15.0"
+__version__ = "1.16.0"
 
 import argparse
 import base64
@@ -194,6 +194,9 @@ def do_scan(q):
             # Suggested per-unit sell-order price; filled by /api/liquidity
             # alongside the saturation signals (needs market history).
             "list_price": None,
+            # Age of the current cheapest sell order at the hub (seconds);
+            # also filled by /api/liquidity (one live order-book call).
+            "floor_age": None,
             "liq_loaded": False,
         })
     return {
@@ -240,9 +243,19 @@ def do_liquidity(q):
     # history files the volume fetch just wrote, so no extra ESI round-trips.
     fair_prices = fetch_history_prices(reward_ids, region_id, SESSION, CACHE_DIR)
     liq = enrich_liquidity(sellable, daily_vols)
+    # Freshness of the current cheapest sell order, deduped per reward type
+    # (one live order-book call each -- order books aren't cacheable, so this
+    # is the slow part of the fill).
+    floor_age_by_type = {}
     for r in sellable:
+        tid = r["name_id"]
+        if tid not in floor_age_by_type:
+            stats = fetch_sell_order_stats(tid, SESSION, station_id=station_id,
+                                           region_id=region_id)
+            floor_age_by_type[tid] = stats["age_seconds"] if stats else None
         liq[r["offer_id"]]["list_price"] = suggested_list_price(
-            r.get("ask"), fair_prices.get(r["name_id"]))
+            r.get("ask"), fair_prices.get(tid))
+        liq[r["offer_id"]]["floor_age"] = floor_age_by_type[tid]
     return {"liquidity": liq}
 
 
@@ -1266,6 +1279,12 @@ function fmtListPrice(v,r){
   if(!r.liq_loaded) return _SPIN;
   return (v===null||v===undefined) ? "no data" : fmtISK(v);
 }
+// Age of the current cheapest sell order ("8h ago"). Also from the background
+// fill (one live order-book call per type), so spinner until it lands.
+function fmtFloorAge(v,r){
+  if(!r.liq_loaded) return _SPIN;
+  return (v===null||v===undefined) ? "no orders" : fmtAgo(v);
+}
 // Tradeability: 0–100 blend of liquidity + low-competition, color-graded red→green.
 function fmtTrade(v,r){
   if(!r.liq_loaded) return _SPIN;
@@ -1380,6 +1399,7 @@ const COLS = [
   {k:"lp_cost",      t:"LP / Run",      w: 80, defvis:true,  tip:"Loyalty Points per redemption.", f:fmtNum},
   {k:"cost_ea",      t:"ISK / Run",     w: 95, defvis:true,  tip:"ISK + required input costs per redemption.", f:fmtISK},
   {k:"list_price",   t:"List @",        w:100, defvis:true,  tip:"Suggested per-unit price to put on your sell order: the lowest current sell, unless that's below the 30-day fair value (someone's dumping) — then it holds at fair value. Per unit of the reward item.", f:fmtListPrice, rowCtx:true},
+  {k:"floor_age",    t:"Floor age",     w: 95, defvis:true,  tip:"How long ago the current cheapest sell order at the hub was posted (from its issued timestamp). A fresh floor in a thin market means the price is actively moving. “no orders” = nothing listed.", f:fmtFloorAge, rowCtx:true, cls:"spread"},
   {k:"ask",          t:"Ask (sell)",    w: 95, defvis:false, tip:"Lowest sell order price at the hub — what the patient column lists at.", f:fmtISK},
   {k:"bid",          t:"Bid (buy)",     w: 95, defvis:false, tip:"Highest buy order price at the hub — what the instant column dumps into.", f:fmtISK},
   {k:"buy_volume",   t:"Buy Demand",    w: 95, defvis:false, tip:"Units on hub buy orders — how many you could sell instantly.", f:fmtNum},
@@ -1568,7 +1588,7 @@ async function fillLiquidity(){
     const liq=d.liquidity;
     for(const r of STATE.rows){
       const e=liq[r.offer_id];
-      if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear; r.list_price=e.list_price; r.liq_loaded=true; }
+      if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear; r.list_price=e.list_price; r.floor_age=e.floor_age; r.liq_loaded=true; }
     }
     renderTable();
     if(STATE.detail&&STATE.selOffer) renderDetail();

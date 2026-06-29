@@ -391,7 +391,9 @@ class TestDoLiquidity:
              patch.object(lp_web, "fetch_prices", return_value={}), \
              patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
              patch.object(lp_web, "fetch_history_volumes", return_value={101: 200}), \
-             patch.object(lp_web, "fetch_history_prices", return_value={101: 120.0}):
+             patch.object(lp_web, "fetch_history_prices", return_value={101: 120.0}), \
+             patch.object(lp_web, "fetch_sell_order_stats",
+                          return_value={"age_seconds": 28800.0}):
             result = lp_web.do_liquidity(q)
         assert "liquidity" in result
         entry = result["liquidity"][1]
@@ -399,7 +401,8 @@ class TestDoLiquidity:
         assert entry["days_to_clear"] == 5.0
         # ask (100) below fair value (120) -> hold the list price at fair value
         assert entry["list_price"] == 120.0
-        assert set(entry) == {"daily_vol", "days_to_clear", "list_price"}
+        assert entry["floor_age"] == 28800.0  # 8h, from the order's issued stamp
+        assert set(entry) == {"daily_vol", "days_to_clear", "list_price", "floor_age"}
 
     def test_history_fetched_for_hub_region(self, tmp_path):
         """Amarr station → daily volume pulled from the Domain region, not Forge."""
@@ -413,10 +416,34 @@ class TestDoLiquidity:
              patch.object(lp_web, "fetch_prices", return_value={}), \
              patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
              patch.object(lp_web, "fetch_history_prices", return_value={101: None}), \
+             patch.object(lp_web, "fetch_sell_order_stats", return_value=None), \
              patch.object(lp_web, "fetch_history_volumes",
                           return_value={101: 5}) as m:
             lp_web.do_liquidity(q)
         assert m.call_args[0][1] == 10000043  # Domain region id
+
+    def test_floor_age_deduped_per_reward_type(self, tmp_path):
+        """Two offers rewarding the same type share one order-book call."""
+        lp_web.CACHE_DIR = tmp_path
+        fake_offers = [{"type_id": 101, "quantity": 1, "lp_cost": 1000}]
+        fake_sellable = [
+            {"offer_id": 1, "name_id": 101, "qty": 1, "max_units": 1,
+             "sell_volume": 0, "ask": 100.0},
+            {"offer_id": 2, "name_id": 101, "qty": 1, "max_units": 1,
+             "sell_volume": 0, "ask": 100.0},
+        ]
+        q = {"corp_id": ["1000"], "lp": ["1000"], "station": ["60003760"]}
+        with patch.object(lp_web, "get_offers", return_value=fake_offers), \
+             patch.object(lp_web, "fetch_prices", return_value={}), \
+             patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
+             patch.object(lp_web, "fetch_history_prices", return_value={101: None}), \
+             patch.object(lp_web, "fetch_history_volumes", return_value={101: 5}), \
+             patch.object(lp_web, "fetch_sell_order_stats",
+                          return_value={"age_seconds": 3600.0}) as m:
+            result = lp_web.do_liquidity(q)
+        assert m.call_count == 1  # deduped: one call for the shared type 101
+        assert result["liquidity"][1]["floor_age"] == 3600.0
+        assert result["liquidity"][2]["floor_age"] == 3600.0
 
 
 # ---------------------------------------------------------------------------

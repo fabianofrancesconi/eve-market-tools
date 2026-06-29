@@ -620,6 +620,57 @@ class TestDualModeComparison:
 
 
 # ---------------------------------------------------------------------------
+# Drag-to-reorder columns (v1.12.0): headers are draggable and the chosen
+# order is persisted via /api/prefs alongside the column widths.
+# ---------------------------------------------------------------------------
+
+class TestColumnReorder:
+    def test_do_prefs_persists_col_order(self):
+        # col_order must be on the do_prefs whitelist so it survives a reload.
+        saved = {}
+        with patch.object(lp_web, "load_settings", return_value={}), \
+             patch.object(lp_web, "save_settings", side_effect=lambda d: saved.update(d)):
+            lp_web.do_prefs({"col_order": ['["name","ask","bid"]'],
+                             "col_layout_v": ["6"]})
+        assert saved["col_order"] == '["name","ask","bid"]'
+        assert saved["col_layout_v"] == "6"
+
+    def test_do_prefs_ignores_unknown_keys(self):
+        # The whitelist must not let arbitrary keys into settings.
+        saved = {}
+        with patch.object(lp_web, "load_settings", return_value={}), \
+             patch.object(lp_web, "save_settings", side_effect=lambda d: saved.update(d)):
+            lp_web.do_prefs({"col_order": ['["name"]'], "evil": ["1"]})
+        assert "col_order" in saved
+        assert "evil" not in saved
+
+    def test_headers_are_draggable(self):
+        # Each <th> opts into HTML5 drag-and-drop.
+        assert '<th draggable="true" data-k="${c.k}"' in lp_web.INDEX_HTML
+
+    def test_reorder_wiring_present(self):
+        html = lp_web.INDEX_HTML
+        # The drag helpers and per-header wiring must be hooked up.
+        assert "function wireLPColDrag(" in html
+        assert "function reorderLPCols(" in html
+        assert "function orderedCols(" in html
+        assert "wireLPColDrag(th);" in html
+        # visCols now derives from the user order, not raw COLS.
+        assert "function visCols(){ return orderedCols()" in html
+
+    def test_col_order_persisted_and_restored(self):
+        html = lp_web.INDEX_HTML
+        # Saved with the widths under the same layout version...
+        assert "col_order=${encodeURIComponent(JSON.stringify(STATE.colOrder))}" in html
+        # ...and restored on load, guarded by the layout version.
+        assert "if(s.col_order && s.col_layout_v==COL_LAYOUT_VERSION){" in html
+
+    def test_drag_does_not_trigger_sort(self):
+        # A header click at the tail of a drag must not re-sort.
+        assert "if(LP_DRAG_KEY){ return; }" in lp_web.INDEX_HTML
+
+
+# ---------------------------------------------------------------------------
 # /api/history endpoint
 # ---------------------------------------------------------------------------
 

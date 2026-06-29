@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.11.1"
+__version__ = "1.12.0"
 
 import argparse
 import base64
@@ -296,8 +296,8 @@ def get_npc_corps():
 
 def do_prefs(q):
     s = load_settings()
-    for k in ("sort_key", "sort_dir", "col_widths", "col_layout_v", "hide_illiquid",
-              "hide_unaffordable", "active_tab", "trade_weight"):
+    for k in ("sort_key", "sort_dir", "col_widths", "col_order", "col_layout_v",
+              "hide_illiquid", "hide_unaffordable", "active_tab", "trade_weight"):
         if k in q:
             s[k] = q[k][0]
     save_settings(s)
@@ -833,6 +833,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .resizer:hover::after, .resizer.active::after { background:var(--cyan); width:3px; }
   body.col-resizing { cursor:col-resize; user-select:none; }
+  /* Column drag-to-reorder. box-shadow markers avoid any layout shift. */
+  th[draggable=true] { cursor:grab; }
+  th.col-dragging { opacity:.45; cursor:grabbing; }
+  th.drop-before { box-shadow: inset 3px 0 0 var(--cyan2); }
+  th.drop-after  { box-shadow: inset -3px 0 0 var(--cyan2); }
+  body.col-dragging-active { cursor:grabbing; }
 
   /* LP table */
   #tbl th, #tbl td { overflow:hidden; text-overflow:ellipsis; }
@@ -1263,7 +1269,7 @@ function saveLS(){
       maxspread:$("#maxspread").value,tax:pctToFrac($("#tax").value),broker:pctToFrac($("#broker").value),
       market:$("#market").value,
       sort_key:STATE.sort.key,sort_dir:STATE.sort.dir,
-      col_widths:STATE.colw,col_layout_v:COL_LAYOUT_VERSION,col_vis:STATE.colVis,
+      col_widths:STATE.colw,col_order:STATE.colOrder,col_layout_v:COL_LAYOUT_VERSION,col_vis:STATE.colVis,
       hide_illiquid:STATE.hideIlliquid?'1':'0',
       hide_unaffordable:STATE.hideUnaffordable?'1':'0',
       trade_weight:STATE.tradeWeight,
@@ -1350,7 +1356,17 @@ const COLS = [
   {k:"output_volume",t:"Vol m³",        w:140, defvis:false, tip:"Packaged m³ per redemption, and total for all runs in parentheses.", f:(v,r)=>{ if(v===null) return "?"; const per=fmtVol(v); return r.max_units>0?`${per} (${fmtVol(v*r.max_units)})`:per; }, rowCtx:true},
 ];
 COLS.forEach(c=>{ STATE.colVis[c.k]=c.defvis; STATE.colw[c.k]=c.w; });
-function visCols(){ return COLS.filter(c=>STATE.colVis[c.k]!==false); }
+const COL_BY_KEY=Object.fromEntries(COLS.map(c=>[c.k,c]));
+STATE.colOrder=COLS.map(c=>c.k);  // user-reorderable; persisted with col widths
+// Resolve STATE.colOrder to column objects, dropping unknown keys and appending
+// any columns that aren't listed yet (so a saved order survives COLS additions).
+function orderedCols(){
+  const seen=new Set(), out=[];
+  for(const k of STATE.colOrder){ const c=COL_BY_KEY[k]; if(c&&!seen.has(k)){ out.push(c); seen.add(k); } }
+  for(const c of COLS) if(!seen.has(c.k)){ out.push(c); seen.add(c.k); }
+  return out;
+}
+function visCols(){ return orderedCols().filter(c=>STATE.colVis[c.k]!==false); }
 
 function lpSetColgroup(){
   $("#cg").innerHTML=visCols().map(c=>`<col style="width:${STATE.colw[c.k]||c.w}px">`).join("");
@@ -1376,6 +1392,60 @@ function startLPResize(e, key){
   document.addEventListener("mouseup",mu);
 }
 
+// ── Column drag-to-reorder ────────────────────────────────────────────────
+// HTML5 drag-and-drop on the <th>s. The resizer's mousedown preventDefault()
+// suppresses a drag starting from the resize grip, and a sort-click never fires
+// after a real drag, so the three header interactions stay independent.
+let LP_DRAG_KEY=null;
+function clearLPDropMarks(){
+  document.querySelectorAll("#tbl thead th").forEach(th=>th.classList.remove("drop-before","drop-after"));
+}
+function lpDropAfter(th,clientX){
+  const r=th.getBoundingClientRect();
+  return clientX > r.left + r.width/2;
+}
+function reorderLPCols(srcKey,dstKey,after){
+  if(!srcKey||srcKey===dstKey) return;
+  const order=orderedCols().map(c=>c.k);   // full order, hidden cols included
+  order.splice(order.indexOf(srcKey),1);
+  let to=order.indexOf(dstKey);
+  if(after) to+=1;
+  order.splice(to,0,srcKey);
+  STATE.colOrder=order;
+  saveLPColWidths();   // col_order rides along with widths under the same version
+  renderTable();
+}
+function wireLPColDrag(th){
+  th.addEventListener("dragstart",e=>{
+    LP_DRAG_KEY=th.dataset.k;
+    e.dataTransfer.effectAllowed="move";
+    try{ e.dataTransfer.setData("text/plain",LP_DRAG_KEY); }catch(_){}
+    th.classList.add("col-dragging");
+    document.body.classList.add("col-dragging-active");
+  });
+  th.addEventListener("dragend",()=>{
+    th.classList.remove("col-dragging");
+    document.body.classList.remove("col-dragging-active");
+    clearLPDropMarks();
+    setTimeout(()=>{ LP_DRAG_KEY=null; },0);
+  });
+  th.addEventListener("dragover",e=>{
+    if(!LP_DRAG_KEY) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect="move";
+    clearLPDropMarks();
+    if(th.dataset.k!==LP_DRAG_KEY)
+      th.classList.add(lpDropAfter(th,e.clientX)?"drop-after":"drop-before");
+  });
+  th.addEventListener("dragleave",()=>th.classList.remove("drop-before","drop-after"));
+  th.addEventListener("drop",e=>{
+    e.preventDefault();
+    const after=lpDropAfter(th,e.clientX);
+    clearLPDropMarks();
+    reorderLPCols(LP_DRAG_KEY, th.dataset.k, after);
+  });
+}
+
 function renderTable(){
   computeTradeability();
   const thead=$("#tbl thead"), tbody=$("#tbl tbody");
@@ -1386,17 +1456,19 @@ function renderTable(){
     const active=STATE.sort.key===c.k;
     const arrow=active?(STATE.sort.dir<0?" ▼":" ▲"):"";
     const tip=c.tip?` data-tip="${c.tip.replace(/"/g,'&quot;')}"`: "";
-    return `<th data-k="${c.k}"${tip}${active?' class="sorted"':''}>${c.t}${arrow}<span class="resizer"></span></th>`;
+    return `<th draggable="true" data-k="${c.k}"${tip}${active?' class="sorted"':''}>${c.t}${arrow}<span class="resizer"></span></th>`;
   }).join("")+"</tr>";
   thead.querySelectorAll("th").forEach((th,i)=>{
     th.onclick=()=>{
       if(LP_RESIZING){ LP_RESIZING=false; return; }
+      if(LP_DRAG_KEY){ return; }  // tail end of a reorder, not a sort click
       const k=th.dataset.k;
       if(STATE.sort.key===k) STATE.sort.dir*=-1;
       else STATE.sort={key:k, dir:k==="name"?1:-1};
       saveLPSort(); renderTable();
     };
     th.querySelector(".resizer").addEventListener("mousedown",e=>startLPResize(e,vc[i].k));
+    wireLPColDrag(th);
   });
   const rows=[...STATE.rows]
     .filter(r=>!STATE.hideIlliquid||!r.illiquid)
@@ -1486,7 +1558,9 @@ function saveLPSort(){
   fetch(`/api/prefs?sort_key=${encodeURIComponent(s.key)}&sort_dir=${s.dir}`).catch(()=>{}); saveLS();
 }
 function saveLPColWidths(){
-  fetch(`/api/prefs?col_widths=${encodeURIComponent(JSON.stringify(STATE.colw))}&col_layout_v=${COL_LAYOUT_VERSION}`).catch(()=>{}); saveLS();
+  fetch(`/api/prefs?col_widths=${encodeURIComponent(JSON.stringify(STATE.colw))}`
+    +`&col_order=${encodeURIComponent(JSON.stringify(STATE.colOrder))}`
+    +`&col_layout_v=${COL_LAYOUT_VERSION}`).catch(()=>{}); saveLS();
 }
 
 // ── Column picker ─────────────────────────────────────────────────────────
@@ -2353,6 +2427,15 @@ async function loadSettings(){
       if(s.col_widths && s.col_layout_v==COL_LAYOUT_VERSION){
         try{
           STATE.colw=(typeof s.col_widths==="string"?JSON.parse(s.col_widths):s.col_widths)||{};
+        }catch(e){}
+      }
+      if(s.col_order && s.col_layout_v==COL_LAYOUT_VERSION){
+        try{
+          const ord=typeof s.col_order==="string"?JSON.parse(s.col_order):s.col_order;
+          if(Array.isArray(ord)){
+            const known=ord.filter(k=>COL_BY_KEY[k]);
+            if(known.length) STATE.colOrder=known;  // orderedCols() appends any missing
+          }
         }catch(e){}
       }
       if(s.hide_illiquid==="1"){ STATE.hideIlliquid=true; $("#toggleIlliquid").checked=true; }

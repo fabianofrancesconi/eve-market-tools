@@ -382,31 +382,36 @@ class TestDoLiquidity:
         fake_offers = [{"type_id": 101, "quantity": 5, "lp_cost": 1000}]
         fake_sellable = [{
             "offer_id": 1, "name_id": 101, "qty": 5, "max_units": 10,
-            "profit_per": 450.0, "sell_volume": 1000,
+            "profit_per": 450.0, "sell_volume": 1000, "ask": 100.0,
         }]
         q = {"corp_id": ["1000"], "lp": ["10000"], "tax": ["0.08"],
              "broker": ["0.03"], "instant": ["0"], "station": ["60003760"]}
         with patch.object(lp_web, "get_offers", return_value=fake_offers), \
              patch.object(lp_web, "fetch_prices", return_value={}), \
              patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
-             patch.object(lp_web, "fetch_history_volumes", return_value={101: 200}):
+             patch.object(lp_web, "fetch_history_volumes", return_value={101: 200}), \
+             patch.object(lp_web, "fetch_history_prices", return_value={101: 120.0}):
             result = lp_web.do_liquidity(q)
         assert "liquidity" in result
         entry = result["liquidity"][1]
         assert entry["daily_vol"] == 200
         assert entry["days_to_clear"] == 5.0
-        assert set(entry) == {"daily_vol", "days_to_clear"}
+        # ask (100) below fair value (120) -> hold the list price at fair value
+        assert entry["list_price"] == 120.0
+        assert set(entry) == {"daily_vol", "days_to_clear", "list_price"}
 
     def test_history_fetched_for_hub_region(self, tmp_path):
         """Amarr station → daily volume pulled from the Domain region, not Forge."""
         lp_web.CACHE_DIR = tmp_path
         fake_offers = [{"type_id": 101, "quantity": 1, "lp_cost": 1000}]
         fake_sellable = [{"offer_id": 1, "name_id": 101, "qty": 1,
-                          "max_units": 1, "profit_per": 1.0, "sell_volume": 0}]
+                          "max_units": 1, "profit_per": 1.0, "sell_volume": 0,
+                          "ask": 100.0}]
         q = {"corp_id": ["1000"], "lp": ["1000"], "station": ["60008494"]}
         with patch.object(lp_web, "get_offers", return_value=fake_offers), \
              patch.object(lp_web, "fetch_prices", return_value={}), \
              patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
+             patch.object(lp_web, "fetch_history_prices", return_value={101: None}), \
              patch.object(lp_web, "fetch_history_volumes",
                           return_value={101: 5}) as m:
             lp_web.do_liquidity(q)

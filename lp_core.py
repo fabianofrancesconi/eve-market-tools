@@ -215,14 +215,27 @@ def _median_daily_volume(history, days=HISTORY_DAYS):
     return statistics.median(vols)
 
 
-def fetch_history_volumes(type_ids, region_id, session, cache_dir, refresh=False):
-    """type_id -> median daily traded volume (last HISTORY_DAYS) in `region_id`,
-    via ESI market history. One HTTP round-trip per uncached type -- this is the
-    expensive call, so resolve it off the main scan path / in the background.
+def _median_daily_avg_price(history, days=HISTORY_DAYS):
+    """Median of the last `days` daily *average* traded prices from an ESI
+    history list. Median (not mean) so one fire-sale or gouge day doesn't skew
+    the fair value. None when there's no usable history."""
+    prices = [d.get("average") for d in history[-days:]]
+    prices = [p for p in prices if p is not None]
+    if not prices:
+        return None
+    return statistics.median(prices)
+
+
+def _fetch_history_summary(type_ids, region_id, session, cache_dir, summarize,
+                           refresh=False):
+    """Shared per-type ESI market-history fetch + cache, reduced to one number
+    per type by `summarize(history_list)`. One HTTP round-trip per uncached type
+    -- the expensive call, so resolve it off the main scan path / in the
+    background.
 
     Shares the `mhist_{region}_{type}.json` cache files the price-chart endpoint
-    uses (same format, HISTORY_TTL_SECONDS window). None for a type with no
-    recorded history (the market never traded it) or on fetch failure."""
+    uses (same format, HISTORY_TTL_SECONDS window). Maps a type to None when it
+    has no recorded history (the market never traded it) or on fetch failure."""
     out = {}
     now = time.time()
     for tid in sorted(set(type_ids)):
@@ -244,8 +257,44 @@ def fetch_history_volumes(type_ids, region_id, session, cache_dir, refresh=False
             except requests.RequestException:
                 out[tid] = None
                 continue
-        out[tid] = _median_daily_volume(data)
+        out[tid] = summarize(data)
     return out
+
+
+def fetch_history_volumes(type_ids, region_id, session, cache_dir, refresh=False):
+    """type_id -> median daily traded volume (last HISTORY_DAYS) in `region_id`,
+    via ESI market history. None for a type with no recorded history or on
+    fetch failure. See _fetch_history_summary for caching."""
+    return _fetch_history_summary(type_ids, region_id, session, cache_dir,
+                                  _median_daily_volume, refresh)
+
+
+def fetch_history_prices(type_ids, region_id, session, cache_dir, refresh=False):
+    """type_id -> median daily average traded price (last HISTORY_DAYS) in
+    `region_id`, the "fair value" anchor for a suggested list price. None for a
+    type with no recorded history or on fetch failure. Reuses the same cache
+    files as fetch_history_volumes, so calling both costs no extra ESI calls."""
+    return _fetch_history_summary(type_ids, region_id, session, cache_dir,
+                                  _median_daily_avg_price, refresh)
+
+
+def suggested_list_price(ask, fair):
+    """Per-unit price to put on a sell order, anchored to history so a single
+    lowball sell order doesn't drag the suggestion below fair value.
+
+      ask  -- current lowest sell order at the hub (None if nothing is listed)
+      fair -- 30-day median of the daily average traded price (None if no
+              history); the fair-value anchor from fetch_history_prices.
+
+    Returns the lowest current sell, UNLESS that sits below fair value (someone
+    is dumping) -- then it holds at fair value rather than joining the race to
+    the bottom. With only one signal available it returns that one; None when
+    neither is."""
+    if ask is None:
+        return fair
+    if fair is None:
+        return ask
+    return max(ask, fair)
 
 
 def enrich_liquidity(sellable, daily_vols):

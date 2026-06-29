@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.12.0"
+__version__ = "1.13.0"
 
 import argparse
 import base64
@@ -41,9 +41,9 @@ import requests
 import arb_core
 from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
-    TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_volumes, fetch_orderbook_jita,
-    fetch_prices, get_offers, load_json, resolve_corp_id, resolve_corp_name, resolve_names,
-    resolve_volumes, save_json,
+    TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_prices, fetch_history_volumes,
+    fetch_orderbook_jita, fetch_prices, get_offers, load_json, resolve_corp_id,
+    resolve_corp_name, resolve_names, resolve_volumes, save_json, suggested_list_price,
 )
 
 SESSION = requests.Session()
@@ -190,6 +190,9 @@ def do_scan(q):
             "daily_vol": None,
             "days_to_clear": None,
             "tradeability": None,
+            # Suggested per-unit sell-order price; filled by /api/liquidity
+            # alongside the saturation signals (needs market history).
+            "list_price": None,
             "liq_loaded": False,
         })
     return {
@@ -230,9 +233,16 @@ def do_liquidity(q):
     offers = get_offers(corp_id, SESSION, CACHE_DIR, refresh=False)
     prices = fetch_prices(_all_type_ids(offers), SESSION, station_id=station_id)
     sellable, _ = evaluate(offers, prices, lp, tax, broker)
-    daily_vols = fetch_history_volumes({r["name_id"] for r in sellable},
-                                       region_id, SESSION, CACHE_DIR)
-    return {"liquidity": enrich_liquidity(sellable, daily_vols)}
+    reward_ids = {r["name_id"] for r in sellable}
+    daily_vols = fetch_history_volumes(reward_ids, region_id, SESSION, CACHE_DIR)
+    # Fair-value anchor for the suggested list price -- reuses the same cached
+    # history files the volume fetch just wrote, so no extra ESI round-trips.
+    fair_prices = fetch_history_prices(reward_ids, region_id, SESSION, CACHE_DIR)
+    liq = enrich_liquidity(sellable, daily_vols)
+    for r in sellable:
+        liq[r["offer_id"]]["list_price"] = suggested_list_price(
+            r.get("ask"), fair_prices.get(r["name_id"]))
+    return {"liquidity": liq}
 
 
 def _resolve_corp_names(ids):
@@ -333,6 +343,11 @@ def do_detail(q):
     detail["daily_vol"] = daily_vol
     detail["days_to_clear"] = (
         detail["sell_volume"] / daily_vol if daily_vol and daily_vol > 0 else None)
+    # Suggested per-unit sell-order price, anchored to the 30-day fair value
+    # (shares the cached history just fetched above -- no extra ESI call).
+    fair = fetch_history_prices({out_tid}, region_id, SESSION, CACHE_DIR).get(out_tid)
+    detail["fair_price"] = fair
+    detail["suggested_list"] = suggested_list_price(detail["ask"], fair)
 
     for it in detail["required_items"]:
         it["book"] = fetch_orderbook_jita(it["type_id"], "sell", SESSION,
@@ -1241,6 +1256,12 @@ function fmtVolPerDay(v,r){
   if(!r.liq_loaded) return _SPIN;
   return v===null ? "no data" : fmtNum(v)+"/d";
 }
+// Suggested per-unit list price — needs market history, so it rides the same
+// background /api/liquidity fill (spinner until it lands).
+function fmtListPrice(v,r){
+  if(!r.liq_loaded) return _SPIN;
+  return (v===null||v===undefined) ? "no data" : fmtISK(v);
+}
 // Tradeability: 0–100 blend of liquidity + low-competition, color-graded red→green.
 function fmtTrade(v,r){
   if(!r.liq_loaded) return _SPIN;
@@ -1349,6 +1370,7 @@ const COLS = [
   {k:"max_units",    t:"Max Runs",      w: 80, defvis:true,  tip:"Redemptions your LP budget affords (budget ÷ LP per run). Affordability only — it doesn't check whether the market can absorb them.", f:v=>v===0?"—":fmtNum(v)},
   {k:"lp_cost",      t:"LP / Run",      w: 80, defvis:true,  tip:"Loyalty Points per redemption.", f:fmtNum},
   {k:"cost_ea",      t:"ISK / Run",     w: 95, defvis:true,  tip:"ISK + required input costs per redemption.", f:fmtISK},
+  {k:"list_price",   t:"List @",        w:100, defvis:true,  tip:"Suggested per-unit price to put on your sell order: the lowest current sell, unless that's below the 30-day fair value (someone's dumping) — then it holds at fair value. Per unit of the reward item.", f:fmtListPrice},
   {k:"ask",          t:"Ask (sell)",    w: 95, defvis:false, tip:"Lowest sell order price at the hub — what the patient column lists at.", f:fmtISK},
   {k:"bid",          t:"Bid (buy)",     w: 95, defvis:false, tip:"Highest buy order price at the hub — what the instant column dumps into.", f:fmtISK},
   {k:"buy_volume",   t:"Buy Demand",    w: 95, defvis:false, tip:"Units on hub buy orders — how many you could sell instantly.", f:fmtNum},
@@ -1537,7 +1559,7 @@ async function fillLiquidity(){
     const liq=d.liquidity;
     for(const r of STATE.rows){
       const e=liq[r.offer_id];
-      if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear; r.liq_loaded=true; }
+      if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear; r.list_price=e.list_price; r.liq_loaded=true; }
     }
     renderTable();
     if(STATE.detail&&STATE.selOffer) renderDetail();
@@ -1823,6 +1845,11 @@ function renderBody(){
         <tr class="total"><td style="text-align:left">Ship cargo needed (larger leg)</td><td>${fmtVol(Math.max(inVol||0,outVol||0))}</td></tr>
       </tbody></table>`)}
     ${sec("saleToggle","saleOpen","Profit breakdown",`
+      <div class="recipe-list-item" style="border:1px solid var(--line2);border-radius:6px;padding:9px 12px;margin-bottom:12px">
+        <span class="name" data-tip="Per-unit price to put on your sell order. The lowest current sell, unless that's below the 30-day fair value (someone's dumping) — then it holds at fair value.">Suggested list price <span style="color:var(--dim2)">/ unit</span></span>
+        <span class="val isk">${d.suggested_list===null?'—':fmtISK(d.suggested_list)}</span>
+      </div>
+      ${d.suggested_list===null?'':`<p class="muted" style="margin:-4px 0 12px">Lowest sell ${d.ask===null?'—':fmtISK(d.ask)} · 30-day fair value ${d.fair_price===null?'—':fmtISK(d.fair_price)}.</p>`}
       <table class="mini"><thead><tr>
         <th style="text-align:left"></th>
         <th data-tip="Sell value (listed at ask) — list the reward at the lowest sell order and pay sales tax + broker fee.">List<br><span style="color:var(--dim);font-weight:400">sell order</span></th>

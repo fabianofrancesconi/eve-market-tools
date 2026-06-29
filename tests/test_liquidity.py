@@ -135,3 +135,86 @@ class TestEnrichLiquidity:
         rows = [_row(offer_id=7, name_id=1), _row(offer_id=8, name_id=2)]
         out = lp_core.enrich_liquidity(rows, {1: 100, 2: 100})
         assert set(out) == {7, 8}
+
+
+# ---------------------------------------------------------------------------
+# _median_daily_avg_price
+# ---------------------------------------------------------------------------
+
+class TestMedianDailyAvgPrice:
+    def test_median_of_average_prices(self):
+        hist = [{"average": 100.0}, {"average": 300.0}, {"average": 200.0}]
+        assert lp_core._median_daily_avg_price(hist) == 200.0
+
+    def test_empty_history_is_none(self):
+        assert lp_core._median_daily_avg_price([]) is None
+
+    def test_skips_missing_prices(self):
+        hist = [{"average": None}, {"average": 50.0}, {"average": 150.0}]
+        assert lp_core._median_daily_avg_price(hist) == 100.0
+
+    def test_all_missing_is_none(self):
+        assert lp_core._median_daily_avg_price([{"average": None}, {}]) is None
+
+    def test_uses_only_last_n_days(self):
+        # A 10-day fire sale at the front is ignored when the 30-day tail is
+        # steady, so the median reflects the recent norm, not the dump.
+        hist = [{"average": 1.0} for _ in range(10)] + \
+               [{"average": 500.0} for _ in range(30)]
+        assert lp_core._median_daily_avg_price(hist, days=30) == 500.0
+
+
+# ---------------------------------------------------------------------------
+# fetch_history_prices  (shares the mhist cache with fetch_history_volumes)
+# ---------------------------------------------------------------------------
+
+_HIST_PX = [{"date": "2024-01-01", "average": 100.0},
+            {"date": "2024-01-02", "average": 300.0},
+            {"date": "2024-01-03", "average": 200.0}]
+
+
+class TestFetchHistoryPrices:
+    def test_fetches_and_returns_median_price(self, tmp_path):
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = _HIST_PX
+        with patch.object(lp_core.requests.Session, "get", return_value=resp):
+            s = lp_core.requests.Session()
+            out = lp_core.fetch_history_prices({34}, 10000002, s, tmp_path)
+        assert out == {34: 200.0}
+
+    def test_uses_disk_cache_without_calling_esi(self, tmp_path):
+        (tmp_path / "mhist_10000002_34.json").write_text(
+            json.dumps({"_ts": time.time(), "data": _HIST_PX}))
+        s = MagicMock()
+        s.get.side_effect = AssertionError("must not hit ESI when cached")
+        out = lp_core.fetch_history_prices({34}, 10000002, s, tmp_path)
+        assert out == {34: 200.0}
+
+    def test_non_200_yields_none(self, tmp_path):
+        s = MagicMock()
+        s.get.return_value = MagicMock(status_code=404)
+        out = lp_core.fetch_history_prices({999}, 10000002, s, tmp_path)
+        assert out == {999: None}
+
+
+# ---------------------------------------------------------------------------
+# suggested_list_price
+# ---------------------------------------------------------------------------
+
+class TestSuggestedListPrice:
+    def test_lists_at_lowest_sell_in_a_healthy_market(self):
+        # Lowest sell at/above fair value -> sit at the top of the book.
+        assert lp_core.suggested_list_price(1000.0, 800.0) == 1000.0
+
+    def test_holds_at_fair_value_when_market_is_dumped(self):
+        # Lowest sell below fair value -> don't join the race to the bottom.
+        assert lp_core.suggested_list_price(600.0, 800.0) == 800.0
+
+    def test_no_history_falls_back_to_ask(self):
+        assert lp_core.suggested_list_price(1000.0, None) == 1000.0
+
+    def test_no_sell_orders_falls_back_to_fair(self):
+        assert lp_core.suggested_list_price(None, 800.0) == 800.0
+
+    def test_neither_signal_is_none(self):
+        assert lp_core.suggested_list_price(None, None) is None

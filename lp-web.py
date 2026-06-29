@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.19.0"
+__version__ = "1.20.0"
 
 import argparse
 import base64
@@ -668,12 +668,15 @@ def do_ind_scan(q, emit=None):
         _emit({"type": "progress", "pct": 18,
                "msg": f"{len(candidates):,} manufacturable items — loading recipes…", "sub": ""})
         bps = ind_core.assemble_blueprints(conn, candidates)
+        ind_core.assemble_invention(conn, bps)
 
         type_ids = set()
         for bp in bps:
             type_ids.add(bp["product_id"])
             type_ids.add(bp["blueprint_id"])
             type_ids.update(mid for mid, _ in bp["materials"])
+            if bp.get("invention"):
+                type_ids.update(dc for dc, _ in bp["invention"]["datacores"])
 
         _emit({"type": "progress", "pct": 30,
                "msg": f"Pricing {len(type_ids):,} item types at "
@@ -737,11 +740,14 @@ def do_ind_detail(q):
         if not row:
             raise LPError(f"No manufacturing blueprint {blueprint_id}.")
         bp = ind_core.assemble_blueprints(conn, [dict(row)])[0]
+        ind_core.assemble_invention(conn, [bp])
     finally:
         conn.close()
 
     type_ids = {bp["product_id"], bp["blueprint_id"]}
     type_ids.update(mid for mid, _ in bp["materials"])
+    if bp.get("invention"):
+        type_ids.update(dc for dc, _ in bp["invention"]["datacores"])
     prices = fetch_prices(type_ids, SESSION, station_id)
     params["adjusted"] = ind_core.fetch_adjusted_prices(SESSION, CACHE_DIR)
     params["bpo_prices"] = {
@@ -2912,6 +2918,22 @@ function renderIndDetail(d){
     +`<td class="num">${isk(m.line_cost_batch)}</td>`
     +`<td class="num">${m.line_volume_batch?fmtVol(m.line_volume_batch):"—"}</td></tr>`).join("");
   const tier=d.product.tech_level?("T"+d.product.tech_level):"";
+  let invHtml="";
+  if(d.invention){
+    const iv=d.invention;
+    const dcs=iv.datacores.map(c=>
+      `<tr><td>${c.name}</td><td class="num">${fmtNum(c.quantity)}</td>`
+      +`<td class="num">${isk(c.unit_price)}</td><td class="num">${isk(c.line_cost)}</td></tr>`).join("");
+    invHtml=`
+      <div class="ind-d-head" style="margin-top:10px">Invention (T2)</div>
+      <div class="ind-d-grid">
+        <span>Success probability</span><b>${(iv.probability*100).toFixed(1)}% (base ${(iv.base_probability*100).toFixed(1)}%)</b>
+        <span>Runs per invented BPC</span><b>${fmtNum(iv.runs_per_bpc)}</b>
+        <span>Invention cost / T2 run</span><b>${isk(iv.cost_per_run)}</b>
+      </div>
+      <table class="ind-d-mats"><thead><tr><th>Datacore</th><th class="num">Qty</th>
+        <th class="num">Unit</th><th class="num">Line</th></tr></thead><tbody>${dcs}</tbody></table>`;
+  }
   $("#ind-detail").innerHTML=`
     <div class="ind-d-head">
       <b>${d.product.name}</b> ${tier} · ${d.runs.toLocaleString()} run(s) · source ${d.station_name}
@@ -2930,7 +2952,8 @@ function renderIndDetail(d){
     </div>
     <table class="ind-d-mats"><thead><tr><th>Material</th><th class="num">Qty/run</th>
       <th class="num">Unit</th><th class="num">Line/run</th><th class="num">Line×N</th>
-      <th class="num">m³×N</th></tr></thead><tbody>${mats}</tbody></table>`;
+      <th class="num">m³×N</th></tr></thead><tbody>${mats}</tbody></table>
+    ${invHtml}`;
 }
 
 function loadIndGroups(){

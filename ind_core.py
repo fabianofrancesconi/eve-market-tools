@@ -450,6 +450,58 @@ def assemble_blueprints(conn, candidates, activity_id=ACT_MANUFACTURING):
     return bps
 
 
+def assemble_invention(conn, bps):
+    """Attach bp['invention'] to every T2 blueprint among `bps` (in place, and
+    returns `bps`). A T2 manufacturing blueprint is the product of some T1
+    blueprint's invention activity; we look up that inventor, its datacores
+    (activity-8 materials), the base success probability and the runs the
+    invented BPC carries. T1 blueprints get bp['invention'] = None."""
+    t2_ids = [bp["blueprint_id"] for bp in bps]
+    by_t2 = {}
+    for bp in bps:
+        bp["invention"] = None
+        by_t2.setdefault(bp["blueprint_id"], []).append(bp)
+    if not t2_ids:
+        return bps
+    marks = ", ".join("?" for _ in t2_ids)
+
+    inventor, t1_ids = {}, set()  # t2_bp -> (t1_bp, runs_per_bpc)
+    for r in conn.execute(
+        f"SELECT blueprint_id AS t1, product_id AS t2, quantity AS runs FROM products "
+        f"WHERE activity_id = ? AND product_id IN ({marks})",
+        [ACT_INVENTION, *t2_ids]):
+        inventor[r["t2"]] = (r["t1"], r["runs"])
+        t1_ids.add(r["t1"])
+    if not inventor:
+        return bps
+
+    prob = {}  # t2_bp -> base probability
+    for r in conn.execute(
+        f"SELECT product_id AS t2, probability FROM probabilities "
+        f"WHERE activity_id = ? AND product_id IN ({marks})",
+        [ACT_INVENTION, *t2_ids]):
+        prob[r["t2"]] = r["probability"]
+
+    t1_marks = ", ".join("?" for _ in t1_ids)
+    datacores = {}  # t1_bp -> [(datacore_id, qty)]
+    for r in conn.execute(
+        f"SELECT blueprint_id AS t1, material_id, quantity FROM materials "
+        f"WHERE activity_id = ? AND blueprint_id IN ({t1_marks})",
+        [ACT_INVENTION, *t1_ids]):
+        datacores.setdefault(r["t1"], []).append((r["material_id"], r["quantity"]))
+
+    for t2, (t1, runs) in inventor.items():
+        info = {
+            "t1_blueprint_id": t1,
+            "datacores": datacores.get(t1, []),
+            "probability": prob.get(t2),
+            "runs_per_bpc": runs,
+        }
+        for bp in by_t2.get(t2, []):
+            bp["invention"] = info
+    return bps
+
+
 # --- evaluation (pure: dicts in, dicts out -- no I/O) ----------------------
 def _best(*vals):
     """Highest of the supplied values, ignoring None. None if all are None."""
@@ -531,16 +583,52 @@ def _buildable(bp, skill_profile, default_level=0):
     return all(sp.get(sid, default_level) >= lvl for sid, lvl in bp.get("skills", []))
 
 
-def blueprint_cost_per_run(bp, params):
+def invention_cost_per_run(inv, prices, params):
+    """Effective blueprint cost for one T2 manufacturing run, sourced from
+    invention rather than a bought BPO.
+
+      inv     {datacores:[(id,qty)], probability (base), runs_per_bpc, ...}
+      prices  live prices (datacores priced at sell_min)
+      params  carries skills_level (the science-skill assumption) and an optional
+              decryptor_price.
+
+    Each invention attempt costs the datacores (+ optional decryptor) and yields,
+    on success, a BPC good for `runs_per_bpc` manufacturing runs. So the cost
+    charged to ONE T2 run is attempt_cost / (success_prob * runs_per_bpc). The
+    base success probability is lifted by the three invention skills, here
+    approximated with the flat skills_level (encryption /40, two datacore /30).
+    The consumed T1 BPC is assumed owned (free) -- consistent with the rest of
+    the 'owned by default' handling for the base blueprint."""
+    runs = inv.get("runs_per_bpc") or 1
+    p_base = inv.get("probability") or 0.0
+    if p_base <= 0 or runs <= 0:
+        return 0.0
+    lvl = params.get("skills_level", 0)
+    p = min(1.0, p_base * (1 + lvl / 40.0 + 2 * lvl / 30.0))
+    attempt = 0.0
+    for dcid, qty in inv.get("datacores", []):
+        unit = (prices.get(dcid) or {}).get("sell_min")
+        if unit:
+            attempt += qty * unit
+    if params.get("decryptor_price"):
+        attempt += params["decryptor_price"]
+    return attempt / (p * runs)
+
+
+def blueprint_cost_per_run(bp, params, prices=None):
     """Per-run blueprint cost. Counted by default; the 'I own it' toggle
-    (params['bp_owned']) zeroes it. For T1 this amortizes the BPO purchase price
-    over params['amortize_runs']. (T2/invention overrides this in a later
-    milestone via params['invention_costs'].)"""
+    (params['bp_owned']) zeroes it. Precedence: an explicit
+    params['invention_costs'] override, then T2 invention (when the blueprint
+    carries bp['invention']), then a T1 BPO purchase amortized over
+    params['amortize_runs']."""
     if params.get("bp_owned"):
         return 0.0
-    inv = (params.get("invention_costs") or {}).get(bp["blueprint_id"])
-    if inv is not None:
-        return inv
+    override = (params.get("invention_costs") or {}).get(bp["blueprint_id"])
+    if override is not None:
+        return override
+    inv = bp.get("invention")
+    if inv:
+        return invention_cost_per_run(inv, prices or {}, params)
     price = (params.get("bpo_prices") or {}).get(bp["blueprint_id"])
     amort = params.get("amortize_runs") or 1
     return (price / amort) if price else 0.0
@@ -575,7 +663,7 @@ def evaluate_industry(candidates, prices, adjusted, params):
         pid = bp["product_id"]
         out_qty = bp.get("out_qty") or 1
         cost = manufacturing_cost(bp, prices, adjusted, job_rate, me)
-        bp_cost = blueprint_cost_per_run(bp, params)
+        bp_cost = blueprint_cost_per_run(bp, params, prices)
         total_cost = cost["material_cost"] + cost["job_cost"] + bp_cost
 
         p = prices.get(pid, {})
@@ -675,7 +763,7 @@ def build_industry_detail(bp, prices, names, volumes, params):
             "line_volume_batch": None if line_vol is None else line_vol * n,
         })
 
-    bp_cost = blueprint_cost_per_run(bp, params)
+    bp_cost = blueprint_cost_per_run(bp, params, prices)
     total_cost = cost["material_cost"] + cost["job_cost"] + bp_cost
     p = prices.get(pid, {})
     ask, bid = p.get("sell_min"), p.get("buy_max")
@@ -713,4 +801,33 @@ def build_industry_detail(bp, prices, names, volumes, params):
         # cargo for the whole batch
         "input_volume_batch": input_volume * n,
         "output_volume_batch": None if out_vol is None else out_vol * n,
+        "invention": _invention_detail(bp, prices, names, params),
+    }
+
+
+def _invention_detail(bp, prices, names, params):
+    """The invention breakdown for the detail panel (None for T1 items): the
+    datacore shopping list, the skill-adjusted success probability, runs per
+    invented BPC and the resulting per-run blueprint cost."""
+    inv = bp.get("invention")
+    if not inv:
+        return None
+    lvl = params.get("skills_level", 0)
+    p = min(1.0, (inv.get("probability") or 0.0) * (1 + lvl / 40.0 + 2 * lvl / 30.0))
+    datacores = []
+    for dcid, qty in inv.get("datacores", []):
+        unit = (prices.get(dcid) or {}).get("sell_min")
+        datacores.append({
+            "type_id": dcid,
+            "name": (names or {}).get(dcid, str(dcid)),
+            "quantity": qty,
+            "unit_price": unit,
+            "line_cost": (qty * unit) if unit else None,
+        })
+    return {
+        "datacores": datacores,
+        "base_probability": inv.get("probability"),
+        "probability": p,
+        "runs_per_bpc": inv.get("runs_per_bpc"),
+        "cost_per_run": invention_cost_per_run(inv, prices, params),
     }

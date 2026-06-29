@@ -428,3 +428,93 @@ class TestBuildIndustryDetail:
         assert d["total_cost"] == pytest.approx(row["total_cost"])
         assert d["profit_patient"] == pytest.approx(row["profit_patient"])
         assert d["job_cost"] == pytest.approx(row["job_cost"])
+
+
+# ---------------------------------------------------------------------------
+# invention_cost_per_run (Milestone 4 — T2)
+# ---------------------------------------------------------------------------
+
+def _inv(**kw):
+    base = {"t1_blueprint_id": 600, "datacores": [(20410, 2), (20411, 4)],
+            "probability": 0.30, "runs_per_bpc": 10}
+    base.update(kw)
+    return base
+
+
+def _inv_prices():
+    return {20410: {"sell_min": 1000.0}, 20411: {"sell_min": 500.0}}
+
+
+class TestInventionCost:
+    def test_attempt_cost_over_prob_and_runs(self):
+        # attempt = 2*1000 + 4*500 = 4000 ; skills 0 -> p=0.30 ; runs 10
+        # cost/run = 4000 / (0.30 * 10) = 1333.33
+        c = ind_core.invention_cost_per_run(_inv(), _inv_prices(), {"skills_level": 0})
+        assert c == pytest.approx(4000.0 / (0.30 * 10))
+
+    def test_skills_raise_probability_lowering_cost(self):
+        # skills_level 5: p = 0.30 * (1 + 5/40 + 2*5/30) = 0.30 * 1.4583 = 0.4375
+        p = 0.30 * (1 + 5/40 + 2*5/30)
+        c = ind_core.invention_cost_per_run(_inv(), _inv_prices(), {"skills_level": 5})
+        assert c == pytest.approx(4000.0 / (p * 10))
+
+    def test_decryptor_price_added(self):
+        c0 = ind_core.invention_cost_per_run(_inv(), _inv_prices(), {"skills_level": 0})
+        c1 = ind_core.invention_cost_per_run(
+            _inv(), _inv_prices(), {"skills_level": 0, "decryptor_price": 2000.0})
+        assert c1 > c0
+        assert c1 == pytest.approx(6000.0 / (0.30 * 10))
+
+    def test_zero_probability_is_zero(self):
+        assert ind_core.invention_cost_per_run(_inv(probability=0), _inv_prices(), {}) == 0.0
+
+    def test_blueprint_cost_uses_invention_when_present(self):
+        bp = _bp(invention=_inv())
+        cost = ind_core.blueprint_cost_per_run(bp, {"skills_level": 0}, _inv_prices())
+        assert cost == pytest.approx(4000.0 / (0.30 * 10))
+
+    def test_owned_toggle_zeroes_t2(self):
+        bp = _bp(invention=_inv())
+        assert ind_core.blueprint_cost_per_run(bp, {"bp_owned": True}, _inv_prices()) == 0.0
+
+    def test_detail_includes_invention_block(self):
+        bp = _bp(invention=_inv())
+        params = _params(adjusted=_ADJUSTED)
+        names = {20410: "Datacore A", 20411: "Datacore B"}
+        merged = _prices(); merged.update(_inv_prices())
+        d = ind_core.build_industry_detail(bp, merged, names, _VOLUMES, params)
+        assert d["invention"] is not None
+        assert d["invention"]["runs_per_bpc"] == 10
+        assert len(d["invention"]["datacores"]) == 2
+        assert d["invention"]["datacores"][0]["name"] == "Datacore A"
+
+    def test_t1_has_no_invention_block(self):
+        d = ind_core.build_industry_detail(_bp(), _prices(), {}, _VOLUMES,
+                                           _params(adjusted=_ADJUSTED))
+        assert d["invention"] is None
+
+
+# ---------------------------------------------------------------------------
+# assemble_invention (DB -> bp['invention'])
+# ---------------------------------------------------------------------------
+
+class TestAssembleInvention:
+    def test_attaches_invention_to_t2(self, tmp_path):
+        # Fixture: T1 bp 680 invents T2 bp 700 (runs 1, prob 0.30, datacore 20410 x2),
+        # and 700 manufactures product 12005.
+        ind_core.build_sde_db(tmp_path, session=_fake_session())
+        conn = ind_core.connect_sde(tmp_path)
+        try:
+            cands = ind_core.manufacturing_candidates(conn)
+            bps = ind_core.assemble_blueprints(conn, cands)
+            ind_core.assemble_invention(conn, bps)
+        finally:
+            conn.close()
+        t2 = next(b for b in bps if b["blueprint_id"] == 700)
+        t1 = next(b for b in bps if b["blueprint_id"] == 681)
+        assert t2["invention"] is not None
+        assert t2["invention"]["t1_blueprint_id"] == 680
+        assert t2["invention"]["probability"] == pytest.approx(0.30)
+        assert t2["invention"]["runs_per_bpc"] == 1
+        assert t2["invention"]["datacores"] == [(20410, 2)]
+        assert t1["invention"] is None

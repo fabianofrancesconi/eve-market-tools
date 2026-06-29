@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.18.0"
+__version__ = "1.19.0"
 
 import argparse
 import base64
@@ -39,6 +39,7 @@ _FAVICON_B64 = base64.b64encode(_FAVICON_SVG).decode()
 import requests
 
 import arb_core
+import ind_core
 from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
     TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_prices, fetch_history_volumes,
@@ -51,6 +52,7 @@ SESSION = requests.Session()
 CACHE_DIR = default_cache_dir()
 SETTINGS_PATH = CACHE_DIR / "lp_web_settings.json"
 ARB_SETTINGS_PATH = CACHE_DIR / "arb_settings.json"
+IND_SETTINGS_PATH = CACHE_DIR / "ind_settings.json"
 REFRESHED_CORPS = set()
 
 REGION_NAMES = {
@@ -93,6 +95,14 @@ def load_arb_settings():
 
 def save_arb_settings(d):
     save_json(ARB_SETTINGS_PATH, d)
+
+
+def load_ind_settings():
+    return load_json(IND_SETTINGS_PATH, {})
+
+
+def save_ind_settings(d):
+    save_json(IND_SETTINGS_PATH, d)
 
 
 def _all_type_ids(offers):
@@ -575,6 +585,175 @@ def do_arb_scan(q, emit=None):
     }
 
 
+# ── Industry planner ────────────────────────────────────────────────────────
+
+# After ranking by ISK/hour, only the top rows get a (cached, one-call-per-type)
+# market-history lookup for the "days to sell" column — bounds the work on a
+# broad scan while still covering everything worth looking at.
+IND_HISTORY_TOP_N = 80
+
+_IND_PREF_KEYS = ("profiles", "profile", "market_group", "me", "te", "job_rate",
+                  "sales_tax", "broker", "runs", "bp_owned", "amortize_runs",
+                  "station", "skills_level", "buildable_only")
+
+
+def do_ind_prefs(q):
+    s = load_ind_settings()
+    for k in _IND_PREF_KEYS:
+        if k in q:
+            s[k] = q[k][0]
+    save_ind_settings(s)
+    return {"ok": True}
+
+
+def do_ind_groups(q):
+    """Top-level market groups for the category dropdown (builds the SDE first
+    if needed)."""
+    ind_core.load_sde_industry(CACHE_DIR, SESSION)
+    conn = ind_core.connect_sde(CACHE_DIR)
+    try:
+        return {"groups": ind_core.top_market_groups(conn)}
+    finally:
+        conn.close()
+
+
+def _ind_params(q):
+    """Parse the shared scan/detail knobs. Percentages (job rate, taxes) come
+    from the UI as whole numbers and are converted to fractions here."""
+    return {
+        "me": int(float(q.get("me", ["0"])[0] or 0)),
+        "te": int(float(q.get("te", ["0"])[0] or 0)),
+        "job_rate": float(q.get("job_rate", ["6"])[0] or 0) / 100.0,
+        "sales_tax": float(q.get("sales_tax", ["4.5"])[0] or 0) / 100.0,
+        "broker_fee": float(q.get("broker", ["1.5"])[0] or 0) / 100.0,
+        "runs": max(1, int(float(q.get("runs", ["1"])[0] or 1))),
+        "bp_owned": q.get("bp_owned", ["0"])[0] in ("1", "true", "on"),
+        "amortize_runs": max(1, int(float(q.get("amortize_runs", ["1"])[0] or 1))),
+        "skills_level": int(float(q.get("skills_level", ["5"])[0] or 0)),
+    }
+
+
+def do_ind_scan(q, emit=None):
+    """Rank manufacturable items by profitability. Streams SSE progress."""
+    def _emit(d):
+        if emit:
+            emit(d)
+
+    market_group = q.get("market_group", ["all"])[0]
+    station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
+    if station_id not in TRADE_HUBS:
+        station_id = JITA_STATION_ID
+    region_id = TRADE_HUBS[station_id]["region_id"]
+    refresh_sde = q.get("refresh_sde", ["0"])[0] in ("1", "true", "on")
+    buildable_only = q.get("buildable_only", ["0"])[0] in ("1", "true", "on")
+    params = _ind_params(q)
+
+    s = load_ind_settings()
+    for k in _IND_PREF_KEYS:
+        if k in q:
+            s[k] = q[k][0]
+    save_ind_settings(s)
+
+    _emit({"type": "progress", "pct": 4, "msg": "Loading blueprint database…", "sub": ""})
+    ind_core.load_sde_industry(
+        CACHE_DIR, SESSION, refresh=refresh_sde,
+        emit=lambda m: _emit({"type": "progress", "pct": 6, "msg": m, "sub": ""}))
+    conn = ind_core.connect_sde(CACHE_DIR)
+    try:
+        if market_group and market_group != "all":
+            group_ids = ind_core.expand_market_groups(conn, [int(market_group)])
+            candidates = ind_core.manufacturing_candidates(conn, group_ids)
+        else:
+            candidates = ind_core.manufacturing_candidates(conn)
+        _emit({"type": "progress", "pct": 18,
+               "msg": f"{len(candidates):,} manufacturable items — loading recipes…", "sub": ""})
+        bps = ind_core.assemble_blueprints(conn, candidates)
+
+        type_ids = set()
+        for bp in bps:
+            type_ids.add(bp["product_id"])
+            type_ids.add(bp["blueprint_id"])
+            type_ids.update(mid for mid, _ in bp["materials"])
+
+        _emit({"type": "progress", "pct": 30,
+               "msg": f"Pricing {len(type_ids):,} item types at "
+                      f"{TRADE_HUBS[station_id]['name']}…", "sub": ""})
+        prices = fetch_prices(type_ids, SESSION, station_id)
+        adjusted = ind_core.fetch_adjusted_prices(SESSION, CACHE_DIR)
+        volumes = ind_core.volumes_for(conn, type_ids)
+        bpo_prices = {bp["blueprint_id"]: prices[bp["blueprint_id"]]["sell_min"]
+                      for bp in bps
+                      if (prices.get(bp["blueprint_id"]) or {}).get("sell_min")}
+
+        _emit({"type": "progress", "pct": 78, "msg": "Computing profitability…", "sub": ""})
+        params.update({"bpo_prices": bpo_prices, "volumes": volumes})
+        rows = ind_core.evaluate_industry(bps, prices, adjusted, params)
+        if buildable_only:
+            rows = [r for r in rows if r["buildable"]]
+    finally:
+        conn.close()
+
+    # Days-to-sell for the top rows only (one cached call per product type).
+    top = rows[:IND_HISTORY_TOP_N]
+    if top:
+        _emit({"type": "progress", "pct": 88,
+               "msg": f"Checking market depth for the top {len(top)} items…", "sub": ""})
+        daily = fetch_history_volumes({r["product_id"] for r in top}, region_id,
+                                      SESSION, CACHE_DIR)
+        for r in top:
+            dv = daily.get(r["product_id"])
+            r["daily_vol"] = dv
+            r["days_to_sell"] = ((r["out_qty"] * r["runs"]) / dv) if dv else None
+
+    _emit({"type": "progress", "pct": 97, "msg": "Formatting results…", "sub": ""})
+    return {
+        "station_id": station_id,
+        "station_name": TRADE_HUBS[station_id]["name"],
+        "market_group": market_group,
+        "runs": params["runs"],
+        "count": len(rows),
+        "scanned_at": time.time(),
+        "rows": rows,
+    }
+
+
+def do_ind_detail(q):
+    """Full breakdown for one blueprint, with accurate (ESI packaged) cargo
+    volumes resolved lazily for just this item's inputs and output."""
+    blueprint_id = int(q["blueprint_id"][0])
+    station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
+    if station_id not in TRADE_HUBS:
+        station_id = JITA_STATION_ID
+    params = _ind_params(q)
+
+    conn = ind_core.connect_sde(CACHE_DIR)
+    try:
+        row = conn.execute(
+            "SELECT p.blueprint_id, p.product_id, p.quantity AS out_qty, "
+            "t.type_name, t.market_group_id, t.tech_level, t.volume AS out_volume "
+            "FROM products p JOIN types t ON t.type_id = p.product_id "
+            "WHERE p.blueprint_id = ? AND p.activity_id = ?",
+            (blueprint_id, ind_core.ACT_MANUFACTURING)).fetchone()
+        if not row:
+            raise LPError(f"No manufacturing blueprint {blueprint_id}.")
+        bp = ind_core.assemble_blueprints(conn, [dict(row)])[0]
+    finally:
+        conn.close()
+
+    type_ids = {bp["product_id"], bp["blueprint_id"]}
+    type_ids.update(mid for mid, _ in bp["materials"])
+    prices = fetch_prices(type_ids, SESSION, station_id)
+    params["adjusted"] = ind_core.fetch_adjusted_prices(SESSION, CACHE_DIR)
+    params["bpo_prices"] = {
+        bp["blueprint_id"]: (prices.get(bp["blueprint_id"]) or {}).get("sell_min")}
+    volumes = resolve_volumes(type_ids, SESSION, CACHE_DIR)
+    names = resolve_names(type_ids, SESSION, CACHE_DIR)
+    detail = ind_core.build_industry_detail(bp, prices, names, volumes, params)
+    detail["product"]["tech_level"] = bp.get("tech_level")
+    detail["station_name"] = TRADE_HUBS[station_id]["name"]
+    return detail
+
+
 # ── HTTP handler ────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -604,7 +783,7 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
-    def _handle_arb_scan(self, q):
+    def _handle_sse_scan(self, q, scan_fn, tag):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -612,14 +791,17 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         emit = self._sse_emit
         try:
-            result = do_arb_scan(q, emit=emit)
+            result = scan_fn(q, emit=emit)
             emit({"type": "result", **result})
         except LPError as e:
-            print(f"[arb] LPError: {e}", file=sys.stderr)
+            print(f"[{tag}] LPError: {e}", file=sys.stderr)
             emit({"type": "error", "error": str(e)})
         except Exception as e:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             emit({"type": "error", "error": f"{type(e).__name__}: {e}"})
+
+    def _handle_arb_scan(self, q):
+        self._handle_sse_scan(q, do_arb_scan, "arb")
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -638,6 +820,7 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/settings":
                 merged = load_settings()
                 merged["arb"] = load_arb_settings()
+                merged["ind"] = load_ind_settings()
                 self._send_json(merged)
             elif parsed.path == "/api/prefs":
                 self._send_json(do_prefs(q))
@@ -653,6 +836,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(do_arb_prefs(q))
             elif parsed.path == "/api/arb/scan":
                 self._handle_arb_scan(q)
+            elif parsed.path == "/api/ind/prefs":
+                self._send_json(do_ind_prefs(q))
+            elif parsed.path == "/api/ind/groups":
+                self._send_json(do_ind_groups(q))
+            elif parsed.path == "/api/ind/scan":
+                self._handle_sse_scan(q, do_ind_scan, "ind")
+            elif parsed.path == "/api/ind/detail":
+                self._send_json(do_ind_detail(q))
             else:
                 self._send_json({"error": "not found"}, 404)
         except LPError as e:
@@ -1099,6 +1290,28 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;
   }
   .arb-chart-head h3 { font-size:16px; font-weight:700; color:var(--cyan); margin:0; }
+
+  /* ── Industry ────────────────────────────────────────────────────── */
+  .ind-presets { display:inline-flex; gap:3px; margin-left:4px; }
+  .ind-preset { padding:4px 7px; font-size:11px; }
+  #ind-detail {
+    background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
+    padding:12px 14px; margin-bottom:12px;
+  }
+  .ind-d-head { font-size:14px; color:var(--fg); margin-bottom:10px; position:relative; }
+  .ind-d-close { position:absolute; right:0; top:0; cursor:pointer; color:var(--dim); padding:0 4px; }
+  .ind-d-close:hover { color:var(--fg); }
+  .ind-d-grid {
+    display:grid; grid-template-columns:auto auto; gap:3px 18px;
+    font-size:12px; margin-bottom:12px; max-width:560px;
+  }
+  .ind-d-grid span { color:var(--dim); }
+  .ind-d-grid b { text-align:right; color:var(--fg); }
+  .ind-d-mats { width:100%; border-collapse:collapse; font-size:12px; }
+  .ind-d-mats th, .ind-d-mats td { padding:3px 8px; border-bottom:1px solid var(--line2); }
+  .ind-d-mats th { color:var(--dim); text-align:left; font-weight:600; }
+  .ind-d-mats td.num, .ind-d-mats th.num { text-align:right; }
+  #ind-tbl th { cursor:pointer; user-select:none; }
 </style>
 </head>
 <body>
@@ -1108,6 +1321,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <nav class="tabs">
     <button class="tab active" data-tab="lp">LP Store</button>
     <button class="tab" data-tab="arb">Arbitrage</button>
+    <button class="tab" data-tab="ind">Industry</button>
   </nav>
 </header>
 
@@ -1187,6 +1401,56 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Industry controls -->
+<div id="ind-controls" class="ctrlbar hidden">
+  <div class="field"><label>Category</label>
+    <select id="ind-group"><option value="all">All (slow)</option></select>
+  </div>
+  <div class="field"><label>Tax profile</label>
+    <select id="ind-profile" data-tip="Saved job-cost-rate presets for a build location"></select>
+  </div>
+  <div class="field"><label>Job cost %</label>
+    <input id="ind-jobrate" type="number" step="0.1" value="6" style="width:75px"
+           data-tip="Installation cost as a % of EIV — read it off the in-game Industry window (it already bundles system index + facility tax + SCC).">
+    <button id="ind-saveprofile" class="secondary" style="padding:4px 8px" data-tip="Save the current job cost % as a named profile">＋</button>
+  </div>
+  <div class="field"><label>Source hub</label>
+    <select id="ind-station">
+      <option value="60003760">Jita 4-4</option>
+      <option value="60008494">Amarr 8-20</option>
+      <option value="60004588">Rens 6-8</option>
+      <option value="60011866">Dodixie 9-20</option>
+      <option value="60005686">Hek 8-12</option>
+    </select>
+  </div>
+  <div class="field"><label>ME</label><input id="ind-me" type="number" min="0" max="10" value="10" style="width:55px"></div>
+  <div class="field"><label>TE</label><input id="ind-te" type="number" min="0" max="20" value="20" style="width:55px"></div>
+  <div class="field"><label>Skills @</label>
+    <input id="ind-skills" type="number" min="0" max="5" value="5" style="width:55px"
+           data-tip="Assume every required skill is at this level (gates buildable + reduces build time)">
+  </div>
+  <div class="field"><label>Sales tax %</label><input id="ind-tax" type="number" step="0.1" value="4.5" style="width:70px"></div>
+  <div class="field"><label>Broker %</label><input id="ind-broker" type="number" step="0.1" value="1.5" style="width:70px"></div>
+  <div class="field"><label>Batch (runs)</label>
+    <input id="ind-runs" type="number" min="1" value="1" style="width:80px">
+    <span class="ind-presets">
+      <button class="ind-preset secondary" data-n="1">1</button>
+      <button class="ind-preset secondary" data-n="100">100</button>
+      <button class="ind-preset secondary" data-n="10000">10k</button>
+    </span>
+  </div>
+  <div class="field"><label>Amortize/runs</label>
+    <input id="ind-amort" type="number" min="1" value="1" style="width:70px"
+           data-tip="Spread a bought BPO's price over this many runs (ignored if you own it)">
+  </div>
+  <div class="btn-group">
+    <button id="ind-go" class="primary">Scan</button>
+    <label class="check-field" data-tip="Mark the blueprint as already owned — drops its cost from the math"><input type="checkbox" id="ind-owned"> I own the BP</label>
+    <label class="check-field" data-tip="Only show items every required skill (at the level above) can build"><input type="checkbox" id="ind-buildable"> Buildable only</label>
+    <button id="ind-refresh" class="secondary" data-tip="Re-download the blueprint database from Fuzzwork">⟳ Refresh SDE</button>
+  </div>
+</div>
+
 <div id="statusbar"></div>
 
 <main>
@@ -1202,6 +1466,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="prog-sub" id="arb-prog-sub"></div>
     </div>
     <table id="arb-tbl"><colgroup id="arb-cg"></colgroup><thead></thead><tbody></tbody></table>
+  </div>
+  <!-- Industry tab -->
+  <div id="ind-tablewrap" class="tablewrap hidden">
+    <div id="ind-progress" class="hidden">
+      <div class="prog-label" id="ind-prog-label">Initializing…</div>
+      <div class="prog-track"><div class="prog-fill" id="ind-prog-fill"></div></div>
+      <div class="prog-sub" id="ind-prog-sub"></div>
+    </div>
+    <div id="ind-detail" class="hidden"></div>
+    <table id="ind-tbl"><thead></thead><tbody></tbody></table>
   </div>
   <!-- LP detail panel -->
   <div id="detail"><div class="inner"></div></div>
@@ -1338,12 +1612,16 @@ function switchTab(tab){
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===tab));
   $("#lp-controls").classList.toggle("hidden", tab!=="lp");
   $("#arb-controls").classList.toggle("hidden", tab!=="arb");
+  $("#ind-controls").classList.toggle("hidden", tab!=="ind");
   $("#lp-tablewrap").classList.toggle("hidden", tab!=="lp");
   $("#arb-tablewrap").classList.toggle("hidden", tab!=="arb");
+  $("#ind-tablewrap").classList.toggle("hidden", tab!=="ind");
   if(tab!=="lp") closeDetail();
   setStatus("");
-  document.title = tab==="lp" ? "EVE LP Store Scanner" : "EVE Arbitrage Scanner";
+  document.title = tab==="lp" ? "EVE LP Store Scanner"
+                : tab==="arb" ? "EVE Arbitrage Scanner" : "EVE Industry Planner";
   fetch(`/api/prefs?active_tab=${tab}`).catch(()=>{}); saveLS();
+  if(tab==="ind" && !IND.groupsLoaded) loadIndGroups();
 }
 document.querySelectorAll(".tab").forEach(t=>{
   t.onclick = ()=>switchTab(t.dataset.tab);
@@ -2477,6 +2755,237 @@ function openArbChart(row){
 })();
 
 // ══════════════════════════════════════════════════════════════════════════
+// INDUSTRY TAB
+// ══════════════════════════════════════════════════════════════════════════
+let IND = {rows:[], sort:{key:"isk_per_hour_best", dir:-1}, lastData:null, es:null,
+           groupsLoaded:false, profiles:[]};
+
+const fmtDur = s => {
+  if(s===null||s===undefined) return "—";
+  const h=Math.floor(s/3600), m=Math.round((s%3600)/60);
+  return h>0 ? `${h}h ${m}m` : `${m}m`;
+};
+const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
+const fmtDaysSell = v => (v===null||v===undefined) ? "—" : v.toFixed(1);
+
+const IND_COLS = [
+  {k:"product_name",       t:"Item",        w:230, tip:"The manufactured item. * = an input has no sell price at the source hub."},
+  {k:"tech_level",         t:"T",           w: 40, tip:"Tech level.", f:v=>v?("T"+v):"—"},
+  {k:"isk_per_hour_best",  t:"ISK/hr",      w:115, tip:"Profit per hour of manufacturing time — the headline 'worth it' number.", f:fmtISK, pn:true},
+  {k:"profit_best",        t:"Profit/run",  w:110, tip:"Best-of patient/instant profit for one run.", f:fmtISK, pn:true},
+  {k:"total_profit_best",  t:"Profit×N",    w:115, tip:"Profit across the whole batch (Runs).", f:fmtISK, pn:true},
+  {k:"margin_best",        t:"Margin",      w: 75, tip:"Profit as a % of total cost.", f:fmtPct1, pn:true},
+  {k:"build_time",         t:"Build",       w: 80, tip:"Time for one run after TE + skills.", f:fmtDur},
+  {k:"total_cost",         t:"Cost/run",    w:105, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
+  {k:"bp_cost",            t:"BP cost",     w: 95, tip:"Blueprint cost per run (0 if you own it).", f:fmtISK},
+  {k:"ask",                t:"Sell",        w:105, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
+  {k:"input_volume",       t:"Cargo in",    w: 95, tip:"m³ of materials to haul in for the batch.", f:v=>v?fmtVol(v):"—"},
+  {k:"output_volume",      t:"Cargo out",   w: 95, tip:"m³ of finished items to haul out for the batch.", f:v=>v?fmtVol(v):"—"},
+  {k:"days_to_sell",       t:"Days to sell",w: 95, tip:"Batch size ÷ daily traded volume (top items only).", f:fmtDaysSell},
+  {k:"buildable",          t:"Build?",      w: 65, tip:"Can every required skill (at the Skills level) make it?", f:v=>v?"✓":"✗"},
+];
+
+function renderIndTable(){
+  const thead=$("#ind-tbl thead"), tbody=$("#ind-tbl tbody");
+  thead.innerHTML="<tr>"+IND_COLS.map(c=>{
+    const active=IND.sort.key===c.k;
+    const arrow=active?(IND.sort.dir<0?" ▼":" ▲"):"";
+    const tip=c.tip?` data-tip="${c.tip.replace(/"/g,'&quot;')}"`:"";
+    const w=c.w?` style="width:${c.w}px"`:"";
+    return `<th data-k="${c.k}"${tip}${w}${active?' class="sorted"':''}>${c.t}${arrow}</th>`;
+  }).join("")+"</tr>";
+  thead.querySelectorAll("th").forEach(th=>{
+    th.onclick=()=>{
+      const k=th.dataset.k;
+      if(IND.sort.key===k) IND.sort.dir*=-1;
+      else IND.sort={key:k, dir:k==="product_name"?1:-1};
+      renderIndTable();
+    };
+  });
+  const rows=[...IND.rows].sort((a,b)=>{
+    const k=IND.sort.key, d=IND.sort.dir;
+    let x=a[k], y=b[k];
+    if(typeof x==="string") return String(x).localeCompare(String(y))*d;
+    if(x===null||x===undefined) x=-Infinity;
+    if(y===null||y===undefined) y=-Infinity;
+    return (x-y)*d;
+  });
+  tbody.innerHTML=rows.map((r,i)=>{
+    const tds=IND_COLS.map(c=>{
+      let v=r[c.k], txt=c.f?c.f(v,r):(v===null||v===undefined?"—":v);
+      if(c.k==="product_name" && r.missing_price) txt+=" *";
+      let cls=c.cls||"";
+      if(c.pn) cls+=(v>0?" pos":(v<0?" neg":""));
+      if(c.k==="buildable") cls+=v?" pos":" neg";
+      return `<td class="${cls.trim()}">${txt}</td>`;
+    }).join("");
+    return `<tr style="cursor:pointer" data-ridx="${i}">${tds}</tr>`;
+  }).join("");
+  tbody.querySelectorAll("tr").forEach((tr,i)=>{
+    tr.onclick=()=>openIndDetail(rows[i]);
+  });
+}
+
+function renderIndStatus(){
+  const d=IND.lastData; if(!d||ACTIVE_TAB!=="ind") return;
+  setStatus(
+    `<span class="pill"><b>${d.count.toLocaleString()}</b> items · source <b>${d.station_name}</b></span>`
+    +`<span class="pill">batch <b>${d.runs.toLocaleString()}</b> runs</span>`
+    +`<span class="ts">scan ${fmtTs(d.scanned_at)}</span>`);
+}
+
+function showIndProgress(msg, sub, pct){
+  $("#ind-tbl").classList.add("hidden");
+  $("#ind-detail").classList.add("hidden");
+  $("#ind-progress").classList.remove("hidden");
+  $("#ind-prog-label").textContent=msg;
+  $("#ind-prog-sub").textContent=sub||"";
+  $("#ind-prog-fill").style.width=(pct||0)+"%";
+}
+function hideIndProgress(){
+  $("#ind-progress").classList.add("hidden");
+  $("#ind-tbl").classList.remove("hidden");
+}
+
+function indParams(extra){
+  const p={
+    market_group: $("#ind-group").value,
+    station:      $("#ind-station").value,
+    me:           $("#ind-me").value||"0",
+    te:           $("#ind-te").value||"0",
+    job_rate:     $("#ind-jobrate").value||"0",
+    sales_tax:    $("#ind-tax").value||"0",
+    broker:       $("#ind-broker").value||"0",
+    runs:         $("#ind-runs").value||"1",
+    amortize_runs:$("#ind-amort").value||"1",
+    skills_level: $("#ind-skills").value||"0",
+    bp_owned:     $("#ind-owned").checked?"1":"0",
+    buildable_only:$("#ind-buildable").checked?"1":"0",
+  };
+  return new URLSearchParams(Object.assign(p, extra||{}));
+}
+
+function scanInd(refreshSde){
+  if(IND.es){ IND.es.close(); IND.es=null; }
+  const btn=$("#ind-go"); btn.disabled=true; btn.textContent="Scanning…";
+  const p=indParams(refreshSde?{refresh_sde:"1"}:null);
+  showIndProgress("Loading blueprint database…","",1);
+  setStatus("Scanning…");
+  const es=new EventSource("/api/ind/scan?"+p); IND.es=es;
+  es.onmessage=e=>{
+    let data; try{ data=JSON.parse(e.data); }catch(err){ return; }
+    if(data.type==="progress"){
+      showIndProgress(data.msg, data.sub||"", data.pct||0);
+      setStatus(data.msg+(data.sub?" — "+data.sub:""));
+    } else if(data.type==="result"){
+      es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
+      IND.rows=data.rows; IND.lastData=data;
+      hideIndProgress(); renderIndStatus(); renderIndTable();
+    } else if(data.type==="error"){
+      es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
+      hideIndProgress(); setStatus(data.error, true);
+    }
+  };
+  es.onerror=()=>{
+    es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
+    hideIndProgress(); setStatus("Connection error — server may have stopped.", true);
+  };
+}
+
+function openIndDetail(row){
+  const box=$("#ind-detail");
+  box.classList.remove("hidden");
+  box.innerHTML=`<div class="ind-d-head">Loading ${row.product_name}…</div>`;
+  box.scrollIntoView({block:"nearest"});
+  const p=indParams({blueprint_id:row.blueprint_id});
+  fetch("/api/ind/detail?"+p).then(r=>r.json()).then(d=>{
+    if(d.error){ box.innerHTML=`<div class="ind-d-head">${d.error}</div>`; return; }
+    renderIndDetail(d);
+  }).catch(()=>{ box.innerHTML=`<div class="ind-d-head">Failed to load detail.</div>`; });
+}
+
+function renderIndDetail(d){
+  const isk=v=>v===null||v===undefined?"—":fmtISK(v);
+  const mats=d.required_items.map(m=>
+    `<tr><td>${m.name}</td><td class="num">${fmtNum(m.eff_qty)}</td>`
+    +`<td class="num">${isk(m.unit_price)}</td><td class="num">${isk(m.line_cost)}</td>`
+    +`<td class="num">${isk(m.line_cost_batch)}</td>`
+    +`<td class="num">${m.line_volume_batch?fmtVol(m.line_volume_batch):"—"}</td></tr>`).join("");
+  const tier=d.product.tech_level?("T"+d.product.tech_level):"";
+  $("#ind-detail").innerHTML=`
+    <div class="ind-d-head">
+      <b>${d.product.name}</b> ${tier} · ${d.runs.toLocaleString()} run(s) · source ${d.station_name}
+      <span class="ind-d-close" onclick="$('#ind-detail').classList.add('hidden')">✕</span>
+    </div>
+    <div class="ind-d-grid">
+      <span>Material cost/run</span><b>${isk(d.material_cost)}</b>
+      <span>Job install/run (EIV ${isk(d.eiv)} × ${(d.job_rate*100).toFixed(1)}%)</span><b>${isk(d.job_cost)}</b>
+      <span>Blueprint cost/run</span><b>${isk(d.bp_cost)}</b>
+      <span>Total cost/run</span><b>${isk(d.total_cost)}</b>
+      <span>Sell @ ask (patient)</span><b>${isk(d.revenue_patient)}</b>
+      <span>Profit/run — list</span><b class="${d.profit_patient>0?'pos':'neg'}">${isk(d.profit_patient)}</b>
+      <span>Profit/run — instant</span><b class="${d.profit_instant>0?'pos':'neg'}">${isk(d.profit_instant)}</b>
+      <span>Build time/run</span><b>${fmtDur(d.build_time)}</b>
+      <span>Cargo in / out (batch)</span><b>${d.input_volume_batch?fmtVol(d.input_volume_batch):"—"} / ${d.output_volume_batch?fmtVol(d.output_volume_batch):"—"}</b>
+    </div>
+    <table class="ind-d-mats"><thead><tr><th>Material</th><th class="num">Qty/run</th>
+      <th class="num">Unit</th><th class="num">Line/run</th><th class="num">Line×N</th>
+      <th class="num">m³×N</th></tr></thead><tbody>${mats}</tbody></table>`;
+}
+
+function loadIndGroups(){
+  fetch("/api/ind/groups").then(r=>r.json()).then(d=>{
+    if(!d.groups) return;
+    const sel=$("#ind-group"), cur=sel.value;
+    sel.innerHTML='<option value="all">All (slow)</option>'
+      +d.groups.map(g=>`<option value="${g.id}">${g.name}</option>`).join("");
+    sel.value=cur; IND.groupsLoaded=true;
+  }).catch(()=>{});
+}
+
+// ── Tax profiles (named job-cost-rate presets) ──────────────────────
+function renderIndProfiles(){
+  const sel=$("#ind-profile");
+  sel.innerHTML='<option value="">— custom —</option>'
+    +IND.profiles.map((p,i)=>`<option value="${i}">${p.name}</option>`).join("");
+}
+function applyIndProfile(){
+  const i=$("#ind-profile").value;
+  if(i!==""&&IND.profiles[i]){ $("#ind-jobrate").value=IND.profiles[i].job_rate; saveIndPrefs(); }
+}
+function addIndProfile(){
+  const name=prompt("Name this tax profile (e.g. Ikuchi, NPC station):");
+  if(!name) return;
+  IND.profiles.push({name, job_rate:$("#ind-jobrate").value||"6"});
+  renderIndProfiles();
+  $("#ind-profile").value=String(IND.profiles.length-1);
+  saveIndPrefs();
+}
+
+function saveIndPrefs(){
+  const p=indParams({
+    profiles: JSON.stringify(IND.profiles),
+    profile:  $("#ind-profile").value,
+  });
+  fetch("/api/ind/prefs?"+p).catch(()=>{}); saveLS();
+}
+
+// wiring
+$("#ind-go").onclick=()=>scanInd(false);
+$("#ind-refresh").onclick=()=>scanInd(true);
+$("#ind-saveprofile").onclick=addIndProfile;
+$("#ind-profile").addEventListener("change", applyIndProfile);
+document.querySelectorAll(".ind-preset").forEach(b=>{
+  b.onclick=()=>{ $("#ind-runs").value=b.dataset.n; saveIndPrefs(); };
+});
+["#ind-group","#ind-station","#ind-me","#ind-te","#ind-jobrate","#ind-tax",
+ "#ind-broker","#ind-runs","#ind-amort","#ind-skills"].forEach(sel=>{
+  const el=$(sel); if(!el) return;
+  el.addEventListener("change", saveIndPrefs);
+});
+["#ind-owned","#ind-buildable"].forEach(sel=>$(sel).addEventListener("change", saveIndPrefs));
+
+// ══════════════════════════════════════════════════════════════════════════
 // Init
 // ══════════════════════════════════════════════════════════════════════════
 updateArbJumpsVisibility();  // reflect default cross-station selection before settings load
@@ -2528,8 +3037,26 @@ async function loadSettings(){
         $("#arb-toggleLowsec").classList.add("active");
       }
       updateArbJumpsVisibility();
+      // Industry settings
+      const ind=s.ind||{};
+      if(ind.market_group) $("#ind-group").value=ind.market_group;
+      if(ind.station) $("#ind-station").value=ind.station;
+      if(ind.me!==undefined&&ind.me!=="") $("#ind-me").value=ind.me;
+      if(ind.te!==undefined&&ind.te!=="") $("#ind-te").value=ind.te;
+      if(ind.job_rate) $("#ind-jobrate").value=ind.job_rate;
+      if(ind.sales_tax) $("#ind-tax").value=ind.sales_tax;
+      if(ind.broker) $("#ind-broker").value=ind.broker;
+      if(ind.runs) $("#ind-runs").value=ind.runs;
+      if(ind.amortize_runs) $("#ind-amort").value=ind.amortize_runs;
+      if(ind.skills_level!==undefined&&ind.skills_level!=="") $("#ind-skills").value=ind.skills_level;
+      if(ind.bp_owned==="1") $("#ind-owned").checked=true;
+      if(ind.buildable_only==="1") $("#ind-buildable").checked=true;
+      if(ind.profiles){ try{ IND.profiles=JSON.parse(ind.profiles)||[]; }catch(e){} }
+      renderIndProfiles();
+      if(ind.profile) $("#ind-profile").value=ind.profile;
       // Restore last active tab
       if(s.active_tab==="arb") switchTab("arb");
+      else if(s.active_tab==="ind") switchTab("ind");
   }
   // Auto-run LP scanner if corp is set
   if(ACTIVE_TAB==="lp" && $("#corp").value.trim()) scan(false);

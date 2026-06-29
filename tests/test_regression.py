@@ -856,3 +856,33 @@ class TestApiHistoryEndpoint:
             data, _ = http_get(f"{base}/api/history?type_id=34&region_id=10000002")
         dates = [d["date"] for d in data["history"]]
         assert dates == sorted(dates)
+
+
+# ---------------------------------------------------------------------------
+# Industry module routing (v1.19.0) — endpoints exist, isolate, and 404 right.
+# The scan/detail data path is covered by ind_core unit tests; here we guard the
+# web wiring (settings merge, prefs persistence, unknown-subpath status).
+# ---------------------------------------------------------------------------
+
+class TestIndustryRoutes:
+    def test_settings_includes_ind_key(self, tmp_server):
+        base, _ = tmp_server
+        body, status = http_get(f"{base}/api/settings")
+        assert status == 200
+        assert "ind" in body  # JS reads s.ind; missing key would break loadSettings
+
+    def test_ind_prefs_roundtrip(self, tmp_server, tmp_path, monkeypatch):
+        base, _ = tmp_server
+        monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
+        body, status = http_get(
+            f"{base}/api/ind/prefs?me=10&job_rate=6&profile=2&bp_owned=1")
+        assert status == 200 and body["ok"] is True
+        saved = json.loads((tmp_path / "ind.json").read_text())
+        assert saved["me"] == "10"
+        assert saved["job_rate"] == "6"
+        assert saved["bp_owned"] == "1"
+
+    def test_unknown_ind_subpath_404(self, tmp_server):
+        base, _ = tmp_server
+        body, status = http_get(f"{base}/api/ind/bogus")
+        assert status == 404

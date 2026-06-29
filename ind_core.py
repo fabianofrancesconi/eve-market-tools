@@ -28,6 +28,9 @@ from pathlib import Path
 
 import requests
 
+import lp_core
+from lp_core import ESI, HEADERS, load_json, save_json
+
 # --- constants -------------------------------------------------------------
 SDE_BASE_URL = "https://www.fuzzwork.co.uk/dump/latest/csv"
 USER_AGENT = "eve-industry-tools/1.0 (fabiano.francesconi@gmail.com)"
@@ -35,6 +38,9 @@ _SDE_HEADERS = {"User-Agent": USER_AGENT}
 SDE_DB_NAME = "sde_industry.sqlite"
 # The SDE only changes on game patches; a week between rebuilds is plenty.
 SDE_TTL_SECONDS = 7 * 24 * 3600
+# Adjusted prices (the EIV basis) are recomputed by CCP daily; cache a few hours.
+ADJ_CACHE_NAME = "adjusted_prices.json"
+ADJ_TTL_SECONDS = 6 * 3600
 
 # EVE industry activity IDs (the only two this module models).
 ACT_MANUFACTURING = 1
@@ -288,6 +294,71 @@ def sde_meta(conn):
     return {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")}
 
 
+def top_market_groups(conn):
+    """Top-level market groups (parent is null), for the category dropdown.
+    Returns [{"id", "name"}] sorted by name."""
+    rows = conn.execute(
+        "SELECT market_group_id AS id, name FROM market_groups "
+        "WHERE parent_group_id IS NULL ORDER BY name")
+    return [dict(r) for r in rows]
+
+
+def expand_market_groups(conn, root_ids):
+    """All descendant market-group ids of the given roots (inclusive), so a
+    user picking a top-level category ('Ships') captures every leaf group its
+    manufacturable items actually live in. Iterative BFS over parent links."""
+    children = {}
+    for r in conn.execute("SELECT market_group_id, parent_group_id FROM market_groups"):
+        children.setdefault(r["parent_group_id"], []).append(r["market_group_id"])
+    out, stack = set(), list(root_ids)
+    while stack:
+        gid = stack.pop()
+        if gid in out:
+            continue
+        out.add(gid)
+        stack.extend(children.get(gid, []))
+    return out
+
+
+def volumes_for(conn, type_ids):
+    """SDE packaged-ish volume (m3) per type, from invTypes. Fast (already
+    loaded) -- used for the scan's cargo columns. Note this is the SDE `volume`
+    (assembled for ships); the detail panel can refine outputs via ESI's
+    packaged volume. {type_id: m3}, missing types omitted."""
+    if not type_ids:
+        return {}
+    ids = list(set(type_ids))
+    out = {}
+    for i in range(0, len(ids), 900):
+        chunk = ids[i:i + 900]
+        marks = ", ".join("?" for _ in chunk)
+        for r in conn.execute(
+            f"SELECT type_id, volume FROM types WHERE type_id IN ({marks})", chunk):
+            if r["volume"] is not None:
+                out[r["type_id"]] = r["volume"]
+    return out
+
+
+def fetch_adjusted_prices(session, cache_dir, refresh=False):
+    """{type_id: adjusted_price} from ESI /markets/prices/ -- the CCP-published
+    per-type value that the job-cost EIV is computed against (NOT the market
+    price). One bulk call, cached for ADJ_TTL_SECONDS."""
+    path = Path(cache_dir) / ADJ_CACHE_NAME
+    now = time.time()
+    cached = load_json(path, None)
+    if not refresh and cached and now - cached.get("_ts", 0) < ADJ_TTL_SECONDS:
+        return {int(k): v for k, v in cached["data"].items()}
+    r = session.get(f"{ESI}/markets/prices/", headers=HEADERS, timeout=60)
+    r.raise_for_status()
+    data = {}
+    for e in r.json():
+        ap = e.get("adjusted_price")
+        if ap:
+            data[e["type_id"]] = ap
+    save_json(path, {"_ts": now, "data": {str(k): v for k, v in data.items()}})
+    return data
+
+
 def manufacturing_candidates(conn, market_group_ids=None):
     """Every manufacturable product: the blueprint, its output type + quantity,
     the product's name, market group and tech level. Optionally restricted to a
@@ -436,23 +507,28 @@ def manufacturing_cost(bp, prices, adjusted, job_rate, me):
     }
 
 
-def build_time(base_time, te, skill_profile):
+def build_time(base_time, te, skill_profile, default_level=0):
     """Seconds to run one manufacturing job, after Time Efficiency and the two
-    time skills (Industry -4%/lvl, Advanced Industry -3%/lvl). None if the
-    blueprint has no recorded time."""
+    time skills (Industry -4%/lvl, Advanced Industry -3%/lvl). Skills not named
+    in `skill_profile` fall back to `default_level` (so "assume all skills at L5"
+    is just default_level=5). None if the blueprint has no recorded time."""
     if not base_time:
         return None
-    ind = (skill_profile or {}).get(INDUSTRY_SKILL_ID, 0)
-    adv = (skill_profile or {}).get(ADV_INDUSTRY_SKILL_ID, 0)
+    sp = skill_profile or {}
+    ind = sp.get(INDUSTRY_SKILL_ID, default_level)
+    adv = sp.get(ADV_INDUSTRY_SKILL_ID, default_level)
     return (base_time * (1 - te / 100.0)
             * (1 - INDUSTRY_TIME_PER_LEVEL * ind)
             * (1 - ADV_INDUSTRY_TIME_PER_LEVEL * adv))
 
 
-def _buildable(bp, skill_profile):
-    """True if the manual skill profile meets every skill the blueprint needs."""
+def _buildable(bp, skill_profile, default_level=0):
+    """True if the skill profile meets every skill the blueprint needs. Skills
+    absent from the profile assume `default_level` (the "all skills at level X"
+    convenience), so an empty profile + default_level=5 means "can I build it
+    with everything at 5?"."""
     sp = skill_profile or {}
-    return all(sp.get(sid, 0) >= lvl for sid, lvl in bp.get("skills", []))
+    return all(sp.get(sid, default_level) >= lvl for sid, lvl in bp.get("skills", []))
 
 
 def blueprint_cost_per_run(bp, params):
@@ -488,6 +564,7 @@ def evaluate_industry(candidates, prices, adjusted, params):
     broker = params.get("broker_fee", 0.0)
     n = max(1, int(params.get("runs", 1)))
     skill_profile = params.get("skill_profile") or {}
+    default_level = params.get("skills_level", 0)
     daily_vols = params.get("daily_vols") or {}
     volumes = params.get("volumes") or {}
     patient_factor = 1 - sales_tax - broker
@@ -510,7 +587,7 @@ def evaluate_industry(candidates, prices, adjusted, params):
         profit_best = _best(profit_patient, profit_instant)
         margin = lambda pr: (pr / total_cost) if (pr is not None and total_cost > 0) else None
 
-        secs = build_time(bp.get("base_time"), te, skill_profile)
+        secs = build_time(bp.get("base_time"), te, skill_profile, default_level)
         hours = (secs / 3600.0) if secs else None
         iph = lambda pr: (pr / hours) if (pr is not None and hours) else None
 
@@ -551,7 +628,7 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "output_volume": None if out_vol is None else out_vol * n,
             "daily_vol": dv,
             "days_to_sell": days_to_sell,
-            "buildable": _buildable(bp, skill_profile),
+            "buildable": _buildable(bp, skill_profile, default_level),
         })
 
     rows.sort(key=lambda r: (r["isk_per_hour_best"] if r["isk_per_hour_best"] is not None
@@ -630,7 +707,8 @@ def build_industry_detail(bp, prices, names, volumes, params):
         "profit_patient": None if rev_patient is None else rev_patient - total_cost,
         "profit_instant": None if rev_instant is None else rev_instant - total_cost,
         "build_time": build_time(bp.get("base_time"), params.get("te", 0),
-                                 params.get("skill_profile")),
+                                 params.get("skill_profile"),
+                                 params.get("skills_level", 0)),
         "runs": n,
         # cargo for the whole batch
         "input_volume_batch": input_volume * n,

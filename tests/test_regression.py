@@ -12,6 +12,7 @@ Bugs covered:
 """
 import importlib.util
 import json
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -662,6 +663,56 @@ class TestColumnReorder:
         assert "wireLPColDrag(th);" in html
         # visCols now derives from the user order, not raw COLS.
         assert "function visCols(){ return orderedCols()" in html
+
+
+# ---------------------------------------------------------------------------
+# Column formatters that read the row object must declare rowCtx:true
+# (v1.14.0 regression: the "List @" column used fmtListPrice — which reads
+#  r.liq_loaded — without rowCtx, so the render loop passed `undefined` as the
+#  row and threw "Cannot read properties of undefined (reading 'liq_loaded')").
+#
+# The render loop calls `c.rowCtx ? c.f(v,r) : c.f(v)`, so any formatter that
+# touches the row argument MUST be on a column flagged rowCtx:true.
+# ---------------------------------------------------------------------------
+
+class TestColumnFormatterRowContext:
+    def _cols_block(self):
+        html = lp_web.INDEX_HTML
+        start = html.index("const COLS = [")
+        end = html.index("];", start)
+        return html[start:end]
+
+    def _col_lines(self):
+        return [ln for ln in self._cols_block().splitlines() if "{k:" in ln]
+
+    def _row_ctx_named_formatters(self):
+        """Named formatters declared `function fmtX(v, r)` read the row arg."""
+        return set(re.findall(r"function\s+(fmt\w+)\s*\(\s*v\s*,\s*r\s*\)",
+                              lp_web.INDEX_HTML))
+
+    def test_heuristics_find_the_expected_formatters(self):
+        # Guard against the regexes silently matching nothing.
+        assert len(self._col_lines()) >= 12
+        assert {"fmtListPrice", "fmtVolPerDay", "fmtDays", "fmtTrade"} \
+            <= self._row_ctx_named_formatters()
+
+    def test_list_price_column_has_rowctx(self):
+        line = next(ln for ln in self._col_lines() if '{k:"list_price"' in ln)
+        assert "f:fmtListPrice" in line
+        assert "rowCtx:true" in line
+
+    def test_every_row_reading_column_declares_rowctx(self):
+        row_named = self._row_ctx_named_formatters()
+        offenders = []
+        for ln in self._col_lines():
+            key = re.search(r'\{k:"([^"]+)"', ln).group(1)
+            inline_row = re.search(r"f:\s*\(\s*v\s*,\s*r\s*\)\s*=>", ln) is not None
+            named_row = any(re.search(r"f:\s*" + re.escape(n) + r"\b", ln)
+                            for n in row_named)
+            if (inline_row or named_row) and "rowCtx:true" not in ln:
+                offenders.append(key)
+        assert not offenders, \
+            f"columns read the row arg but lack rowCtx:true: {offenders}"
 
     def test_col_order_persisted_and_restored(self):
         html = lp_web.INDEX_HTML

@@ -10,7 +10,7 @@ Two apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.14.0"
+__version__ = "1.14.1"
 
 import argparse
 import base64
@@ -1379,7 +1379,7 @@ const COLS = [
   {k:"max_units",    t:"Max Runs",      w: 80, defvis:true,  tip:"Redemptions your LP budget affords (budget ÷ LP per run). Affordability only — it doesn't check whether the market can absorb them.", f:v=>v===0?"—":fmtNum(v)},
   {k:"lp_cost",      t:"LP / Run",      w: 80, defvis:true,  tip:"Loyalty Points per redemption.", f:fmtNum},
   {k:"cost_ea",      t:"ISK / Run",     w: 95, defvis:true,  tip:"ISK + required input costs per redemption.", f:fmtISK},
-  {k:"list_price",   t:"List @",        w:100, defvis:true,  tip:"Suggested per-unit price to put on your sell order: the lowest current sell, unless that's below the 30-day fair value (someone's dumping) — then it holds at fair value. Per unit of the reward item.", f:fmtListPrice},
+  {k:"list_price",   t:"List @",        w:100, defvis:true,  tip:"Suggested per-unit price to put on your sell order: the lowest current sell, unless that's below the 30-day fair value (someone's dumping) — then it holds at fair value. Per unit of the reward item.", f:fmtListPrice, rowCtx:true},
   {k:"ask",          t:"Ask (sell)",    w: 95, defvis:false, tip:"Lowest sell order price at the hub — what the patient column lists at.", f:fmtISK},
   {k:"bid",          t:"Bid (buy)",     w: 95, defvis:false, tip:"Highest buy order price at the hub — what the instant column dumps into.", f:fmtISK},
   {k:"buy_volume",   t:"Buy Demand",    w: 95, defvis:false, tip:"Units on hub buy orders — how many you could sell instantly.", f:fmtNum},

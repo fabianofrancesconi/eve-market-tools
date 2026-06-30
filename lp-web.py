@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.33.0"
+__version__ = "1.33.1"
 
 import argparse
 import base64
@@ -1281,10 +1281,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_callback(q)
             else:
                 self._send_json({"error": "not found"}, 404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass   # client navigated away / closed the tab mid-request — nothing to send
         except LPError as e:
             self._send_json({"error": str(e)}, 400)
         except Exception as e:  # noqa: BLE001
-            self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
+            try:
+                self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass   # client is already gone — the error response has nowhere to go
 
 
 # ── Front-end ───────────────────────────────────────────────────────────────

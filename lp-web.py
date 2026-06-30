@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.34.0"
+__version__ = "1.34.1"
 
 import argparse
 import base64
@@ -1709,6 +1709,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #char-orders-tbl td.tx-sell { color:var(--green2); font-weight:600; }
   #char-jobs-tbl td.tl, #char-jobs-tbl th:last-child { text-align:right;
     font-variant-numeric:tabular-nums; }
+  #char-jobs-tbl th:not(:first-child), #char-jobs-tbl td:not(:first-child) { white-space:nowrap; }
   table.mini { font-size:13px; width:100%; border-collapse:collapse; }
   table.mini th { position:static; background:none; color:var(--dim);
     font-size:10px; letter-spacing:.5px; border-bottom:1px solid var(--line); padding:4px 8px; }

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.26.0"
+__version__ = "1.26.1"
 
 import argparse
 import base64
@@ -1312,6 +1312,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .cfg-scopes { font-size:11px; color:var(--dim); font-family:ui-monospace,monospace; line-height:1.6; }
   .lp-mylp { text-transform:none; letter-spacing:0; font-weight:600; color:var(--gold);
     font-size:10px; margin-left:6px; }
+  #lp.locked { color:var(--gold); border-color:var(--line2); opacity:.85; cursor:not-allowed; }
   #char-jobs-tbl .timer-cell { color:var(--cyan); font-weight:600; font-variant-numeric:tabular-nums; }
   #char-jobs-tbl .timer-cell.done { color:var(--green2); }
 
@@ -2886,6 +2887,7 @@ function _corpItems(){ return _corpDrop.querySelectorAll(".corp-drop-item"); }
 
 function _corpSelect(name){
   _corpInput.value=name; _corpClose();
+  if(typeof updateMyLpBadge==="function") updateMyLpBadge();  // lock LP budget to this corp's character LP
   saveLS(); clearTimeout(lpScanTimer); scan(false);
 }
 
@@ -3959,7 +3961,14 @@ async function refreshCharData(){
   let d; try{ d=await (await fetch("/api/char/data")).json(); }catch(e){ return; }
   if(d.error){ setStatus(authEsc(d.error), true); return; }
   AUTH.data=d;
+  const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge();
+  // If the character LP just changed the locked budget for the corp on screen,
+  // re-run the LP scan so results reflect the real budget (e.g. on first load,
+  // when char data arrives after the initial scan).
+  if($("#lp").value!==prevLp && ACTIVE_TAB==="lp" && ($("#corp").value||"").trim()){
+    clearTimeout(lpScanTimer); scan(false);
+  }
 }
 
 function renderCharData(){
@@ -4016,16 +4025,25 @@ function syncJobTimers(){
   if(IND.openDetail) renderIndDetail(IND.openDetail);
 }
 
-// Show the player's LP balance for the corp currently typed in the LP tab.
+// When logged in, drive the LP budget from the character's loyalty points for
+// the selected corp and lock the field. Falls back to a normal editable input
+// when not logged in or the corp isn't one the character holds LP with.
 function updateMyLpBadge(){
-  const badge=$("#lp-mylp");
+  const badge=$("#lp-mylp"), inp=$("#lp");
   const corp=($("#corp").value||"").trim().toLowerCase();
   const lp=(AUTH.data&&AUTH.data.loyalty)||[];
-  const m=corp?lp.find(l=>(l.corp_name||"").toLowerCase()===corp):null;
-  if(AUTH.loggedIn && m){
-    badge.textContent="you have "+(m.loyalty_points||0).toLocaleString()+" LP";
+  const m=(AUTH.loggedIn&&corp)?lp.find(l=>(l.corp_name||"").toLowerCase()===corp):null;
+  if(m){
+    inp.value=m.loyalty_points||0;
+    inp.readOnly=true; inp.classList.add("locked");
+    inp.title="Locked to your character's loyalty points for this corporation.";
+    badge.textContent="🔒 from character";
     badge.classList.remove("hidden");
-  } else badge.classList.add("hidden");
+  } else {
+    inp.readOnly=false; inp.classList.remove("locked");
+    inp.title="";
+    badge.classList.add("hidden");
+  }
 }
 
 $("#login-eve").onclick=doLogin;

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.32.1"
+__version__ = "1.32.2"
 
 import argparse
 import base64
@@ -1663,6 +1663,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .char-card h3 { margin-top:14px; }
   .char-card-wide { grid-column:1/-1; }
   .char-card-sub { color:var(--dim); font-size:11px; font-weight:400; margin-left:6px; }
+  /* Caps each card's table at a fixed height so one long list (e.g. a deep
+     skill queue) can't stretch the whole grid row and bury the cards next to
+     it — scroll inside the card instead. */
+  .char-card-scroll { max-height:260px; overflow-y:auto; }
+  .char-card-scroll table.mini thead th { position:sticky; top:0; background:var(--panel2); z-index:1; }
   .char-none { color:var(--dim); font-size:13px; padding:10px 4px; }
   .char-none.char-none-warn { color:var(--gold); }
   #char-orders-tbl td.tx-buy { color:var(--red); font-weight:600; }
@@ -2170,32 +2175,40 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="char-grid">
         <section class="char-card">
           <h3>Running industry jobs</h3>
-          <table class="mini" id="char-jobs-tbl"><thead><tr>
-            <th>Product</th><th>Activity</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>
-          </tr></thead><tbody></tbody></table>
+          <div class="char-card-scroll">
+            <table class="mini" id="char-jobs-tbl"><thead><tr>
+              <th>Product</th><th>Activity</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>
+            </tr></thead><tbody></tbody></table>
+          </div>
           <div id="char-jobs-empty" class="char-none hidden">No active jobs.</div>
         </section>
         <section class="char-card">
           <h3>Skill queue</h3>
-          <table class="mini" id="char-queue-tbl"><thead><tr>
-            <th>Skill</th><th>Lvl</th><th style="text-align:right">Finishes</th>
-          </tr></thead><tbody></tbody></table>
+          <div class="char-card-scroll">
+            <table class="mini" id="char-queue-tbl"><thead><tr>
+              <th>Skill</th><th>Lvl</th><th style="text-align:right">Finishes</th>
+            </tr></thead><tbody></tbody></table>
+          </div>
           <div id="char-queue-empty" class="char-none hidden">Skill queue is empty.</div>
         </section>
         <section class="char-card">
           <h3>Loyalty points</h3>
-          <table class="mini" id="char-lp-tbl"><thead><tr>
-            <th>Corporation</th><th style="text-align:right">LP</th>
-          </tr></thead><tbody></tbody></table>
+          <div class="char-card-scroll">
+            <table class="mini" id="char-lp-tbl"><thead><tr>
+              <th>Corporation</th><th style="text-align:right">LP</th>
+            </tr></thead><tbody></tbody></table>
+          </div>
           <div id="char-lp-empty" class="char-none hidden">No loyalty points.</div>
         </section>
         <section class="char-card char-card-wide">
           <h3>Active market orders</h3>
-          <table class="mini" id="char-orders-tbl"><thead><tr>
-            <th>Item</th><th>Side</th><th style="text-align:right">Remaining</th>
-            <th style="text-align:right">Price</th><th style="text-align:right">Issued</th>
-            <th style="text-align:right">Expires</th>
-          </tr></thead><tbody></tbody></table>
+          <div class="char-card-scroll">
+            <table class="mini" id="char-orders-tbl"><thead><tr>
+              <th>Item</th><th>Side</th><th style="text-align:right">Remaining</th>
+              <th style="text-align:right">Price</th><th style="text-align:right">Issued</th>
+              <th style="text-align:right">Expires</th>
+            </tr></thead><tbody></tbody></table>
+          </div>
           <div id="char-orders-empty" class="char-none hidden">No open orders.</div>
         </section>
       </div>

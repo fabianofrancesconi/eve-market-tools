@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.22.1"
+__version__ = "1.23.0"
 
 import argparse
 import base64
@@ -1394,10 +1394,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-copy, .ind-own { margin:0 6px; padding:1px 8px; font-size:11px; cursor:pointer;
     background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--cyan); }
   .ind-copy:hover, .ind-own:hover { border-color:var(--cyan2); }
+  /* Body splits the stats grid (left) from the crafting timer (right) so the
+     wide empty space beside the two-column grid is put to use. Wraps on narrow. */
+  .ind-d-body { display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap;
+    margin-bottom:12px; }
   .ind-d-grid {
     display:grid; grid-template-columns:auto auto; gap:3px 18px;
-    font-size:12px; margin-bottom:12px; max-width:560px;
+    font-size:12px; max-width:560px;
   }
+  .ind-d-side { flex:1 1 240px; min-width:220px; }
+  .ind-d-timer-card { background:var(--panel); border:1px solid var(--line2);
+    border-radius:6px; padding:10px 12px; }
+  .ind-d-timer-card .ind-d-sub { margin-top:0; }
   .ind-d-grid span { color:var(--dim); }
   .ind-d-grid b { text-align:right; color:var(--fg); }
   .ind-d-sub { grid-column:1/-1; margin-top:8px; padding-bottom:2px;
@@ -3092,7 +3100,14 @@ function renderIndTable(){
 
   tbody.querySelectorAll("tr[data-ridx]").forEach(tr=>{
     const r=ordered[+tr.dataset.ridx];
-    tr.onclick=ev=>{ if(ev.target.classList.contains("fav-star")) return; openIndDetail(r); };
+    tr.onclick=ev=>{
+      if(ev.target.classList.contains("fav-star")) return;
+      // Clicking the open row's header again toggles the detail panel shut.
+      const box=$("#ind-detail");
+      if(IND.openDetail && IND.openDetail.blueprint_id===r.blueprint_id && !box.classList.contains("hidden")){
+        box.classList.add("hidden"); IND.openDetail=null;
+      } else openIndDetail(r);
+    };
   });
   tbody.querySelectorAll(".fav-star").forEach(star=>{
     star.onclick=ev=>{ ev.stopPropagation(); toggleFavorite(+star.dataset.bp); };
@@ -3286,7 +3301,7 @@ function renderIndDetail(d){
     const hh=Math.floor(secs/3600), mm=Math.round((secs%3600)/60);
     timerHtml=`<div class="ind-timer">
         <input class="ind-timer-h" type="number" min="0" value="${hh}"> h
-        <input class="ind-timer-m" type="number" min="0" max="59" value="${mm}"> m
+        <input class="ind-timer-m" type="number" step="1" value="${mm}"> m
         <button class="ind-timer-start primary" data-bp="${d.blueprint_id}">▶ Start</button>
       </div>`;
   }
@@ -3315,6 +3330,7 @@ function renderIndDetail(d){
       ${tier} · ${n.toLocaleString()} run(s) · source ${d.station_name}
       <span class="ind-d-close" title="Close">✕</span>
     </div>
+    <div class="ind-d-body">
     <div class="ind-d-grid">
       <div class="ind-d-sub">Per unit (sell price)</div>
       <span>Sell @ ask — list</span><b>${isk(d.ask)}</b>
@@ -3341,8 +3357,13 @@ function renderIndDetail(d){
       <span>Blueprint payback</span><b>${payback}</b>
       <span>Tradeability</span><b>${d.tradeability==null?"—":d.tradeability+" / 100"}${d.daily_units!=null?` (${fmtNum(d.daily_units)} units/day)`:""}</b>
     </div>
-    <div class="ind-d-sub">Crafting timer</div>
-    ${timerHtml}
+    <aside class="ind-d-side">
+      <div class="ind-d-timer-card">
+        <div class="ind-d-sub">Crafting timer</div>
+        ${timerHtml}
+      </div>
+    </aside>
+    </div>
     <div class="ind-d-sub">Materials to buy — ${n.toLocaleString()} run(s)</div>
     <table class="ind-d-mats"><thead><tr><th>Material</th><th class="num">Qty needed</th>
       <th class="num">Unit price</th><th class="num">Total cost</th>
@@ -3365,6 +3386,16 @@ function renderIndDetail(d){
     if(navigator.clipboard&&navigator.clipboard.writeText){
       navigator.clipboard.writeText(d.product.name).then(done).catch(()=>fallbackCopy(d.product.name,done));
     } else fallbackCopy(d.product.name, done);
+  };
+  // Minutes carry into hours: stepping the minute field below 0 borrows an hour
+  // (wrapping to 59), and above 59 carries up — hours stay floored at 0.
+  const hEl=box.querySelector(".ind-timer-h"), mEl=box.querySelector(".ind-timer-m");
+  if(mEl) mEl.oninput=()=>{
+    let h=parseInt(hEl.value)||0, m=parseInt(mEl.value);
+    if(isNaN(m)) return;
+    while(m<0){ if(h>0){ h--; m+=60; } else { m=0; } }
+    while(m>59){ m-=60; h++; }
+    hEl.value=h; mEl.value=m;
   };
   const startBtn=box.querySelector(".ind-timer-start");
   if(startBtn) startBtn.onclick=()=>{

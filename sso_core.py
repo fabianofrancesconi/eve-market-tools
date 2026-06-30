@@ -38,6 +38,7 @@ SCOPES = [
     "esi-wallet.read_character_wallet.v1",
     "esi-characters.read_loyalty.v1",
     "esi-industry.read_character_jobs.v1",
+    "esi-markets.read_character_orders.v1",
 ]
 
 AUTH_FILE = "eve_auth.json"
@@ -202,11 +203,11 @@ def fetch_loyalty_points(token, character_id, session):
     return r.json()
 
 
-def fetch_wallet_transactions(token, character_id, session):
-    """[{transaction_id, date, is_buy, type_id, quantity, unit_price,
-    location_id, …}, …] — most recent ~2500 market transactions, newest first.
-    Same scope as the wallet balance (esi-wallet.read_character_wallet.v1)."""
-    r = session.get(f"{ESI}/characters/{character_id}/wallet/transactions/",
+def fetch_market_orders(token, character_id, session):
+    """[{order_id, type_id, is_buy_order, price, volume_remain, volume_total,
+    issued, duration, location_id, …}, …] — the character's currently open
+    sell/buy orders. Requires esi-markets.read_character_orders.v1."""
+    r = session.get(f"{ESI}/characters/{character_id}/orders/",
                     headers=_auth_headers(token), timeout=30)
     r.raise_for_status()
     return r.json()

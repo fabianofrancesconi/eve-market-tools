@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.31.0"
+__version__ = "1.32.0"
 
 import argparse
 import base64
@@ -293,7 +293,7 @@ def _track_delivered_jobs(cid, jobs, names):
         store[key] = entry
         save_json(JOBS_TRACK_PATH, store)
     return {"total_runs": entry["total_runs"], "total_jobs": entry["total_jobs"],
-            "since": entry["since"]}
+            "since": entry["since"], "by_product": entry["by_product"]}
 
 
 def do_char_data(q):
@@ -310,20 +310,19 @@ def do_char_data(q):
     # include_completed so delivered jobs (last 90 days) surface for the runs-
     # delivered counter; the active-jobs table below filters them back out.
     jobs = sso_core.fetch_industry_jobs(token, cid, SESSION, include_completed=True)
-    transactions = sso_core.fetch_wallet_transactions(token, cid, SESSION)
-    transactions.sort(key=lambda t: t.get("date") or "", reverse=True)
-    transactions = transactions[:50]   # most recent only — this is a live snapshot, not a ledger
+    orders = sso_core.fetch_market_orders(token, cid, SESSION)
+    orders.sort(key=lambda o: o.get("issued") or "", reverse=True)
 
     # Resolve every type/skill name referenced by jobs, the skill queue and
-    # transactions in one call.
+    # open orders in one call.
     name_ids = set()
     for j in jobs:
         name_ids.add(j.get("blueprint_type_id"))
         name_ids.add(j.get("product_type_id"))
     for qd in queue:
         name_ids.add(qd.get("skill_id"))
-    for t in transactions:
-        name_ids.add(t.get("type_id"))
+    for o in orders:
+        name_ids.add(o.get("type_id"))
     name_ids.discard(None)
     names = resolve_names(list(name_ids), SESSION, CACHE_DIR) if name_ids else {}
 
@@ -372,18 +371,18 @@ def do_char_data(q):
             "finish_date": fin,
         })
 
-    tx_out = []
-    for t in transactions:
-        qty, price = t.get("quantity") or 0, t.get("unit_price") or 0
-        tx_out.append({
-            "transaction_id": t.get("transaction_id"),
-            "date": t.get("date"),
-            "is_buy": t.get("is_buy"),
-            "type_id": t.get("type_id"),
-            "type_name": names.get(t.get("type_id"), "?"),
-            "quantity": qty,
-            "unit_price": price,
-            "total": qty * price,
+    orders_out = []
+    for o in orders:
+        orders_out.append({
+            "order_id": o.get("order_id"),
+            "is_buy_order": bool(o.get("is_buy_order")),
+            "type_id": o.get("type_id"),
+            "type_name": names.get(o.get("type_id"), "?"),
+            "price": o.get("price"),
+            "volume_remain": o.get("volume_remain"),
+            "volume_total": o.get("volume_total"),
+            "issued": o.get("issued"),
+            "duration": o.get("duration"),
         })
 
     return {
@@ -396,7 +395,7 @@ def do_char_data(q):
         "loyalty": loyalty_out,
         "jobs": out_jobs,
         "runs_tracked": runs_tracked,
-        "transactions": tx_out,
+        "market_orders": orders_out,
     }
 
 
@@ -1651,8 +1650,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .char-card-wide { grid-column:1/-1; }
   .char-card-sub { color:var(--dim); font-size:11px; font-weight:400; margin-left:6px; }
   .char-none { color:var(--dim); font-size:13px; padding:10px 4px; }
-  #char-tx-tbl td.tx-buy { color:var(--red); font-weight:600; }
-  #char-tx-tbl td.tx-sell { color:var(--green2); font-weight:600; }
+  #char-orders-tbl td.tx-buy { color:var(--red); font-weight:600; }
+  #char-orders-tbl td.tx-sell { color:var(--green2); font-weight:600; }
   #char-jobs-tbl td.tl, #char-jobs-tbl th:last-child { text-align:right;
     font-variant-numeric:tabular-nums; }
   table.mini { font-size:13px; width:100%; border-collapse:collapse; }
@@ -2140,7 +2139,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div id="char-tablewrap" class="tablewrap hidden">
     <div id="char-empty" class="char-empty">
       <p>Log in with your EVE Online account to see your wallet, skills, loyalty
-      points, running industry jobs and recent market transactions here.</p>
+      points, running industry jobs and active market orders here.</p>
       <button id="char-login-btn" class="auth-btn primary-btn">Log in with EVE</button>
     </div>
     <div id="char-body" class="hidden">
@@ -2176,12 +2175,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
           <div id="char-lp-empty" class="char-none hidden">No loyalty points.</div>
         </section>
         <section class="char-card char-card-wide">
-          <h3>Market transactions <span class="char-card-sub">last 50</span></h3>
-          <table class="mini" id="char-tx-tbl"><thead><tr>
-            <th>Date</th><th>Item</th><th>Side</th><th style="text-align:right">Qty</th>
-            <th style="text-align:right">Unit price</th><th style="text-align:right">Total</th>
+          <h3>Active market orders</h3>
+          <table class="mini" id="char-orders-tbl"><thead><tr>
+            <th>Item</th><th>Side</th><th style="text-align:right">Remaining</th>
+            <th style="text-align:right">Price</th><th style="text-align:right">Issued</th>
+            <th style="text-align:right">Expires</th>
           </tr></thead><tbody></tbody></table>
-          <div id="char-tx-empty" class="char-none hidden">No recent transactions.</div>
+          <div id="char-orders-empty" class="char-none hidden">No open orders.</div>
         </section>
       </div>
     </div>
@@ -3869,6 +3869,10 @@ function renderIndDetail(d){
   const taxInstantIsk=(d.bid!=null && d.sales_tax)?qty*d.bid*d.sales_tax*n:null;
   const jobCostBatch=d.job_cost!=null?d.job_cost*n:null;
   const inventionCostBatch=d.invention?d.invention_cost*n:0;
+  // Cumulative runs delivered for this exact item, from the same tracker
+  // backing the Character tab KPI — broken out per product there.
+  const prodTrack=(AUTH.loggedIn && AUTH.data && AUTH.data.runs_tracked)
+    ? AUTH.data.runs_tracked.by_product[String(d.product.type_id)] : null;
   // Break-even sell price: instant sale only pays sales tax (no broker fee), so
   // qty*price*(1-sales_tax) = total_cost solved for price. Surfaced only when
   // the instant sale is currently unprofitable.
@@ -3987,6 +3991,11 @@ function renderIndDetail(d){
             <div class="ind-d-card-label">Cargo in</div>
             <div class="ind-d-card-val">${inputBatch?fmtVol(inputBatch):"—"}</div>
             <div class="ind-d-card-sub">${n.toLocaleString()} run(s)</div>
+          </div>
+          <div class="ind-d-card" data-tip="Cumulative runs you've delivered for this item, tracked since the app started watching — it can't see deliveries from before that. Log in with EVE to track.">
+            <div class="ind-d-card-label">Runs delivered</div>
+            <div class="ind-d-card-val">${prodTrack?prodTrack.runs.toLocaleString():(AUTH.loggedIn?"0":"—")}</div>
+            <div class="ind-d-card-sub">${prodTrack?prodTrack.jobs.toLocaleString()+" job(s)":(AUTH.loggedIn?"none yet":"log in to track")}</div>
           </div>
         </div>
       </div>
@@ -4208,17 +4217,22 @@ function renderCharData(){
     `<tr><td>${authEsc(l.corp_name)}</td>`
    + `<td style="text-align:right">${(l.loyalty_points||0).toLocaleString()}</td></tr>`).join("");
 
-  const tx=d.transactions||[];
-  $("#char-tx-empty").classList.toggle("hidden", tx.length>0);
-  $("#char-tx-tbl").classList.toggle("hidden", tx.length===0);
-  $("#char-tx-tbl tbody").innerHTML=tx.map(t=>{
-    const when=t.date?new Date(t.date).toLocaleString([],
+  const orders=d.market_orders||[];
+  $("#char-orders-empty").classList.toggle("hidden", orders.length>0);
+  $("#char-orders-tbl").classList.toggle("hidden", orders.length===0);
+  $("#char-orders-tbl tbody").innerHTML=orders.map(o=>{
+    const issuedMs=o.issued?Date.parse(o.issued):NaN;
+    const issued=isFinite(issuedMs)?new Date(issuedMs).toLocaleString([],
       {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
-    return `<tr><td>${when}</td><td>${authEsc(t.type_name)}</td>`
-         + `<td class="${t.is_buy?"tx-buy":"tx-sell"}">${t.is_buy?"Buy":"Sell"}</td>`
-         + `<td style="text-align:right">${t.quantity.toLocaleString()}</td>`
-         + `<td style="text-align:right">${fmtISK(t.unit_price)}</td>`
-         + `<td style="text-align:right">${fmtISK(t.total)}</td></tr>`;
+    const expiresMs=isFinite(issuedMs)&&o.duration!=null?issuedMs+o.duration*86400000:NaN;
+    const expires=isFinite(expiresMs)?new Date(expiresMs).toLocaleString([],
+      {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
+    return `<tr><td>${authEsc(o.type_name)}</td>`
+         + `<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
+         + `<td style="text-align:right">${(o.volume_remain??0).toLocaleString()} / ${(o.volume_total??0).toLocaleString()}</td>`
+         + `<td style="text-align:right">${fmtISK(o.price)}</td>`
+         + `<td style="text-align:right">${issued}</td>`
+         + `<td style="text-align:right">${expires}</td></tr>`;
   }).join("");
 }
 

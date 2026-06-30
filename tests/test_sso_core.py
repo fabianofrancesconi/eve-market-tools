@@ -173,15 +173,16 @@ def test_fetch_industry_jobs_url_headers_and_params():
     assert params["include_completed"] == "false"
 
 
-def test_fetch_wallet_transactions_url_and_headers():
-    txs = [{"transaction_id": 1, "date": "2026-06-30T12:00:00Z", "is_buy": True,
-            "type_id": 587, "quantity": 5, "unit_price": 1000.0, "location_id": 60003760}]
-    sess = _get_session(txs)
-    out = sso_core.fetch_wallet_transactions("TOKEN", 42, sess)
-    assert out == txs
+def test_fetch_market_orders_url_and_headers():
+    orders = [{"order_id": 1, "type_id": 587, "is_buy_order": False, "price": 1000.0,
+               "volume_remain": 3, "volume_total": 5, "issued": "2026-06-30T12:00:00Z",
+               "duration": 90, "location_id": 60003760}]
+    sess = _get_session(orders)
+    out = sso_core.fetch_market_orders("TOKEN", 42, sess)
+    assert out == orders
     url = sess.get.call_args[0][0]
     headers = sess.get.call_args[1]["headers"]
-    assert url.endswith("/characters/42/wallet/transactions/")
+    assert url.endswith("/characters/42/orders/")
     assert headers["Authorization"] == "Bearer TOKEN"
 
 

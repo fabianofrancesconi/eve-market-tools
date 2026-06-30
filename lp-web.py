@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.32.2"
+__version__ = "1.32.3"
 
 import argparse
 import base64
@@ -1302,6 +1302,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--fg);
     font:15px/1.5 "Segoe UI",system-ui,sans-serif; height:100vh; overflow:hidden; }
+  /* Dark themed scrollbars everywhere, not just the default OS chrome. */
+  * { scrollbar-width:thin; scrollbar-color:var(--line2) transparent; }
+  *::-webkit-scrollbar { width:9px; height:9px; }
+  *::-webkit-scrollbar-track { background:transparent; }
+  *::-webkit-scrollbar-thumb { background:var(--line2); border-radius:5px; }
+  *::-webkit-scrollbar-thumb:hover { background:var(--cyan2); }
   a { color:var(--cyan); text-decoration:none; }
   a:hover { text-decoration:underline; }
   .hidden { display:none !important; }

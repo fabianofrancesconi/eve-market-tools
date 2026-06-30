@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.25.1"
+__version__ = "1.26.0"
 
 import argparse
 import base64
@@ -1790,6 +1790,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-timer-remaining { font-weight:700; color:var(--cyan); font-variant-numeric:tabular-nums; }
   .ind-timer.done .ind-timer-remaining { color:var(--green2,#4caf76); }
   .ind-timer-eta { color:var(--dim); font-size:12px; }
+  .ind-timer-none { color:var(--dim); font-size:12px; line-height:1.4; }
   #ind-tbl td.timer-cell { text-align:center; font-variant-numeric:tabular-nums;
     color:var(--cyan); font-weight:600; }
   #ind-tbl td.timer-cell.done { color:var(--green2,#4caf76); }
@@ -3421,7 +3422,7 @@ const IND_COLS = [
   {k:"_fav",               t:"★",           w: 30, tip:"Mark as favourite. Favourites pin to the top and stay visible regardless of filters.", raw:true},
   {k:"product_name",       t:"Item",        w:210, tip:"The manufactured item. * = an input has no sell price at the source hub. Open it to mark the blueprint as owned."},
   {k:"tech_level",         t:"Tech",        w: 46, tip:"Tech level.", f:v=>v?("T"+v):"—"},
-  {k:"_timer",             t:"⏱ Timer",     w: 84, tip:"Crafting timer countdown, set from the detail view. Click the row to open it and start/edit the timer.", raw:true},
+  {k:"_timer",             t:"⏱ Timer",     w: 84, tip:"Live countdown for your running manufacturing job on this blueprint, pulled from EVE (refreshed every 5 min). Log in with EVE to populate.", raw:true},
   {k:"isk_per_hour_best",  t:"ISK/hr",      w:110, tip:"Profit per hour of manufacturing time — the headline 'worth it' number.", f:fmtISK, pn:true},
   {k:"profit_best",        t:"Profit/run",  w:105, tip:"Best-of patient/instant profit for one run.", f:fmtISK, pn:true},
   {k:"total_profit_best",  t:"Profit×N",    w:108, tip:"Profit across the whole batch (Runs).", f:fmtISK, pn:true},
@@ -3764,28 +3765,25 @@ function renderIndDetail(d){
   else if(d.bp_source==="invention") payback="n/a — invented per run";
   else if(d.bp_market) payback="never at current profit";
   else payback="—";
-  // Crafting timer — prefilled with the batch build time, persisted in localStorage.
+  // Industry job timer — read-only, driven by the character's running jobs (ESI).
   const tEnd=IND.timers[d.blueprint_id], nowMs=Date.now();
+  const job=(AUTH.loggedIn && AUTH.data && AUTH.data.jobs)
+    ? AUTH.data.jobs.find(j=>j.blueprint_type_id===d.blueprint_id && j.activity_id===1) : null;
+  const jobRuns=job&&job.runs?` · ${job.runs} run(s)`:"";
   let timerHtml;
   if(tEnd && tEnd>nowMs){
     timerHtml=`<div class="ind-timer">
         <span class="ind-timer-remaining ind-live-timer" data-end="${tEnd}">${fmtCountdown(tEnd-nowMs)}</span>
-        <span class="ind-timer-eta">ETA ${new Date(tEnd).toLocaleString([],{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})}</span>
-        <button class="ind-timer-cancel secondary" data-bp="${d.blueprint_id}">Reset</button>
+        <span class="ind-timer-eta">ETA ${new Date(tEnd).toLocaleString([],{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})}${jobRuns}</span>
       </div>`;
   } else if(tEnd){
     timerHtml=`<div class="ind-timer done">
         <span class="ind-timer-remaining">✓ Ready — finished ${new Date(tEnd).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
-        <button class="ind-timer-cancel secondary" data-bp="${d.blueprint_id}">Clear</button>
       </div>`;
   } else {
-    const secs=Math.round(batchTime||0);
-    const hh=Math.floor(secs/3600), mm=Math.round((secs%3600)/60);
-    timerHtml=`<div class="ind-timer">
-        <input class="ind-timer-h" type="number" min="0" value="${hh}"> h
-        <input class="ind-timer-m" type="number" step="1" value="${mm}"> m
-        <button class="ind-timer-start primary" data-bp="${d.blueprint_id}">▶ Start</button>
-      </div>`;
+    timerHtml=`<div class="ind-timer-none">${AUTH.loggedIn
+        ? "No active manufacturing job for this blueprint."
+        : "Log in with EVE to see your running industry jobs here."}</div>`;
   }
   let invHtml="";
   if(d.invention){
@@ -3841,7 +3839,7 @@ function renderIndDetail(d){
     </div>
     <aside class="ind-d-side">
       <div class="ind-d-timer-card">
-        <div class="ind-d-sub">Crafting timer</div>
+        <div class="ind-d-sub">Industry job</div>
         ${timerHtml}
       </div>
     </aside>
@@ -3873,39 +3871,8 @@ function renderIndDetail(d){
       navigator.clipboard.writeText(d.product.name).then(done).catch(()=>fallbackCopy(d.product.name,done));
     } else fallbackCopy(d.product.name, done);
   };
-  // Minutes carry into hours: stepping the minute field below 0 borrows an hour
-  // (wrapping to 59), and above 59 carries up — hours stay floored at 0.
-  const hEl=box.querySelector(".ind-timer-h"), mEl=box.querySelector(".ind-timer-m");
-  if(mEl) mEl.oninput=()=>{
-    let h=parseInt(hEl.value)||0, m=parseInt(mEl.value);
-    if(isNaN(m)) return;
-    while(m<0){ if(h>0){ h--; m+=60; } else { m=0; } }
-    while(m>59){ m-=60; h++; }
-    hEl.value=h; mEl.value=m;
-  };
-  const startBtn=box.querySelector(".ind-timer-start");
-  if(startBtn) startBtn.onclick=()=>{
-    const h=parseInt(box.querySelector(".ind-timer-h").value)||0;
-    const m=parseInt(box.querySelector(".ind-timer-m").value)||0;
-    const ms=(h*3600+m*60)*1000;
-    if(ms<=0) return;
-    IND.timers[d.blueprint_id]=Date.now()+ms;
-    saveIndTimers();
-    renderIndDetail(d);
-    if(IND.rows.length) renderIndTable();   // reflect it in the main table's Timer column
-  };
-  const cancelBtn=box.querySelector(".ind-timer-cancel");
-  if(cancelBtn) cancelBtn.onclick=()=>{
-    delete IND.timers[d.blueprint_id];
-    saveIndTimers();
-    renderIndDetail(d);
-    if(IND.rows.length) renderIndTable();
-  };
 }
 
-const IND_TIMERS_KEY="eve_ind_timers";
-function saveIndTimers(){ try{ localStorage.setItem(IND_TIMERS_KEY, JSON.stringify(IND.timers)); }catch(e){} }
-function loadIndTimers(){ try{ IND.timers=JSON.parse(localStorage.getItem(IND_TIMERS_KEY))||{}; }catch(e){ IND.timers={}; } }
 function fmtCountdown(ms){
   let s=Math.max(0,Math.floor(ms/1000));
   const h=Math.floor(s/3600); s-=h*3600;
@@ -3939,8 +3906,8 @@ setInterval(()=>{
 // EVE SSO / CHARACTER
 // ══════════════════════════════════════════════════════════════════════════
 const AUTH = { loggedIn:false, name:null, charId:null, data:null,
-               cfg:{client_id:"",callback_url:"",suggested_callback:"",scopes:[]},
-               syncedTimers:new Set() };
+               cfg:{client_id:"",callback_url:"",suggested_callback:"",scopes:[]} };
+const CHAR_REFRESH_MS = 300000;  // ESI caches character industry jobs for 5 min
 const ROMAN=["0","I","II","III","IV","V"];
 function authEsc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
@@ -3982,11 +3949,10 @@ async function doLogin(){
 }
 async function doLogout(){
   await fetch("/api/auth/logout").catch(()=>{});
-  // Drop the timers we mirrored from real jobs (keep the user's manual ones).
-  AUTH.syncedTimers.forEach(bp=>{ delete IND.timers[bp]; });
-  AUTH.syncedTimers.clear(); saveIndTimers();
   AUTH.loggedIn=false; AUTH.name=null; AUTH.charId=null; AUTH.data=null;
+  IND.timers={};   // timers come from the API only — nothing to keep
   renderAuthChip(); updateMyLpBadge(); renderIndTable();
+  if(IND.openDetail) renderIndDetail(IND.openDetail);
 }
 
 async function refreshCharData(){
@@ -4036,20 +4002,18 @@ function renderCharData(){
    + `<td style="text-align:right">${(l.loyalty_points||0).toLocaleString()}</td></tr>`).join("");
 }
 
-// Mirror real in-game manufacturing jobs into the Industry-table timers, keyed
-// by blueprint type id (== the planner's blueprint_id). Tracked separately so a
-// logout only removes these, not the user's hand-started timers.
+// Rebuild the Industry-table timers from the character's real manufacturing jobs,
+// keyed by blueprint type id (== the planner's blueprint_id). This is the only
+// source of timers — there is no manual timer any more.
 function syncJobTimers(){
-  if(!AUTH.data) return;
-  AUTH.syncedTimers.forEach(bp=>{ delete IND.timers[bp]; });
-  AUTH.syncedTimers.clear();
-  (AUTH.data.jobs||[]).forEach(j=>{
+  IND.timers={};
+  (AUTH.data&&AUTH.data.jobs||[]).forEach(j=>{
     if(j.activity_id!==1) return;          // manufacturing only
     const end=Date.parse(j.end), bp=j.blueprint_type_id;
-    if(isFinite(end) && bp){ IND.timers[bp]=end; AUTH.syncedTimers.add(bp); }
+    if(isFinite(end) && bp) IND.timers[bp]=end;
   });
-  saveIndTimers();
   if(ACTIVE_TAB==="ind") renderIndTable();
+  if(IND.openDetail) renderIndDetail(IND.openDetail);
 }
 
 // Show the player's LP balance for the corp currently typed in the LP tab.
@@ -4085,6 +4049,11 @@ $("#cfg-save").onclick=async()=>{
   setStatus('<span class="pill">EVE login settings saved</span>');
 };
 $("#ind-usechar").onchange=()=>{ saveLS(); saveIndPrefs(); if(IND.lastData) scanInd(false); };
+
+// Re-pull character data (wallet, jobs, skill queue, LP) on EVE's cache cadence
+// so the job timers stay current. The per-second ticker handles the countdown
+// itself; this just refreshes the underlying job list every 5 minutes.
+setInterval(()=>{ if(AUTH.loggedIn) refreshCharData(); }, CHAR_REFRESH_MS);
 
 function fallbackCopy(text, done){
   // execCommand path for non-secure contexts where navigator.clipboard is absent.
@@ -4359,7 +4328,6 @@ async function loadSettings(){
   document.addEventListener("scroll",()=>{ if(cur){ cur=null; tip.classList.remove("show"); } }, true);
 })();
 
-loadIndTimers();
 loadSettings();
 checkAuth();
 _corpInput.addEventListener("input", updateMyLpBadge);

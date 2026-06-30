@@ -18,7 +18,7 @@ Downloads the full public order book for a region and finds cross-station negati
 ### Industry Planner
 Ranks manufacturable items by how worthwhile they are to build, after material cost (bought at a selectable hub), job install cost and blueprint cost. Covers T1 manufacturing and T2 invention (datacores, success probability, runs-per-BPC). Sorts by ISK/hour using real build times, layers in required skills, market-history "days to sell" / tradeability score, and input/output cargo m³ for a chosen batch size.
 
-Build-location profiles capture each station or structure's ME/TE, system cost index, structure bonus, facility tax and SCC surcharge via a wizard, so the job cost reflects where you actually build. Star items to pin them to the top regardless of filters, and start a per-item crafting countdown that shows in its own column. Columns are drag-to-reorder. Click any row for a full per-item breakdown. Blueprint data comes from a local SQLite copy of the Fuzzwork SDE dump, rebuilt on demand.
+Build-location profiles capture each station or structure's ME/TE, system cost index, structure bonus, facility tax and SCC surcharge via a wizard, so the job cost reflects where you actually build. Star items to pin them to the top regardless of filters. When you're logged in with EVE, your actually-running manufacturing jobs show a live countdown in the Timer column (matched by blueprint). Columns are drag-to-reorder. Click any row for a full per-item breakdown. Blueprint data comes from a local SQLite copy of the Fuzzwork SDE dump, rebuilt on demand.
 
 ---
 
@@ -30,7 +30,7 @@ What it adds:
 - A **Character** tab with your wallet balance, total SP, **loyalty points** per corporation, your **skill queue** with finish times, and your **currently running industry jobs** with live countdown timers.
 - The **LP Store** tab shows your LP balance for the corporation you're viewing.
 - The **Industry** planner gains a **My skills** toggle that swaps the uniform "Skills @" assumption for your character's *actual* trained skill levels, so build times and the Build? gate match your character.
-- Your real running manufacturing jobs are mirrored into the Industry table's timer column (matched by blueprint), alongside any timers you start by hand.
+- Your real running manufacturing jobs drive the Industry table's timer column (matched by blueprint), with a per-second live countdown. The job list is re-pulled from EVE every 5 minutes (EVE's cache cadence for industry jobs).
 
 ### One-time setup
 

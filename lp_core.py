@@ -141,7 +141,7 @@ PRICE_CACHE_TTL = 300  # 5 minutes — matches ESI's cache header for market ord
 def _esi_orders_for_type(type_id, session, station_id, region_id):
     """Fetch all orders for one type in a region from ESI, filter to station."""
     orders, page = [], 1
-    while True:
+    while page <= 10:
         r = session.get(f"{ESI}/markets/{region_id}/orders/",
                         params={"type_id": type_id, "order_type": "all", "page": page},
                         headers=HEADERS, timeout=30)
@@ -184,31 +184,26 @@ def fetch_prices_esi(type_ids, session, station_id=JITA_STATION_ID,
         cache_dir = default_cache_dir()
     cache_path = Path(cache_dir) / f"esi_prices_{station_id}.json"
     now = time.time()
-    cached = {}
-    if not refresh:
-        cached = load_json(cache_path, {})
-        ts = cached.get("_ts", 0)
-        if now - ts < PRICE_CACHE_TTL:
-            ids = sorted(set(type_ids))
-            out = {}
-            for tid in ids:
-                entry = cached.get(str(tid))
-                if entry:
-                    out[tid] = entry
-            missing = [tid for tid in ids if tid not in out]
-            if not missing:
-                return out
-        else:
-            cached = {}
+    cached = load_json(cache_path, {})
+    cache_valid = (now - cached.get("_ts", 0) < PRICE_CACHE_TTL)
 
     ids = sorted(set(type_ids))
     out = {}
-    total = len(ids)
-    for idx, tid in enumerate(ids):
-        entry = cached.get(str(tid))
-        if entry and not refresh:
-            out[tid] = entry
-            continue
+    if not refresh and cache_valid:
+        missing = []
+        for tid in ids:
+            entry = cached.get(str(tid))
+            if entry:
+                out[tid] = entry
+            else:
+                missing.append(tid)
+        if not missing:
+            return out
+    else:
+        missing = ids
+
+    total = len(missing)
+    for idx, tid in enumerate(missing):
         try:
             orders = _esi_orders_for_type(tid, session, station_id, region_id)
             out[tid] = _summarise_orders(orders)
@@ -218,10 +213,11 @@ def fetch_prices_esi(type_ids, session, station_id=JITA_STATION_ID,
         if emit and idx % 20 == 0:
             emit(idx, total)
 
-    to_save = {"_ts": now}
+    # Merge into existing cache (don't overwrite unrelated types)
     for tid, v in out.items():
-        to_save[str(tid)] = v
-    save_json(cache_path, to_save)
+        cached[str(tid)] = v
+    cached["_ts"] = now
+    save_json(cache_path, cached)
     return out
 
 

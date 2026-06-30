@@ -16,7 +16,9 @@ Ranks LP store offers for any NPC corporation by ISK/LP efficiency. Enter your c
 Downloads the full public order book for a region and finds cross-station negative-spread opportunities — items where you can buy a sell order in one station and resell into a buy order in another at a profit after sales tax. Filters to deals with a Jita leg within a configurable round-trip jump range.
 
 ### Industry Planner
-Ranks manufacturable items by how worthwhile they are to build, after material cost (bought at a selectable hub), job install cost (a manual, remembered job-cost % per named tax profile) and blueprint cost. Covers T1 manufacturing and T2 invention (datacores, success probability, runs-per-BPC). Sorts by ISK/hour using real build times, layers in required skills, market-history "days to sell", and input/output cargo m³ for a chosen batch size. Click any row for a full per-item breakdown. Blueprint data comes from a local SQLite copy of the Fuzzwork SDE dump, rebuilt on demand.
+Ranks manufacturable items by how worthwhile they are to build, after material cost (bought at a selectable hub), job install cost and blueprint cost. Covers T1 manufacturing and T2 invention (datacores, success probability, runs-per-BPC). Sorts by ISK/hour using real build times, layers in required skills, market-history "days to sell" / tradeability score, and input/output cargo m³ for a chosen batch size.
+
+Build-location profiles capture each station or structure's ME/TE, system cost index, structure bonus, facility tax and SCC surcharge via a wizard, so the job cost reflects where you actually build. Star items to pin them to the top regardless of filters, and start a per-item crafting countdown that shows in its own column. Columns are drag-to-reorder. Click any row for a full per-item breakdown. Blueprint data comes from a local SQLite copy of the Fuzzwork SDE dump, rebuilt on demand.
 
 ---
 
@@ -165,10 +167,27 @@ A scan progress bar streams live updates as the order book downloads (first run 
 
 ---
 
+## Industry tab
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| Category | All | Market group to scan (or everything) |
+| Source hub | Jita | Trade hub where materials are priced and the product is sold |
+| Build location | — | Saved station/structure profile (ME/TE, cost index, bonuses, taxes); ＋ adds one via a wizard, ✎ edits |
+| Batch (runs) | 1 | Runs per job; scales profit×N, cargo and days-to-sell live without a rescan |
+| Skills level | 5 | Assumed industry-skill level for build-time and buildability |
+| Sales tax / broker | 4.5% / 1.5% | Applied to the product's sale |
+| Min tradeability | 0 | Hide products whose market absorbs too little volume |
+
+Blueprint data is built once from the Fuzzwork SDE dump into a local SQLite database. Use **⟳ Refresh SDE** to rebuild it after a game patch. Favourites, the build-location profiles, and the column order persist across visits.
+
+---
+
 ## Data sources
 
-- **ESI** (`https://esi.evetech.net`) — LP store offers, order books, universe names, routes
-- **Fuzzwork aggregates** (`https://market.fuzzwork.co.uk/aggregates/`) — Jita IV-4 best bid/ask prices for LP scanner
+- **ESI** (`https://esi.evetech.net`) — LP store offers, order books, universe names, routes, market history
+- **Fuzzwork aggregates** (`https://market.fuzzwork.co.uk/aggregates/`) — best bid/ask prices per hub for the LP and industry scanners
+- **Fuzzwork SDE dump** (`https://www.fuzzwork.co.uk/dump/latest/csv/`) — static blueprint, material and type data for the Industry planner
 
 ESI excludes most player-built Upwell structure markets, so prices can differ slightly from the in-game view.
 
@@ -186,10 +205,12 @@ All cached data lives in `.eve_scanner_cache/` next to the script (or in the Doc
 | `lp_names.json` | Item name lookups |
 | `lp_volumes.json` | Packaged cargo volumes |
 | `npc_corps.json` | NPC corporation list |
+| `sde_industry.sqlite` | Blueprint/material/type data built from the Fuzzwork SDE dump (rebuilt on demand) |
 | `lp_web_settings.json` | Last-used LP scanner form values |
 | `arb_settings.json` | Last-used Arbitrage form values |
+| `ind_settings.json` | Industry planner form values, build-location profiles, favourites and column order |
 
-Form preferences (corporation, LP budget, arb settings, column widths, sort order) are also saved in the browser's `localStorage` and restored automatically on the next visit.
+Form preferences (corporation, LP budget, arb settings, industry settings, column widths and order, sort order) are also saved in the browser's `localStorage` and restored automatically on the next visit.
 
 ---
 

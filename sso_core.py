@@ -202,6 +202,16 @@ def fetch_loyalty_points(token, character_id, session):
     return r.json()
 
 
+def fetch_wallet_transactions(token, character_id, session):
+    """[{transaction_id, date, is_buy, type_id, quantity, unit_price,
+    location_id, …}, …] — most recent ~2500 market transactions, newest first.
+    Same scope as the wallet balance (esi-wallet.read_character_wallet.v1)."""
+    r = session.get(f"{ESI}/characters/{character_id}/wallet/transactions/",
+                    headers=_auth_headers(token), timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
 def fetch_industry_jobs(token, character_id, session, include_completed=False):
     """[{job_id, activity_id, blueprint_type_id, product_type_id, runs, status,
     start_date, end_date, …}, …]."""

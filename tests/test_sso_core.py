@@ -173,6 +173,18 @@ def test_fetch_industry_jobs_url_headers_and_params():
     assert params["include_completed"] == "false"
 
 
+def test_fetch_wallet_transactions_url_and_headers():
+    txs = [{"transaction_id": 1, "date": "2026-06-30T12:00:00Z", "is_buy": True,
+            "type_id": 587, "quantity": 5, "unit_price": 1000.0, "location_id": 60003760}]
+    sess = _get_session(txs)
+    out = sso_core.fetch_wallet_transactions("TOKEN", 42, sess)
+    assert out == txs
+    url = sess.get.call_args[0][0]
+    headers = sess.get.call_args[1]["headers"]
+    assert url.endswith("/characters/42/wallet/transactions/")
+    assert headers["Authorization"] == "Bearer TOKEN"
+
+
 def test_fetch_loyalty_points_authorized():
     sess = _get_session([{"corporation_id": 1000035, "loyalty_points": 50000}])
     out = sso_core.fetch_loyalty_points("TOKEN", 42, sess)

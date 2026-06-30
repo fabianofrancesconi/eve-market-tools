@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.30.0"
+__version__ = "1.31.0"
 
 import argparse
 import base64
@@ -310,14 +310,20 @@ def do_char_data(q):
     # include_completed so delivered jobs (last 90 days) surface for the runs-
     # delivered counter; the active-jobs table below filters them back out.
     jobs = sso_core.fetch_industry_jobs(token, cid, SESSION, include_completed=True)
+    transactions = sso_core.fetch_wallet_transactions(token, cid, SESSION)
+    transactions.sort(key=lambda t: t.get("date") or "", reverse=True)
+    transactions = transactions[:50]   # most recent only — this is a live snapshot, not a ledger
 
-    # Resolve every type/skill name referenced by jobs and the skill queue in one call.
+    # Resolve every type/skill name referenced by jobs, the skill queue and
+    # transactions in one call.
     name_ids = set()
     for j in jobs:
         name_ids.add(j.get("blueprint_type_id"))
         name_ids.add(j.get("product_type_id"))
     for qd in queue:
         name_ids.add(qd.get("skill_id"))
+    for t in transactions:
+        name_ids.add(t.get("type_id"))
     name_ids.discard(None)
     names = resolve_names(list(name_ids), SESSION, CACHE_DIR) if name_ids else {}
 
@@ -366,6 +372,20 @@ def do_char_data(q):
             "finish_date": fin,
         })
 
+    tx_out = []
+    for t in transactions:
+        qty, price = t.get("quantity") or 0, t.get("unit_price") or 0
+        tx_out.append({
+            "transaction_id": t.get("transaction_id"),
+            "date": t.get("date"),
+            "is_buy": t.get("is_buy"),
+            "type_id": t.get("type_id"),
+            "type_name": names.get(t.get("type_id"), "?"),
+            "quantity": qty,
+            "unit_price": price,
+            "total": qty * price,
+        })
+
     return {
         "name": _AUTH.get("name"),
         "character_id": cid,
@@ -376,6 +396,7 @@ def do_char_data(q):
         "loyalty": loyalty_out,
         "jobs": out_jobs,
         "runs_tracked": runs_tracked,
+        "transactions": tx_out,
     }
 
 
@@ -1627,7 +1648,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .char-card { background:var(--panel2); border:1px solid var(--line); border-radius:6px;
     padding:4px 16px 14px; }
   .char-card h3 { margin-top:14px; }
+  .char-card-wide { grid-column:1/-1; }
+  .char-card-sub { color:var(--dim); font-size:11px; font-weight:400; margin-left:6px; }
   .char-none { color:var(--dim); font-size:13px; padding:10px 4px; }
+  #char-tx-tbl td.tx-buy { color:var(--red); font-weight:600; }
+  #char-tx-tbl td.tx-sell { color:var(--green2); font-weight:600; }
   #char-jobs-tbl td.tl, #char-jobs-tbl th:last-child { text-align:right;
     font-variant-numeric:tabular-nums; }
   table.mini { font-size:13px; width:100%; border-collapse:collapse; }
@@ -2115,7 +2140,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div id="char-tablewrap" class="tablewrap hidden">
     <div id="char-empty" class="char-empty">
       <p>Log in with your EVE Online account to see your wallet, skills, loyalty
-      points and currently running industry jobs here.</p>
+      points, running industry jobs and recent market transactions here.</p>
       <button id="char-login-btn" class="auth-btn primary-btn">Log in with EVE</button>
     </div>
     <div id="char-body" class="hidden">
@@ -2149,6 +2174,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
             <th>Corporation</th><th style="text-align:right">LP</th>
           </tr></thead><tbody></tbody></table>
           <div id="char-lp-empty" class="char-none hidden">No loyalty points.</div>
+        </section>
+        <section class="char-card char-card-wide">
+          <h3>Market transactions <span class="char-card-sub">last 50</span></h3>
+          <table class="mini" id="char-tx-tbl"><thead><tr>
+            <th>Date</th><th>Item</th><th>Side</th><th style="text-align:right">Qty</th>
+            <th style="text-align:right">Unit price</th><th style="text-align:right">Total</th>
+          </tr></thead><tbody></tbody></table>
+          <div id="char-tx-empty" class="char-none hidden">No recent transactions.</div>
         </section>
       </div>
     </div>
@@ -4174,6 +4207,19 @@ function renderCharData(){
   $("#char-lp-tbl tbody").innerHTML=lp.map(l=>
     `<tr><td>${authEsc(l.corp_name)}</td>`
    + `<td style="text-align:right">${(l.loyalty_points||0).toLocaleString()}</td></tr>`).join("");
+
+  const tx=d.transactions||[];
+  $("#char-tx-empty").classList.toggle("hidden", tx.length>0);
+  $("#char-tx-tbl").classList.toggle("hidden", tx.length===0);
+  $("#char-tx-tbl tbody").innerHTML=tx.map(t=>{
+    const when=t.date?new Date(t.date).toLocaleString([],
+      {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
+    return `<tr><td>${when}</td><td>${authEsc(t.type_name)}</td>`
+         + `<td class="${t.is_buy?"tx-buy":"tx-sell"}">${t.is_buy?"Buy":"Sell"}</td>`
+         + `<td style="text-align:right">${t.quantity.toLocaleString()}</td>`
+         + `<td style="text-align:right">${fmtISK(t.unit_price)}</td>`
+         + `<td style="text-align:right">${fmtISK(t.total)}</td></tr>`;
+  }).join("");
 }
 
 // Rebuild the Industry-table timers from the character's real manufacturing jobs,

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.29.1"
+__version__ = "1.29.2"
 
 import argparse
 import base64
@@ -3779,10 +3779,12 @@ function renderIndDetail(d){
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   // Fee/tax breakdown — re-derives the ISK amounts folded into revenue_patient
   // / revenue_instant (qty × price × rate) so they can surface as their own card.
-  const qty=d.product.quantity;
+  const qty=d.product.quantity, qtyBatchTot=qty*n;
   const brokerIsk=(d.ask!=null && d.broker_fee)?qty*d.ask*d.broker_fee*n:null;
   const taxListIsk=(d.ask!=null && d.sales_tax)?qty*d.ask*d.sales_tax*n:null;
   const taxInstantIsk=(d.bid!=null && d.sales_tax)?qty*d.bid*d.sales_tax*n:null;
+  const jobCostBatch=d.job_cost!=null?d.job_cost*n:null;
+  const inventionCostBatch=d.invention?d.invention_cost*n:0;
   // Break-even sell price: instant sale only pays sales tax (no broker fee), so
   // qty*price*(1-sales_tax) = total_cost solved for price. Surfaced only when
   // the instant sale is currently unprofitable.
@@ -3890,17 +3892,17 @@ function renderIndDetail(d){
           <div class="ind-d-card">
             <div class="ind-d-card-label">Job duration</div>
             <div class="ind-d-card-val">${fmtDur(batchTime)}</div>
-            <div class="ind-d-card-sub">${fmtDur(d.build_time)} / run</div>
+            <div class="ind-d-card-sub">${n.toLocaleString()} run(s)</div>
           </div>
           <div class="ind-d-card">
             <div class="ind-d-card-label">Build cost</div>
             <div class="ind-d-card-val">${isk(batchCost)}</div>
-            <div class="ind-d-card-sub">mats ${isk(d.material_cost)} + job ${isk(d.job_cost)}${d.invention?` + invent ${isk(d.invention_cost)}`:""} /run</div>
+            <div class="ind-d-card-sub">mats ${isk(matTotCost)} + job ${isk(jobCostBatch)}${d.invention?` + invent ${isk(inventionCostBatch)}`:""}</div>
           </div>
           <div class="ind-d-card">
             <div class="ind-d-card-label">Cargo in</div>
             <div class="ind-d-card-val">${inputBatch?fmtVol(inputBatch):"—"}</div>
-            <div class="ind-d-card-sub">batch of ${n.toLocaleString()} run(s)</div>
+            <div class="ind-d-card-sub">${n.toLocaleString()} run(s)</div>
           </div>
         </div>
       </div>
@@ -3910,13 +3912,13 @@ function renderIndDetail(d){
           <div class="ind-d-card">
             <div class="ind-d-card-label">Profit — instant</div>
             <div class="ind-d-card-val ${pn(batchProfitI)}">${isk(batchProfitI)}</div>
-            <div class="ind-d-card-sub">${qty}× @ bid ${isk(d.bid)} − tax ${fmtPct1(d.sales_tax)} − cost ${isk(d.total_cost)} = ${isk(d.profit_instant)} /run</div>
+            <div class="ind-d-card-sub">${qtyBatchTot.toLocaleString()}× @ bid ${isk(d.bid)} − tax ${fmtPct1(d.sales_tax)} − cost ${isk(batchCost)} = ${isk(batchProfitI)}</div>
             ${minPriceInstant!=null?`<div class="ind-d-card-sub ind-d-card-warn">Break-even sell: ${isk(minPriceInstant)}/unit</div>`:""}
           </div>
           <div class="ind-d-card">
             <div class="ind-d-card-label">Profit — sell (list)</div>
             <div class="ind-d-card-val ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
-            <div class="ind-d-card-sub">${qty}× @ ask ${isk(d.ask)} − tax ${fmtPct1(d.sales_tax)} − broker ${fmtPct1(d.broker_fee)} − cost ${isk(d.total_cost)} = ${isk(d.profit_patient)} /run</div>
+            <div class="ind-d-card-sub">${qtyBatchTot.toLocaleString()}× @ ask ${isk(d.ask)} − tax ${fmtPct1(d.sales_tax)} − broker ${fmtPct1(d.broker_fee)} − cost ${isk(batchCost)} = ${isk(batchProfitL)}</div>
           </div>
           <div class="ind-d-card">
             <div class="ind-d-card-label">Fees &amp; taxes</div>

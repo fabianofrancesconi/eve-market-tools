@@ -90,9 +90,17 @@ _FIXTURES = {
     "invMarketGroups": BOM + '"marketGroupID","parentGroupID","marketGroupName","description","iconID","hasTypes"\n'
     '"61","","Test Group","","",""\n',
 
+    # Skill 3380 (Industry): rank 1, no prereqs
+    # Skill 11442: rank 3, requires skill 3380 at level 3
+    # Skill 25000 (fake): rank 2, requires skill 11442 at level 2 (two-deep chain)
     "dgmTypeAttributes": BOM + '"typeID","attributeID","valueInt","valueFloat"\n'
     '"3380","275","","1.0"\n'
     '"11442","275","","3.0"\n'
+    '"25000","275","","2.0"\n'
+    '"11442","182","","3380.0"\n'
+    '"11442","277","","3.0"\n'
+    '"25000","182","","11442.0"\n'
+    '"25000","277","","2.0"\n'
     '"99999","180","","500.0"\n',
 }
 
@@ -694,10 +702,73 @@ class TestMissingSkills:
         conn = self._conn(tmp_path)
         try:
             conn.execute("DROP TABLE IF EXISTS skill_ranks")
+            conn.execute("DROP TABLE IF EXISTS skill_prereqs")
             bp = _bp(skills=[(3380, 3)])
             result = ind_core.missing_skills(bp, {}, conn, default_level=0)
             assert len(result) == 1
             # train_hours should be 0 because rank is unknown
             assert result[0]["train_hours"] == 0.0
+        finally:
+            conn.close()
+
+    def test_walks_prerequisite_chain(self, tmp_path):
+        """Skill 11442 requires 3380 at L3. If character has neither,
+        missing_skills should return both, prerequisites first."""
+        conn = self._conn(tmp_path)
+        try:
+            bp = _bp(skills=[(11442, 1)])
+            result = ind_core.missing_skills(bp, {}, conn, default_level=0)
+            ids = [e["skill_id"] for e in result]
+            # 3380 is a prereq of 11442, so should appear before 11442
+            assert 3380 in ids
+            assert 11442 in ids
+            assert ids.index(3380) < ids.index(11442)
+            # 3380 needed at level 3 (as prereq of 11442)
+            entry_3380 = next(e for e in result if e["skill_id"] == 3380)
+            assert entry_3380["required"] == 3
+        finally:
+            conn.close()
+
+    def test_deep_prerequisite_chain(self, tmp_path):
+        """Skill 25000 requires 11442 L2, which requires 3380 L3.
+        All three should appear if character has none."""
+        conn = self._conn(tmp_path)
+        try:
+            bp = _bp(skills=[(25000, 1)])
+            result = ind_core.missing_skills(bp, {}, conn, default_level=0)
+            ids = [e["skill_id"] for e in result]
+            assert 3380 in ids
+            assert 11442 in ids
+            assert 25000 in ids
+            # Order: 3380 before 11442 before 25000
+            assert ids.index(3380) < ids.index(11442) < ids.index(25000)
+        finally:
+            conn.close()
+
+    def test_prereq_already_trained_not_shown(self, tmp_path):
+        """If character already has the prereq trained, it's not listed."""
+        conn = self._conn(tmp_path)
+        try:
+            bp = _bp(skills=[(11442, 1)])
+            # Character has 3380 at L5 (prereq met), but not 11442
+            result = ind_core.missing_skills(bp, {3380: 5}, conn, default_level=0)
+            ids = [e["skill_id"] for e in result]
+            assert 3380 not in ids
+            assert 11442 in ids
+        finally:
+            conn.close()
+
+    def test_no_duplicate_skills_in_result(self, tmp_path):
+        """If the same skill appears as both direct and prereq, show once at max level."""
+        conn = self._conn(tmp_path)
+        try:
+            # bp requires 3380 at L1 directly AND 11442 L1 (whose prereq is 3380 L3)
+            bp = _bp(skills=[(3380, 1), (11442, 1)])
+            result = ind_core.missing_skills(bp, {}, conn, default_level=0)
+            ids = [e["skill_id"] for e in result]
+            assert ids.count(3380) == 1
+            # Required level should be 3 (from prerequisite, higher than direct L1)
+            entry = next(e for e in result if e["skill_id"] == 3380)
+            assert entry["required"] == 3
         finally:
             conn.close()

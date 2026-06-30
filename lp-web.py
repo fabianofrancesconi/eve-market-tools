@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.39.0"
+__version__ = "1.40.0"
 
 import argparse
 import base64
@@ -1963,6 +1963,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-skills-warn { color:#e06050; }
   .ind-d-skills td { color:#e8b050; }
   .ind-d-skills tr.ind-d-total td { color:#e06050; }
+  .ind-prereq { font-size:10px; color:var(--dim); font-style:italic; }
   #ind-tbl th { cursor:pointer; user-select:none; }
   #ind-tbl th[data-nosort] { cursor:default; }
   /* Highlight the blueprint buy-in price (the thing you must purchase). */
@@ -4180,7 +4181,7 @@ function renderIndDetail(d){
     </div>
     ${d.missing_skills&&d.missing_skills.length?`
     <div class="ind-d-sub ind-skills-warn">Missing skills — ${d.missing_skills.length} needed</div>
-    <table class="ind-d-mats ind-d-skills"><thead><tr><th>Skill</th><th class="num">Have</th><th class="num">Need</th><th class="num">Train time</th></tr></thead><tbody>${d.missing_skills.map(s=>`<tr><td>${s.name}</td><td class="num">${s.current}</td><td class="num">${s.required}</td><td class="num">${s.train_hours<1?(Math.round(s.train_hours*60)+"m"):(s.train_hours<24?s.train_hours.toFixed(1)+"h":(s.train_hours/24).toFixed(1)+"d")}</td></tr>`).join("")}</tbody>
+    <table class="ind-d-mats ind-d-skills"><thead><tr><th>Skill</th><th class="num">Have</th><th class="num">Need</th><th class="num">Train time</th></tr></thead><tbody>${d.missing_skills.map(s=>`<tr><td>${s.name}${s.prereq?' <span class="ind-prereq">(prereq)</span>':''}</td><td class="num">${s.current}</td><td class="num">${s.required}</td><td class="num">${s.train_hours<1?(Math.round(s.train_hours*60)+"m"):(s.train_hours<24?s.train_hours.toFixed(1)+"h":(s.train_hours/24).toFixed(1)+"d")}</td></tr>`).join("")}</tbody>
     <tfoot><tr class="ind-d-total"><td>Total training</td><td></td><td></td><td class="num">${(()=>{const h=d.missing_skills.reduce((s,sk)=>s+sk.train_hours,0);return h<1?(Math.round(h*60)+"m"):(h<24?h.toFixed(1)+"h":(h/24).toFixed(1)+"d");})()}</td></tr></tfoot></table>`:""}
     <aside class="ind-d-side">
       <div class="ind-d-section">

@@ -161,6 +161,12 @@ _INDEXES = [
 
 # Attribute 275 = skillTimeConstant (the training rank multiplier).
 _SKILL_RANK_ATTR_ID = 275
+# Prerequisite skill attribute IDs (requiredSkill1..4 and their levels).
+_PREREQ_SKILL_ATTRS = {182, 183, 184, 1285}    # skill type_id
+_PREREQ_LEVEL_ATTRS = {277, 278, 279, 1286}    # required level
+_PREREQ_ATTR_PAIRS = [(182, 277), (183, 278), (184, 279), (1285, 1286)]
+# All attribute IDs we extract from dgmTypeAttributes in one pass.
+_WANTED_ATTRS = {_SKILL_RANK_ATTR_ID} | _PREREQ_SKILL_ATTRS | _PREREQ_LEVEL_ATTRS
 # SP thresholds per level (cumulative) = 250 × rank × sqrt(32)^(L-1).
 # Precomputed multiplier for each level (relative to rank):
 #   L1: 250, L2: 1414, L3: 8000, L4: 45255, L5: 256000
@@ -230,30 +236,58 @@ def _ingest_table(conn, session, table, basename, columns):
 
 
 def _ingest_skill_ranks(conn, session):
-    """Import only attribute 275 (skillTimeConstant) from dgmTypeAttributes.
-    This is a multi-million row CSV but we only keep the ~500 skill rank rows."""
+    """Single-pass extraction of skill-related attributes from dgmTypeAttributes:
+    - attribute 275 (skillTimeConstant) -> skill_ranks table
+    - attributes 182/183/184/1285 + 277/278/279/1286 -> skill_prereqs table
+    The CSV is multi-million rows; we filter in-flight to keep only what we need."""
     conn.execute("DROP TABLE IF EXISTS skill_ranks")
     conn.execute("CREATE TABLE skill_ranks (type_id INTEGER PRIMARY KEY, rank REAL)")
+    conn.execute("DROP TABLE IF EXISTS skill_prereqs")
+    conn.execute("CREATE TABLE skill_prereqs "
+                 "(type_id INTEGER, prereq_skill_id INTEGER, prereq_level INTEGER)")
     rows_iter = _stream_csv_rows(session, "dgmTypeAttributes")
     header = next(rows_iter)
     idx = {name: i for i, name in enumerate(header)}
-    ti, ai, vi, vf = idx.get("typeID"), idx.get("attributeID"), idx.get("valueInt"), idx.get("valueFloat")
-    batch, total = [], 0
+    ti = idx.get("typeID")
+    ai = idx.get("attributeID")
+    vi = idx.get("valueInt")
+    vf = idx.get("valueFloat")
+
+    # Accumulate per-type attribute values, then flush prereqs when we have pairs.
+    rank_batch, prereq_batch = [], []
+    # {type_id: {attr_id: value}} — built up row by row
+    attrs_by_type = {}
     for raw in rows_iter:
-        if ai is None or int(raw[ai]) != _SKILL_RANK_ATTR_ID:
+        attr_id = int(raw[ai])
+        if attr_id not in _WANTED_ATTRS:
             continue
         type_id = int(raw[ti])
-        rank = float(raw[vf]) if (vf is not None and raw[vf]) else (float(raw[vi]) if (vi is not None and raw[vi]) else None)
-        if rank:
-            batch.append((type_id, rank))
-        if len(batch) >= _INSERT_BATCH:
-            conn.executemany("INSERT INTO skill_ranks (type_id, rank) VALUES (?, ?)", batch)
-            total += len(batch)
-            batch = []
-    if batch:
-        conn.executemany("INSERT INTO skill_ranks (type_id, rank) VALUES (?, ?)", batch)
-        total += len(batch)
-    return total
+        val = float(raw[vf]) if (vf is not None and raw[vf]) else (
+              float(raw[vi]) if (vi is not None and raw[vi]) else None)
+        if val is None:
+            continue
+        if attr_id == _SKILL_RANK_ATTR_ID:
+            rank_batch.append((type_id, val))
+        else:
+            attrs_by_type.setdefault(type_id, {})[attr_id] = val
+
+    # Flush ranks
+    if rank_batch:
+        conn.executemany("INSERT INTO skill_ranks (type_id, rank) VALUES (?, ?)", rank_batch)
+
+    # Build prereq rows from collected pairs
+    for type_id, attrs in attrs_by_type.items():
+        for skill_attr, level_attr in _PREREQ_ATTR_PAIRS:
+            sid = attrs.get(skill_attr)
+            lvl = attrs.get(level_attr)
+            if sid and lvl:
+                prereq_batch.append((type_id, int(sid), int(lvl)))
+    if prereq_batch:
+        conn.executemany(
+            "INSERT INTO skill_prereqs (type_id, prereq_skill_id, prereq_level) VALUES (?, ?, ?)",
+            prereq_batch)
+    conn.execute("CREATE INDEX idx_prereqs_type ON skill_prereqs(type_id)")
+    return len(rank_batch) + len(prereq_batch)
 
 
 def build_sde_db(cache_dir, session=None, emit=None):
@@ -690,40 +724,113 @@ def training_time_hours(from_level, to_level, rank):
     return (sp_to - sp_from) / _SP_PER_HOUR
 
 
+def _load_prereqs(conn, skill_ids):
+    """Load prerequisite tree for a set of skill IDs. Returns
+    {skill_id: [(prereq_skill_id, level), ...]}."""
+    prereqs = {}
+    try:
+        marks = ", ".join("?" for _ in skill_ids)
+        for r in conn.execute(
+                f"SELECT type_id, prereq_skill_id, prereq_level FROM skill_prereqs "
+                f"WHERE type_id IN ({marks})", list(skill_ids)):
+            prereqs.setdefault(r["type_id"], []).append(
+                (r["prereq_skill_id"], r["prereq_level"]))
+    except sqlite3.OperationalError:
+        pass  # table doesn't exist yet (old SDE build)
+    return prereqs
+
+
+def _walk_skill_tree(skill_id, required_level, sp, default_level, prereqs,
+                     visited, result):
+    """Recursively walk the prerequisite tree for one skill. Adds entries to
+    `result` for any skill (including prerequisites) the character lacks.
+    `visited` tracks {skill_id: level_already_required} to avoid duplicates
+    and handle the same skill appearing at different levels (keep highest)."""
+    current = sp.get(skill_id, default_level)
+    prev_required = visited.get(skill_id, 0)
+    if required_level <= prev_required:
+        return  # already handled at this or higher level
+    visited[skill_id] = required_level
+
+    # Walk this skill's own prerequisites first (depth-first)
+    for prereq_id, prereq_lvl in prereqs.get(skill_id, []):
+        _walk_skill_tree(prereq_id, prereq_lvl, sp, default_level, prereqs,
+                         visited, result)
+
+    if current < required_level:
+        # Update existing entry if we already added this skill at a lower level
+        for entry in result:
+            if entry["skill_id"] == skill_id:
+                entry["required"] = required_level
+                return
+        result.append({
+            "skill_id": skill_id,
+            "required": required_level,
+            "current": current,
+        })
+
+
 def missing_skills(bp, skill_profile, conn, default_level=0):
-    """Return a list of skills that the character lacks for this blueprint.
-    Each entry: {skill_id, name, required, current, train_hours}."""
+    """Return a list of skills the character lacks for this blueprint, including
+    prerequisite skills walked recursively. Each entry: {skill_id, name,
+    required, current, train_hours}. Ordered prerequisites-first."""
     sp = skill_profile or {}
-    missing = []
-    skill_ids = [sid for sid, _ in bp.get("skills", [])]
-    if not skill_ids:
-        return missing
-    marks = ", ".join("?" for _ in skill_ids)
+    direct_skills = bp.get("skills", [])
+    if not direct_skills:
+        return []
+
+    # Collect all skill IDs we might need prerequisites for (iterative BFS)
+    to_check = set(sid for sid, _ in direct_skills)
+    all_skill_ids = set(to_check)
+    prereqs = {}
+    for _ in range(10):  # max depth guard
+        if not to_check:
+            break
+        loaded = _load_prereqs(conn, to_check)
+        prereqs.update(loaded)
+        to_check = set()
+        for reqs in loaded.values():
+            for psid, _ in reqs:
+                if psid not in all_skill_ids:
+                    all_skill_ids.add(psid)
+                    to_check.add(psid)
+
+    # Walk the tree for each direct requirement
+    visited = {}
+    result = []
+    for sid, required_lvl in direct_skills:
+        _walk_skill_tree(sid, required_lvl, sp, default_level, prereqs,
+                         visited, result)
+
+    if not result:
+        return []
+
+    # Resolve names and ranks for all missing skills
+    missing_ids = [e["skill_id"] for e in result]
+    marks = ", ".join("?" for _ in missing_ids)
     names = {}
     ranks = {}
     for r in conn.execute(
             f"SELECT type_id, type_name FROM types WHERE type_id IN ({marks})",
-            skill_ids):
+            missing_ids):
         names[r["type_id"]] = r["type_name"]
     try:
         for r in conn.execute(
                 f"SELECT type_id, rank FROM skill_ranks WHERE type_id IN ({marks})",
-                skill_ids):
+                missing_ids):
             ranks[r["type_id"]] = r["rank"]
     except sqlite3.OperationalError:
-        pass  # table doesn't exist yet (old SDE build)
-    for sid, required_lvl in bp.get("skills", []):
-        current = sp.get(sid, default_level)
-        if current < required_lvl:
-            rank = ranks.get(sid)
-            missing.append({
-                "skill_id": sid,
-                "name": names.get(sid, f"Skill {sid}"),
-                "required": required_lvl,
-                "current": current,
-                "train_hours": training_time_hours(current, required_lvl, rank),
-            })
-    return missing
+        pass
+
+    direct_ids = set(sid for sid, _ in direct_skills)
+    for entry in result:
+        sid = entry["skill_id"]
+        entry["name"] = names.get(sid, f"Skill {sid}")
+        entry["train_hours"] = training_time_hours(
+            entry["current"], entry["required"], ranks.get(sid))
+        entry["prereq"] = sid not in direct_ids
+
+    return result
 
 
 def invention_cost_per_run(inv, prices, params):

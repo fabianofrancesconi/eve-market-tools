@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.27.1"
+__version__ = "1.28.0"
 
 import argparse
 import base64
@@ -1744,10 +1744,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display:grid; grid-template-columns:auto auto; gap:3px 18px;
     font-size:12px; max-width:560px;
   }
-  .ind-d-side { flex:1 1 240px; min-width:220px; }
+  .ind-d-side { flex:1 1 240px; min-width:220px; display:flex; flex-direction:column; gap:10px; }
   .ind-d-timer-card { background:var(--panel); border:1px solid var(--line2);
     border-radius:6px; padding:10px 12px; }
   .ind-d-timer-card .ind-d-sub { margin-top:0; }
+  .ind-d-cards { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .ind-d-card { background:var(--panel); border:1px solid var(--line2);
+    border-radius:6px; padding:8px 10px; font-size:12px; }
+  .ind-d-card-label { color:var(--dim); font-size:10px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.6px; margin-bottom:3px; }
+  .ind-d-card-val { font-size:15px; font-weight:700; color:var(--fg); }
+  .ind-d-card-val.pos { color:var(--green2,#4caf76); }
+  .ind-d-card-val.neg { color:var(--red); }
+  .ind-d-card-sub { color:var(--dim); font-size:11px; margin-top:1px; }
+  .ind-d-card-grid { display:grid; grid-template-columns:auto auto; gap:2px 10px; }
+  .ind-d-card-grid span { color:var(--dim); }
+  .ind-d-card-grid b { text-align:right; color:var(--fg); font-weight:600; }
   .ind-d-grid span { color:var(--dim); }
   .ind-d-grid b { text-align:right; color:var(--fg); }
   .ind-d-sub { grid-column:1/-1; margin-top:8px; padding-bottom:2px;
@@ -3750,6 +3762,12 @@ function renderIndDetail(d){
   const batchProfitI=d.profit_instant!=null?d.profit_instant*n:null;
   const batchTime=d.build_time?d.build_time*n:null;
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
+  // Fee/tax breakdown — re-derives the ISK amounts folded into revenue_patient
+  // / revenue_instant (qty × price × rate) so they can surface as their own card.
+  const qty=d.product.quantity;
+  const brokerIsk=(d.ask!=null && d.broker_fee)?qty*d.ask*d.broker_fee*n:null;
+  const taxListIsk=(d.ask!=null && d.sales_tax)?qty*d.ask*d.sales_tax*n:null;
+  const taxInstantIsk=(d.bid!=null && d.sales_tax)?qty*d.bid*d.sales_tax*n:null;
   const tier=d.product.tech_level?("T"+d.product.tech_level):"";
   const owned = IND.owned.has(d.blueprint_id);
   let bpSrc;
@@ -3847,6 +3865,38 @@ function renderIndDetail(d){
       <div class="ind-d-timer-card">
         <div class="ind-d-sub">Industry job</div>
         ${timerHtml}
+      </div>
+      <div class="ind-d-cards">
+        <div class="ind-d-card">
+          <div class="ind-d-card-label">Job duration</div>
+          <div class="ind-d-card-val">${fmtDur(batchTime)}</div>
+          <div class="ind-d-card-sub">${fmtDur(d.build_time)} / run</div>
+        </div>
+        <div class="ind-d-card">
+          <div class="ind-d-card-label">Profit — instant</div>
+          <div class="ind-d-card-val ${pn(batchProfitI)}">${isk(batchProfitI)}</div>
+          <div class="ind-d-card-sub">${isk(d.profit_instant)} / run</div>
+        </div>
+        <div class="ind-d-card">
+          <div class="ind-d-card-label">Profit — sell (list)</div>
+          <div class="ind-d-card-val ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
+          <div class="ind-d-card-sub">${isk(d.profit_patient)} / run</div>
+        </div>
+        <div class="ind-d-card">
+          <div class="ind-d-card-label">Fees &amp; taxes</div>
+          <div class="ind-d-card-grid">
+            <span>Broker fee (list)</span><b>${isk(brokerIsk)}</b>
+            <span>Sales tax (list)</span><b>${isk(taxListIsk)}</b>
+            <span>Sales tax (instant)</span><b>${isk(taxInstantIsk)}</b>
+          </div>
+        </div>
+        <div class="ind-d-card">
+          <div class="ind-d-card-label">Cargo</div>
+          <div class="ind-d-card-grid">
+            <span>In</span><b>${inputBatch?fmtVol(inputBatch):"—"}</b>
+            <span>Out</span><b>${outputBatch?fmtVol(outputBatch):"—"}</b>
+          </div>
+        </div>
       </div>
     </aside>
     </div>

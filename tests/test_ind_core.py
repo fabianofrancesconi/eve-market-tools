@@ -414,6 +414,13 @@ class TestBuildIndustryDetail:
         assert trit["line_volume_batch"] == pytest.approx(100.0)  # 100*0.01*100
         assert d["output_volume_batch"] == pytest.approx(250_000.0)
 
+    def test_exposes_tax_and_broker_rates(self):
+        # detail panel re-derives ISK fee/tax amounts client-side from these rates
+        params = _params(adjusted=_ADJUSTED)
+        d = ind_core.build_industry_detail(_bp(), _prices(), {}, _VOLUMES, params)
+        assert d["sales_tax"] == pytest.approx(0.05)
+        assert d["broker_fee"] == pytest.approx(0.02)
+
     def test_matches_evaluate(self):
         # detail and evaluate must agree on the per-run economics
         params = _params(adjusted=_ADJUSTED)

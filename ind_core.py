@@ -872,6 +872,8 @@ def build_industry_detail(bp, prices, names, volumes, params):
         "missing_price": cost["missing_price"],
         "ask": ask,
         "bid": bid,
+        "sales_tax": sales_tax,
+        "broker_fee": broker,
         "revenue_patient": rev_patient,
         "revenue_instant": rev_instant,
         "profit_patient": profit_patient,

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.21.0"
+__version__ = "1.21.1"
 
 import argparse
 import base64
@@ -1582,7 +1582,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
           </span>
         </div>
       </div>
-      <div class="field" data-tip="Show only items with a tradeability score of at least this (0–100). 0 = no filter. Tradeability is computed for the top-ranked items, so a high threshold narrows the list to the most sellable of those.">
+      <div class="field" data-tip="Hide items whose tradeability is below this (0–100). 0 = no filter. Tradeability is scored for the top-ranked items; items further down the list (not yet scored) are kept, so this trims the illiquid top picks without wiping out a big scan.">
         <label>Min trade</label><input id="ind-mintrade" type="number" min="0" max="100" value="0" style="width:60px">
       </div>
     </div>
@@ -3024,8 +3024,11 @@ function renderIndTable(){
   // Annotate ownership, apply the tradeability filter, then split: owned on top.
   IND.rows.forEach(r=>{ r._owned=IND.owned.has(r.blueprint_id); });
   const minTrade=parseInt($("#ind-mintrade").value)||0;
+  // Only drop items KNOWN to be below the threshold. Tradeability is computed for
+  // the top-ranked items only, so rows without a score (the long tail) are kept —
+  // otherwise a min-trade filter would wipe out a big "All" scan (most unscored).
   const vis=minTrade>0
-    ? IND.rows.filter(r=>r.tradeability!=null && r.tradeability>=minTrade)
+    ? IND.rows.filter(r=>r.tradeability==null || r.tradeability>=minTrade)
     : IND.rows;
   const owned=indSortRows(vis.filter(r=>r._owned));
   const rest =indSortRows(vis.filter(r=>!r._owned));

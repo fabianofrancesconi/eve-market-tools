@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.27.0"
+__version__ = "1.27.1"
 
 import argparse
 import base64
@@ -3728,7 +3728,8 @@ function renderIndDetail(d){
   // totals row so the cargo required is summed and obvious.
   const mvol=v=> v==null?"—":(v.toLocaleString(undefined,{maximumFractionDigits:v<10?2:1})+" m³");
   let matTotCost=0, matTotVol=0, matHasVol=false;
-  const mats=d.required_items.map(m=>{
+  const sortedItems=[...d.required_items].sort((a,b)=>a.name.localeCompare(b.name));
+  const mats=sortedItems.map(m=>{
     const qtyBatch = m.eff_qty*n;
     const costBatch = m.line_cost==null?null:m.line_cost*n;
     const volBatch = (m.volume_each!=null)? m.eff_qty*m.volume_each*n : null;

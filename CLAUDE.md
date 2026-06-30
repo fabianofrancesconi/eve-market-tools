@@ -4,13 +4,22 @@
 
 **Every commit that changes behaviour must bump the version.** The UI reads `__version__` directly — if it is not updated, the version badge in the browser will not change.
 
-### Mandatory steps on every commit (do not wait for the user to ask):
+### Steps on every behaviour-changing commit (do not wait for the user to ask):
 
 1. **Update `__version__ = "x.y.z"`** in `lp-web.py` line 13 — this is what the UI displays
 2. Run `pytest tests/` — all tests must pass
 3. Commit with message `vx.y.z: <description>`
 4. `git tag vx.y.z` (after the commit, use the commit hash if tagging retroactively)
-5. `git push origin master --tags` via WSL — always push branch and tags together in one command
+
+**Do NOT push automatically.** Commit and tag locally as you go, but only push when
+the user explicitly asks (e.g. "push", "ship it"). Several tiny changes can pile up
+across local commits/tags and go out in a single push.
+
+When pushing, always push branch and tags together in one command:
+
+```
+git push origin master --tags
+```
 
 **Never** push a tag alone (`git push origin vX.Y.Z`) — it can silently skip CI.
 
@@ -26,8 +35,13 @@ All changes need corresponding tests in `tests/`.
 
 ## Git / push
 
-GitHub auth doesn't work from the Windows shell — always push from WSL:
+The `origin` remote uses **SSH** (`git@github.com:fabianofrancesconi/eve-market-tools.git`),
+which authenticates as the personal `fabianofrancesconi` account via the local SSH key.
+Push directly:
 
 ```
-wsl -e bash -c "cd /mnt/c/Users/fabia/OneDrive/Documents/eve-scanner && git push origin master --tags"
+git push origin master --tags
 ```
+
+Do **not** use an HTTPS remote — it falls back to a stale `fabiano_adobe` keychain
+credential (Adobe work account) that lacks push access and fails with 403.

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.22.0"
+__version__ = "1.22.1"
 
 import argparse
 import base64
@@ -650,21 +650,26 @@ def do_ind_scan(q, emit=None):
     buildable_only = q.get("buildable_only", ["0"])[0] in ("1", "true", "on")
     include_unbuildable = q.get("include_unbuildable", ["0"])[0] in ("1", "true", "on")
     hide_t2 = q.get("hide_t2", ["0"])[0] in ("1", "true", "on")
+    # A lightweight scan that evaluates ONLY the favorited blueprints, regardless
+    # of category — used to show favorites immediately on tab load, before the
+    # user runs a real scan. Doesn't touch saved settings.
+    favorites_only = q.get("favorites_only", ["0"])[0] in ("1", "true", "on")
     try:
         owned_ids = set(json.loads(q.get("owned", ["[]"])[0]))
     except (ValueError, TypeError):
         owned_ids = set()
     try:
-        fav_ids = set(json.loads(q.get("favorites", ["[]"])[0]))
+        fav_ids = set(int(b) for b in json.loads(q.get("favorites", ["[]"])[0]))
     except (ValueError, TypeError):
         fav_ids = set()
     params = _ind_params(q)
 
-    s = load_ind_settings()
-    for k in _IND_PREF_KEYS:
-        if k in q:
-            s[k] = q[k][0]
-    save_ind_settings(s)
+    if not favorites_only:
+        s = load_ind_settings()
+        for k in _IND_PREF_KEYS:
+            if k in q:
+                s[k] = q[k][0]
+        save_ind_settings(s)
 
     _emit({"type": "progress", "pct": 4, "msg": "Loading blueprint database…", "sub": ""})
     ind_core.load_sde_industry(
@@ -672,17 +677,20 @@ def do_ind_scan(q, emit=None):
         emit=lambda m: _emit({"type": "progress", "pct": 6, "msg": m, "sub": ""}))
     conn = ind_core.connect_sde(CACHE_DIR)
     try:
-        if market_group and market_group != "all":
-            group_ids = ind_core.expand_market_groups(conn, [int(market_group)])
-            candidates = ind_core.manufacturing_candidates(conn, group_ids)
+        if favorites_only:
+            candidates = ind_core.candidates_for_blueprints(conn, fav_ids)
         else:
-            candidates = ind_core.manufacturing_candidates(conn)
-        # Favorited blueprints are always included, even outside the chosen
-        # category, so they're "always visible regardless".
-        present_bp = {c["blueprint_id"] for c in candidates}
-        extra_fav = [b for b in fav_ids if b not in present_bp]
-        if extra_fav:
-            candidates += ind_core.candidates_for_blueprints(conn, extra_fav)
+            if market_group and market_group != "all":
+                group_ids = ind_core.expand_market_groups(conn, [int(market_group)])
+                candidates = ind_core.manufacturing_candidates(conn, group_ids)
+            else:
+                candidates = ind_core.manufacturing_candidates(conn)
+            # Favorited blueprints are always included, even outside the chosen
+            # category, so they're "always visible regardless".
+            present_bp = {c["blueprint_id"] for c in candidates}
+            extra_fav = [b for b in fav_ids if b not in present_bp]
+            if extra_fav:
+                candidates += ind_core.candidates_for_blueprints(conn, extra_fav)
         _emit({"type": "progress", "pct": 18,
                "msg": f"{len(candidates):,} manufacturable items — loading recipes…", "sub": ""})
         bps = ind_core.assemble_blueprints(conn, candidates)
@@ -756,6 +764,7 @@ def do_ind_scan(q, emit=None):
         "runs": params["runs"],
         "count": len(rows),
         "scanned_at": time.time(),
+        "favorites_only": favorites_only,
         "rows": rows,
     }
 
@@ -1434,6 +1443,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-timer-remaining { font-weight:700; color:var(--cyan); font-variant-numeric:tabular-nums; }
   .ind-timer.done .ind-timer-remaining { color:var(--green2,#4caf76); }
   .ind-timer-eta { color:var(--dim); font-size:12px; }
+  #ind-tbl td.timer-cell { text-align:center; font-variant-numeric:tabular-nums;
+    color:var(--cyan); font-weight:600; }
+  #ind-tbl td.timer-cell.done { color:var(--green2,#4caf76); }
   #ind-tbl tr.ind-section td {
     background:var(--panel2); color:var(--dim);
     font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
@@ -1829,7 +1841,10 @@ function switchTab(tab){
   document.title = tab==="lp" ? "EVE LP Store Scanner"
                 : tab==="arb" ? "EVE Arbitrage Scanner" : "EVE Industry Planner";
   fetch(`/api/prefs?active_tab=${tab}`).catch(()=>{}); saveLS();
-  if(tab==="ind" && !IND.groupsLoaded) loadIndGroups();
+  if(tab==="ind"){
+    if(!IND.groupsLoaded) loadIndGroups();
+    renderIndTable(); renderIndStatus();   // show whatever's loaded (e.g. a favourites preview) immediately
+  }
 }
 document.querySelectorAll(".tab").forEach(t=>{
   t.onclick = ()=>switchTab(t.dataset.tab);
@@ -2978,23 +2993,24 @@ const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
 const fmtDaysSell = v => (v===null||v===undefined) ? "—" : v.toFixed(1);
 
 const IND_COLS = [
-  {k:"_fav",               t:"★",           w: 34, tip:"Mark as favourite. Favourites pin to the top and stay visible regardless of filters.", raw:true},
-  {k:"product_name",       t:"Item",        w:226, tip:"The manufactured item. * = an input has no sell price at the source hub. Open it to mark the blueprint as owned."},
-  {k:"tech_level",         t:"T",           w: 40, tip:"Tech level.", f:v=>v?("T"+v):"—"},
-  {k:"isk_per_hour_best",  t:"ISK/hr",      w:115, tip:"Profit per hour of manufacturing time — the headline 'worth it' number.", f:fmtISK, pn:true},
-  {k:"profit_best",        t:"Profit/run",  w:110, tip:"Best-of patient/instant profit for one run.", f:fmtISK, pn:true},
-  {k:"total_profit_best",  t:"Profit×N",    w:115, tip:"Profit across the whole batch (Runs).", f:fmtISK, pn:true},
-  {k:"margin_best",        t:"Margin",      w: 75, tip:"Profit as a % of total cost.", f:fmtPct1, pn:true},
-  {k:"build_time",         t:"Build",       w: 80, tip:"Time for one run after TE + skills.", f:fmtDur},
-  {k:"total_cost",         t:"Cost/run",    w:105, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
-  {k:"bp_price",           t:"BP price",    w:115, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'owned' = you have it.", f:(v,r)=> r._owned?"owned":(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
-  {k:"payback_runs",       t:"Payback",     w: 95, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r._owned?"—":(v==null?"—":fmtNum(v)+" runs")},
-  {k:"ask",                t:"Sell",        w:105, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
-  {k:"input_volume",       t:"Cargo in",    w: 95, tip:"m³ of materials to haul in for the batch.", f:v=>v?fmtVol(v):"—"},
-  {k:"output_volume",      t:"Cargo out",   w: 95, tip:"m³ of finished items to haul out for the batch.", f:v=>v?fmtVol(v):"—"},
-  {k:"days_to_sell",       t:"Days to sell",w: 95, tip:"Batch size ÷ daily traded volume (top items only).", f:fmtDaysSell},
-  {k:"tradeability",       t:"Tradeability",w:105, tip:"How sellable the product is (0–100), from the daily UNITS traded on the market over ~30 days. Low = the market absorbs little quantity, so it's hard to offload no matter how profitable on paper. Computed for the top-ranked items.", f:v=> v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`},
-  {k:"buildable",          t:"Build?",      w: 65, tip:"Can every required skill (at the Skills level) make it?", f:v=>v?"✓":"✗"},
+  {k:"_fav",               t:"★",           w: 30, tip:"Mark as favourite. Favourites pin to the top and stay visible regardless of filters.", raw:true},
+  {k:"product_name",       t:"Item",        w:210, tip:"The manufactured item. * = an input has no sell price at the source hub. Open it to mark the blueprint as owned."},
+  {k:"tech_level",         t:"T",           w: 34, tip:"Tech level.", f:v=>v?("T"+v):"—"},
+  {k:"isk_per_hour_best",  t:"ISK/hr",      w:110, tip:"Profit per hour of manufacturing time — the headline 'worth it' number.", f:fmtISK, pn:true},
+  {k:"profit_best",        t:"Profit/run",  w:105, tip:"Best-of patient/instant profit for one run.", f:fmtISK, pn:true},
+  {k:"total_profit_best",  t:"Profit×N",    w:108, tip:"Profit across the whole batch (Runs).", f:fmtISK, pn:true},
+  {k:"margin_best",        t:"Margin",      w: 65, tip:"Profit as a % of total cost.", f:fmtPct1, pn:true},
+  {k:"build_time",         t:"Build",       w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
+  {k:"_timer",             t:"⏱ Timer",     w: 84, tip:"Crafting timer countdown, set from the detail view. Click the row to open it and start/edit the timer.", raw:true},
+  {k:"total_cost",         t:"Cost/run",    w: 98, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
+  {k:"bp_price",           t:"BP price",    w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'owned' = you have it.", f:(v,r)=> r._owned?"owned":(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
+  {k:"payback_runs",       t:"Payback",     w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r._owned?"—":(v==null?"—":fmtNum(v)+" runs")},
+  {k:"ask",                t:"Sell",        w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
+  {k:"input_volume",       t:"Cargo in",    w: 85, tip:"m³ of materials to haul in for the batch.", f:v=>v?fmtVol(v):"—"},
+  {k:"output_volume",      t:"Cargo out",   w: 85, tip:"m³ of finished items to haul out for the batch.", f:v=>v?fmtVol(v):"—"},
+  {k:"days_to_sell",       t:"Days to sell",w: 88, tip:"Batch size ÷ daily traded volume (top items only).", f:fmtDaysSell},
+  {k:"tradeability",       t:"Tradeability",w: 98, tip:"How sellable the product is (0–100), from the daily UNITS traded on the market over ~30 days. Low = the market absorbs little quantity, so it's hard to offload no matter how profitable on paper. Computed for the top-ranked items.", f:v=> v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`},
+  {k:"buildable",          t:"Build?",      w: 58, tip:"Can every required skill (at the Skills level) make it?", f:v=>v?"✓":"✗"},
 ];
 
 function indSortRows(rows){
@@ -3013,6 +3029,13 @@ function indRowHtml(r, idx){
   const tds=IND_COLS.map(c=>{
     if(c.k==="_fav"){
       return `<td class="fav-cell"><span class="fav-star${fav?" on":""}" data-bp="${r.blueprint_id}" title="${fav?"Remove favourite":"Add favourite"}">${fav?"★":"☆"}</span></td>`;
+    }
+    if(c.k==="_timer"){
+      const end=IND.timers[r.blueprint_id];
+      if(!end) return `<td class="timer-cell">—</td>`;
+      const rem=end-Date.now();
+      if(rem<=0) return `<td class="timer-cell done" title="Ready">✓ Ready</td>`;
+      return `<td class="timer-cell ind-live-timer" data-end="${end}" title="Crafting timer — click the row to view/edit">${fmtCountdownShort(rem)}</td>`;
     }
     let v=r[c.k], txt=c.f?c.f(v,r):(v===null||v===undefined?"—":v);
     if(c.k==="product_name" && r.missing_price) txt+=" *";
@@ -3085,6 +3108,11 @@ function toggleFavorite(bp){
 
 function renderIndStatus(){
   const d=IND.lastData; if(!d||ACTIVE_TAB!=="ind") return;
+  if(d.favorites_only){
+    setStatus(`<span class="pill">★ <b>${d.count.toLocaleString()}</b> favourite${d.count===1?"":"s"} loaded</span>`
+      +`<span class="ts">press Scan for full results</span>`);
+    return;
+  }
   setStatus(
     `<span class="pill"><b>${d.count.toLocaleString()}</b> items · source <b>${d.station_name}</b></span>`
     +`<span class="pill">batch <b>${d.runs.toLocaleString()}</b> runs</span>`
@@ -3150,6 +3178,28 @@ function scanInd(refreshSde){
     es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
     hideIndProgress(); setStatus("Connection error — server may have stopped.", true);
   };
+}
+
+// Loads ONLY the favourited blueprints, silently and without touching saved
+// settings, so favourites are visible the moment the page (or the Industry tab)
+// opens — before the user ever presses Scan. A later real Scan replaces these
+// rows with the full category results (favourites still included/pinned).
+function loadFavoritesPreview(){
+  if(IND.favorites.size===0 || IND.rows.length>0 || IND.es) return;
+  const p=indParams({favorites_only:"1"});
+  const es=new EventSource("/api/ind/scan?"+p);
+  IND.es=es;   // shares the slot scanInd() checks/clears, so a real Scan cancels this
+  es.onmessage=e=>{
+    let data; try{ data=JSON.parse(e.data); }catch(err){ return; }
+    if(data.type==="result"){
+      es.close(); IND.es=null;
+      IND.rows=data.rows; IND.lastData=data;
+      if(ACTIVE_TAB==="ind"){ renderIndStatus(); renderIndTable(); }
+    } else if(data.type==="error"){
+      es.close(); IND.es=null;
+    }
+  };
+  es.onerror=()=>{ es.close(); IND.es=null; };
 }
 
 function openIndDetail(row){
@@ -3222,7 +3272,7 @@ function renderIndDetail(d){
   let timerHtml;
   if(tEnd && tEnd>nowMs){
     timerHtml=`<div class="ind-timer">
-        <span class="ind-timer-remaining" data-end="${tEnd}">${fmtCountdown(tEnd-nowMs)}</span>
+        <span class="ind-timer-remaining ind-live-timer" data-end="${tEnd}">${fmtCountdown(tEnd-nowMs)}</span>
         <span class="ind-timer-eta">ETA ${new Date(tEnd).toLocaleString([],{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})}</span>
         <button class="ind-timer-cancel secondary" data-bp="${d.blueprint_id}">Reset</button>
       </div>`;
@@ -3325,12 +3375,14 @@ function renderIndDetail(d){
     IND.timers[d.blueprint_id]=Date.now()+ms;
     saveIndTimers();
     renderIndDetail(d);
+    if(IND.rows.length) renderIndTable();   // reflect it in the main table's Timer column
   };
   const cancelBtn=box.querySelector(".ind-timer-cancel");
   if(cancelBtn) cancelBtn.onclick=()=>{
     delete IND.timers[d.blueprint_id];
     saveIndTimers();
     renderIndDetail(d);
+    if(IND.rows.length) renderIndTable();
   };
 }
 
@@ -3343,13 +3395,27 @@ function fmtCountdown(ms){
   const m=Math.floor(s/60); s-=m*60;
   return (h?h+"h ":"")+(h||m?m+"m ":"")+s+"s left";
 }
-// Tick the open detail's countdown once a second; re-render when it completes.
+// Compact H:MM:SS / M:SS form for the narrow table column.
+function fmtCountdownShort(ms){
+  let s=Math.max(0,Math.floor(ms/1000));
+  const h=Math.floor(s/3600); s-=h*3600;
+  const m=Math.floor(s/60); s-=m*60;
+  return h>0 ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
+             : `${m}:${String(s).padStart(2,"0")}`;
+}
+// Tick every live countdown once a second — the open detail panel's span and
+// any "_timer" cells in the main table — without a full table re-render.
 setInterval(()=>{
-  const el=document.querySelector("#ind-detail .ind-timer-remaining[data-end]");
-  if(!el) return;
-  const rem=(+el.dataset.end)-Date.now();
-  if(rem<=0){ if(IND.openDetail) renderIndDetail(IND.openDetail); }
-  else el.textContent=fmtCountdown(rem);
+  document.querySelectorAll(".ind-live-timer[data-end]").forEach(el=>{
+    const rem=(+el.dataset.end)-Date.now();
+    const isCell=el.classList.contains("timer-cell");
+    if(rem<=0){
+      if(isCell){ el.textContent="✓ Ready"; el.classList.add("done"); el.removeAttribute("data-end"); }
+      else if(IND.openDetail) renderIndDetail(IND.openDetail);
+    } else {
+      el.textContent=isCell?fmtCountdownShort(rem):fmtCountdown(rem);
+    }
+  });
 }, 1000);
 
 function fallbackCopy(text, done){
@@ -3594,6 +3660,7 @@ async function loadSettings(){
   }
   // Auto-run LP scanner if corp is set
   if(ACTIVE_TAB==="lp" && $("#corp").value.trim()) scan(false);
+  loadFavoritesPreview();
 }
 // ── Custom tooltip engine ──────────────────────────────────────────
 // Reads data-tip on any element and shows a themed, cursor-following

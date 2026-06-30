@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.20.1"
+__version__ = "1.21.0"
 
 import argparse
 import base64
@@ -44,7 +44,8 @@ import arb_core
 import ind_core
 from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
-    TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_prices, fetch_history_volumes,
+    TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_prices,
+    fetch_history_volumes,
     fetch_orderbook_jita, fetch_prices, fetch_sell_order_stats, get_offers, load_json,
     resolve_corp_id, resolve_corp_name, resolve_names, resolve_volumes, save_json,
     suggested_list_price,
@@ -595,8 +596,9 @@ def do_arb_scan(q, emit=None):
 IND_HISTORY_TOP_N = 80
 
 _IND_PREF_KEYS = ("profiles", "profile", "market_group", "me", "te", "job_rate",
-                  "sales_tax", "broker", "runs", "bp_owned", "amortize_runs",
-                  "station", "skills_level", "buildable_only")
+                  "sales_tax", "broker", "runs", "station", "skills_level",
+                  "buildable_only", "include_unbuildable", "hide_t2", "owned",
+                  "sort_key", "sort_dir", "min_tradeability")
 
 
 def do_ind_prefs(q):
@@ -629,8 +631,6 @@ def _ind_params(q):
         "sales_tax": float(q.get("sales_tax", ["4.5"])[0] or 0) / 100.0,
         "broker_fee": float(q.get("broker", ["1.5"])[0] or 0) / 100.0,
         "runs": max(1, int(float(q.get("runs", ["1"])[0] or 1))),
-        "bp_owned": q.get("bp_owned", ["0"])[0] in ("1", "true", "on"),
-        "amortize_runs": max(1, int(float(q.get("amortize_runs", ["1"])[0] or 1))),
         "skills_level": int(float(q.get("skills_level", ["5"])[0] or 0)),
     }
 
@@ -648,6 +648,12 @@ def do_ind_scan(q, emit=None):
     region_id = TRADE_HUBS[station_id]["region_id"]
     refresh_sde = q.get("refresh_sde", ["0"])[0] in ("1", "true", "on")
     buildable_only = q.get("buildable_only", ["0"])[0] in ("1", "true", "on")
+    include_unbuildable = q.get("include_unbuildable", ["0"])[0] in ("1", "true", "on")
+    hide_t2 = q.get("hide_t2", ["0"])[0] in ("1", "true", "on")
+    try:
+        owned_ids = set(json.loads(q.get("owned", ["[]"])[0]))
+    except (ValueError, TypeError):
+        owned_ids = set()
     params = _ind_params(q)
 
     s = load_ind_settings()
@@ -686,15 +692,35 @@ def do_ind_scan(q, emit=None):
         prices = fetch_prices(type_ids, SESSION, station_id)
         adjusted = ind_core.fetch_adjusted_prices(SESSION, CACHE_DIR)
         volumes = ind_core.volumes_for(conn, type_ids)
-        bpo_prices = {bp["blueprint_id"]: prices[bp["blueprint_id"]]["sell_min"]
-                      for bp in bps
-                      if (prices.get(bp["blueprint_id"]) or {}).get("sell_min")}
+
+        # Blueprint (BPO) prices for T1 items come from the whole REGION, not the
+        # single source station — NPC-seeded BPOs and Jita relists rarely sit at
+        # the hub we price materials at. T2 blueprints (BPCs) aren't sold; their
+        # cost is invention, handled separately. A BPO with no region sell order
+        # is treated as unobtainable (you can neither buy nor own it here).
+        t1_bp_ids = {bp["blueprint_id"] for bp in bps if not bp.get("invention")}
+        _emit({"type": "progress", "pct": 62,
+               "msg": f"Pricing {len(t1_bp_ids):,} blueprints region-wide…", "sub": ""})
+        bpo_region = (arb_core.fetch_fuzzwork_region(t1_bp_ids, region_id, SESSION)
+                      if t1_bp_ids else {})
+        bpo_prices = {bid: v["sell_min"] for bid, v in bpo_region.items()
+                      if v.get("sell_min")}
 
         _emit({"type": "progress", "pct": 78, "msg": "Computing profitability…", "sub": ""})
         params.update({"bpo_prices": bpo_prices, "volumes": volumes})
         rows = ind_core.evaluate_industry(bps, prices, adjusted, params)
         if buildable_only:
             rows = [r for r in rows if r["buildable"]]
+        # Mark the blueprints the user says they own (drives the split + display).
+        for r in rows:
+            r["owned"] = r["blueprint_id"] in owned_ids
+        if not include_unbuildable:
+            # Hide items whose blueprint you neither own nor can buy/invent.
+            rows = [r for r in rows if r["bp_available"] or r["owned"]]
+        if hide_t2:
+            # Drop T2 / invention items (keep only directly-built T1 / non-invented).
+            rows = [r for r in rows
+                    if not (r["requires_invention"] or r["tech_level"] == 2)]
     finally:
         conn.close()
 
@@ -703,12 +729,13 @@ def do_ind_scan(q, emit=None):
     if top:
         _emit({"type": "progress", "pct": 88,
                "msg": f"Checking market depth for the top {len(top)} items…", "sub": ""})
-        daily = fetch_history_volumes({r["product_id"] for r in top}, region_id,
-                                      SESSION, CACHE_DIR)
+        product_ids = {r["product_id"] for r in top}
+        daily = fetch_history_volumes(product_ids, region_id, SESSION, CACHE_DIR)
         for r in top:
             dv = daily.get(r["product_id"])
             r["daily_vol"] = dv
             r["days_to_sell"] = ((r["out_qty"] * r["runs"]) / dv) if dv else None
+            r["tradeability"] = ind_core.tradeability(dv)
 
     _emit({"type": "progress", "pct": 97, "msg": "Formatting results…", "sub": ""})
     return {
@@ -752,13 +779,32 @@ def do_ind_detail(q):
         type_ids.update(dc for dc, _ in bp["invention"]["datacores"])
     prices = fetch_prices(type_ids, SESSION, station_id)
     params["adjusted"] = ind_core.fetch_adjusted_prices(SESSION, CACHE_DIR)
-    params["bpo_prices"] = {
-        bp["blueprint_id"]: (prices.get(bp["blueprint_id"]) or {}).get("sell_min")}
+    # BPO price + where it's sold, region-wide (The Forge). T1 only; T2 is invented.
+    params["bpo_prices"] = {}
+    bp_market = None
+    if not bp.get("invention"):
+        region_id = TRADE_HUBS[station_id]["region_id"]
+        orders = arb_core.fetch_type_orders(region_id, bp["blueprint_id"], SESSION)
+        loc = ind_core.cheapest_sell_location(orders)
+        if loc:
+            params["bpo_prices"][bp["blueprint_id"]] = loc["price"]
+            loc_name = resolve_names([loc["location_id"]], SESSION, CACHE_DIR).get(
+                loc["location_id"], f"location {loc['location_id']}")
+            bp_market = {"price": loc["price"], "station": loc_name,
+                         "orders": loc["orders"],
+                         "region": REGION_NAMES.get(region_id, f"region {region_id}")}
     volumes = resolve_volumes(type_ids, SESSION, CACHE_DIR)
     names = resolve_names(type_ids, SESSION, CACHE_DIR)
     detail = ind_core.build_industry_detail(bp, prices, names, volumes, params)
     detail["product"]["tech_level"] = bp.get("tech_level")
     detail["station_name"] = TRADE_HUBS[station_id]["name"]
+    detail["bp_market"] = bp_market
+    # Tradeability for this product (daily units traded, ~30d median).
+    dv = fetch_history_volumes([bp["product_id"]],
+                               TRADE_HUBS[station_id]["region_id"],
+                               SESSION, CACHE_DIR).get(bp["product_id"])
+    detail["daily_units"] = dv
+    detail["tradeability"] = ind_core.tradeability(dv)
     return detail
 
 
@@ -945,6 +991,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .field { display:flex; flex-direction:column; gap:1px; }
   .field label { font-size:10px; text-transform:uppercase; letter-spacing:.7px;
     color:var(--dim); font-weight:600; }
+  /* An input paired with an inline control (a button / preset group) on one row. */
+  .field-row { display:flex; gap:4px; align-items:center; }
+  /* The Industry bar has many controls — let it wrap to multiple rows instead of
+     being clipped (the shared .ctrlbar is a fixed-height, no-wrap, overflow:hidden).
+     Controls are organised into labelled groups separated by a divider. */
+  #ind-controls { height:auto; min-height:56px; flex-wrap:wrap; overflow:visible;
+    align-items:stretch; row-gap:10px; padding-top:6px; padding-bottom:10px; }
+  #ind-controls .ctrl-group {
+    display:flex; flex-direction:column; gap:5px;
+    padding-right:14px; margin-right:2px; border-right:1px solid var(--line2);
+  }
+  #ind-controls .ctrl-group:last-child { border-right:none; padding-right:0; }
+  .ctrl-cap { font-size:9px; text-transform:uppercase; letter-spacing:1.2px;
+    color:var(--cyan); font-weight:700; opacity:.65; }
+  .ctrl-fields { display:flex; gap:10px; align-items:flex-end; flex:1; }
+  .ctrl-actions .ctrl-fields { gap:8px; }
   input, select {
     background:var(--panel2); border:1px solid var(--line2); color:var(--fg);
     border-radius:4px; padding:4px 8px; font:inherit; font-size:14px;
@@ -1309,17 +1371,52 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-d-head { font-size:14px; color:var(--fg); margin-bottom:10px; position:relative; }
   .ind-d-close { position:absolute; right:0; top:0; cursor:pointer; color:var(--dim); padding:0 4px; }
   .ind-d-close:hover { color:var(--fg); }
+  .ind-copy, .ind-own { margin:0 6px; padding:1px 8px; font-size:11px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--cyan); }
+  .ind-copy:hover, .ind-own:hover { border-color:var(--cyan2); }
   .ind-d-grid {
     display:grid; grid-template-columns:auto auto; gap:3px 18px;
     font-size:12px; margin-bottom:12px; max-width:560px;
   }
   .ind-d-grid span { color:var(--dim); }
   .ind-d-grid b { text-align:right; color:var(--fg); }
+  .ind-d-sub { grid-column:1/-1; margin-top:8px; padding-bottom:2px;
+    border-bottom:1px solid var(--line2); font-size:10px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.8px; color:var(--cyan); opacity:.7; }
+  .ind-d-grid .ind-d-sub:first-child { margin-top:0; }
   .ind-d-mats { width:100%; border-collapse:collapse; font-size:12px; }
   .ind-d-mats th, .ind-d-mats td { padding:3px 8px; border-bottom:1px solid var(--line2); }
   .ind-d-mats th { color:var(--dim); text-align:left; font-weight:600; }
   .ind-d-mats td.num, .ind-d-mats th.num { text-align:right; }
+  .ind-d-mats tr.ind-d-total td { border-top:2px solid var(--line2); font-weight:700; color:var(--fg); }
   #ind-tbl th { cursor:pointer; user-select:none; }
+  #ind-tbl th[data-nosort] { cursor:default; }
+  /* Highlight the blueprint buy-in price (the thing you must purchase). */
+  #ind-tbl td.bp-buy { color:var(--c8a040, #c8a040); font-weight:600; }
+  .ind-d-grid b.bp-buy { color:#c8a040; }
+  #ind-tbl td.have-cell { text-align:center; }
+  /* Build-location wizard modal */
+  .ind-modal { position:fixed; inset:0; background:rgba(0,0,0,.6);
+    display:flex; align-items:center; justify-content:center; z-index:50; }
+  .ind-modal-box { background:var(--panel); border:1px solid var(--line2);
+    border-radius:8px; padding:18px 20px; width:380px; max-width:92vw;
+    box-shadow:0 20px 60px rgba(0,0,0,.7); }
+  .ind-modal-box h3 { margin:0 0 4px; font-size:16px; color:var(--cyan); }
+  .sw-hint { font-size:11px; color:var(--dim); margin:0 0 12px; line-height:1.4; }
+  .sw-field { display:flex; align-items:center; justify-content:space-between;
+    gap:10px; margin-bottom:8px; font-size:13px; color:var(--fg); }
+  .sw-field span small { color:var(--dim); font-weight:400; }
+  .sw-field input { width:110px; }
+  .sw-eff { margin:12px 0; padding:8px 10px; background:var(--panel2);
+    border-radius:5px; font-size:13px; }
+  .sw-eff b { color:var(--c8a040,#c8a040); font-size:15px; }
+  .sw-formula { display:block; font-size:10px; color:var(--dim); margin-top:2px; }
+  .sw-actions { display:flex; gap:8px; align-items:center; margin-top:6px; }
+  #ind-tbl tr.ind-section td {
+    background:var(--panel2); color:var(--dim);
+    font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
+    padding:6px 8px; border-top:1px solid var(--line2); cursor:default;
+  }
 </style>
 </head>
 <body>
@@ -1411,51 +1508,95 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <!-- Industry controls -->
 <div id="ind-controls" class="ctrlbar hidden">
-  <div class="field"><label>Category</label>
-    <select id="ind-group"><option value="all">All (slow)</option></select>
+  <!-- What & where -->
+  <div class="ctrl-group">
+    <span class="ctrl-cap">Scope</span>
+    <div class="ctrl-fields">
+      <div class="field" data-tip="Limit the scan to one market group (e.g. Ammunition & Charges). 'All' ranks every blueprint — much slower.">
+        <label>Category</label>
+        <select id="ind-group"><option value="all">All (slow)</option></select>
+      </div>
+      <div class="field" data-tip="Trade hub where you BUY the materials and SELL the finished item — all prices in the scan come from here.">
+        <label>Source hub</label>
+        <select id="ind-station">
+          <option value="60003760">Jita 4-4</option>
+          <option value="60008494">Amarr 8-20</option>
+          <option value="60004588">Rens 6-8</option>
+          <option value="60011866">Dodixie 9-20</option>
+          <option value="60005686">Hek 8-12</option>
+        </select>
+      </div>
+    </div>
   </div>
-  <div class="field"><label>Tax profile</label>
-    <select id="ind-profile" data-tip="Saved job-cost-rate presets for a build location"></select>
+  <!-- Blueprint research level -->
+  <div class="ctrl-group">
+    <span class="ctrl-cap">Blueprint</span>
+    <div class="ctrl-fields">
+      <div class="field" data-tip="ME = Material Efficiency of the blueprint (0–10). Higher ME means fewer materials consumed per run (up to −10% at ME 10). Assume the blueprint is researched to this level.">
+        <label>ME</label><input id="ind-me" type="number" min="0" max="10" value="10" style="width:55px">
+      </div>
+      <div class="field" data-tip="TE = Time Efficiency of the blueprint (0–20). Higher TE means faster builds (up to −20% build time at TE 20). Assume the blueprint is researched to this level.">
+        <label>TE</label><input id="ind-te" type="number" min="0" max="20" value="20" style="width:55px">
+      </div>
+      <div class="field" data-tip="Assume every skill the blueprint requires is trained to this level (0–5). Gates the 'Build?' column and speeds up build time via the Industry skills.">
+        <label>Skills @</label><input id="ind-skills" type="number" min="0" max="5" value="5" style="width:55px">
+      </div>
+    </div>
   </div>
-  <div class="field"><label>Job cost %</label>
-    <input id="ind-jobrate" type="number" step="0.1" value="6" style="width:75px"
-           data-tip="Installation cost as a % of EIV — read it off the in-game Industry window (it already bundles system index + facility tax + SCC).">
-    <button id="ind-saveprofile" class="secondary" style="padding:4px 8px" data-tip="Save the current job cost % as a named profile">＋</button>
+  <!-- Costs & fees -->
+  <div class="ctrl-group">
+    <span class="ctrl-cap">Costs &amp; fees</span>
+    <div class="ctrl-fields">
+      <div class="field" data-tip="Saved build locations (station / structure), each with its own system cost index, structure bonus, facility tax and SCC surcharge. ＋ adds one via a wizard, ✎ edits the selected one.">
+        <label>Build location</label>
+        <div class="field-row">
+          <select id="ind-profile"></select>
+          <button id="ind-struct-new" class="secondary" style="padding:4px 8px" title="Add a build location">＋</button>
+          <button id="ind-struct-edit" class="secondary" style="padding:4px 8px" title="Edit selected build location">✎</button>
+        </div>
+      </div>
+      <div class="field" data-tip="Effective job installation cost as a % of EIV. Set by the chosen build location [ system index × (1 − bonus) + facility tax + SCC surcharge ], or type a custom value.">
+        <label>Job cost %</label>
+        <input id="ind-jobrate" type="number" step="0.01" value="6" style="width:70px">
+      </div>
+      <div class="field" data-tip="Sales tax paid when you sell the finished item (the Accounting skill lowers it; base is 4.5%).">
+        <label>Sales tax %</label><input id="ind-tax" type="number" step="0.1" value="4.5" style="width:65px">
+      </div>
+      <div class="field" data-tip="Broker fee paid to place a sell order (standings + Broker Relations skill lower it; ~1.5% is typical at Jita).">
+        <label>Broker %</label><input id="ind-broker" type="number" step="0.1" value="1.5" style="width:65px">
+      </div>
+    </div>
   </div>
-  <div class="field"><label>Source hub</label>
-    <select id="ind-station">
-      <option value="60003760">Jita 4-4</option>
-      <option value="60008494">Amarr 8-20</option>
-      <option value="60004588">Rens 6-8</option>
-      <option value="60011866">Dodixie 9-20</option>
-      <option value="60005686">Hek 8-12</option>
-    </select>
+  <!-- Output volume & sellability filter -->
+  <div class="ctrl-group">
+    <span class="ctrl-cap">Output</span>
+    <div class="ctrl-fields">
+      <div class="field" data-tip="How many production runs to model. Updates profit, cargo and days-to-sell live. Use the 1 / 100 / 10k presets or type a number.">
+        <label>Batch (runs)</label>
+        <div class="field-row">
+          <input id="ind-runs" type="number" min="1" value="1" style="width:65px">
+          <span class="ind-presets">
+            <button class="ind-preset secondary" data-n="1">1</button>
+            <button class="ind-preset secondary" data-n="100">100</button>
+            <button class="ind-preset secondary" data-n="10000">10k</button>
+          </span>
+        </div>
+      </div>
+      <div class="field" data-tip="Show only items with a tradeability score of at least this (0–100). 0 = no filter. Tradeability is computed for the top-ranked items, so a high threshold narrows the list to the most sellable of those.">
+        <label>Min trade</label><input id="ind-mintrade" type="number" min="0" max="100" value="0" style="width:60px">
+      </div>
+    </div>
   </div>
-  <div class="field"><label>ME</label><input id="ind-me" type="number" min="0" max="10" value="10" style="width:55px"></div>
-  <div class="field"><label>TE</label><input id="ind-te" type="number" min="0" max="20" value="20" style="width:55px"></div>
-  <div class="field"><label>Skills @</label>
-    <input id="ind-skills" type="number" min="0" max="5" value="5" style="width:55px"
-           data-tip="Assume every required skill is at this level (gates buildable + reduces build time)">
-  </div>
-  <div class="field"><label>Sales tax %</label><input id="ind-tax" type="number" step="0.1" value="4.5" style="width:70px"></div>
-  <div class="field"><label>Broker %</label><input id="ind-broker" type="number" step="0.1" value="1.5" style="width:70px"></div>
-  <div class="field"><label>Batch (runs)</label>
-    <input id="ind-runs" type="number" min="1" value="1" style="width:80px">
-    <span class="ind-presets">
-      <button class="ind-preset secondary" data-n="1">1</button>
-      <button class="ind-preset secondary" data-n="100">100</button>
-      <button class="ind-preset secondary" data-n="10000">10k</button>
-    </span>
-  </div>
-  <div class="field"><label>Amortize/runs</label>
-    <input id="ind-amort" type="number" min="1" value="1" style="width:70px"
-           data-tip="Spread a bought BPO's price over this many runs (ignored if you own it)">
-  </div>
-  <div class="btn-group">
-    <button id="ind-go" class="primary">Scan</button>
-    <label class="check-field" data-tip="Mark the blueprint as already owned — drops its cost from the math"><input type="checkbox" id="ind-owned"> I own the BP</label>
-    <label class="check-field" data-tip="Only show items every required skill (at the level above) can build"><input type="checkbox" id="ind-buildable"> Buildable only</label>
-    <button id="ind-refresh" class="secondary" data-tip="Re-download the blueprint database from Fuzzwork">⟳ Refresh SDE</button>
+  <!-- Actions & display filters -->
+  <div class="ctrl-group ctrl-actions">
+    <span class="ctrl-cap">Actions</span>
+    <div class="ctrl-fields">
+      <button id="ind-go" class="primary">Scan</button>
+      <label class="check-field" data-tip="Only show items every required skill (at the Skills @ level) can build."><input type="checkbox" id="ind-buildable"> Buildable only</label>
+      <label class="check-field" data-tip="Also show items whose blueprint you don't own and isn't on sale (a T1 BPO with no market order). Off = only craftable things."><input type="checkbox" id="ind-unobtainable"> Include unobtainable</label>
+      <label class="check-field" data-tip="Hide T2 / invention items — show only directly-built T1 items."><input type="checkbox" id="ind-hidet2"> Hide T2</label>
+      <button id="ind-refresh" class="secondary" data-tip="Re-download the blueprint database (SDE) from Fuzzwork. Only needed after a game patch.">⟳ Refresh SDE</button>
+    </div>
   </div>
 </div>
 
@@ -1519,6 +1660,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 </main>
+
+<!-- Build-location wizard (Industry) -->
+<div id="indStructModal" class="ind-modal hidden">
+  <div class="ind-modal-box">
+    <h3 id="sw-title">New build location</h3>
+    <p class="sw-hint">Read these off the in-game Industry window for your station/structure (the same panel that shows "Total job cost").</p>
+    <label class="sw-field"><span>Name</span>
+      <input id="sw-name" placeholder="e.g. Low Tax Magic House" autocomplete="off"></label>
+    <label class="sw-field"><span>System cost index %</span>
+      <input id="sw-index" type="number" step="0.01" value="0"></label>
+    <label class="sw-field"><span>Structure bonus % <small>(role + rig cost reduction)</small></span>
+      <input id="sw-bonus" type="number" step="0.1" value="0"></label>
+    <label class="sw-field"><span>Facility tax %</span>
+      <input id="sw-facility" type="number" step="0.01" value="0"></label>
+    <label class="sw-field"><span>SCC surcharge %</span>
+      <input id="sw-scc" type="number" step="0.01" value="4"></label>
+    <div class="sw-eff">Effective job cost: <b id="sw-eff">—</b> of EIV
+      <span class="sw-formula">= index × (1 − bonus) + facility tax + SCC</span></div>
+    <div class="sw-actions">
+      <button id="sw-delete" class="secondary">Delete</button>
+      <span style="flex:1"></span>
+      <button id="sw-cancel" class="secondary">Cancel</button>
+      <button id="sw-save" class="primary">Save</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -1608,7 +1775,18 @@ function saveLS(){
       arb:{region:$("#arb-region").value,cross_station:$("#arb-cross").value,
         sales_tax:pctToFrac($("#arb-tax").value),min_isk:$("#arb-minisk").value,
         max_jumps:$("#arb-maxjumps").value,route_flag:$("#arb-route").value,
-        avoid_lowsec:ARB.avoidLowsec?'1':'0'}
+        avoid_lowsec:ARB.avoidLowsec?'1':'0'},
+      ind:{market_group:$("#ind-group").value,station:$("#ind-station").value,
+        me:$("#ind-me").value,te:$("#ind-te").value,job_rate:$("#ind-jobrate").value,
+        sales_tax:$("#ind-tax").value,broker:$("#ind-broker").value,runs:$("#ind-runs").value,
+        skills_level:$("#ind-skills").value,
+        buildable_only:$("#ind-buildable").checked?'1':'0',
+        include_unbuildable:$("#ind-unobtainable").checked?'1':'0',
+        hide_t2:$("#ind-hidet2").checked?'1':'0',
+        min_tradeability:$("#ind-mintrade").value,
+        profiles:JSON.stringify(IND.profiles),profile:$("#ind-profile").value,
+        owned:JSON.stringify([...IND.owned]),
+        sort_key:IND.sort.key,sort_dir:IND.sort.dir}
     }));
   }catch(e){}
 }
@@ -2766,7 +2944,7 @@ function openArbChart(row){
 // INDUSTRY TAB
 // ══════════════════════════════════════════════════════════════════════════
 let IND = {rows:[], sort:{key:"isk_per_hour_best", dir:-1}, lastData:null, es:null,
-           groupsLoaded:false, profiles:[]};
+           groupsLoaded:false, profiles:[], owned:new Set(), savedGroup:null, openDetail:null};
 
 const fmtDur = s => {
   if(s===null||s===undefined) return "—";
@@ -2777,7 +2955,8 @@ const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
 const fmtDaysSell = v => (v===null||v===undefined) ? "—" : v.toFixed(1);
 
 const IND_COLS = [
-  {k:"product_name",       t:"Item",        w:230, tip:"The manufactured item. * = an input has no sell price at the source hub."},
+  {k:"_have",              t:"Have?",       w: 50, tip:"Tick the blueprints you already own. Owned ones move to the top section and drop the buy-in.", raw:true},
+  {k:"product_name",       t:"Item",        w:220, tip:"The manufactured item. * = an input has no sell price at the source hub."},
   {k:"tech_level",         t:"T",           w: 40, tip:"Tech level.", f:v=>v?("T"+v):"—"},
   {k:"isk_per_hour_best",  t:"ISK/hr",      w:115, tip:"Profit per hour of manufacturing time — the headline 'worth it' number.", f:fmtISK, pn:true},
   {k:"profit_best",        t:"Profit/run",  w:110, tip:"Best-of patient/instant profit for one run.", f:fmtISK, pn:true},
@@ -2785,13 +2964,41 @@ const IND_COLS = [
   {k:"margin_best",        t:"Margin",      w: 75, tip:"Profit as a % of total cost.", f:fmtPct1, pn:true},
   {k:"build_time",         t:"Build",       w: 80, tip:"Time for one run after TE + skills.", f:fmtDur},
   {k:"total_cost",         t:"Cost/run",    w:105, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
-  {k:"bp_cost",            t:"BP cost",     w: 95, tip:"Blueprint cost per run (0 if you own it).", f:fmtISK},
+  {k:"bp_price",           t:"BP price",    w:115, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'owned' = you have it.", f:(v,r)=> r._owned?"owned":(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
+  {k:"payback_runs",       t:"Payback",     w: 95, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r._owned?"—":(v==null?"—":fmtNum(v)+" runs")},
   {k:"ask",                t:"Sell",        w:105, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
   {k:"input_volume",       t:"Cargo in",    w: 95, tip:"m³ of materials to haul in for the batch.", f:v=>v?fmtVol(v):"—"},
   {k:"output_volume",      t:"Cargo out",   w: 95, tip:"m³ of finished items to haul out for the batch.", f:v=>v?fmtVol(v):"—"},
   {k:"days_to_sell",       t:"Days to sell",w: 95, tip:"Batch size ÷ daily traded volume (top items only).", f:fmtDaysSell},
+  {k:"tradeability",       t:"Tradeability",w:105, tip:"How sellable the product is (0–100), from the daily UNITS traded on the market over ~30 days. Low = the market absorbs little quantity, so it's hard to offload no matter how profitable on paper. Computed for the top-ranked items.", f:v=> v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`},
   {k:"buildable",          t:"Build?",      w: 65, tip:"Can every required skill (at the Skills level) make it?", f:v=>v?"✓":"✗"},
 ];
+
+function indSortRows(rows){
+  const k=IND.sort.key, d=IND.sort.dir;
+  return [...rows].sort((a,b)=>{
+    let x=a[k], y=b[k];
+    if(typeof x==="string") return String(x).localeCompare(String(y))*d;
+    if(x===null||x===undefined) x=-Infinity;
+    if(y===null||y===undefined) y=-Infinity;
+    return (x-y)*d;
+  });
+}
+
+function indRowHtml(r, idx){
+  const tds=IND_COLS.map(c=>{
+    if(c.k==="_have"){
+      return `<td class="have-cell"><input type="checkbox" class="have-box" data-bp="${r.blueprint_id}"${r._owned?" checked":""}></td>`;
+    }
+    let v=r[c.k], txt=c.f?c.f(v,r):(v===null||v===undefined?"—":v);
+    if(c.k==="product_name" && r.missing_price) txt+=" *";
+    let cls=c.cls||"";
+    if(c.pn) cls+=(v>0?" pos":(v<0?" neg":""));
+    if(c.k==="buildable") cls+=v?" pos":" neg";
+    return `<td class="${cls.trim()}">${txt}</td>`;
+  }).join("");
+  return `<tr style="cursor:pointer" data-ridx="${idx}">${tds}</tr>`;
+}
 
 function renderIndTable(){
   const thead=$("#ind-tbl thead"), tbody=$("#ind-tbl tbody");
@@ -2800,37 +3007,53 @@ function renderIndTable(){
     const arrow=active?(IND.sort.dir<0?" ▼":" ▲"):"";
     const tip=c.tip?` data-tip="${c.tip.replace(/"/g,'&quot;')}"`:"";
     const w=c.w?` style="width:${c.w}px"`:"";
-    return `<th data-k="${c.k}"${tip}${w}${active?' class="sorted"':''}>${c.t}${arrow}</th>`;
+    const sortable=c.k!=="_have";
+    return `<th data-k="${c.k}"${tip}${w}${active?' class="sorted"':''}${sortable?"":' data-nosort="1"'}>${c.t}${arrow}</th>`;
   }).join("")+"</tr>";
   thead.querySelectorAll("th").forEach(th=>{
+    if(th.dataset.nosort) return;
     th.onclick=()=>{
       const k=th.dataset.k;
       if(IND.sort.key===k) IND.sort.dir*=-1;
       else IND.sort={key:k, dir:k==="product_name"?1:-1};
+      saveIndPrefs();
       renderIndTable();
     };
   });
-  const rows=[...IND.rows].sort((a,b)=>{
-    const k=IND.sort.key, d=IND.sort.dir;
-    let x=a[k], y=b[k];
-    if(typeof x==="string") return String(x).localeCompare(String(y))*d;
-    if(x===null||x===undefined) x=-Infinity;
-    if(y===null||y===undefined) y=-Infinity;
-    return (x-y)*d;
+
+  // Annotate ownership, apply the tradeability filter, then split: owned on top.
+  IND.rows.forEach(r=>{ r._owned=IND.owned.has(r.blueprint_id); });
+  const minTrade=parseInt($("#ind-mintrade").value)||0;
+  const vis=minTrade>0
+    ? IND.rows.filter(r=>r.tradeability!=null && r.tradeability>=minTrade)
+    : IND.rows;
+  const owned=indSortRows(vis.filter(r=>r._owned));
+  const rest =indSortRows(vis.filter(r=>!r._owned));
+  const ncol=IND_COLS.length;
+  const sect=(label,n)=>`<tr class="ind-section"><td colspan="${ncol}">${label} — ${n}</td></tr>`;
+
+  const ordered=[];   // flat list parallel to rendered data rows, for click handling
+  let html="";
+  if(owned.length){
+    html+=sect("✓ Blueprints you own", owned.length);
+    owned.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+  }
+  html+=sect(owned.length?"Need to acquire":"All items", rest.length);
+  rest.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+  tbody.innerHTML=html;
+
+  tbody.querySelectorAll("tr[data-ridx]").forEach(tr=>{
+    const r=ordered[+tr.dataset.ridx];
+    tr.onclick=ev=>{ if(ev.target.classList.contains("have-box")) return; openIndDetail(r); };
   });
-  tbody.innerHTML=rows.map((r,i)=>{
-    const tds=IND_COLS.map(c=>{
-      let v=r[c.k], txt=c.f?c.f(v,r):(v===null||v===undefined?"—":v);
-      if(c.k==="product_name" && r.missing_price) txt+=" *";
-      let cls=c.cls||"";
-      if(c.pn) cls+=(v>0?" pos":(v<0?" neg":""));
-      if(c.k==="buildable") cls+=v?" pos":" neg";
-      return `<td class="${cls.trim()}">${txt}</td>`;
-    }).join("");
-    return `<tr style="cursor:pointer" data-ridx="${i}">${tds}</tr>`;
-  }).join("");
-  tbody.querySelectorAll("tr").forEach((tr,i)=>{
-    tr.onclick=()=>openIndDetail(rows[i]);
+  tbody.querySelectorAll(".have-box").forEach(box=>{
+    box.onclick=ev=>{
+      ev.stopPropagation();
+      const id=+box.dataset.bp;
+      if(box.checked) IND.owned.add(id); else IND.owned.delete(id);
+      saveIndPrefs();
+      renderIndTable();
+    };
   });
 }
 
@@ -2865,10 +3088,12 @@ function indParams(extra){
     sales_tax:    $("#ind-tax").value||"0",
     broker:       $("#ind-broker").value||"0",
     runs:         $("#ind-runs").value||"1",
-    amortize_runs:$("#ind-amort").value||"1",
     skills_level: $("#ind-skills").value||"0",
-    bp_owned:     $("#ind-owned").checked?"1":"0",
     buildable_only:$("#ind-buildable").checked?"1":"0",
+    include_unbuildable:$("#ind-unobtainable").checked?"1":"0",
+    hide_t2:      $("#ind-hidet2").checked?"1":"0",
+    min_tradeability: $("#ind-mintrade").value||"0",
+    owned:        JSON.stringify([...IND.owned]),
   };
   return new URLSearchParams(Object.assign(p, extra||{}));
 }
@@ -2913,13 +3138,58 @@ function openIndDetail(row){
 }
 
 function renderIndDetail(d){
+  IND.openDetail=d;   // remembered so a batch-size change can re-render this panel
   const isk=v=>v===null||v===undefined?"—":fmtISK(v);
-  const mats=d.required_items.map(m=>
-    `<tr><td>${m.name}</td><td class="num">${fmtNum(m.eff_qty)}</td>`
-    +`<td class="num">${isk(m.unit_price)}</td><td class="num">${isk(m.line_cost)}</td>`
-    +`<td class="num">${isk(m.line_cost_batch)}</td>`
-    +`<td class="num">${m.line_volume_batch?fmtVol(m.line_volume_batch):"—"}</td></tr>`).join("");
+  const n=Math.max(1, parseInt($("#ind-runs").value)||1);
+  // Batch figures are derived from per-run values × current run count, so they
+  // track the Batch (runs) field live (no re-fetch needed).
+  // Materials table = the shopping list for the whole batch: every column scales
+  // with the run count (qty, cost and m3 you actually buy for N runs), with a
+  // totals row so the cargo required is summed and obvious.
+  const mvol=v=> v==null?"—":(v.toLocaleString(undefined,{maximumFractionDigits:v<10?2:1})+" m³");
+  let matTotCost=0, matTotVol=0, matHasVol=false;
+  const mats=d.required_items.map(m=>{
+    const qtyBatch = m.eff_qty*n;
+    const costBatch = m.line_cost==null?null:m.line_cost*n;
+    const volBatch = (m.volume_each!=null)? m.eff_qty*m.volume_each*n : null;
+    if(costBatch!=null) matTotCost+=costBatch;
+    if(volBatch!=null){ matTotVol+=volBatch; matHasVol=true; }
+    return `<tr><td>${m.name}</td><td class="num">${qtyBatch.toLocaleString()}</td>`
+      +`<td class="num">${isk(m.unit_price)}</td><td class="num">${isk(costBatch)}</td>`
+      +`<td class="num">${mvol(volBatch)}</td></tr>`;
+  }).join("");
+  const matTotal=`<tr class="ind-d-total"><td>Total — ${d.required_items.length} material${d.required_items.length===1?"":"s"}</td>`
+    +`<td class="num"></td><td class="num"></td><td class="num">${isk(matTotCost)}</td>`
+    +`<td class="num">${matHasVol?mvol(matTotVol):"—"}</td></tr>`;
+  const inVolRun=d.required_items.reduce((s,m)=>s+((m.volume_each!=null)?m.eff_qty*m.volume_each:0),0);
+  const outVolRun=(d.product.volume_each!=null)?d.product.quantity*d.product.volume_each:null;
+  const inputBatch=inVolRun*n, outputBatch=outVolRun!=null?outVolRun*n:null;
+  const batchCost=d.total_cost!=null?d.total_cost*n:null;
+  const batchProfitL=d.profit_patient!=null?d.profit_patient*n:null;
+  const batchProfitI=d.profit_instant!=null?d.profit_instant*n:null;
+  const batchTime=d.build_time?d.build_time*n:null;
+  const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   const tier=d.product.tech_level?("T"+d.product.tech_level):"";
+  const owned = IND.owned.has(d.blueprint_id);
+  let bpSrc;
+  if(owned){
+    bpSrc = "You own this blueprint";
+  } else if(d.bp_market){
+    bpSrc = `Buy BPO ${isk(d.bp_market.price)} at ${d.bp_market.station}`
+          + ` · ${fmtNum(d.bp_market.orders)} on sale in ${d.bp_market.region}`;
+  } else if(d.bp_source==="invention"){
+    bpSrc = "Invent (T2) — no BPO on the market; datacore cost is in Cost/run";
+  } else {
+    bpSrc = "Not obtainable (no BPO for sale in The Forge)";
+  }
+  // Payback shown regardless of ownership: how many runs of profit recoup the
+  // BPO's market price (informational even if you already own it).
+  let payback;
+  if(d.payback_runs!=null) payback=`${fmtNum(d.payback_runs)} runs`
+      +(d.bp_market?` (BPO ${isk(d.bp_market.price)})`:"");
+  else if(d.bp_source==="invention") payback="n/a — invented per run";
+  else if(d.bp_market) payback="never at current profit";
+  else payback="—";
   let invHtml="";
   if(d.invention){
     const iv=d.invention;
@@ -2938,37 +3208,99 @@ function renderIndDetail(d){
   }
   $("#ind-detail").innerHTML=`
     <div class="ind-d-head">
-      <b>${d.product.name}</b> ${tier} · ${d.runs.toLocaleString()} run(s) · source ${d.station_name}
-      <span class="ind-d-close" onclick="$('#ind-detail').classList.add('hidden')">✕</span>
+      <b>${d.product.name}</b>
+      <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy</button>
+      <button class="ind-own" title="Toggle whether you own this blueprint">${owned?"✓ BP owned":"☐ Mark BP owned"}</button>
+      ${tier} · ${n.toLocaleString()} run(s) · source ${d.station_name}
+      <span class="ind-d-close" title="Close">✕</span>
     </div>
     <div class="ind-d-grid">
-      <span>Material cost/run</span><b>${isk(d.material_cost)}</b>
-      <span>Job install/run (EIV ${isk(d.eiv)} × ${(d.job_rate*100).toFixed(1)}%)</span><b>${isk(d.job_cost)}</b>
-      <span>Blueprint cost/run</span><b>${isk(d.bp_cost)}</b>
-      <span>Total cost/run</span><b>${isk(d.total_cost)}</b>
-      <span>Sell @ ask (patient)</span><b>${isk(d.revenue_patient)}</b>
-      <span>Profit/run — list</span><b class="${d.profit_patient>0?'pos':'neg'}">${isk(d.profit_patient)}</b>
-      <span>Profit/run — instant</span><b class="${d.profit_instant>0?'pos':'neg'}">${isk(d.profit_instant)}</b>
-      <span>Build time/run</span><b>${fmtDur(d.build_time)}</b>
-      <span>Cargo in / out (batch)</span><b>${d.input_volume_batch?fmtVol(d.input_volume_batch):"—"} / ${d.output_volume_batch?fmtVol(d.output_volume_batch):"—"}</b>
+      <div class="ind-d-sub">Per unit (sell price)</div>
+      <span>Sell @ ask — list</span><b>${isk(d.ask)}</b>
+      <span>Sell @ bid — instant</span><b>${isk(d.bid)}</b>
+
+      <div class="ind-d-sub">Per run — ${fmtNum(d.product.quantity)}× ${d.product.name}</div>
+      <span>Material cost</span><b>${isk(d.material_cost)}</b>
+      <span>Job install (EIV ${isk(d.eiv)} × ${(d.job_rate*100).toFixed(1)}%)</span><b>${isk(d.job_cost)}</b>
+      ${d.invention?`<span>Invention cost</span><b>${isk(d.invention_cost)}</b>`:""}
+      <span>Total cost</span><b>${isk(d.total_cost)}</b>
+      <span>Profit — list</span><b class="${pn(d.profit_patient)}">${isk(d.profit_patient)}</b>
+      <span>Profit — instant</span><b class="${pn(d.profit_instant)}">${isk(d.profit_instant)}</b>
+      <span>Build time</span><b>${fmtDur(d.build_time)}</b>
+
+      <div class="ind-d-sub">Batch — ${n.toLocaleString()} run(s)</div>
+      <span>Total cost</span><b>${isk(batchCost)}</b>
+      <span>Profit — list</span><b class="${pn(batchProfitL)}">${isk(batchProfitL)}</b>
+      <span>Profit — instant</span><b class="${pn(batchProfitI)}">${isk(batchProfitI)}</b>
+      <span>Build time</span><b>${fmtDur(batchTime)}</b>
+      <span>Cargo in / out</span><b>${inputBatch?fmtVol(inputBatch):"—"} / ${outputBatch?fmtVol(outputBatch):"—"}</b>
+
+      <div class="ind-d-sub">Blueprint &amp; market</div>
+      <span>Blueprint</span><b class="bp-buy">${bpSrc}</b>
+      <span>Blueprint payback</span><b>${payback}</b>
+      <span>Tradeability</span><b>${d.tradeability==null?"—":d.tradeability+" / 100"}${d.daily_units!=null?` (${fmtNum(d.daily_units)} units/day)`:""}</b>
     </div>
-    <table class="ind-d-mats"><thead><tr><th>Material</th><th class="num">Qty/run</th>
-      <th class="num">Unit</th><th class="num">Line/run</th><th class="num">Line×N</th>
-      <th class="num">m³×N</th></tr></thead><tbody>${mats}</tbody></table>
+    <div class="ind-d-sub">Materials to buy — ${n.toLocaleString()} run(s)</div>
+    <table class="ind-d-mats"><thead><tr><th>Material</th><th class="num">Qty needed</th>
+      <th class="num">Unit price</th><th class="num">Total cost</th>
+      <th class="num">Cargo m³</th></tr></thead><tbody>${mats}${matTotal}</tbody></table>
     ${invHtml}`;
+  // Wire copy + close + ownership via listeners (inline onclick can't see $).
+  const box=$("#ind-detail");
+  box.querySelector(".ind-d-close").onclick=()=>{ box.classList.add("hidden"); IND.openDetail=null; };
+  box.querySelector(".ind-own").onclick=()=>{
+    if(IND.owned.has(d.blueprint_id)) IND.owned.delete(d.blueprint_id);
+    else IND.owned.add(d.blueprint_id);
+    saveIndPrefs();
+    renderIndTable();     // move the row between owned / need-to-acquire
+    renderIndDetail(d);   // refresh this panel (button label + blueprint line)
+  };
+  const copyBtn=box.querySelector(".ind-copy");
+  copyBtn.onclick=()=>{
+    const done=()=>{ copyBtn.textContent="✓ Copied"; setTimeout(()=>{copyBtn.textContent="⧉ Copy";},1200); };
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(d.product.name).then(done).catch(()=>fallbackCopy(d.product.name,done));
+    } else fallbackCopy(d.product.name, done);
+  };
+}
+
+function fallbackCopy(text, done){
+  // execCommand path for non-secure contexts where navigator.clipboard is absent.
+  try{
+    const ta=document.createElement("textarea");
+    ta.value=text; ta.style.position="fixed"; ta.style.opacity="0";
+    document.body.appendChild(ta); ta.select();
+    document.execCommand("copy"); document.body.removeChild(ta);
+    if(done) done();
+  }catch(e){}
 }
 
 function loadIndGroups(){
   fetch("/api/ind/groups").then(r=>r.json()).then(d=>{
     if(!d.groups) return;
-    const sel=$("#ind-group"), cur=sel.value;
+    const sel=$("#ind-group");
+    // The saved category can't be applied until the option list exists (it's
+    // fetched async), so honour IND.savedGroup here once the options are in.
+    const want=(sel.value && sel.value!=="all") ? sel.value : (IND.savedGroup||"all");
     sel.innerHTML='<option value="all">All (slow)</option>'
       +d.groups.map(g=>`<option value="${g.id}">${g.name}</option>`).join("");
-    sel.value=cur; IND.groupsLoaded=true;
+    sel.value=[...sel.options].some(o=>o.value===want)?want:"all";
+    IND.groupsLoaded=true;
   }).catch(()=>{});
 }
 
-// ── Tax profiles (named job-cost-rate presets) ──────────────────────
+// ── Build locations (station/structure job-cost profiles) ───────────
+// A profile is {name, system_index, role_bonus, facility_tax, scc_surcharge};
+// its effective Job cost % = system_index×(1−role_bonus/100) + facility_tax + SCC,
+// matching the in-game Industry job-cost breakdown. (Legacy profiles may carry a
+// flat job_rate instead.)
+function structEffectiveRate(p){
+  if(p && p.system_index!==undefined && p.system_index!==null){
+    return (+p.system_index||0)*(1-(+p.role_bonus||0)/100)
+         + (+p.facility_tax||0) + (+p.scc_surcharge||0);
+  }
+  return parseFloat(p&&p.job_rate)||0;
+}
 function renderIndProfiles(){
   const sel=$("#ind-profile");
   sel.innerHTML='<option value="">— custom —</option>'
@@ -2976,21 +3308,67 @@ function renderIndProfiles(){
 }
 function applyIndProfile(){
   const i=$("#ind-profile").value;
-  if(i!==""&&IND.profiles[i]){ $("#ind-jobrate").value=IND.profiles[i].job_rate; saveIndPrefs(); }
+  if(i!==""&&IND.profiles[i]){
+    $("#ind-jobrate").value=structEffectiveRate(IND.profiles[i]).toFixed(2);
+    saveIndPrefs();
+  }
 }
-function addIndProfile(){
-  const name=prompt("Name this tax profile (e.g. Ikuchi, NPC station):");
-  if(!name) return;
-  IND.profiles.push({name, job_rate:$("#ind-jobrate").value||"6"});
+
+// Wizard ----------------------------------------------------------------
+let IND_EDIT_IDX=null;
+function swPreview(){
+  const eff=(+$("#sw-index").value||0)*(1-(+$("#sw-bonus").value||0)/100)
+          +(+$("#sw-facility").value||0)+(+$("#sw-scc").value||0);
+  $("#sw-eff").textContent=eff.toFixed(2)+"%";
+}
+function openStructWizard(idx){
+  IND_EDIT_IDX = (idx==null||idx==="")?null:+idx;
+  const p = IND_EDIT_IDX!=null ? IND.profiles[IND_EDIT_IDX] : null;
+  $("#sw-title").textContent = p ? "Edit build location" : "New build location";
+  $("#sw-name").value     = p ? (p.name||"") : "";
+  $("#sw-index").value    = p && p.system_index!=null ? p.system_index : "0";
+  $("#sw-bonus").value    = p && p.role_bonus!=null ? p.role_bonus : "0";
+  $("#sw-facility").value = p && p.facility_tax!=null ? p.facility_tax : "0";
+  $("#sw-scc").value      = p && p.scc_surcharge!=null ? p.scc_surcharge : "4";
+  $("#sw-delete").style.display = p ? "" : "none";
+  swPreview();
+  $("#indStructModal").classList.remove("hidden");
+  $("#sw-name").focus();
+}
+function closeStructWizard(){ $("#indStructModal").classList.add("hidden"); }
+function saveStructWizard(){
+  const name=$("#sw-name").value.trim();
+  if(!name){ $("#sw-name").focus(); return; }
+  const p={ name,
+    system_index:+$("#sw-index").value||0,
+    role_bonus:+$("#sw-bonus").value||0,
+    facility_tax:+$("#sw-facility").value||0,
+    scc_surcharge:+$("#sw-scc").value||0 };
+  let idx;
+  if(IND_EDIT_IDX!=null){ IND.profiles[IND_EDIT_IDX]=p; idx=IND_EDIT_IDX; }
+  else { IND.profiles.push(p); idx=IND.profiles.length-1; }
   renderIndProfiles();
-  $("#ind-profile").value=String(IND.profiles.length-1);
+  $("#ind-profile").value=String(idx);
+  $("#ind-jobrate").value=structEffectiveRate(p).toFixed(2);
   saveIndPrefs();
+  closeStructWizard();
+}
+function deleteStruct(){
+  if(IND_EDIT_IDX==null) return;
+  IND.profiles.splice(IND_EDIT_IDX,1);
+  renderIndProfiles();
+  $("#ind-profile").value="";
+  saveIndPrefs();
+  closeStructWizard();
 }
 
 function saveIndPrefs(){
   const p=indParams({
     profiles: JSON.stringify(IND.profiles),
     profile:  $("#ind-profile").value,
+    owned:    JSON.stringify([...IND.owned]),
+    sort_key: IND.sort.key,
+    sort_dir: String(IND.sort.dir),
   });
   fetch("/api/ind/prefs?"+p).catch(()=>{}); saveLS();
 }
@@ -2998,17 +3376,53 @@ function saveIndPrefs(){
 // wiring
 $("#ind-go").onclick=()=>scanInd(false);
 $("#ind-refresh").onclick=()=>scanInd(true);
-$("#ind-saveprofile").onclick=addIndProfile;
+// Recompute the batch-scaled columns (profit×N, cargo in/out, days-to-sell) from
+// each row's per-run building blocks, so changing the run count updates the table
+// live without a rescan.
+function applyIndRuns(){
+  const n=Math.max(1, parseInt($("#ind-runs").value)||1);
+  IND.rows.forEach(r=>{
+    r.runs=n;
+    r.total_profit_best = r.profit_best==null?null:r.profit_best*n;
+    r.input_volume = r.in_vol_run==null?null:r.in_vol_run*n;
+    r.output_volume = r.out_vol_run==null?null:r.out_vol_run*n;
+    r.days_to_sell = r.daily_vol?((r.out_qty*n)/r.daily_vol):null;
+  });
+  if(IND.lastData) IND.lastData.runs=n;
+}
+function onIndRunsChanged(){
+  applyIndRuns(); saveIndPrefs(); renderIndStatus(); renderIndTable();
+  const box=$("#ind-detail");
+  if(IND.openDetail && !box.classList.contains("hidden")) renderIndDetail(IND.openDetail);
+}
+
 $("#ind-profile").addEventListener("change", applyIndProfile);
+// Build-location wizard wiring
+$("#ind-struct-new").onclick=()=>openStructWizard(null);
+$("#ind-struct-edit").onclick=()=>{
+  const i=$("#ind-profile").value;
+  if(i==="") openStructWizard(null); else openStructWizard(i);
+};
+["#sw-index","#sw-bonus","#sw-facility","#sw-scc"].forEach(s=>$(s).addEventListener("input", swPreview));
+$("#sw-save").onclick=saveStructWizard;
+$("#sw-cancel").onclick=closeStructWizard;
+$("#sw-delete").onclick=deleteStruct;
+$("#indStructModal").addEventListener("click", e=>{ if(e.target.id==="indStructModal") closeStructWizard(); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#indStructModal").classList.contains("hidden")) closeStructWizard(); });
+// Typing a custom job-cost % detaches from the saved build location.
+$("#ind-jobrate").addEventListener("input", ()=>{ $("#ind-profile").value=""; });
 document.querySelectorAll(".ind-preset").forEach(b=>{
-  b.onclick=()=>{ $("#ind-runs").value=b.dataset.n; saveIndPrefs(); };
+  b.onclick=()=>{ $("#ind-runs").value=b.dataset.n; onIndRunsChanged(); };
 });
+$("#ind-runs").addEventListener("input", onIndRunsChanged);
 ["#ind-group","#ind-station","#ind-me","#ind-te","#ind-jobrate","#ind-tax",
- "#ind-broker","#ind-runs","#ind-amort","#ind-skills"].forEach(sel=>{
+ "#ind-broker","#ind-skills"].forEach(sel=>{
   const el=$(sel); if(!el) return;
   el.addEventListener("change", saveIndPrefs);
 });
-["#ind-owned","#ind-buildable"].forEach(sel=>$(sel).addEventListener("change", saveIndPrefs));
+["#ind-buildable","#ind-unobtainable","#ind-hidet2"].forEach(sel=>$(sel).addEventListener("change", saveIndPrefs));
+// Min-tradeability is a client-side filter — re-render immediately (no rescan).
+$("#ind-mintrade").addEventListener("input", ()=>{ saveIndPrefs(); renderIndTable(); });
 
 // ══════════════════════════════════════════════════════════════════════════
 // Init
@@ -3064,7 +3478,11 @@ async function loadSettings(){
       updateArbJumpsVisibility();
       // Industry settings
       const ind=s.ind||{};
-      if(ind.market_group) $("#ind-group").value=ind.market_group;
+      // Category options load async; stash the saved one so loadIndGroups applies
+      // it once the list exists (and set it now in case the list is already there).
+      if(ind.market_group){ IND.savedGroup=ind.market_group; $("#ind-group").value=ind.market_group; }
+      if(ind.sort_key && IND_COLS.some(c=>c.k===ind.sort_key))
+        IND.sort={key:ind.sort_key, dir:Number(ind.sort_dir)===1?1:-1};
       if(ind.station) $("#ind-station").value=ind.station;
       if(ind.me!==undefined&&ind.me!=="") $("#ind-me").value=ind.me;
       if(ind.te!==undefined&&ind.te!=="") $("#ind-te").value=ind.te;
@@ -3072,13 +3490,15 @@ async function loadSettings(){
       if(ind.sales_tax) $("#ind-tax").value=ind.sales_tax;
       if(ind.broker) $("#ind-broker").value=ind.broker;
       if(ind.runs) $("#ind-runs").value=ind.runs;
-      if(ind.amortize_runs) $("#ind-amort").value=ind.amortize_runs;
       if(ind.skills_level!==undefined&&ind.skills_level!=="") $("#ind-skills").value=ind.skills_level;
-      if(ind.bp_owned==="1") $("#ind-owned").checked=true;
       if(ind.buildable_only==="1") $("#ind-buildable").checked=true;
+      if(ind.include_unbuildable==="1") $("#ind-unobtainable").checked=true;
+      if(ind.hide_t2==="1") $("#ind-hidet2").checked=true;
+      if(ind.min_tradeability!==undefined&&ind.min_tradeability!=="") $("#ind-mintrade").value=ind.min_tradeability;
       if(ind.profiles){ try{ IND.profiles=JSON.parse(ind.profiles)||[]; }catch(e){} }
       renderIndProfiles();
       if(ind.profile) $("#ind-profile").value=ind.profile;
+      if(ind.owned){ try{ IND.owned=new Set(JSON.parse(ind.owned)||[]); }catch(e){} }
       // Restore last active tab
       if(s.active_tab==="arb") switchTab("arb");
       else if(s.active_tab==="ind") switchTab("ind");

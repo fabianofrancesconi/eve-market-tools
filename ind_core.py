@@ -54,6 +54,13 @@ ADV_INDUSTRY_SKILL_ID = 3388      # "Advanced Industry" -3%/level
 INDUSTRY_TIME_PER_LEVEL = 0.04
 ADV_INDUSTRY_TIME_PER_LEVEL = 0.03
 
+# Tradeability: daily UNITS traded (ESI market-history volume) mapped to 0..100 on
+# a log scale. What matters for a producer is how many units the market actually
+# absorbs per day (not how many separate transactions). An item moving this many
+# units/day scores ~100; the log curve spreads out the low end, which is exactly
+# where "is there a market at all?" matters. 1000 units/day = comfortably liquid.
+TRADEABILITY_FULL = 1000.0
+
 # Rows inserted per executemany batch when importing a CSV.
 _INSERT_BATCH = 5000
 
@@ -509,6 +516,39 @@ def _best(*vals):
     return max(present) if present else None
 
 
+def tradeability(daily_volume):
+    """A 0..100 score for how sellable a product is, from the daily UNITS traded
+    on the market (not the transaction count). The point is to demote items that
+    look profitable on paper but whose market can't absorb meaningful quantity.
+
+      0 units/day              -> 0   (you can't realistically sell it)
+      ~10/day                  -> ~35
+      ~100/day                 -> ~67
+      >= TRADEABILITY_FULL/day -> 100
+
+    Log scale (traded volume spans orders of magnitude), clamped to [0, 100].
+    None in -> None (history unknown)."""
+    if daily_volume is None:
+        return None
+    if daily_volume <= 0:
+        return 0
+    score = math.log10(1 + daily_volume) / math.log10(1 + TRADEABILITY_FULL)
+    return int(round(max(0.0, min(1.0, score)) * 100))
+
+
+def cheapest_sell_location(orders):
+    """From a list of ESI region orders for one type, the cheapest SELL order's
+    price, location_id and how many sell orders exist -- i.e. where (and for how
+    much) you can actually buy the item right now. None if nothing is on sale."""
+    sells = [o for o in orders if not o.get("is_buy_order")]
+    if not sells:
+        return None
+    cheapest = min(sells, key=lambda o: o["price"])
+    return {"price": cheapest["price"],
+            "location_id": cheapest["location_id"],
+            "orders": len(sells)}
+
+
 def effective_qty(base_qty, me, runs=1):
     """Units of a material actually consumed, after Material Efficiency.
 
@@ -597,8 +637,8 @@ def invention_cost_per_run(inv, prices, params):
     charged to ONE T2 run is attempt_cost / (success_prob * runs_per_bpc). The
     base success probability is lifted by the three invention skills, here
     approximated with the flat skills_level (encryption /40, two datacore /30).
-    The consumed T1 BPC is assumed owned (free) -- consistent with the rest of
-    the 'owned by default' handling for the base blueprint."""
+    The consumed T1 BPC (the invention input) is assumed owned/free -- modelling
+    a copied T1 original you already run."""
     runs = inv.get("runs_per_bpc") or 1
     p_base = inv.get("probability") or 0.0
     if p_base <= 0 or runs <= 0:
@@ -615,34 +655,20 @@ def invention_cost_per_run(inv, prices, params):
     return attempt / (p * runs)
 
 
-def blueprint_cost_per_run(bp, params, prices=None):
-    """Per-run blueprint cost. Counted by default; the 'I own it' toggle
-    (params['bp_owned']) zeroes it. Precedence: an explicit
-    params['invention_costs'] override, then T2 invention (when the blueprint
-    carries bp['invention']), then a T1 BPO purchase amortized over
-    params['amortize_runs']."""
-    if params.get("bp_owned"):
-        return 0.0
-    override = (params.get("invention_costs") or {}).get(bp["blueprint_id"])
-    if override is not None:
-        return override
-    inv = bp.get("invention")
-    if inv:
-        return invention_cost_per_run(inv, prices or {}, params)
-    price = (params.get("bpo_prices") or {}).get(bp["blueprint_id"])
-    amort = params.get("amortize_runs") or 1
-    return (price / amort) if price else 0.0
-
-
 def evaluate_industry(candidates, prices, adjusted, params):
     """Rank assembled blueprints by ISK/hour. Mirrors lp_core.evaluate()'s
     dual-mode shape: every row carries patient (list at the ask, pay sales tax +
     broker) and instant (dump to the bid, pay sales tax only) figures plus a
     *_best convenience field, then batch totals for params['runs'] units.
 
-    params keys: me, te, job_rate, sales_tax, broker_fee, runs (N), bp_owned,
-    amortize_runs, bpo_prices, skill_profile, daily_vols (product_id -> median
-    daily volume, for days-to-sell), volumes (type_id -> packaged m3, for cargo).
+    Assumes you own no blueprints: a T1 item's BPO is a one-time buy-in (reported
+    as bp_price, with payback_runs) kept OUT of the per-craft margin; a T2 item's
+    invention datacores are a recurring cost folded INTO it.
+
+    params keys: me, te, job_rate, sales_tax, broker_fee, runs (N), bpo_prices
+    (blueprint_id -> region BPO sell price), skill_profile, skills_level,
+    daily_vols (product_id -> median daily volume, for days-to-sell), volumes
+    (type_id -> packaged m3, for cargo).
 
     Rows are sorted by isk_per_hour_best (None last)."""
     me = params.get("me", 0)
@@ -663,17 +689,35 @@ def evaluate_industry(candidates, prices, adjusted, params):
         pid = bp["product_id"]
         out_qty = bp.get("out_qty") or 1
         cost = manufacturing_cost(bp, prices, adjusted, job_rate, me)
-        bp_cost = blueprint_cost_per_run(bp, params, prices)
-        total_cost = cost["material_cost"] + cost["job_cost"] + bp_cost
+
+        # Blueprint economics differ by tech tier (assuming you own nothing):
+        #   T2 — you can't buy the blueprint (BPCs are contract-only); you invent
+        #        it, and the datacores are a RECURRING per-run cost that belongs
+        #        in the per-craft margin.
+        #   T1 — you buy a reusable BPO: a one-time CAPITAL buy-in, kept out of
+        #        the per-craft margin and reported separately with a payback.
+        inv = bp.get("invention")
+        bpo_price = (params.get("bpo_prices") or {}).get(bp["blueprint_id"])
+        invention_cost = invention_cost_per_run(inv, prices, params) if inv else 0.0
+        bp_buyin = None if inv else bpo_price          # T1 BPO purchase price
+        bp_available = bool(inv or bpo_price)          # obtainable: inventable or BPO on sale
+
+        # Operating (per-craft) cost = materials + job (+ invention for T2). The
+        # BPO buy-in is NOT here — that's capital, recovered via payback.
+        operating_cost = cost["material_cost"] + cost["job_cost"] + invention_cost
+        total_cost = operating_cost
 
         p = prices.get(pid, {})
         ask, bid = p.get("sell_min"), p.get("buy_max")
         rev_patient = (out_qty * ask * patient_factor) if ask else None
         rev_instant = (out_qty * bid * instant_factor) if bid else None
-        profit_patient = (rev_patient - total_cost) if rev_patient is not None else None
-        profit_instant = (rev_instant - total_cost) if rev_instant is not None else None
+        profit_patient = (rev_patient - operating_cost) if rev_patient is not None else None
+        profit_instant = (rev_instant - operating_cost) if rev_instant is not None else None
         profit_best = _best(profit_patient, profit_instant)
-        margin = lambda pr: (pr / total_cost) if (pr is not None and total_cost > 0) else None
+        margin = lambda pr: (pr / operating_cost) if (pr is not None and operating_cost > 0) else None
+        # Runs of profit needed to recoup the BPO purchase (T1 only).
+        payback_runs = (math.ceil(bp_buyin / profit_best)
+                        if (bp_buyin and profit_best and profit_best > 0) else None)
 
         secs = build_time(bp.get("base_time"), te, skill_profile, default_level)
         hours = (secs / 3600.0) if secs else None
@@ -695,8 +739,13 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "material_cost": cost["material_cost"],
             "eiv": cost["eiv"],
             "job_cost": cost["job_cost"],
-            "bp_cost": bp_cost,
-            "total_cost": total_cost,
+            "invention_cost": invention_cost,   # recurring per-run cost (T2 only)
+            "bp_price": bp_buyin,               # one-time BPO buy-in (T1; None for T2)
+            "bp_source": "invention" if inv else ("market" if bpo_price else "none"),
+            "bp_available": bp_available,
+            "payback_runs": payback_runs,
+            "requires_invention": bool(inv),
+            "total_cost": operating_cost,
             "missing_price": cost["missing_price"],
             "ask": ask,
             "bid": bid,
@@ -714,8 +763,13 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "total_profit_best": None if profit_best is None else profit_best * n,
             "input_volume": in_vol * n,
             "output_volume": None if out_vol is None else out_vol * n,
+            # Per-run building blocks so the UI can rescale batch columns live
+            # (profit×N, cargo, days-to-sell) when the run count changes.
+            "in_vol_run": in_vol,
+            "out_vol_run": out_vol,
             "daily_vol": dv,
             "days_to_sell": days_to_sell,
+            "tradeability": None,   # patched for the top rows by the web layer
             "buildable": _buildable(bp, skill_profile, default_level),
         })
 
@@ -727,9 +781,8 @@ def evaluate_industry(candidates, prices, adjusted, params):
 def build_industry_detail(bp, prices, names, volumes, params):
     """Full per-item breakdown for the detail panel: the material shopping list
     (qty, unit price, line cost and line m3 at batch N), the EIV/job-cost
-    components, blueprint cost, output, and revenue/profit in both sell modes.
-    All money/volume scale with params['runs'] (N) except bp_cost, which is a
-    fixed per-run amortized add. Mirrors lp_core.build_detail()."""
+    components, the blueprint buy-in / invention cost, output, and revenue/profit
+    in both sell modes. Mirrors lp_core.build_detail()."""
     me = params.get("me", 0)
     n = max(1, int(params.get("runs", 1)))
     job_rate = params.get("job_rate", 0.0)
@@ -763,12 +816,21 @@ def build_industry_detail(bp, prices, names, volumes, params):
             "line_volume_batch": None if line_vol is None else line_vol * n,
         })
 
-    bp_cost = blueprint_cost_per_run(bp, params, prices)
-    total_cost = cost["material_cost"] + cost["job_cost"] + bp_cost
+    inv = bp.get("invention")
+    bpo_price = (params.get("bpo_prices") or {}).get(bp["blueprint_id"])
+    invention_cost = invention_cost_per_run(inv, prices, params) if inv else 0.0
+    bp_buyin = None if inv else bpo_price
+    bp_source = "invention" if inv else ("market" if bpo_price else "none")
+    operating_cost = cost["material_cost"] + cost["job_cost"] + invention_cost
     p = prices.get(pid, {})
     ask, bid = p.get("sell_min"), p.get("buy_max")
     rev_patient = (out_qty * ask * (1 - sales_tax - broker)) if ask else None
     rev_instant = (out_qty * bid * (1 - sales_tax)) if bid else None
+    profit_patient = None if rev_patient is None else rev_patient - operating_cost
+    profit_instant = None if rev_instant is None else rev_instant - operating_cost
+    profit_best = _best(profit_patient, profit_instant)
+    payback_runs = (math.ceil(bp_buyin / profit_best)
+                    if (bp_buyin and profit_best and profit_best > 0) else None)
     out_vol_each = volumes.get(pid)
     out_vol = (out_qty * out_vol_each) if out_vol_each is not None else None
 
@@ -785,15 +847,19 @@ def build_industry_detail(bp, prices, names, volumes, params):
         "eiv": cost["eiv"],
         "job_rate": job_rate,
         "job_cost": cost["job_cost"],
-        "bp_cost": bp_cost,
-        "total_cost": total_cost,
+        "invention_cost": invention_cost,
+        "bp_price": bp_buyin,
+        "bp_source": bp_source,
+        "bp_available": bool(inv or bpo_price),
+        "payback_runs": payback_runs,
+        "total_cost": operating_cost,
         "missing_price": cost["missing_price"],
         "ask": ask,
         "bid": bid,
         "revenue_patient": rev_patient,
         "revenue_instant": rev_instant,
-        "profit_patient": None if rev_patient is None else rev_patient - total_cost,
-        "profit_instant": None if rev_instant is None else rev_instant - total_cost,
+        "profit_patient": profit_patient,
+        "profit_instant": profit_instant,
         "build_time": build_time(bp.get("base_time"), params.get("te", 0),
                                  params.get("skill_profile"),
                                  params.get("skills_level", 0)),

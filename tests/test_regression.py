@@ -875,12 +875,12 @@ class TestIndustryRoutes:
         base, _ = tmp_server
         monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
         body, status = http_get(
-            f"{base}/api/ind/prefs?me=10&job_rate=6&profile=2&bp_owned=1")
+            f"{base}/api/ind/prefs?me=10&job_rate=6&profile=2&hide_t2=1")
         assert status == 200 and body["ok"] is True
         saved = json.loads((tmp_path / "ind.json").read_text())
         assert saved["me"] == "10"
         assert saved["job_rate"] == "6"
-        assert saved["bp_owned"] == "1"
+        assert saved["hide_t2"] == "1"
 
     def test_unknown_ind_subpath_404(self, tmp_server):
         base, _ = tmp_server

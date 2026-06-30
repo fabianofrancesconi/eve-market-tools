@@ -327,26 +327,6 @@ class TestBuildTime:
 
 
 # ---------------------------------------------------------------------------
-# blueprint_cost_per_run
-# ---------------------------------------------------------------------------
-
-class TestBlueprintCost:
-    def test_owned_is_zero(self):
-        assert ind_core.blueprint_cost_per_run(_bp(), {"bp_owned": True}) == 0.0
-
-    def test_amortized_bpo_price(self):
-        params = {"bpo_prices": {681: 1_000_000.0}, "amortize_runs": 100}
-        assert ind_core.blueprint_cost_per_run(_bp(), params) == pytest.approx(10_000.0)
-
-    def test_invention_cost_overrides(self):
-        params = {"invention_costs": {681: 5_000.0}, "bpo_prices": {681: 9e9}}
-        assert ind_core.blueprint_cost_per_run(_bp(), params) == pytest.approx(5_000.0)
-
-    def test_no_price_is_zero(self):
-        assert ind_core.blueprint_cost_per_run(_bp(), {}) == 0.0
-
-
-# ---------------------------------------------------------------------------
 # evaluate_industry
 # ---------------------------------------------------------------------------
 
@@ -468,14 +448,18 @@ class TestInventionCost:
     def test_zero_probability_is_zero(self):
         assert ind_core.invention_cost_per_run(_inv(probability=0), _inv_prices(), {}) == 0.0
 
-    def test_blueprint_cost_uses_invention_when_present(self):
+    def test_t2_invention_cost_is_in_operating_profit(self):
+        # For a T2 item the invention (datacore) cost is a recurring per-run cost
+        # folded into the margin, not a separate buy-in.
         bp = _bp(invention=_inv())
-        cost = ind_core.blueprint_cost_per_run(bp, {"skills_level": 0}, _inv_prices())
-        assert cost == pytest.approx(4000.0 / (0.30 * 10))
-
-    def test_owned_toggle_zeroes_t2(self):
-        bp = _bp(invention=_inv())
-        assert ind_core.blueprint_cost_per_run(bp, {"bp_owned": True}, _inv_prices()) == 0.0
+        merged = _prices(); merged.update(_inv_prices())
+        r = ind_core.evaluate_industry([bp], merged, _ADJUSTED, _params())[0]
+        inv_cost = ind_core.invention_cost_per_run(_inv(), merged, _params())
+        assert r["invention_cost"] == pytest.approx(inv_cost)
+        assert r["bp_price"] is None          # no BPO to buy for T2
+        # profit = revenue - (material + job + invention)
+        expected = r["ask"] * (1 - 0.05 - 0.02) - r["total_cost"]
+        assert r["profit_patient"] == pytest.approx(expected)
 
     def test_detail_includes_invention_block(self):
         bp = _bp(invention=_inv())
@@ -518,3 +502,76 @@ class TestAssembleInvention:
         assert t2["invention"]["runs_per_bpc"] == 1
         assert t2["invention"]["datacores"] == [(20410, 2)]
         assert t1["invention"] is None
+
+
+# ---------------------------------------------------------------------------
+# Blueprint availability — hide items you can neither own nor obtain
+# ---------------------------------------------------------------------------
+
+class TestBlueprintAvailability:
+    def test_t1_unobtainable_when_no_bpo_for_sale(self):
+        r = ind_core.evaluate_industry([_bp()], _prices(), _ADJUSTED, _params())[0]
+        assert r["bp_available"] is False
+        assert r["bp_source"] == "none"
+        assert r["bp_price"] is None
+
+    def test_t1_buyin_and_payback_with_region_bpo_price(self):
+        # T1 BPO is a one-time buy-in, NOT in the per-run margin; payback = runs
+        # to recoup it from operating profit (812/run → ceil(1e6/812) = 1232).
+        r = ind_core.evaluate_industry(
+            [_bp()], _prices(), _ADJUSTED, _params(bpo_prices={681: 1_000_000.0}))[0]
+        assert r["bp_available"] is True
+        assert r["bp_source"] == "market"
+        assert r["bp_price"] == pytest.approx(1_000_000.0)
+        assert r["total_cost"] == pytest.approx(1048.0)   # buy-in excluded from cost
+        assert r["profit_best"] == pytest.approx(812.0)
+        assert r["payback_runs"] == 1232
+
+    def test_t2_available_via_invention(self):
+        bp = _bp(invention=_inv())
+        merged = _prices(); merged.update(_inv_prices())
+        r = ind_core.evaluate_industry([bp], merged, _ADJUSTED, _params())[0]
+        assert r["bp_available"] is True and r["bp_source"] == "invention"
+
+    def test_tradeability_none_and_zero(self):
+        # tradeability is based on daily UNITS traded, not transaction count
+        assert ind_core.tradeability(None) is None
+        assert ind_core.tradeability(0) == 0
+        assert ind_core.tradeability(-5) == 0
+
+    def test_tradeability_full_caps_at_100(self):
+        assert ind_core.tradeability(ind_core.TRADEABILITY_FULL) == 100
+        assert ind_core.tradeability(10_000_000) == 100   # clamped
+
+    def test_tradeability_monotonic_and_values(self):
+        import math
+        f = ind_core.TRADEABILITY_FULL
+        exp10 = round(100 * math.log10(11) / math.log10(1 + f))
+        assert ind_core.tradeability(10) == exp10          # ~35 units/day
+        assert (ind_core.tradeability(10) < ind_core.tradeability(100)
+                < ind_core.tradeability(1000))
+        assert ind_core.tradeability(5) < 30               # a thin market scores low
+
+    def test_cheapest_sell_location(self):
+        orders = [
+            {"is_buy_order": True,  "price": 999.0, "location_id": 1},
+            {"is_buy_order": False, "price": 1500.0, "location_id": 60003760},
+            {"is_buy_order": False, "price": 1200.0, "location_id": 60008494},
+        ]
+        loc = ind_core.cheapest_sell_location(orders)
+        assert loc["price"] == 1200.0
+        assert loc["location_id"] == 60008494
+        assert loc["orders"] == 2
+
+    def test_cheapest_sell_location_none_when_no_sells(self):
+        assert ind_core.cheapest_sell_location(
+            [{"is_buy_order": True, "price": 5.0, "location_id": 1}]) is None
+
+    def test_requires_invention_flag(self):
+        # drives the "Hide T2 / invention" filter in the web layer
+        t1 = ind_core.evaluate_industry([_bp()], _prices(), _ADJUSTED, _params())[0]
+        assert t1["requires_invention"] is False
+        bp = _bp(invention=_inv())
+        merged = _prices(); merged.update(_inv_prices())
+        t2 = ind_core.evaluate_industry([bp], merged, _ADJUSTED, _params())[0]
+        assert t2["requires_invention"] is True

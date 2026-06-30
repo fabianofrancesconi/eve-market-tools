@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.33.1"
+__version__ = "1.34.0"
 
 import argparse
 import base64
@@ -48,9 +48,9 @@ from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
     TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_prices,
     fetch_history_volumes,
-    fetch_orderbook_jita, fetch_prices, fetch_sell_order_stats, get_offers, load_json,
-    resolve_corp_id, resolve_corp_name, resolve_names, resolve_volumes, save_json,
-    suggested_list_price,
+    fetch_orderbook_jita, fetch_order_rank, fetch_prices, fetch_sell_order_stats, get_offers,
+    load_json, resolve_corp_id, resolve_corp_name, resolve_names, resolve_station_region,
+    resolve_volumes, save_json, suggested_list_price,
 )
 
 SESSION = requests.Session()
@@ -391,6 +391,21 @@ def do_char_data(q):
 
     orders_out = []
     for o in orders:
+        # Your exact place in the order-matching queue: needs the live order
+        # book at this order's own station, not just the Jita aggregate above.
+        # Best-effort -- a player structure or a transient ESI hiccup just
+        # leaves this unknown rather than failing the whole bundle.
+        rank = None
+        loc = o.get("location_id")
+        region_id = (TRADE_HUBS.get(loc, {}).get("region_id")
+                    or resolve_station_region(loc, SESSION, CACHE_DIR)) if loc else None
+        if region_id:
+            try:
+                rank = fetch_order_rank(
+                    o.get("type_id"), "buy" if o.get("is_buy_order") else "sell",
+                    o.get("order_id"), SESSION, loc, region_id)
+            except requests.RequestException:
+                rank = None
         orders_out.append({
             "order_id": o.get("order_id"),
             "is_buy_order": bool(o.get("is_buy_order")),
@@ -402,6 +417,9 @@ def do_char_data(q):
             "volume_total": o.get("volume_total"),
             "issued": o.get("issued"),
             "duration": o.get("duration"),
+            "is_best": rank["is_best"] if rank else None,
+            "queue_rank": rank["rank"] if rank else None,
+            "queue_total": rank["total"] if rank else None,
         })
 
     return {
@@ -2224,6 +2242,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
               <th>Item</th><th>Side</th><th style="text-align:right">Remaining</th>
               <th style="text-align:right">Price</th>
               <th style="text-align:right" data-tip="Current best sell price at Jita 4-4 — a quick reference, not necessarily the same station as your order.">Jita sell</th>
+              <th style="text-align:right" data-tip="Your position in this item's order-matching queue at your order's own station — #1 means you're the best price, ties broken by who listed first. Blank if the station can't be resolved (e.g. a player structure).">Queue</th>
               <th style="text-align:right">Posted</th>
               <th style="text-align:right">Expires</th>
             </tr></thead><tbody></tbody></table>
@@ -4276,11 +4295,15 @@ function renderCharData(){
     const expiresMs=isFinite(issuedMs)&&o.duration!=null?issuedMs+o.duration*86400000:NaN;
     const expires=isFinite(expiresMs)?new Date(expiresMs).toLocaleString([],
       {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
+    const queue=o.is_best==null?`<span style="color:var(--dim)">—</span>`
+      :o.is_best?`<span class="tx-sell">Best ✓</span>`
+      :`<span class="tx-buy">#${o.queue_rank} / ${o.queue_total}</span>`;
     return `<tr><td>${authEsc(o.type_name)}</td>`
          + `<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
          + `<td style="text-align:right">${(o.volume_remain??0).toLocaleString()} / ${(o.volume_total??0).toLocaleString()}</td>`
          + `<td style="text-align:right">${fmtISK(o.price)}</td>`
          + `<td style="text-align:right">${o.market_sell!=null?fmtISK(o.market_sell):"—"}</td>`
+         + `<td style="text-align:right">${queue}</td>`
          + `<td style="text-align:right"${postedTip}>${posted}</td>`
          + `<td style="text-align:right">${expires}</td></tr>`;
   }).join("");

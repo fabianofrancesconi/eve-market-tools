@@ -159,6 +159,50 @@ def _fetch_station_orders(type_id, side, session, station_id, region_id):
     return at_station
 
 
+def resolve_station_region(station_id, session, cache_dir):
+    """NPC station_id -> region_id, persistently cached (it never changes).
+    Player/Upwell structure ids (>= 1e9) need docking access we don't have, so
+    those return None without a network call."""
+    if station_id is None or station_id >= 1_000_000_000:
+        return None
+    path = Path(cache_dir) / "station_regions.json"
+    cache = {int(k): v for k, v in load_json(path, {}).items()}
+    if station_id in cache:
+        return cache[station_id]
+    try:
+        r = session.get(f"{ESI}/universe/stations/{station_id}/", headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        system_id = r.json()["system_id"]
+        r2 = session.get(f"{ESI}/universe/systems/{system_id}/", headers=HEADERS, timeout=15)
+        r2.raise_for_status()
+        constellation_id = r2.json()["constellation_id"]
+        r3 = session.get(f"{ESI}/universe/constellations/{constellation_id}/",
+                         headers=HEADERS, timeout=15)
+        r3.raise_for_status()
+        region_id = r3.json()["region_id"]
+    except (requests.RequestException, KeyError, ValueError):
+        return None
+    cache[station_id] = region_id
+    save_json(path, {str(k): v for k, v in cache.items()})
+    return region_id
+
+
+def fetch_order_rank(type_id, side, my_order_id, session, station_id, region_id):
+    """1-based queue position of `my_order_id` among open `side` orders for
+    `type_id` at `station_id` -- price first, then issued time (EVE's real
+    tiebreak for same-price orders: whoever listed first matches first).
+    None if the order isn't in this book (filled, cancelled, or a structure
+    we can't see into)."""
+    orders = _fetch_station_orders(type_id, side, session, station_id, region_id)
+    orders.sort(key=lambda o: o.get("issued") or "")              # stable tiebreak
+    orders.sort(key=lambda o: o["price"], reverse=(side == "buy"))  # stable: keeps tiebreak
+    for i, o in enumerate(orders):
+        if o.get("order_id") == my_order_id:
+            return {"rank": i + 1, "total": len(orders), "is_best": i == 0,
+                    "best_price": orders[0]["price"]}
+    return None
+
+
 def fetch_orderbook_jita(type_id, side, session,
                          station_id=JITA_STATION_ID, region_id=JITA_REGION_ID,
                          max_levels=200):

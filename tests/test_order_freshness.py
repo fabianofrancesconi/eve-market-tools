@@ -110,3 +110,105 @@ class TestOrderbookStillAggregates:
         book = lp_core.fetch_orderbook_jita(34, "sell", s,
                                             station_id=STATION, region_id=REGION)
         assert book == [[100.0, 12], [110.0, 3]]  # cheapest first, levels merged
+
+
+# ---------------------------------------------------------------------------
+# fetch_order_rank (v1.34.0) -- "am I the best price, and if not, what's my
+# queue position" for the character's own market orders.
+# ---------------------------------------------------------------------------
+
+def _sell(order_id, price, issued, vol=10, location=STATION):
+    return {"order_id": order_id, "location_id": location, "price": price,
+            "volume_remain": vol, "issued": issued, "duration": 90, "is_buy_order": False}
+
+
+class TestFetchOrderRank:
+    def test_cheapest_sell_is_rank_one_and_best(self):
+        s = _session([
+            _sell(1, 200.0, "2024-01-01T00:00:00Z"),
+            _sell(2, 100.0, "2024-01-01T00:00:00Z"),   # cheapest -> mine
+            _sell(3, 150.0, "2024-01-01T00:00:00Z"),
+        ])
+        out = lp_core.fetch_order_rank(34, "sell", 2, s, STATION, REGION)
+        assert out == {"rank": 1, "total": 3, "is_best": True, "best_price": 100.0}
+
+    def test_not_cheapest_reports_rank(self):
+        s = _session([
+            _sell(1, 100.0, "2024-01-01T00:00:00Z"),
+            _sell(2, 150.0, "2024-01-01T00:00:00Z"),   # mine, 2nd cheapest
+            _sell(3, 200.0, "2024-01-01T00:00:00Z"),
+        ])
+        out = lp_core.fetch_order_rank(34, "sell", 2, s, STATION, REGION)
+        assert out == {"rank": 2, "total": 3, "is_best": False, "best_price": 100.0}
+
+    def test_tie_broken_by_earliest_issued(self):
+        # Same price: whoever listed first is ranked ahead (EVE's real matching order).
+        s = _session([
+            _sell(1, 100.0, "2024-01-01T10:00:00Z"),   # later -> behind
+            _sell(2, 100.0, "2024-01-01T06:00:00Z"),   # earlier -> rank 1
+        ])
+        out = lp_core.fetch_order_rank(34, "sell", 1, s, STATION, REGION)
+        assert out["rank"] == 2
+        assert out["is_best"] is False
+
+    def test_buy_orders_rank_highest_first(self):
+        s = _session([
+            {**_sell(1, 100.0, "2024-01-01T00:00:00Z"), "is_buy_order": True},
+            {**_sell(2, 200.0, "2024-01-01T00:00:00Z"), "is_buy_order": True},  # mine, best buy
+        ])
+        out = lp_core.fetch_order_rank(34, "buy", 2, s, STATION, REGION)
+        assert out["is_best"] is True
+        assert out["best_price"] == 200.0
+
+    def test_missing_order_id_returns_none(self):
+        s = _session([_sell(1, 100.0, "2024-01-01T00:00:00Z")])
+        assert lp_core.fetch_order_rank(34, "sell", 999, s, STATION, REGION) is None
+
+
+# ---------------------------------------------------------------------------
+# resolve_station_region (v1.34.0)
+# ---------------------------------------------------------------------------
+
+class TestResolveStationRegion:
+    def test_structure_id_skips_network_call(self):
+        s = MagicMock()
+        out = lp_core.resolve_station_region(1_000_000_000_001, s, "/tmp/nonexistent")
+        assert out is None
+        s.get.assert_not_called()
+
+    def test_none_station_id_skips_network_call(self):
+        s = MagicMock()
+        assert lp_core.resolve_station_region(None, s, "/tmp/nonexistent") is None
+        s.get.assert_not_called()
+
+    def test_resolves_via_three_hop_chain(self, tmp_path):
+        s = MagicMock()
+        station_resp = MagicMock(status_code=200)
+        station_resp.json.return_value = {"system_id": 30000142}
+        system_resp = MagicMock(status_code=200)
+        system_resp.json.return_value = {"constellation_id": 20000020}
+        constellation_resp = MagicMock(status_code=200)
+        constellation_resp.json.return_value = {"region_id": 10000002}
+        s.get.side_effect = [station_resp, system_resp, constellation_resp]
+        out = lp_core.resolve_station_region(60003760, s, tmp_path)
+        assert out == 10000002
+
+    def test_result_is_cached_to_disk(self, tmp_path):
+        s = MagicMock()
+        station_resp = MagicMock(status_code=200)
+        station_resp.json.return_value = {"system_id": 30000142}
+        system_resp = MagicMock(status_code=200)
+        system_resp.json.return_value = {"constellation_id": 20000020}
+        constellation_resp = MagicMock(status_code=200)
+        constellation_resp.json.return_value = {"region_id": 10000002}
+        s.get.side_effect = [station_resp, system_resp, constellation_resp]
+        lp_core.resolve_station_region(60003760, s, tmp_path)
+        s.get.reset_mock()
+        out = lp_core.resolve_station_region(60003760, s, tmp_path)
+        assert out == 10000002
+        s.get.assert_not_called()   # served from the cache file, no re-fetch
+
+    def test_esi_failure_returns_none(self, tmp_path):
+        s = MagicMock()
+        s.get.side_effect = lp_core.requests.RequestException("boom")
+        assert lp_core.resolve_station_region(60003760, s, tmp_path) is None

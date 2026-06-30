@@ -12,11 +12,12 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.24.0"
+__version__ = "1.25.0"
 
 import argparse
 import base64
 import json
+import secrets
 import sys
 import threading
 import time
@@ -42,6 +43,7 @@ import requests
 
 import arb_core
 import ind_core
+import sso_core
 from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
     TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_prices,
@@ -56,7 +58,20 @@ CACHE_DIR = default_cache_dir()
 SETTINGS_PATH = CACHE_DIR / "lp_web_settings.json"
 ARB_SETTINGS_PATH = CACHE_DIR / "arb_settings.json"
 IND_SETTINGS_PATH = CACHE_DIR / "ind_settings.json"
+AUTH_SETTINGS_PATH = CACHE_DIR / "auth_settings.json"  # client_id + callback_url
 REFRESHED_CORPS = set()
+
+# ── EVE SSO state (single process, single user) ───────────────────────────────
+# Pending PKCE handshakes keyed by `state` (verifier + redirect_uri), set in
+# /api/auth/login and consumed once in /callback.
+_PKCE: dict = {}
+# Live session: access_token + expiry + character identity. Refresh token is
+# persisted via sso_core; the access token is held only in memory.
+_AUTH: dict = {}
+# Logged-in character's {skill_id: trained_level}, used to auto-fill the planner.
+_CHAR_SKILL_PROFILE: dict = {}
+# The host:port the server is actually bound to, for the suggested callback URL.
+_SERVER_PORT = 8765
 
 REGION_NAMES = {
     10000002: "The Forge (Jita)",
@@ -106,6 +121,214 @@ def load_ind_settings():
 
 def save_ind_settings(d):
     save_json(IND_SETTINGS_PATH, d)
+
+
+# ── EVE SSO helpers ───────────────────────────────────────────────────────────
+
+def load_auth_settings():
+    return load_json(AUTH_SETTINGS_PATH, {})
+
+
+def save_auth_settings(d):
+    save_json(AUTH_SETTINGS_PATH, d)
+
+
+def _suggested_callback():
+    return f"http://localhost:{_SERVER_PORT}/callback"
+
+
+def _callback_url():
+    """The redirect_uri to use — the explicit one the user saved, else the
+    suggested localhost callback for the bound port."""
+    return (load_auth_settings().get("callback_url") or "").strip() or _suggested_callback()
+
+
+def _restore_auth():
+    """Load a persisted session on startup so a previous login survives a restart.
+    The access token is refreshed lazily on first use."""
+    saved = sso_core.load_tokens(CACHE_DIR)
+    if saved.get("refresh_token") and saved.get("character_id"):
+        _AUTH.update({
+            "refresh_token": saved["refresh_token"],
+            "character_id": saved["character_id"],
+            "name": saved.get("name"),
+            "scopes": saved.get("scopes", []),
+            "access_token": None,
+            "expires_at": 0,
+        })
+
+
+def _access_token():
+    """A valid bearer token, refreshing transparently when expired. Raises LPError
+    if nobody is logged in or no CLIENT_ID is configured."""
+    if not _AUTH.get("refresh_token"):
+        raise LPError("Not logged in to EVE.")
+    if _AUTH.get("access_token") and not sso_core.access_token_expired(_AUTH.get("expires_at")):
+        return _AUTH["access_token"]
+    client_id = (load_auth_settings().get("client_id") or "").strip()
+    if not client_id:
+        raise LPError("No EVE application CLIENT_ID configured.")
+    tok = sso_core.refresh_access_token(client_id, _AUTH["refresh_token"], SESSION)
+    _apply_token(tok)
+    return _AUTH["access_token"]
+
+
+def _apply_token(tok):
+    """Store a token response into _AUTH and persist the (possibly rotated)
+    refresh token + identity."""
+    claims = sso_core.decode_jwt_payload(tok["access_token"])
+    _AUTH.update({
+        "access_token": tok["access_token"],
+        "refresh_token": tok.get("refresh_token", _AUTH.get("refresh_token")),
+        "expires_at": time.time() + int(tok.get("expires_in", 1200)),
+        "character_id": claims["character_id"],
+        "name": claims.get("name"),
+        "scopes": claims.get("scopes", []),
+    })
+    sso_core.save_tokens(CACHE_DIR, {
+        "refresh_token": _AUTH["refresh_token"],
+        "character_id": _AUTH["character_id"],
+        "name": _AUTH["name"],
+        "scopes": _AUTH["scopes"],
+    })
+
+
+def _refresh_skill_profile():
+    """Pull the character's skills and cache the {skill_id: level} profile so the
+    Industry planner can use real per-skill levels. Best-effort."""
+    global _CHAR_SKILL_PROFILE
+    try:
+        skills = sso_core.fetch_skills(_access_token(), _AUTH["character_id"], SESSION)
+        _CHAR_SKILL_PROFILE = sso_core.skill_profile_from_skills(skills)
+    except (LPError, requests.RequestException):
+        _CHAR_SKILL_PROFILE = {}
+
+
+def do_auth_config(q):
+    """GET returns the saved CLIENT_ID + callback; with params, saves them."""
+    s = load_auth_settings()
+    changed = False
+    if "client_id" in q:
+        s["client_id"] = q["client_id"][0].strip()
+        changed = True
+    if "callback_url" in q:
+        s["callback_url"] = q["callback_url"][0].strip()
+        changed = True
+    if changed:
+        save_auth_settings(s)
+    return {
+        "client_id": s.get("client_id", ""),
+        "callback_url": s.get("callback_url", ""),
+        "suggested_callback": _suggested_callback(),
+        "scopes": sso_core.SCOPES,
+    }
+
+
+def do_auth_login(q):
+    """Begin the PKCE handshake — returns the authorize URL to send the browser to."""
+    client_id = (load_auth_settings().get("client_id") or "").strip()
+    if not client_id:
+        raise LPError("Enter your EVE application CLIENT_ID first (Login settings).")
+    verifier, challenge = sso_core.make_pkce()
+    state = secrets.token_urlsafe(16)
+    redirect_uri = _callback_url()
+    _PKCE[state] = {"verifier": verifier, "redirect_uri": redirect_uri}
+    url = sso_core.build_authorize_url(client_id, redirect_uri, sso_core.SCOPES, state, challenge)
+    return {"url": url}
+
+
+def do_auth_status(q):
+    return {
+        "logged_in": bool(_AUTH.get("refresh_token")),
+        "character_id": _AUTH.get("character_id"),
+        "name": _AUTH.get("name"),
+        "scopes": _AUTH.get("scopes", []),
+    }
+
+
+def do_auth_logout(q):
+    sso_core.clear_tokens(CACHE_DIR)
+    _AUTH.clear()
+    _PKCE.clear()
+    global _CHAR_SKILL_PROFILE
+    _CHAR_SKILL_PROFILE = {}
+    return {"ok": True}
+
+
+def do_char_data(q):
+    """Bundle of the logged-in character's wallet, SP, skill queue, loyalty points
+    and running industry jobs (with resolved names + timers)."""
+    token = _access_token()
+    cid = _AUTH["character_id"]
+    _refresh_skill_profile()
+
+    wallet = sso_core.fetch_wallet(token, cid, SESSION)
+    skills = sso_core.fetch_skills(token, cid, SESSION)
+    queue = sso_core.fetch_skillqueue(token, cid, SESSION)
+    loyalty = sso_core.fetch_loyalty_points(token, cid, SESSION)
+    jobs = sso_core.fetch_industry_jobs(token, cid, SESSION, include_completed=False)
+
+    # Resolve every type/skill name referenced by jobs and the skill queue in one call.
+    name_ids = set()
+    for j in jobs:
+        name_ids.add(j.get("blueprint_type_id"))
+        name_ids.add(j.get("product_type_id"))
+    for qd in queue:
+        name_ids.add(qd.get("skill_id"))
+    name_ids.discard(None)
+    names = resolve_names(list(name_ids), SESSION, CACHE_DIR) if name_ids else {}
+
+    activity_label = {ind_core.ACT_MANUFACTURING: "Manufacturing",
+                      ind_core.ACT_INVENTION: "Invention"}
+    out_jobs = []
+    for j in jobs:
+        act = j.get("activity_id")
+        out_jobs.append({
+            "job_id": j.get("job_id"),
+            "activity": activity_label.get(act, f"Activity {act}"),
+            "activity_id": act,
+            "blueprint_type_id": j.get("blueprint_type_id"),
+            "blueprint_name": names.get(j.get("blueprint_type_id"), "?"),
+            "product_type_id": j.get("product_type_id"),
+            "product_name": names.get(j.get("product_type_id"), "?"),
+            "runs": j.get("runs"),
+            "status": j.get("status"),
+            "start": j.get("start_date"),
+            "end": j.get("end_date"),
+        })
+    out_jobs.sort(key=lambda x: x.get("end") or "")
+
+    loyalty_out = []
+    for lp in loyalty:
+        cid_lp = lp.get("corporation_id")
+        loyalty_out.append({
+            "corp_id": cid_lp,
+            "corp_name": resolve_corp_name(cid_lp, SESSION) if cid_lp else "?",
+            "loyalty_points": lp.get("loyalty_points", 0),
+        })
+    loyalty_out.sort(key=lambda x: -(x.get("loyalty_points") or 0))
+
+    queue_out = []
+    now = time.time()
+    for qd in queue:
+        fin = qd.get("finish_date")
+        queue_out.append({
+            "skill_id": qd.get("skill_id"),
+            "skill_name": names.get(qd.get("skill_id"), "?"),
+            "finished_level": qd.get("finished_level"),
+            "finish_date": fin,
+        })
+
+    return {
+        "name": _AUTH.get("name"),
+        "character_id": cid,
+        "wallet": wallet,
+        "total_sp": skills.get("total_sp"),
+        "unallocated_sp": skills.get("unallocated_sp"),
+        "skillqueue": queue_out,
+        "loyalty": loyalty_out,
+        "jobs": out_jobs,
+    }
 
 
 def _all_type_ids(offers):
@@ -654,6 +877,7 @@ def do_ind_scan(q, emit=None):
     # of category — used to show favorites immediately on tab load, before the
     # user runs a real scan. Doesn't touch saved settings.
     favorites_only = q.get("favorites_only", ["0"])[0] in ("1", "true", "on")
+    use_char_skills = q.get("use_char_skills", ["0"])[0] in ("1", "true", "on")
     try:
         owned_ids = set(json.loads(q.get("owned", ["[]"])[0]))
     except (ValueError, TypeError):
@@ -663,6 +887,8 @@ def do_ind_scan(q, emit=None):
     except (ValueError, TypeError):
         fav_ids = set()
     params = _ind_params(q)
+    if use_char_skills and _CHAR_SKILL_PROFILE:
+        params["skill_profile"] = _CHAR_SKILL_PROFILE
 
     if not favorites_only:
         s = load_ind_settings()
@@ -777,6 +1003,8 @@ def do_ind_detail(q):
     if station_id not in TRADE_HUBS:
         station_id = JITA_STATION_ID
     params = _ind_params(q)
+    if q.get("use_char_skills", ["0"])[0] in ("1", "true", "on") and _CHAR_SKILL_PROFILE:
+        params["skill_profile"] = _CHAR_SKILL_PROFILE
 
     conn = ind_core.connect_sde(CACHE_DIR)
     try:
@@ -850,6 +1078,39 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _handle_callback(self, q):
+        """EVE SSO redirect target: validate state, exchange the code for tokens,
+        load the skill profile, then bounce back to the app."""
+        if "error" in q:
+            self._send_html(f"<h2>EVE login failed</h2><p>{q['error'][0]}</p>"
+                            "<p><a href='/'>Back to app</a></p>")
+            return
+        state = q.get("state", [""])[0]
+        code = q.get("code", [""])[0]
+        handshake = _PKCE.pop(state, None)
+        if not handshake or not code:
+            self._send_html("<h2>EVE login failed</h2><p>Invalid or expired login "
+                            "request. Please try again.</p><p><a href='/'>Back to app</a></p>")
+            return
+        try:
+            client_id = (load_auth_settings().get("client_id") or "").strip()
+            tok = sso_core.exchange_code(client_id, handshake["redirect_uri"],
+                                         code, handshake["verifier"], SESSION)
+            _apply_token(tok)
+            _refresh_skill_profile()
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc(file=sys.stderr)
+            self._send_html(f"<h2>EVE login failed</h2><p>{type(e).__name__}: {e}</p>"
+                            "<p><a href='/'>Back to app</a></p>")
+            return
+        self._redirect("/")
+
     def _sse_emit(self, data):
         try:
             self.wfile.write(f"data: {json.dumps(data)}\n\n".encode())
@@ -918,6 +1179,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_sse_scan(q, do_ind_scan, "ind")
             elif parsed.path == "/api/ind/detail":
                 self._send_json(do_ind_detail(q))
+            elif parsed.path == "/api/auth/config":
+                self._send_json(do_auth_config(q))
+            elif parsed.path == "/api/auth/login":
+                self._send_json(do_auth_login(q))
+            elif parsed.path == "/api/auth/status":
+                self._send_json(do_auth_status(q))
+            elif parsed.path == "/api/auth/logout":
+                self._send_json(do_auth_logout(q))
+            elif parsed.path == "/api/char/data":
+                self._send_json(do_char_data(q))
+            elif parsed.path == "/callback":
+                self._handle_callback(q)
             else:
                 self._send_json({"error": "not found"}, 404)
         except LPError as e:
@@ -1000,6 +1273,47 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .tab:hover { color:var(--fg); }
   .tab.active { color:var(--cyan); border-bottom-color:var(--cyan2); }
+
+  /* ── EVE login (header right) ─────────────────────────────────────── */
+  #auth-region { margin-left:auto; display:flex; align-items:center; gap:8px; }
+  .auth-btn {
+    background:var(--panel3); border:1px solid var(--line2); color:var(--fg);
+    font:inherit; font-size:13px; font-weight:600; border-radius:4px;
+    padding:5px 12px; cursor:pointer; white-space:nowrap;
+  }
+  .auth-btn:hover { border-color:var(--cyan2); color:var(--cyan); }
+  .auth-btn.primary-btn { background:var(--accent); border-color:var(--accent2); color:#fff; }
+  .auth-btn.primary-btn:hover { background:var(--accent2); color:#fff; }
+  .auth-cog {
+    background:transparent; border:1px solid var(--line2); color:var(--dim);
+    font-size:13px; line-height:1; border-radius:4px; width:26px; height:26px;
+    cursor:pointer; flex-shrink:0;
+  }
+  .auth-cog:hover { color:var(--cyan); border-color:var(--cyan2); }
+  #char-chip { display:flex; align-items:center; gap:8px;
+    background:var(--panel3); border:1px solid var(--line2); border-radius:4px;
+    padding:3px 4px 3px 11px; cursor:pointer; }
+  #char-chip:hover { border-color:var(--cyan2); }
+  #chip-name { color:var(--cyan); font-weight:700; font-size:13px; white-space:nowrap; }
+  .chip-wallet { color:var(--gold); font-size:12px; font-variant-numeric:tabular-nums; }
+  #auth-cfg-pop {
+    position:absolute; top:50px; right:16px; z-index:60; width:380px;
+    background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
+    padding:14px 16px 16px; box-shadow:0 8px 30px rgba(0,0,0,.6);
+  }
+  #auth-cfg-pop h4 { font-size:13px; color:var(--cyan); margin-bottom:8px; }
+  #auth-cfg-pop .cfg-hint { font-size:12px; color:var(--dim); line-height:1.5; margin-bottom:12px; }
+  #auth-cfg-pop input { width:100%; background:var(--panel); border:1px solid var(--line2);
+    color:var(--fg); font:inherit; font-size:13px; border-radius:4px; padding:6px 8px; }
+  #auth-cfg-pop .field-row input { width:auto; flex:1; }
+  .cfg-l { font-size:10px; text-transform:uppercase; letter-spacing:.7px;
+    color:var(--dim); font-weight:700; margin:10px 0 3px; }
+  .cfg-sub { text-transform:none; letter-spacing:0; font-weight:400; color:var(--dim2); }
+  .cfg-scopes { font-size:11px; color:var(--dim); font-family:ui-monospace,monospace; line-height:1.6; }
+  .lp-mylp { text-transform:none; letter-spacing:0; font-weight:600; color:var(--gold);
+    font-size:10px; margin-left:6px; }
+  #char-jobs-tbl .timer-cell { color:var(--cyan); font-weight:600; font-variant-numeric:tabular-nums; }
+  #char-jobs-tbl .timer-cell.done { color:var(--green2); }
 
   /* ── Control bar ─────────────────────────────────────────────────── */
   .ctrlbar {
@@ -1243,6 +1557,28 @@ INDEX_HTML = r"""<!DOCTYPE html>
     color:var(--dim); border-bottom:1px solid var(--line); padding-bottom:5px;
     margin:18px 0 8px;
   }
+
+  /* ── Character tab ───────────────────────────────────────────────── */
+  #char-tablewrap { padding:18px; }
+  .char-empty { max-width:480px; margin:60px auto; text-align:center; color:var(--dim);
+    line-height:1.6; display:flex; flex-direction:column; gap:16px; align-items:center; }
+  .char-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+    gap:12px; margin-bottom:18px; }
+  .char-kpi { background:var(--panel2); border:1px solid var(--line); border-radius:6px;
+    padding:10px 14px; position:relative; overflow:hidden; }
+  .char-kpi::before { content:""; position:absolute; top:0; left:0; right:0; height:2px;
+    background:linear-gradient(90deg,var(--cyan2),transparent); }
+  .char-kpi .l { font-size:9px; text-transform:uppercase; letter-spacing:.5px;
+    color:var(--dim); font-weight:700; }
+  .char-kpi .v { font-size:20px; font-weight:700; margin-top:3px; }
+  .char-kpi .v.gold { color:var(--gold); font-variant-numeric:tabular-nums; }
+  .char-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:18px; }
+  .char-card { background:var(--panel2); border:1px solid var(--line); border-radius:6px;
+    padding:4px 16px 14px; }
+  .char-card h3 { margin-top:14px; }
+  .char-none { color:var(--dim); font-size:13px; padding:10px 4px; }
+  #char-jobs-tbl td.tl, #char-jobs-tbl th:last-child { text-align:right;
+    font-variant-numeric:tabular-nums; }
   table.mini { font-size:13px; width:100%; border-collapse:collapse; }
   table.mini th { position:static; background:none; color:var(--dim);
     font-size:10px; letter-spacing:.5px; border-bottom:1px solid var(--line); padding:4px 8px; }
@@ -1472,12 +1808,43 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <button class="tab active" data-tab="lp">LP Store</button>
     <button class="tab" data-tab="arb">Arbitrage</button>
     <button class="tab" data-tab="ind">Industry</button>
+    <button class="tab hidden" id="char-tab-btn" data-tab="char">Character</button>
   </nav>
+  <div id="auth-region">
+    <button id="login-eve" class="auth-btn" data-tip="Log in with your EVE Online account to load your skills, wallet, loyalty points and running industry jobs.">Log in with EVE</button>
+    <button id="login-cfg" class="auth-cog" title="EVE login settings" aria-label="EVE login settings">&#9881;</button>
+    <div id="char-chip" class="hidden" data-tip="Click to open the Character tab. Use the gear to log out.">
+      <span id="chip-name">&bull;&bull;&bull;</span>
+      <span id="chip-wallet" class="chip-wallet"></span>
+      <button id="logout-eve" class="auth-cog" title="Log out of EVE" aria-label="Log out">&#10005;</button>
+    </div>
+  </div>
 </header>
+
+<!-- EVE login settings popover -->
+<div id="auth-cfg-pop" class="hidden">
+  <h4>EVE Online login</h4>
+  <p class="cfg-hint">Register an application at
+    <a href="https://developers.eveonline.com/applications" target="_blank" rel="noopener">developers.eveonline.com</a>
+    (Authentication only). Set its <b>Callback URL</b> to the value below, then paste the <b>Client ID</b> here.</p>
+  <label class="cfg-l">Client ID</label>
+  <input id="cfg-client-id" type="text" placeholder="your application Client ID" autocomplete="off">
+  <label class="cfg-l">Callback URL <span class="cfg-sub">(register this exact value)</span></label>
+  <div class="field-row">
+    <input id="cfg-callback" type="text" readonly>
+    <button id="cfg-copy" class="auth-btn">Copy</button>
+  </div>
+  <div class="cfg-l" style="margin-top:10px">Scopes requested</div>
+  <div id="cfg-scopes" class="cfg-scopes"></div>
+  <div class="field-row" style="margin-top:12px; justify-content:flex-end">
+    <button id="cfg-close" class="auth-btn">Close</button>
+    <button id="cfg-save" class="auth-btn primary-btn">Save</button>
+  </div>
+</div>
 
 <!-- LP controls -->
 <div id="lp-controls" class="ctrlbar">
-  <div class="field"><label>Corporation</label>
+  <div class="field"><label>Corporation <span id="lp-mylp" class="lp-mylp hidden"></span></label>
     <div class="corp-wrap">
       <span class="corp-icon">⌕</span>
       <input id="corp" placeholder="Search corporation…" autocomplete="off" spellcheck="false">
@@ -1586,6 +1953,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="field" data-tip="Assume every skill the blueprint requires is trained to this level (0–5). Gates the 'Build?' column and speeds up build time via the Industry skills.">
         <label>Skills @</label><input id="ind-skills" type="number" min="0" max="5" value="5" style="width:55px">
       </div>
+      <div class="field" style="justify-content:flex-end">
+        <label class="check-field" id="ind-usechar-wrap" data-tip="Use your logged-in character's actual trained skill levels instead of the uniform 'Skills @' value. Log in with EVE to enable.">
+          <input type="checkbox" id="ind-usechar" disabled> My skills
+        </label>
+      </div>
     </div>
   </div>
   <!-- Costs & fees -->
@@ -1670,6 +2042,44 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
     <div id="ind-detail" class="hidden"></div>
     <table id="ind-tbl"><thead></thead><tbody></tbody></table>
+  </div>
+  <div id="char-tablewrap" class="tablewrap hidden">
+    <div id="char-empty" class="char-empty">
+      <p>Log in with your EVE Online account to see your wallet, skills, loyalty
+      points and currently running industry jobs here.</p>
+      <button id="char-login-btn" class="auth-btn primary-btn">Log in with EVE</button>
+    </div>
+    <div id="char-body" class="hidden">
+      <div class="char-kpis">
+        <div class="char-kpi"><div class="l">Character</div><div class="v" id="cv-name">—</div></div>
+        <div class="char-kpi"><div class="l">Wallet</div><div class="v gold" id="cv-wallet">—</div></div>
+        <div class="char-kpi"><div class="l">Total SP</div><div class="v" id="cv-sp">—</div></div>
+        <div class="char-kpi"><div class="l">Running jobs</div><div class="v" id="cv-jobs">—</div></div>
+      </div>
+      <div class="char-grid">
+        <section class="char-card">
+          <h3>Running industry jobs</h3>
+          <table class="mini" id="char-jobs-tbl"><thead><tr>
+            <th>Product</th><th>Activity</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>
+          </tr></thead><tbody></tbody></table>
+          <div id="char-jobs-empty" class="char-none hidden">No active jobs.</div>
+        </section>
+        <section class="char-card">
+          <h3>Skill queue</h3>
+          <table class="mini" id="char-queue-tbl"><thead><tr>
+            <th>Skill</th><th>Lvl</th><th style="text-align:right">Finishes</th>
+          </tr></thead><tbody></tbody></table>
+          <div id="char-queue-empty" class="char-none hidden">Skill queue is empty.</div>
+        </section>
+        <section class="char-card">
+          <h3>Loyalty points</h3>
+          <table class="mini" id="char-lp-tbl"><thead><tr>
+            <th>Corporation</th><th style="text-align:right">LP</th>
+          </tr></thead><tbody></tbody></table>
+          <div id="char-lp-empty" class="char-none hidden">No loyalty points.</div>
+        </section>
+      </div>
+    </div>
   </div>
   <!-- LP detail panel -->
   <div id="detail"><div class="inner"></div></div>
@@ -1825,6 +2235,7 @@ function saveLS(){
         me:$("#ind-me").value,te:$("#ind-te").value,job_rate:$("#ind-jobrate").value,
         sales_tax:$("#ind-tax").value,broker:$("#ind-broker").value,runs:$("#ind-runs").value,
         skills_level:$("#ind-skills").value,
+        use_char_skills:$("#ind-usechar").checked?'1':'0',
         buildable_only:$("#ind-buildable").checked?'1':'0',
         include_unbuildable:$("#ind-unobtainable").checked?'1':'0',
         hide_t2:$("#ind-hidet2").checked?'1':'0',
@@ -1847,15 +2258,18 @@ function switchTab(tab){
   $("#lp-tablewrap").classList.toggle("hidden", tab!=="lp");
   $("#arb-tablewrap").classList.toggle("hidden", tab!=="arb");
   $("#ind-tablewrap").classList.toggle("hidden", tab!=="ind");
+  $("#char-tablewrap").classList.toggle("hidden", tab!=="char");
   if(tab!=="lp") closeDetail();
   setStatus("");
   document.title = tab==="lp" ? "EVE LP Store Scanner"
-                : tab==="arb" ? "EVE Arbitrage Scanner" : "EVE Industry Planner";
+                : tab==="arb" ? "EVE Arbitrage Scanner"
+                : tab==="char" ? "EVE Character" : "EVE Industry Planner";
   fetch(`/api/prefs?active_tab=${tab}`).catch(()=>{}); saveLS();
   if(tab==="ind"){
     if(!IND.groupsLoaded) loadIndGroups();
     renderIndTable(); renderIndStatus();   // show whatever's loaded (e.g. a favourites preview) immediately
   }
+  if(tab==="char" && AUTH.loggedIn) refreshCharData();
 }
 document.querySelectorAll(".tab").forEach(t=>{
   t.onclick = ()=>switchTab(t.dataset.tab);
@@ -3225,6 +3639,7 @@ function indParams(extra){
     broker:       $("#ind-broker").value||"0",
     runs:         $("#ind-runs").value||"1",
     skills_level: $("#ind-skills").value||"0",
+    use_char_skills: ($("#ind-usechar").checked && AUTH.loggedIn)?"1":"0",
     buildable_only:$("#ind-buildable").checked?"1":"0",
     include_unbuildable:$("#ind-unobtainable").checked?"1":"0",
     hide_t2:      $("#ind-hidet2").checked?"1":"0",
@@ -3520,6 +3935,157 @@ setInterval(()=>{
   });
 }, 1000);
 
+// ══════════════════════════════════════════════════════════════════════════
+// EVE SSO / CHARACTER
+// ══════════════════════════════════════════════════════════════════════════
+const AUTH = { loggedIn:false, name:null, charId:null, data:null,
+               cfg:{client_id:"",callback_url:"",suggested_callback:"",scopes:[]},
+               syncedTimers:new Set() };
+const ROMAN=["0","I","II","III","IV","V"];
+function authEsc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
+  c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function romanLvl(n){ return ROMAN[n]||String(n||""); }
+
+async function loadAuthConfig(){
+  try{ AUTH.cfg=await (await fetch("/api/auth/config")).json(); }catch(e){ return; }
+  $("#cfg-client-id").value=AUTH.cfg.client_id||"";
+  $("#cfg-callback").value=AUTH.cfg.callback_url||AUTH.cfg.suggested_callback||"";
+  $("#cfg-scopes").innerHTML=(AUTH.cfg.scopes||[]).map(authEsc).join("<br>");
+}
+function openAuthCfg(){ loadAuthConfig(); $("#auth-cfg-pop").classList.remove("hidden"); }
+function closeAuthCfg(){ $("#auth-cfg-pop").classList.add("hidden"); }
+
+function renderAuthChip(){
+  $("#login-eve").classList.toggle("hidden", AUTH.loggedIn);
+  $("#char-chip").classList.toggle("hidden", !AUTH.loggedIn);
+  $("#char-tab-btn").classList.toggle("hidden", !AUTH.loggedIn);
+  $("#char-empty").classList.toggle("hidden", AUTH.loggedIn);
+  $("#char-body").classList.toggle("hidden", !AUTH.loggedIn);
+  if(AUTH.loggedIn) $("#chip-name").textContent=AUTH.name||"Capsuleer";
+  const cb=$("#ind-usechar");
+  cb.disabled=!AUTH.loggedIn;
+  if(!AUTH.loggedIn) cb.checked=false;
+  if(ACTIVE_TAB==="char" && !AUTH.loggedIn) switchTab("ind");
+}
+
+async function checkAuth(){
+  let st; try{ st=await (await fetch("/api/auth/status")).json(); }catch(e){ return; }
+  AUTH.loggedIn=!!st.logged_in; AUTH.name=st.name; AUTH.charId=st.character_id;
+  renderAuthChip();
+  if(AUTH.loggedIn) refreshCharData();
+}
+
+async function doLogin(){
+  let r; try{ r=await (await fetch("/api/auth/login")).json(); }catch(e){ openAuthCfg(); return; }
+  if(r.url){ window.location.href=r.url; }
+  else { openAuthCfg(); if(r.error) setStatus(authEsc(r.error), true); }
+}
+async function doLogout(){
+  await fetch("/api/auth/logout").catch(()=>{});
+  // Drop the timers we mirrored from real jobs (keep the user's manual ones).
+  AUTH.syncedTimers.forEach(bp=>{ delete IND.timers[bp]; });
+  AUTH.syncedTimers.clear(); saveIndTimers();
+  AUTH.loggedIn=false; AUTH.name=null; AUTH.charId=null; AUTH.data=null;
+  renderAuthChip(); updateMyLpBadge(); renderIndTable();
+}
+
+async function refreshCharData(){
+  let d; try{ d=await (await fetch("/api/char/data")).json(); }catch(e){ return; }
+  if(d.error){ setStatus(authEsc(d.error), true); return; }
+  AUTH.data=d;
+  renderCharData(); syncJobTimers(); updateMyLpBadge();
+}
+
+function renderCharData(){
+  const d=AUTH.data; if(!d) return;
+  $("#cv-name").textContent=d.name||"—";
+  $("#cv-wallet").textContent=d.wallet!=null?fmtISK(d.wallet):"—";
+  $("#cv-sp").textContent=d.total_sp!=null?Math.round(d.total_sp).toLocaleString():"—";
+  $("#chip-wallet").textContent=d.wallet!=null?fmtISK(d.wallet)+" ISK":"";
+
+  const jobs=d.jobs||[];
+  $("#cv-jobs").textContent=jobs.length;
+  $("#char-jobs-empty").classList.toggle("hidden", jobs.length>0);
+  $("#char-jobs-tbl").classList.toggle("hidden", jobs.length===0);
+  $("#char-jobs-tbl tbody").innerHTML=jobs.map(j=>{
+    const end=Date.parse(j.end), rem=end-Date.now();
+    let tcell="—";
+    if(isFinite(end)) tcell = rem>0
+      ? `<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
+      : `<span class="timer-cell done">✓ Ready</span>`;
+    return `<tr><td>${authEsc(j.product_name)}</td><td>${authEsc(j.activity)}</td>`
+         + `<td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td>`
+         + `<td class="tl">${tcell}</td></tr>`;
+  }).join("");
+
+  const q=d.skillqueue||[];
+  $("#char-queue-empty").classList.toggle("hidden", q.length>0);
+  $("#char-queue-tbl").classList.toggle("hidden", q.length===0);
+  $("#char-queue-tbl tbody").innerHTML=q.map(s=>{
+    const fin=s.finish_date?new Date(s.finish_date).toLocaleString([],
+      {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
+    return `<tr><td>${authEsc(s.skill_name)}</td><td>${romanLvl(s.finished_level)}</td>`
+         + `<td style="text-align:right">${fin}</td></tr>`;
+  }).join("");
+
+  const lp=d.loyalty||[];
+  $("#char-lp-empty").classList.toggle("hidden", lp.length>0);
+  $("#char-lp-tbl").classList.toggle("hidden", lp.length===0);
+  $("#char-lp-tbl tbody").innerHTML=lp.map(l=>
+    `<tr><td>${authEsc(l.corp_name)}</td>`
+   + `<td style="text-align:right">${(l.loyalty_points||0).toLocaleString()}</td></tr>`).join("");
+}
+
+// Mirror real in-game manufacturing jobs into the Industry-table timers, keyed
+// by blueprint type id (== the planner's blueprint_id). Tracked separately so a
+// logout only removes these, not the user's hand-started timers.
+function syncJobTimers(){
+  if(!AUTH.data) return;
+  AUTH.syncedTimers.forEach(bp=>{ delete IND.timers[bp]; });
+  AUTH.syncedTimers.clear();
+  (AUTH.data.jobs||[]).forEach(j=>{
+    if(j.activity_id!==1) return;          // manufacturing only
+    const end=Date.parse(j.end), bp=j.blueprint_type_id;
+    if(isFinite(end) && bp){ IND.timers[bp]=end; AUTH.syncedTimers.add(bp); }
+  });
+  saveIndTimers();
+  if(ACTIVE_TAB==="ind") renderIndTable();
+}
+
+// Show the player's LP balance for the corp currently typed in the LP tab.
+function updateMyLpBadge(){
+  const badge=$("#lp-mylp");
+  const corp=($("#corp").value||"").trim().toLowerCase();
+  const lp=(AUTH.data&&AUTH.data.loyalty)||[];
+  const m=corp?lp.find(l=>(l.corp_name||"").toLowerCase()===corp):null;
+  if(AUTH.loggedIn && m){
+    badge.textContent="you have "+(m.loyalty_points||0).toLocaleString()+" LP";
+    badge.classList.remove("hidden");
+  } else badge.classList.add("hidden");
+}
+
+$("#login-eve").onclick=doLogin;
+$("#char-login-btn").onclick=doLogin;
+$("#login-cfg").onclick=()=>{ const p=$("#auth-cfg-pop"); p.classList.contains("hidden")?openAuthCfg():closeAuthCfg(); };
+$("#logout-eve").onclick=e=>{ e.stopPropagation(); doLogout(); };
+$("#char-chip").onclick=()=>switchTab("char");
+$("#cfg-close").onclick=closeAuthCfg;
+$("#cfg-copy").onclick=()=>{
+  const t=$("#cfg-callback").value;
+  const done=()=>{ const b=$("#cfg-copy"); b.textContent="Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+  if(navigator.clipboard&&navigator.clipboard.writeText)
+    navigator.clipboard.writeText(t).then(done).catch(()=>fallbackCopy(t,done));
+  else fallbackCopy(t,done);
+};
+$("#cfg-save").onclick=async()=>{
+  const cid=encodeURIComponent($("#cfg-client-id").value.trim());
+  const cb=encodeURIComponent($("#cfg-callback").value.trim());
+  await fetch(`/api/auth/config?client_id=${cid}&callback_url=${cb}`).catch(()=>{});
+  closeAuthCfg();
+  setStatus('<span class="pill">EVE login settings saved</span>');
+};
+$("#ind-usechar").onchange=()=>{ saveLS(); saveIndPrefs(); if(IND.lastData) scanInd(false); };
+
 function fallbackCopy(text, done){
   // execCommand path for non-secure contexts where navigator.clipboard is absent.
   try{
@@ -3752,6 +4318,7 @@ async function loadSettings(){
       if(ind.broker) $("#ind-broker").value=ind.broker;
       if(ind.runs) $("#ind-runs").value=ind.runs;
       if(ind.skills_level!==undefined&&ind.skills_level!=="") $("#ind-skills").value=ind.skills_level;
+      if(ind.use_char_skills==="1") $("#ind-usechar").checked=true;
       if(ind.buildable_only==="1") $("#ind-buildable").checked=true;
       if(ind.include_unbuildable==="1") $("#ind-unobtainable").checked=true;
       if(ind.hide_t2==="1") $("#ind-hidet2").checked=true;
@@ -3794,6 +4361,8 @@ async function loadSettings(){
 
 loadIndTimers();
 loadSettings();
+checkAuth();
+_corpInput.addEventListener("input", updateMyLpBadge);
 </script>
 </body>
 </html>""".replace("__VERSION__", __version__).replace("__FAVICON__", _FAVICON_B64)
@@ -3805,6 +4374,10 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
+
+    global _SERVER_PORT
+    _SERVER_PORT = args.port
+    _restore_auth()
 
     url = f"http://{args.host if args.host != '0.0.0.0' else 'localhost'}:{args.port}"
     server = ThreadingHTTPServer((args.host, args.port), Handler)

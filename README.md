@@ -22,6 +22,30 @@ Build-location profiles capture each station or structure's ME/TE, system cost i
 
 ---
 
+## Log in with EVE (optional)
+
+Log in with your EVE Online account to pull live character data into the tools. Click **Log in with EVE** in the top-right corner.
+
+What it adds:
+- A **Character** tab with your wallet balance, total SP, **loyalty points** per corporation, your **skill queue** with finish times, and your **currently running industry jobs** with live countdown timers.
+- The **LP Store** tab shows your LP balance for the corporation you're viewing.
+- The **Industry** planner gains a **My skills** toggle that swaps the uniform "Skills @" assumption for your character's *actual* trained skill levels, so build times and the Build? gate match your character.
+- Your real running manufacturing jobs are mirrored into the Industry table's timer column (matched by blueprint), alongside any timers you start by hand.
+
+### One-time setup
+
+EVE's SSO requires each user to register their own application (it's free and takes a minute):
+
+1. Go to **[developers.eveonline.com/applications](https://developers.eveonline.com/applications)** and create a new application.
+2. Set **Connection Type** to *Authentication Only*.
+3. Set the **Callback URL** to exactly the value shown in the app's login settings (the ⚙ button next to *Log in with EVE*) — by default `http://localhost:8765/callback`.
+4. Copy the application's **Client ID** and paste it into the same login-settings panel, then **Save**.
+5. Click **Log in with EVE**, approve on EVE's site, and you'll be redirected back logged in.
+
+This uses the OAuth2 **PKCE** native-app flow, so there is **no client secret**. The scopes requested are read-only: skills, skill queue, wallet, loyalty points and industry jobs. The refresh token is stored in the cache directory (`.eve_scanner_cache/eve_auth.json`) like the other local settings; delete that file or click the **✕** on the character chip to log out.
+
+---
+
 ## Docker
 
 Pre-built images are published to the GitHub Container Registry on every release.

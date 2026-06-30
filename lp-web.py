@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.32.3"
+__version__ = "1.33.0"
 
 import argparse
 import base64
@@ -384,6 +384,11 @@ def do_char_data(q):
             "finish_date": fin,
         })
 
+    # Jita best-sell, just as a comparison reference for your own listings —
+    # not necessarily the station/region the order is actually sitting in.
+    order_prices = (fetch_prices({o["type_id"] for o in orders if o.get("type_id")}, SESSION)
+                    if orders else {})
+
     orders_out = []
     for o in orders:
         orders_out.append({
@@ -392,6 +397,7 @@ def do_char_data(q):
             "type_id": o.get("type_id"),
             "type_name": names.get(o.get("type_id"), "?"),
             "price": o.get("price"),
+            "market_sell": order_prices.get(o.get("type_id"), {}).get("sell_min"),
             "volume_remain": o.get("volume_remain"),
             "volume_total": o.get("volume_total"),
             "issued": o.get("issued"),
@@ -2211,7 +2217,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
           <div class="char-card-scroll">
             <table class="mini" id="char-orders-tbl"><thead><tr>
               <th>Item</th><th>Side</th><th style="text-align:right">Remaining</th>
-              <th style="text-align:right">Price</th><th style="text-align:right">Issued</th>
+              <th style="text-align:right">Price</th>
+              <th style="text-align:right" data-tip="Current best sell price at Jita 4-4 — a quick reference, not necessarily the same station as your order.">Jita sell</th>
+              <th style="text-align:right">Posted</th>
               <th style="text-align:right">Expires</th>
             </tr></thead><tbody></tbody></table>
           </div>
@@ -4258,8 +4266,8 @@ function renderCharData(){
   $("#char-orders-tbl").classList.toggle("hidden", orders.length===0);
   $("#char-orders-tbl tbody").innerHTML=orders.map(o=>{
     const issuedMs=o.issued?Date.parse(o.issued):NaN;
-    const issued=isFinite(issuedMs)?new Date(issuedMs).toLocaleString([],
-      {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
+    const posted=isFinite(issuedMs)?fmtDur((Date.now()-issuedMs)/1000)+" ago":"—";
+    const postedTip=isFinite(issuedMs)?` title="${new Date(issuedMs).toLocaleString()}"`:"";
     const expiresMs=isFinite(issuedMs)&&o.duration!=null?issuedMs+o.duration*86400000:NaN;
     const expires=isFinite(expiresMs)?new Date(expiresMs).toLocaleString([],
       {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
@@ -4267,7 +4275,8 @@ function renderCharData(){
          + `<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
          + `<td style="text-align:right">${(o.volume_remain??0).toLocaleString()} / ${(o.volume_total??0).toLocaleString()}</td>`
          + `<td style="text-align:right">${fmtISK(o.price)}</td>`
-         + `<td style="text-align:right">${issued}</td>`
+         + `<td style="text-align:right">${o.market_sell!=null?fmtISK(o.market_sell):"—"}</td>`
+         + `<td style="text-align:right"${postedTip}>${posted}</td>`
          + `<td style="text-align:right">${expires}</td></tr>`;
   }).join("");
 }

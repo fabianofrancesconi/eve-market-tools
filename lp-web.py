@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.23.0"
+__version__ = "1.23.1"
 
 import argparse
 import base64
@@ -1388,7 +1388,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
     padding:12px 14px; margin-bottom:12px;
   }
-  .ind-d-head { font-size:14px; color:var(--fg); margin-bottom:10px; position:relative; }
+  .ind-d-head { font-size:14px; color:var(--fg); margin-bottom:10px; position:relative;
+    cursor:pointer; }
+  .ind-d-head:hover { color:var(--cyan); }
+  .ind-d-head button { cursor:pointer; }
   .ind-d-close { position:absolute; right:0; top:0; cursor:pointer; color:var(--dim); padding:0 4px; }
   .ind-d-close:hover { color:var(--fg); }
   .ind-copy, .ind-own { margin:0 6px; padding:1px 8px; font-size:11px; cursor:pointer;
@@ -3371,7 +3374,11 @@ function renderIndDetail(d){
     ${invHtml}`;
   // Wire copy + close + ownership via listeners (inline onclick can't see $).
   const box=$("#ind-detail");
-  box.querySelector(".ind-d-close").onclick=()=>{ box.classList.add("hidden"); IND.openDetail=null; };
+  const closeDetail=()=>{ box.classList.add("hidden"); IND.openDetail=null; };
+  box.querySelector(".ind-d-close").onclick=closeDetail;
+  // Clicking the header bar itself (not its buttons) collapses the detail view.
+  const head=box.querySelector(".ind-d-head");
+  head.onclick=ev=>{ if(!ev.target.closest("button")) closeDetail(); };
   box.querySelector(".ind-own").onclick=()=>{
     if(IND.owned.has(d.blueprint_id)) IND.owned.delete(d.blueprint_id);
     else IND.owned.add(d.blueprint_id);

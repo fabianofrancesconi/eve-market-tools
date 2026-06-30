@@ -882,6 +882,27 @@ class TestIndustryRoutes:
         assert saved["job_rate"] == "6"
         assert saved["hide_t2"] == "1"
 
+    def test_ind_prefs_persists_col_order(self, tmp_server, tmp_path, monkeypatch):
+        # The industry column order must survive a reload, like the LP store.
+        base, _ = tmp_server
+        monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
+        order = '["_fav","product_name","_timer","tech_level"]'
+        body, status = http_get(
+            f"{base}/api/ind/prefs?col_order={urllib.parse.quote(order)}")
+        assert status == 200 and body["ok"] is True
+        saved = json.loads((tmp_path / "ind.json").read_text())
+        assert saved["col_order"] == order
+
+    def test_ind_columns_reorderable(self):
+        html = lp_web.INDEX_HTML
+        # Headers are draggable and the order is resolved through indOrderedCols().
+        assert "function indOrderedCols(" in html
+        assert "function reorderIndCols(" in html
+        assert "thead.innerHTML=\"<tr>\"+indOrderedCols()" in html
+        # Order is saved and restored.
+        assert "col_order: JSON.stringify(IND.colOrder)" in html
+        assert "if(ind.col_order){ try{" in html
+
     def test_unknown_ind_subpath_404(self, tmp_server):
         base, _ = tmp_server
         body, status = http_get(f"{base}/api/ind/bogus")

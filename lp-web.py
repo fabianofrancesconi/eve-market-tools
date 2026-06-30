@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.23.1"
+__version__ = "1.24.0"
 
 import argparse
 import base64
@@ -598,7 +598,7 @@ IND_HISTORY_TOP_N = 80
 _IND_PREF_KEYS = ("profiles", "profile", "market_group", "me", "te", "job_rate",
                   "sales_tax", "broker", "runs", "station", "skills_level",
                   "buildable_only", "include_unbuildable", "hide_t2", "owned",
-                  "sort_key", "sort_dir", "min_tradeability", "favorites")
+                  "sort_key", "sort_dir", "min_tradeability", "favorites", "col_order")
 
 
 def do_ind_prefs(q):
@@ -2993,7 +2993,7 @@ function openArbChart(row){
 // ══════════════════════════════════════════════════════════════════════════
 let IND = {rows:[], sort:{key:"isk_per_hour_best", dir:-1}, lastData:null, es:null,
            groupsLoaded:false, profiles:[], owned:new Set(), favorites:new Set(),
-           timers:{}, savedGroup:null, openDetail:null};
+           timers:{}, savedGroup:null, openDetail:null, colOrder:null};
 
 const fmtDur = s => {
   if(s===null||s===undefined) return "—";
@@ -3006,13 +3006,13 @@ const fmtDaysSell = v => (v===null||v===undefined) ? "—" : v.toFixed(1);
 const IND_COLS = [
   {k:"_fav",               t:"★",           w: 30, tip:"Mark as favourite. Favourites pin to the top and stay visible regardless of filters.", raw:true},
   {k:"product_name",       t:"Item",        w:210, tip:"The manufactured item. * = an input has no sell price at the source hub. Open it to mark the blueprint as owned."},
-  {k:"tech_level",         t:"T",           w: 34, tip:"Tech level.", f:v=>v?("T"+v):"—"},
+  {k:"tech_level",         t:"Tech",        w: 46, tip:"Tech level.", f:v=>v?("T"+v):"—"},
+  {k:"_timer",             t:"⏱ Timer",     w: 84, tip:"Crafting timer countdown, set from the detail view. Click the row to open it and start/edit the timer.", raw:true},
   {k:"isk_per_hour_best",  t:"ISK/hr",      w:110, tip:"Profit per hour of manufacturing time — the headline 'worth it' number.", f:fmtISK, pn:true},
   {k:"profit_best",        t:"Profit/run",  w:105, tip:"Best-of patient/instant profit for one run.", f:fmtISK, pn:true},
   {k:"total_profit_best",  t:"Profit×N",    w:108, tip:"Profit across the whole batch (Runs).", f:fmtISK, pn:true},
   {k:"margin_best",        t:"Margin",      w: 65, tip:"Profit as a % of total cost.", f:fmtPct1, pn:true},
   {k:"build_time",         t:"Build",       w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
-  {k:"_timer",             t:"⏱ Timer",     w: 84, tip:"Crafting timer countdown, set from the detail view. Click the row to open it and start/edit the timer.", raw:true},
   {k:"total_cost",         t:"Cost/run",    w: 98, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
   {k:"bp_price",           t:"BP price",    w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'owned' = you have it.", f:(v,r)=> r._owned?"owned":(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
   {k:"payback_runs",       t:"Payback",     w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r._owned?"—":(v==null?"—":fmtNum(v)+" runs")},
@@ -3023,6 +3023,68 @@ const IND_COLS = [
   {k:"tradeability",       t:"Tradeability",w: 98, tip:"How sellable the product is (0–100), from the daily UNITS traded on the market over ~30 days. Low = the market absorbs little quantity, so it's hard to offload no matter how profitable on paper. Computed for the top-ranked items.", f:v=> v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`},
   {k:"buildable",          t:"Build?",      w: 58, tip:"Can every required skill (at the Skills level) make it?", f:v=>v?"✓":"✗"},
 ];
+
+const IND_COL_BY_KEY=Object.fromEntries(IND_COLS.map(c=>[c.k,c]));
+IND.colOrder=IND_COLS.map(c=>c.k);   // user-reorderable; persisted with the rest of the IND prefs
+// Resolve IND.colOrder to column objects, dropping unknown keys and appending any
+// columns not yet listed (so a saved order survives IND_COLS additions/removals).
+function indOrderedCols(){
+  const seen=new Set(), out=[];
+  for(const k of IND.colOrder){ const c=IND_COL_BY_KEY[k]; if(c&&!seen.has(k)){ out.push(c); seen.add(k); } }
+  for(const c of IND_COLS) if(!seen.has(c.k)){ out.push(c); seen.add(c.k); }
+  return out;
+}
+
+// ── Industry column drag-to-reorder (mirrors the LP store) ─────────────────
+let IND_DRAG_KEY=null;
+function clearIndDropMarks(){
+  document.querySelectorAll("#ind-tbl thead th").forEach(th=>th.classList.remove("drop-before","drop-after"));
+}
+function indDropAfter(th,clientX){
+  const r=th.getBoundingClientRect();
+  return clientX > r.left + r.width/2;
+}
+function reorderIndCols(srcKey,dstKey,after){
+  if(!srcKey||srcKey===dstKey) return;
+  const order=indOrderedCols().map(c=>c.k);
+  order.splice(order.indexOf(srcKey),1);
+  let to=order.indexOf(dstKey);
+  if(after) to+=1;
+  order.splice(to,0,srcKey);
+  IND.colOrder=order;
+  saveIndPrefs();
+  renderIndTable();
+}
+function wireIndColDrag(th){
+  th.addEventListener("dragstart",e=>{
+    IND_DRAG_KEY=th.dataset.k;
+    e.dataTransfer.effectAllowed="move";
+    try{ e.dataTransfer.setData("text/plain",IND_DRAG_KEY); }catch(_){}
+    th.classList.add("col-dragging");
+    document.body.classList.add("col-dragging-active");
+  });
+  th.addEventListener("dragend",()=>{
+    th.classList.remove("col-dragging");
+    document.body.classList.remove("col-dragging-active");
+    clearIndDropMarks();
+    setTimeout(()=>{ IND_DRAG_KEY=null; },0);
+  });
+  th.addEventListener("dragover",e=>{
+    if(!IND_DRAG_KEY) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect="move";
+    clearIndDropMarks();
+    if(th.dataset.k!==IND_DRAG_KEY)
+      th.classList.add(indDropAfter(th,e.clientX)?"drop-after":"drop-before");
+  });
+  th.addEventListener("dragleave",()=>th.classList.remove("drop-before","drop-after"));
+  th.addEventListener("drop",e=>{
+    e.preventDefault();
+    const after=indDropAfter(th,e.clientX);
+    clearIndDropMarks();
+    reorderIndCols(IND_DRAG_KEY, th.dataset.k, after);
+  });
+}
 
 function indSortRows(rows){
   const k=IND.sort.key, d=IND.sort.dir;
@@ -3037,7 +3099,7 @@ function indSortRows(rows){
 
 function indRowHtml(r, idx){
   const fav=IND.favorites.has(r.blueprint_id);
-  const tds=IND_COLS.map(c=>{
+  const tds=indOrderedCols().map(c=>{
     if(c.k==="_fav"){
       return `<td class="fav-cell"><span class="fav-star${fav?" on":""}" data-bp="${r.blueprint_id}" title="${fav?"Remove favourite":"Add favourite"}">${fav?"★":"☆"}</span></td>`;
     }
@@ -3060,17 +3122,19 @@ function indRowHtml(r, idx){
 
 function renderIndTable(){
   const thead=$("#ind-tbl thead"), tbody=$("#ind-tbl tbody");
-  thead.innerHTML="<tr>"+IND_COLS.map(c=>{
+  thead.innerHTML="<tr>"+indOrderedCols().map(c=>{
     const active=IND.sort.key===c.k;
     const arrow=active?(IND.sort.dir<0?" ▼":" ▲"):"";
     const tip=c.tip?` data-tip="${c.tip.replace(/"/g,'&quot;')}"`:"";
     const w=c.w?` style="width:${c.w}px"`:"";
     const nosort=c.raw?' data-nosort="1"':"";
-    return `<th data-k="${c.k}"${tip}${w}${nosort}${active?' class="sorted"':''}>${c.t}${arrow}</th>`;
+    return `<th draggable="true" data-k="${c.k}"${tip}${w}${nosort}${active?' class="sorted"':''}>${c.t}${arrow}</th>`;
   }).join("")+"</tr>";
   thead.querySelectorAll("th").forEach(th=>{
+    wireIndColDrag(th);   // every column can be dragged to reorder
     if(th.dataset.nosort) return;
     th.onclick=()=>{
+      if(IND_DRAG_KEY) return;   // tail end of a reorder, not a sort click
       const k=th.dataset.k;
       if(IND.sort.key===k) IND.sort.dir*=-1;
       else IND.sort={key:k, dir:k==="product_name"?1:-1};
@@ -3561,6 +3625,7 @@ function saveIndPrefs(){
     owned:    JSON.stringify([...IND.owned]),
     sort_key: IND.sort.key,
     sort_dir: String(IND.sort.dir),
+    col_order: JSON.stringify(IND.colOrder),
   });
   fetch("/api/ind/prefs?"+p).catch(()=>{}); saveLS();
 }
@@ -3675,6 +3740,10 @@ async function loadSettings(){
       if(ind.market_group){ IND.savedGroup=ind.market_group; $("#ind-group").value=ind.market_group; }
       if(ind.sort_key && IND_COLS.some(c=>c.k===ind.sort_key))
         IND.sort={key:ind.sort_key, dir:Number(ind.sort_dir)===1?1:-1};
+      if(ind.col_order){ try{
+        const ord=typeof ind.col_order==="string"?JSON.parse(ind.col_order):ind.col_order;
+        if(Array.isArray(ord)&&ord.length) IND.colOrder=ord;  // indOrderedCols() drops unknown / appends new
+      }catch(e){} }
       if(ind.station) $("#ind-station").value=ind.station;
       if(ind.me!==undefined&&ind.me!=="") $("#ind-me").value=ind.me;
       if(ind.te!==undefined&&ind.te!=="") $("#ind-te").value=ind.te;

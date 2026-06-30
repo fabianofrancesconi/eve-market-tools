@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.29.0"
+__version__ = "1.29.1"
 
 import argparse
 import base64
@@ -1744,11 +1744,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display:grid; grid-template-columns:auto auto; gap:3px 18px;
     font-size:12px; max-width:560px;
   }
-  .ind-d-side { flex:1 1 240px; min-width:220px; display:flex; flex-direction:column; gap:10px; }
+  .ind-d-side { flex:2 1 480px; min-width:320px; display:flex; flex-direction:column; gap:4px; }
+  .ind-d-section { display:flex; flex-direction:column; gap:8px; }
   .ind-d-timer-card { background:var(--panel); border:1px solid var(--line2);
     border-radius:6px; padding:10px 12px; }
-  .ind-d-timer-card .ind-d-sub { margin-top:0; }
-  .ind-d-cards { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .ind-d-cards { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
   .ind-d-card { background:var(--panel); border:1px solid var(--line2);
     border-radius:6px; padding:8px 10px; font-size:12px; }
   .ind-d-card-label { color:var(--dim); font-size:10px; font-weight:700;
@@ -3883,40 +3883,53 @@ function renderIndDetail(d){
       <span>Tradeability</span><b>${d.tradeability==null?"—":d.tradeability+" / 100"}${d.daily_units!=null?` (${fmtNum(d.daily_units)} units/day)`:""}</b>
     </div>
     <aside class="ind-d-side">
-      <div class="ind-d-timer-card">
-        <div class="ind-d-sub">Industry job</div>
-        ${timerHtml}
-      </div>
-      <div class="ind-d-cards">
-        <div class="ind-d-card">
-          <div class="ind-d-card-label">Job duration</div>
-          <div class="ind-d-card-val">${fmtDur(batchTime)}</div>
-          <div class="ind-d-card-sub">${fmtDur(d.build_time)} / run</div>
-        </div>
-        <div class="ind-d-card">
-          <div class="ind-d-card-label">Profit — instant</div>
-          <div class="ind-d-card-val ${pn(batchProfitI)}">${isk(batchProfitI)}</div>
-          <div class="ind-d-card-sub">${isk(d.profit_instant)} / run</div>
-          ${minPriceInstant!=null?`<div class="ind-d-card-sub ind-d-card-warn">Break-even sell: ${isk(minPriceInstant)}/unit</div>`:""}
-        </div>
-        <div class="ind-d-card">
-          <div class="ind-d-card-label">Profit — sell (list)</div>
-          <div class="ind-d-card-val ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
-          <div class="ind-d-card-sub">${isk(d.profit_patient)} / run</div>
-        </div>
-        <div class="ind-d-card">
-          <div class="ind-d-card-label">Fees &amp; taxes</div>
-          <div class="ind-d-card-grid">
-            <span>Broker fee (list)</span><b>${isk(brokerIsk)}</b>
-            <span>Sales tax (list)</span><b>${isk(taxListIsk)}</b>
-            <span>Sales tax (instant)</span><b>${isk(taxInstantIsk)}</b>
+      <div class="ind-d-section">
+        <div class="ind-d-sub">Craft</div>
+        <div class="ind-d-timer-card">${timerHtml}</div>
+        <div class="ind-d-cards">
+          <div class="ind-d-card">
+            <div class="ind-d-card-label">Job duration</div>
+            <div class="ind-d-card-val">${fmtDur(batchTime)}</div>
+            <div class="ind-d-card-sub">${fmtDur(d.build_time)} / run</div>
+          </div>
+          <div class="ind-d-card">
+            <div class="ind-d-card-label">Build cost</div>
+            <div class="ind-d-card-val">${isk(batchCost)}</div>
+            <div class="ind-d-card-sub">mats ${isk(d.material_cost)} + job ${isk(d.job_cost)}${d.invention?` + invent ${isk(d.invention_cost)}`:""} /run</div>
+          </div>
+          <div class="ind-d-card">
+            <div class="ind-d-card-label">Cargo in</div>
+            <div class="ind-d-card-val">${inputBatch?fmtVol(inputBatch):"—"}</div>
+            <div class="ind-d-card-sub">batch of ${n.toLocaleString()} run(s)</div>
           </div>
         </div>
-        <div class="ind-d-card">
-          <div class="ind-d-card-label">Cargo</div>
-          <div class="ind-d-card-grid">
-            <span>In</span><b>${inputBatch?fmtVol(inputBatch):"—"}</b>
-            <span>Out</span><b>${outputBatch?fmtVol(outputBatch):"—"}</b>
+      </div>
+      <div class="ind-d-section">
+        <div class="ind-d-sub">Resell</div>
+        <div class="ind-d-cards">
+          <div class="ind-d-card">
+            <div class="ind-d-card-label">Profit — instant</div>
+            <div class="ind-d-card-val ${pn(batchProfitI)}">${isk(batchProfitI)}</div>
+            <div class="ind-d-card-sub">${qty}× @ bid ${isk(d.bid)} − tax ${fmtPct1(d.sales_tax)} − cost ${isk(d.total_cost)} = ${isk(d.profit_instant)} /run</div>
+            ${minPriceInstant!=null?`<div class="ind-d-card-sub ind-d-card-warn">Break-even sell: ${isk(minPriceInstant)}/unit</div>`:""}
+          </div>
+          <div class="ind-d-card">
+            <div class="ind-d-card-label">Profit — sell (list)</div>
+            <div class="ind-d-card-val ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
+            <div class="ind-d-card-sub">${qty}× @ ask ${isk(d.ask)} − tax ${fmtPct1(d.sales_tax)} − broker ${fmtPct1(d.broker_fee)} − cost ${isk(d.total_cost)} = ${isk(d.profit_patient)} /run</div>
+          </div>
+          <div class="ind-d-card">
+            <div class="ind-d-card-label">Fees &amp; taxes</div>
+            <div class="ind-d-card-grid">
+              <span>Broker fee (list)</span><b>${isk(brokerIsk)}</b>
+              <span>Sales tax (list)</span><b>${isk(taxListIsk)}</b>
+              <span>Sales tax (instant)</span><b>${isk(taxInstantIsk)}</b>
+            </div>
+          </div>
+          <div class="ind-d-card">
+            <div class="ind-d-card-label">Cargo out</div>
+            <div class="ind-d-card-val">${outputBatch?fmtVol(outputBatch):"—"}</div>
+            <div class="ind-d-card-sub">batch of ${n.toLocaleString()} run(s)</div>
           </div>
         </div>
       </div>

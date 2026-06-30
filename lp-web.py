@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.28.0"
+__version__ = "1.29.0"
 
 import argparse
 import base64
@@ -1757,6 +1757,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-d-card-val.pos { color:var(--green2,#4caf76); }
   .ind-d-card-val.neg { color:var(--red); }
   .ind-d-card-sub { color:var(--dim); font-size:11px; margin-top:1px; }
+  .ind-d-card-sub.ind-d-card-warn { color:var(--gold); font-weight:600; }
   .ind-d-card-grid { display:grid; grid-template-columns:auto auto; gap:2px 10px; }
   .ind-d-card-grid span { color:var(--dim); }
   .ind-d-card-grid b { text-align:right; color:var(--fg); font-weight:600; }
@@ -2018,6 +2019,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
       </div>
       <div class="field" data-tip="Hide items whose tradeability is below this (0–100). 0 = no filter. Tradeability is scored for the top-ranked items; items further down the list (not yet scored) are kept, so this trims the illiquid top picks without wiping out a big scan.">
         <label>Min trade</label><input id="ind-mintrade" type="number" min="0" max="100" value="0" style="width:60px">
+      </div>
+      <div class="field" data-tip="Search by item name. Overrides every other display filter (min trade, etc.) while typing — matches against all scanned items.">
+        <label>Search</label><input id="ind-search" type="text" placeholder="item name…" style="width:140px">
       </div>
     </div>
   </div>
@@ -3429,7 +3433,8 @@ let IND = {rows:[], sort:{key:"isk_per_hour_best", dir:-1}, lastData:null, es:nu
 
 const fmtDur = s => {
   if(s===null||s===undefined) return "—";
-  const h=Math.floor(s/3600), m=Math.round((s%3600)/60);
+  const d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.round((s%3600)/60);
+  if(d>0) return `${d}d ${h}h`;
   return h>0 ? `${h}h ${m}m` : `${m}m`;
 };
 const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
@@ -3576,13 +3581,23 @@ function renderIndTable(){
   });
 
   // Split: favourites pinned on top (always shown), the rest below (filtered).
-  const fav =indSortRows(IND.rows.filter(r=>IND.favorites.has(r.blueprint_id)));
-  const minTrade=parseInt($("#ind-mintrade").value)||0;
-  // Only drop items KNOWN to be below the threshold. Tradeability is computed for
-  // the top-ranked items only, so rows without a score (the long tail) are kept —
-  // otherwise a min-trade filter would wipe out a big "All" scan (most unscored).
+  const search=($("#ind-search").value||"").trim().toLowerCase();
+  let favRows=IND.rows.filter(r=>IND.favorites.has(r.blueprint_id));
   let rest=IND.rows.filter(r=>!IND.favorites.has(r.blueprint_id));
-  if(minTrade>0) rest=rest.filter(r=>r.tradeability==null || r.tradeability>=minTrade);
+  if(search){
+    // Search overrides every other display filter — match by name across the
+    // whole scan, favourites included, regardless of min-trade etc.
+    const matches=r=>(r.product_name||"").toLowerCase().includes(search);
+    favRows=favRows.filter(matches);
+    rest=rest.filter(matches);
+  } else {
+    const minTrade=parseInt($("#ind-mintrade").value)||0;
+    // Only drop items KNOWN to be below the threshold. Tradeability is computed for
+    // the top-ranked items only, so rows without a score (the long tail) are kept —
+    // otherwise a min-trade filter would wipe out a big "All" scan (most unscored).
+    if(minTrade>0) rest=rest.filter(r=>r.tradeability==null || r.tradeability>=minTrade);
+  }
+  const fav=indSortRows(favRows);
   rest=indSortRows(rest);
   const ncol=IND_COLS.length;
   const sect=(label,n)=>`<tr class="ind-section"><td colspan="${ncol}">${label} — ${n}</td></tr>`;
@@ -3768,6 +3783,12 @@ function renderIndDetail(d){
   const brokerIsk=(d.ask!=null && d.broker_fee)?qty*d.ask*d.broker_fee*n:null;
   const taxListIsk=(d.ask!=null && d.sales_tax)?qty*d.ask*d.sales_tax*n:null;
   const taxInstantIsk=(d.bid!=null && d.sales_tax)?qty*d.bid*d.sales_tax*n:null;
+  // Break-even sell price: instant sale only pays sales tax (no broker fee), so
+  // qty*price*(1-sales_tax) = total_cost solved for price. Surfaced only when
+  // the instant sale is currently unprofitable.
+  const minPriceInstant=(d.profit_instant!=null && d.profit_instant<0
+      && d.total_cost!=null && qty>0 && d.sales_tax!=null && d.sales_tax<1)
+    ? d.total_cost/(qty*(1-d.sales_tax)) : null;
   const tier=d.product.tech_level?("T"+d.product.tech_level):"";
   const owned = IND.owned.has(d.blueprint_id);
   let bpSrc;
@@ -3876,6 +3897,7 @@ function renderIndDetail(d){
           <div class="ind-d-card-label">Profit — instant</div>
           <div class="ind-d-card-val ${pn(batchProfitI)}">${isk(batchProfitI)}</div>
           <div class="ind-d-card-sub">${isk(d.profit_instant)} / run</div>
+          ${minPriceInstant!=null?`<div class="ind-d-card-sub ind-d-card-warn">Break-even sell: ${isk(minPriceInstant)}/unit</div>`:""}
         </div>
         <div class="ind-d-card">
           <div class="ind-d-card-label">Profit — sell (list)</div>
@@ -3931,15 +3953,19 @@ function renderIndDetail(d){
 
 function fmtCountdown(ms){
   let s=Math.max(0,Math.floor(ms/1000));
+  const d=Math.floor(s/86400); s-=d*86400;
   const h=Math.floor(s/3600); s-=h*3600;
   const m=Math.floor(s/60); s-=m*60;
+  if(d>0) return `${d}d ${h}h left`;
   return (h?h+"h ":"")+(h||m?m+"m ":"")+s+"s left";
 }
-// Compact H:MM:SS / M:SS form for the narrow table column.
+// Compact H:MM:SS / M:SS form for the narrow table column (Dd Hh past 24h).
 function fmtCountdownShort(ms){
   let s=Math.max(0,Math.floor(ms/1000));
+  const d=Math.floor(s/86400); s-=d*86400;
   const h=Math.floor(s/3600); s-=h*3600;
   const m=Math.floor(s/60); s-=m*60;
+  if(d>0) return `${d}d ${h}h`;
   return h>0 ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
              : `${m}:${String(s).padStart(2,"0")}`;
 }
@@ -4297,6 +4323,7 @@ $("#ind-runs").addEventListener("input", onIndRunsChanged);
 ["#ind-buildable","#ind-unobtainable","#ind-hidet2"].forEach(sel=>$(sel).addEventListener("change", saveIndPrefs));
 // Min-tradeability is a client-side filter — re-render immediately (no rescan).
 $("#ind-mintrade").addEventListener("input", ()=>{ saveIndPrefs(); renderIndTable(); });
+$("#ind-search").addEventListener("input", renderIndTable);
 
 // ══════════════════════════════════════════════════════════════════════════
 // Init

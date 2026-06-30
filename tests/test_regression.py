@@ -504,6 +504,27 @@ class TestHttpRouting:
         data, _ = http_get(f"{base}/api/doesnotexist")
         assert "error" in data
 
+    @pytest.mark.parametrize("path", sorted(lp_web.TAB_ROUTES))
+    def test_tab_url_serves_app_shell(self, tmp_server, path):
+        # Deep-linking / refreshing on a tab URL must serve the SPA shell so the
+        # client can render that module — not 404.
+        base, _ = tmp_server
+        with urllib.request.urlopen(f"{base}{path}") as r:
+            assert r.status == 200
+            assert "text/html" in r.headers.get("Content-Type")
+            assert lp_web.__version__.encode() in r.read()
+
+    def test_tab_routes_cover_every_tab(self):
+        # The clean URL map in the front-end must have a matching server route
+        # for each non-root tab, or a refresh there would 404.
+        for path in ("/arbitrage", "/industry", "/character"):
+            assert path in lp_web.TAB_ROUTES
+        # Front-end path<->tab maps are present and consistent.
+        assert 'const TAB_PATH = {' in lp_web.INDEX_HTML
+        assert 'const PATH_TAB = {' in lp_web.INDEX_HTML
+        assert 'history.pushState' in lp_web.INDEX_HTML
+        assert '"popstate"' in lp_web.INDEX_HTML
+
 
 # ---------------------------------------------------------------------------
 # Custom tooltip system (data-tip + tooltip engine replaced native title=)

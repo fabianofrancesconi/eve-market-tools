@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.34.2"
+__version__ = "1.35.0"
 
 import argparse
 import base64
@@ -1164,6 +1164,12 @@ def do_ind_detail(q):
 
 # ── HTTP handler ────────────────────────────────────────────────────────────
 
+# Clean URLs the SPA uses for each tab — all serve the app shell so a refresh
+# or bookmark on any module reloads straight back into it.
+TAB_ROUTES = {"/lp", "/arbitrage", "/arb", "/industry", "/ind",
+              "/character", "/char"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -1248,7 +1254,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         q = parse_qs(parsed.query)
         try:
-            if parsed.path == "/":
+            if parsed.path == "/" or parsed.path in TAB_ROUTES:
+                # The SPA renders the right module client-side from the path, so
+                # every tab URL (and a deep-link refresh) must serve the shell.
                 self._send_html(INDEX_HTML)
             elif parsed.path == "/favicon.ico":
                 self.send_response(200)
@@ -2429,8 +2437,19 @@ function saveLS(){
 
 // ── Tab switching ─────────────────────────────────────────────────────────
 let ACTIVE_TAB = "lp";
-function switchTab(tab){
+// Each tab has a clean URL so a refresh/bookmark reopens the same module.
+const TAB_PATH = { lp:"/", arb:"/arbitrage", ind:"/industry", char:"/character" };
+const PATH_TAB = { "/":"lp", "/lp":"lp", "/arbitrage":"arb", "/arb":"arb",
+                   "/industry":"ind", "/ind":"ind", "/character":"char", "/char":"char" };
+function switchTab(tab, opts){
+  opts = opts || {};
   ACTIVE_TAB = tab;
+  // Reflect the tab in the URL (skip when we're reacting to a URL change, e.g.
+  // back/forward, so we don't fight the browser's own history).
+  if(opts.url!==false){
+    const p = TAB_PATH[tab] || "/";
+    if(location.pathname !== p) history.pushState({tab}, "", p);
+  }
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===tab));
   $("#lp-controls").classList.toggle("hidden", tab!=="lp");
   $("#arb-controls").classList.toggle("hidden", tab!=="arb");
@@ -2453,6 +2472,13 @@ function switchTab(tab){
 }
 document.querySelectorAll(".tab").forEach(t=>{
   t.onclick = ()=>switchTab(t.dataset.tab);
+});
+// Back/forward between tab URLs — switch without re-pushing history. The
+// Character tab needs a login; fall back to LP if the URL points there logged out.
+window.addEventListener("popstate", ()=>{
+  let tab = PATH_TAB[location.pathname] || "lp";
+  if(tab==="char" && !AUTH.loggedIn) tab="lp";
+  switchTab(tab, {url:false});
 });
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -4212,7 +4238,12 @@ async function checkAuth(){
   let st; try{ st=await (await fetch("/api/auth/status")).json(); }catch(e){ return; }
   AUTH.loggedIn=!!st.logged_in; AUTH.name=st.name; AUTH.charId=st.character_id;
   renderAuthChip();
-  if(AUTH.loggedIn) refreshCharData();
+  if(AUTH.loggedIn){
+    refreshCharData();
+    // A /character deep link couldn't open before auth resolved (it runs
+    // concurrently with loadSettings) — open it now that we know we're in.
+    if(location.pathname==="/character" || location.pathname==="/char") switchTab("char", {url:false});
+  }
 }
 
 async function doLogin(){
@@ -4623,10 +4654,16 @@ async function loadSettings(){
       if(ind.profile) $("#ind-profile").value=ind.profile;
       if(ind.owned){ try{ IND.owned=new Set(JSON.parse(ind.owned)||[]); }catch(e){} }
       if(ind.favorites){ try{ IND.favorites=new Set(JSON.parse(ind.favorites)||[]); }catch(e){} }
-      // Restore last active tab
-      if(s.active_tab==="arb") switchTab("arb");
-      else if(s.active_tab==="ind") switchTab("ind");
+      // Restore the last-used tab saved server-side. A tab URL overrides this
+      // just below; don't re-push history for either.
+      if(s.active_tab==="arb") switchTab("arb", {url:false});
+      else if(s.active_tab==="ind") switchTab("ind", {url:false});
   }
+  // A deep link / refresh on a tab URL wins over the saved pref. "/" is not an
+  // explicit choice, so it defers to the pref restored above.
+  const urlTab = location.pathname==="/" ? null : PATH_TAB[location.pathname];
+  if(urlTab && urlTab!==ACTIVE_TAB && (urlTab!=="char" || AUTH.loggedIn))
+    switchTab(urlTab, {url:false});
   // Auto-run LP scanner if corp is set
   if(ACTIVE_TAB==="lp" && $("#corp").value.trim()) scan(false);
   loadFavoritesPreview();

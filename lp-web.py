@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.26.2"
+__version__ = "1.27.0"
 
 import argparse
 import base64
@@ -1275,7 +1275,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .tab.active { color:var(--cyan); border-bottom-color:var(--cyan2); }
 
   /* ── EVE login (header right) ─────────────────────────────────────── */
-  #auth-region { margin-left:auto; display:flex; align-items:center; gap:8px; }
+  #auth-region { margin-left:auto; display:flex; align-items:center; gap:8px; position:relative; }
   .auth-btn {
     background:var(--panel3); border:1px solid var(--line2); color:var(--fg);
     font:inherit; font-size:13px; font-weight:600; border-radius:4px;
@@ -1296,6 +1296,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #char-chip:hover { border-color:var(--cyan2); }
   #chip-name { color:var(--cyan); font-weight:700; font-size:13px; white-space:nowrap; }
   .chip-wallet { color:var(--gold); font-size:12px; font-variant-numeric:tabular-nums; }
+  #char-refresh-timer { position:absolute; top:100%; right:0; margin-top:4px;
+    font-size:11px; color:var(--dim2); font-variant-numeric:tabular-nums; white-space:nowrap; }
   #auth-cfg-pop {
     position:absolute; top:50px; right:16px; z-index:60; width:380px;
     background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
@@ -1820,6 +1822,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <span id="chip-wallet" class="chip-wallet"></span>
       <button id="logout-eve" class="auth-cog" title="Log out of EVE" aria-label="Log out">&#10005;</button>
     </div>
+    <div id="char-refresh-timer" class="hidden">Next sync in <span id="char-refresh-secs">5:00</span></div>
   </div>
 </header>
 
@@ -3902,6 +3905,7 @@ setInterval(()=>{
       el.textContent=isCell?fmtCountdownShort(rem):fmtCountdown(rem);
     }
   });
+  tickCharRefreshTimer();
 }, 1000);
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -3910,6 +3914,13 @@ setInterval(()=>{
 const AUTH = { loggedIn:false, name:null, charId:null, data:null,
                cfg:{client_id:"",callback_url:"",suggested_callback:"",scopes:[]} };
 const CHAR_REFRESH_MS = 300000;  // ESI caches character industry jobs for 5 min
+let charRefreshDeadline = 0;
+function tickCharRefreshTimer(){
+  const el=$("#char-refresh-timer");
+  if(!AUTH.loggedIn || !charRefreshDeadline){ el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+  $("#char-refresh-secs").textContent=fmtCountdownShort(charRefreshDeadline-Date.now());
+}
 const ROMAN=["0","I","II","III","IV","V"];
 function authEsc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
@@ -3953,6 +3964,7 @@ async function doLogout(){
   await fetch("/api/auth/logout").catch(()=>{});
   AUTH.loggedIn=false; AUTH.name=null; AUTH.charId=null; AUTH.data=null;
   IND.timers={};   // timers come from the API only — nothing to keep
+  charRefreshDeadline=0; tickCharRefreshTimer();
   renderAuthChip(); updateMyLpBadge(); renderIndTable();
   if(IND.openDetail) renderIndDetail(IND.openDetail);
 }
@@ -3961,6 +3973,7 @@ async function refreshCharData(){
   let d; try{ d=await (await fetch("/api/char/data")).json(); }catch(e){ return; }
   if(d.error){ setStatus(authEsc(d.error), true); return; }
   AUTH.data=d;
+  charRefreshDeadline=Date.now()+CHAR_REFRESH_MS; tickCharRefreshTimer();
   const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge();
   // If the character LP just changed the locked budget for the corp on screen,

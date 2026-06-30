@@ -159,6 +159,16 @@ _INDEXES = [
     "CREATE INDEX idx_types_group     ON types(market_group_id)",
 ]
 
+# Attribute 275 = skillTimeConstant (the training rank multiplier).
+_SKILL_RANK_ATTR_ID = 275
+# SP thresholds per level (cumulative) = 250 × rank × sqrt(32)^(L-1).
+# Precomputed multiplier for each level (relative to rank):
+#   L1: 250, L2: 1414, L3: 8000, L4: 45255, L5: 256000
+_SP_PER_LEVEL = [0, 250, 1414, 8000, 45255, 256000]
+# Default training speed: 27 primary + 21/2 secondary = 37.5 SP/min = 2250 SP/hr.
+# This is a reasonable optimized remap baseline.
+_SP_PER_HOUR = 2250
+
 
 # --- download + ingest -----------------------------------------------------
 def _stream_csv_rows(session, basename):
@@ -219,6 +229,33 @@ def _ingest_table(conn, session, table, basename, columns):
     return total
 
 
+def _ingest_skill_ranks(conn, session):
+    """Import only attribute 275 (skillTimeConstant) from dgmTypeAttributes.
+    This is a multi-million row CSV but we only keep the ~500 skill rank rows."""
+    conn.execute("DROP TABLE IF EXISTS skill_ranks")
+    conn.execute("CREATE TABLE skill_ranks (type_id INTEGER PRIMARY KEY, rank REAL)")
+    rows_iter = _stream_csv_rows(session, "dgmTypeAttributes")
+    header = next(rows_iter)
+    idx = {name: i for i, name in enumerate(header)}
+    ti, ai, vi, vf = idx.get("typeID"), idx.get("attributeID"), idx.get("valueInt"), idx.get("valueFloat")
+    batch, total = [], 0
+    for raw in rows_iter:
+        if ai is None or int(raw[ai]) != _SKILL_RANK_ATTR_ID:
+            continue
+        type_id = int(raw[ti])
+        rank = float(raw[vf]) if (vf is not None and raw[vf]) else (float(raw[vi]) if (vi is not None and raw[vi]) else None)
+        if rank:
+            batch.append((type_id, rank))
+        if len(batch) >= _INSERT_BATCH:
+            conn.executemany("INSERT INTO skill_ranks (type_id, rank) VALUES (?, ?)", batch)
+            total += len(batch)
+            batch = []
+    if batch:
+        conn.executemany("INSERT INTO skill_ranks (type_id, rank) VALUES (?, ?)", batch)
+        total += len(batch)
+    return total
+
+
 def build_sde_db(cache_dir, session=None, emit=None):
     """Download every required SDE table and (re)build `sde_industry.sqlite`.
 
@@ -241,6 +278,9 @@ def build_sde_db(cache_dir, session=None, emit=None):
             if emit:
                 emit(f"Downloading {basename}…")
             counts[table] = _ingest_table(conn, session, table, basename, columns)
+        if emit:
+            emit("Downloading skill training ranks…")
+        counts["skill_ranks"] = _ingest_skill_ranks(conn, session)
         for stmt in _INDEXES:
             conn.execute(stmt)
         conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -638,6 +678,52 @@ def _buildable(bp, skill_profile, default_level=0):
     with everything at 5?"."""
     sp = skill_profile or {}
     return all(sp.get(sid, default_level) >= lvl for sid, lvl in bp.get("skills", []))
+
+
+def training_time_hours(from_level, to_level, rank):
+    """Approximate hours to train a skill from from_level to to_level, given its
+    training rank. Uses a fixed SP/hr rate (_SP_PER_HOUR) as a baseline."""
+    if from_level >= to_level or rank is None:
+        return 0.0
+    sp_from = _SP_PER_LEVEL[from_level] * rank if from_level > 0 else 0
+    sp_to = _SP_PER_LEVEL[to_level] * rank
+    return (sp_to - sp_from) / _SP_PER_HOUR
+
+
+def missing_skills(bp, skill_profile, conn, default_level=0):
+    """Return a list of skills that the character lacks for this blueprint.
+    Each entry: {skill_id, name, required, current, train_hours}."""
+    sp = skill_profile or {}
+    missing = []
+    skill_ids = [sid for sid, _ in bp.get("skills", [])]
+    if not skill_ids:
+        return missing
+    marks = ", ".join("?" for _ in skill_ids)
+    names = {}
+    ranks = {}
+    for r in conn.execute(
+            f"SELECT type_id, type_name FROM types WHERE type_id IN ({marks})",
+            skill_ids):
+        names[r["type_id"]] = r["type_name"]
+    try:
+        for r in conn.execute(
+                f"SELECT type_id, rank FROM skill_ranks WHERE type_id IN ({marks})",
+                skill_ids):
+            ranks[r["type_id"]] = r["rank"]
+    except sqlite3.OperationalError:
+        pass  # table doesn't exist yet (old SDE build)
+    for sid, required_lvl in bp.get("skills", []):
+        current = sp.get(sid, default_level)
+        if current < required_lvl:
+            rank = ranks.get(sid)
+            missing.append({
+                "skill_id": sid,
+                "name": names.get(sid, f"Skill {sid}"),
+                "required": required_lvl,
+                "current": current,
+                "train_hours": training_time_hours(current, required_lvl, rank),
+            })
+    return missing
 
 
 def invention_cost_per_run(inv, prices, params):

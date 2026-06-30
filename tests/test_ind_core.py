@@ -89,6 +89,11 @@ _FIXTURES = {
 
     "invMarketGroups": BOM + '"marketGroupID","parentGroupID","marketGroupName","description","iconID","hasTypes"\n'
     '"61","","Test Group","","",""\n',
+
+    "dgmTypeAttributes": BOM + '"typeID","attributeID","valueInt","valueFloat"\n'
+    '"3380","275","","1.0"\n'
+    '"11442","275","","3.0"\n'
+    '"99999","180","","500.0"\n',
 }
 
 
@@ -143,7 +148,8 @@ class TestBuildSdeDb:
         seen = []
         ind_core.build_sde_db(tmp_path, session=_fake_session(), emit=seen.append)
         assert any("invTypes" in m for m in seen)
-        assert len(seen) == len(ind_core._TABLE_SPECS)
+        assert any("skill training ranks" in m for m in seen)
+        assert len(seen) == len(ind_core._TABLE_SPECS) + 1  # +1 for skill_ranks
 
 
 # ---------------------------------------------------------------------------
@@ -596,3 +602,102 @@ class TestBlueprintAvailability:
         merged = _prices(); merged.update(_inv_prices())
         t2 = ind_core.evaluate_industry([bp], merged, _ADJUSTED, _params())[0]
         assert t2["requires_invention"] is True
+
+
+# ---------------------------------------------------------------------------
+# training_time_hours / missing_skills
+# ---------------------------------------------------------------------------
+
+class TestTrainingTime:
+    def test_zero_when_already_trained(self):
+        assert ind_core.training_time_hours(3, 3, 5.0) == 0.0
+        assert ind_core.training_time_hours(5, 3, 5.0) == 0.0
+
+    def test_level_0_to_1_rank_1(self):
+        # SP needed: 250 * 1 = 250, at 2250 SP/hr => ~0.111 hours
+        hours = ind_core.training_time_hours(0, 1, 1.0)
+        assert abs(hours - 250 / 2250) < 0.001
+
+    def test_level_0_to_5_rank_1(self):
+        hours = ind_core.training_time_hours(0, 5, 1.0)
+        assert abs(hours - 256000 / 2250) < 0.1
+
+    def test_level_3_to_5_rank_3(self):
+        # SP: (256000 - 8000) * 3 = 744000, at 2250/hr = 330.67 hrs
+        hours = ind_core.training_time_hours(3, 5, 3.0)
+        expected = (256000 - 8000) * 3.0 / 2250
+        assert abs(hours - expected) < 0.1
+
+    def test_none_rank_returns_zero(self):
+        assert ind_core.training_time_hours(0, 5, None) == 0.0
+
+    def test_higher_rank_scales_linearly(self):
+        h1 = ind_core.training_time_hours(0, 3, 1.0)
+        h5 = ind_core.training_time_hours(0, 3, 5.0)
+        assert abs(h5 / h1 - 5.0) < 0.01
+
+
+class TestMissingSkills:
+    def _conn(self, tmp_path):
+        ind_core.build_sde_db(tmp_path, session=_fake_session())
+        return ind_core.connect_sde(tmp_path)
+
+    def test_no_missing_when_all_trained(self, tmp_path):
+        conn = self._conn(tmp_path)
+        try:
+            bp = _bp(skills=[(3380, 1)])
+            result = ind_core.missing_skills(bp, {3380: 5}, conn)
+            assert result == []
+        finally:
+            conn.close()
+
+    def test_missing_when_undertrained(self, tmp_path):
+        conn = self._conn(tmp_path)
+        try:
+            bp = _bp(skills=[(3380, 3)])
+            result = ind_core.missing_skills(bp, {3380: 1}, conn)
+            assert len(result) == 1
+            assert result[0]["skill_id"] == 3380
+            assert result[0]["required"] == 3
+            assert result[0]["current"] == 1
+            assert result[0]["train_hours"] > 0
+        finally:
+            conn.close()
+
+    def test_missing_uses_default_level(self, tmp_path):
+        conn = self._conn(tmp_path)
+        try:
+            bp = _bp(skills=[(3380, 3)])
+            # default_level=5 means character "has" level 5 in everything
+            result = ind_core.missing_skills(bp, {}, conn, default_level=5)
+            assert result == []
+            # default_level=0 means character has nothing
+            result = ind_core.missing_skills(bp, {}, conn, default_level=0)
+            assert len(result) == 1
+            assert result[0]["current"] == 0
+        finally:
+            conn.close()
+
+    def test_missing_includes_skill_name(self, tmp_path):
+        conn = self._conn(tmp_path)
+        try:
+            # skill 3380 is not in our tiny invTypes fixture as a type,
+            # so it falls back to "Skill 3380" — but let's check the logic
+            bp = _bp(skills=[(34, 3)])  # type 34 = "Tritanium" in our fixture
+            result = ind_core.missing_skills(bp, {}, conn, default_level=0)
+            assert result[0]["name"] == "Tritanium"
+        finally:
+            conn.close()
+
+    def test_missing_with_no_skills_table(self, tmp_path):
+        """Gracefully handles old SDE without skill_ranks table."""
+        conn = self._conn(tmp_path)
+        try:
+            conn.execute("DROP TABLE IF EXISTS skill_ranks")
+            bp = _bp(skills=[(3380, 3)])
+            result = ind_core.missing_skills(bp, {}, conn, default_level=0)
+            assert len(result) == 1
+            # train_hours should be 0 because rank is unknown
+            assert result[0]["train_hours"] == 0.0
+        finally:
+            conn.close()

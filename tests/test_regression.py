@@ -907,3 +907,54 @@ class TestIndustryRoutes:
         base, _ = tmp_server
         body, status = http_get(f"{base}/api/ind/bogus")
         assert status == 404
+
+
+# ---------------------------------------------------------------------------
+# Delivered-runs counter (character tab) — cumulative, persisted, baseline on
+# first sight so history before this feature existed is never counted.
+# ---------------------------------------------------------------------------
+
+class TestDeliveredRunsTracker:
+    def _job(self, job_id, status="delivered", runs=10, product_type_id=165):
+        return {"job_id": job_id, "status": status, "runs": runs,
+                "product_type_id": product_type_id}
+
+    def test_first_sight_is_baseline_not_counted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", tmp_path / "jobs.json")
+        jobs = [self._job(1), self._job(2, status="active", runs=5)]
+        rt = lp_web._track_delivered_jobs(42, jobs, {165: "Test Frigate"})
+        assert rt["total_runs"] == 0
+        assert rt["total_jobs"] == 0
+
+    def test_new_delivery_after_baseline_is_counted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", tmp_path / "jobs.json")
+        lp_web._track_delivered_jobs(42, [self._job(1)], {165: "Test Frigate"})
+        rt = lp_web._track_delivered_jobs(
+            42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
+        assert rt["total_runs"] == 25
+        assert rt["total_jobs"] == 1
+
+    def test_same_job_not_double_counted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", tmp_path / "jobs.json")
+        lp_web._track_delivered_jobs(42, [self._job(1)], {165: "Test Frigate"})
+        lp_web._track_delivered_jobs(42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
+        rt = lp_web._track_delivered_jobs(42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
+        assert rt["total_runs"] == 25
+        assert rt["total_jobs"] == 1
+
+    def test_persists_across_calls(self, tmp_path, monkeypatch):
+        path = tmp_path / "jobs.json"
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", path)
+        lp_web._track_delivered_jobs(42, [self._job(1)], {165: "Test Frigate"})
+        lp_web._track_delivered_jobs(42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
+        saved = json.loads(path.read_text())
+        assert saved["42"]["total_runs"] == 25
+
+    def test_separate_characters_tracked_independently(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", tmp_path / "jobs.json")
+        lp_web._track_delivered_jobs(1, [self._job(1)], {})
+        lp_web._track_delivered_jobs(2, [self._job(1)], {})  # same job_id, different char
+        rt1 = lp_web._track_delivered_jobs(1, [self._job(1), self._job(2, runs=7)], {})
+        rt2 = lp_web._track_delivered_jobs(2, [self._job(1), self._job(2, runs=9)], {})
+        assert rt1["total_runs"] == 7
+        assert rt2["total_runs"] == 9

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.29.2"
+__version__ = "1.30.0"
 
 import argparse
 import base64
@@ -59,6 +59,7 @@ SETTINGS_PATH = CACHE_DIR / "lp_web_settings.json"
 ARB_SETTINGS_PATH = CACHE_DIR / "arb_settings.json"
 IND_SETTINGS_PATH = CACHE_DIR / "ind_settings.json"
 AUTH_SETTINGS_PATH = CACHE_DIR / "auth_settings.json"  # client_id + callback_url
+JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-run counter
 REFRESHED_CORPS = set()
 
 # ── EVE SSO state (single process, single user) ───────────────────────────────
@@ -255,6 +256,46 @@ def do_auth_logout(q):
     return {"ok": True}
 
 
+def _track_delivered_jobs(cid, jobs, names):
+    """Cumulative counter of runs/jobs the character has *delivered*, persisted
+    across restarts. Only counts jobs newly seen as "delivered" — the first time
+    a character is observed, its already-delivered jobs (ESI's 90-day completed
+    window) are recorded as a baseline but not counted, so the counter only grows
+    from the moment this feature started watching, as advertised to the user."""
+    store = load_json(JOBS_TRACK_PATH, {})
+    key = str(cid)
+    entry = store.get(key)
+    first_seen = entry is None
+    if entry is None:
+        entry = {"seen_job_ids": [], "total_runs": 0, "total_jobs": 0,
+                  "since": time.time(), "by_product": {}}
+    seen = set(entry["seen_job_ids"])
+    changed = first_seen
+    for j in jobs:
+        if j.get("status") != "delivered":
+            continue
+        jid = j.get("job_id")
+        if jid is None or jid in seen:
+            continue
+        seen.add(jid)
+        changed = True
+        if first_seen:
+            continue   # baseline — don't count history from before tracking started
+        runs = j.get("runs") or 0
+        entry["total_runs"] += runs
+        entry["total_jobs"] += 1
+        pid = str(j.get("product_type_id"))
+        prod = entry["by_product"].setdefault(pid, {"name": names.get(j.get("product_type_id"), "?"), "runs": 0, "jobs": 0})
+        prod["runs"] += runs
+        prod["jobs"] += 1
+    entry["seen_job_ids"] = list(seen)
+    if changed:
+        store[key] = entry
+        save_json(JOBS_TRACK_PATH, store)
+    return {"total_runs": entry["total_runs"], "total_jobs": entry["total_jobs"],
+            "since": entry["since"]}
+
+
 def do_char_data(q):
     """Bundle of the logged-in character's wallet, SP, skill queue, loyalty points
     and running industry jobs (with resolved names + timers)."""
@@ -266,7 +307,9 @@ def do_char_data(q):
     skills = sso_core.fetch_skills(token, cid, SESSION)
     queue = sso_core.fetch_skillqueue(token, cid, SESSION)
     loyalty = sso_core.fetch_loyalty_points(token, cid, SESSION)
-    jobs = sso_core.fetch_industry_jobs(token, cid, SESSION, include_completed=False)
+    # include_completed so delivered jobs (last 90 days) surface for the runs-
+    # delivered counter; the active-jobs table below filters them back out.
+    jobs = sso_core.fetch_industry_jobs(token, cid, SESSION, include_completed=True)
 
     # Resolve every type/skill name referenced by jobs and the skill queue in one call.
     name_ids = set()
@@ -278,10 +321,14 @@ def do_char_data(q):
     name_ids.discard(None)
     names = resolve_names(list(name_ids), SESSION, CACHE_DIR) if name_ids else {}
 
+    runs_tracked = _track_delivered_jobs(cid, jobs, names)
+
     activity_label = {ind_core.ACT_MANUFACTURING: "Manufacturing",
                       ind_core.ACT_INVENTION: "Invention"}
     out_jobs = []
     for j in jobs:
+        if j.get("status") not in ("active", "paused", "ready"):
+            continue   # delivered/cancelled/reverted — not a running job any more
         act = j.get("activity_id")
         out_jobs.append({
             "job_id": j.get("job_id"),
@@ -328,6 +375,7 @@ def do_char_data(q):
         "skillqueue": queue_out,
         "loyalty": loyalty_out,
         "jobs": out_jobs,
+        "runs_tracked": runs_tracked,
     }
 
 
@@ -2076,6 +2124,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <div class="char-kpi"><div class="l">Wallet</div><div class="v gold" id="cv-wallet">—</div></div>
         <div class="char-kpi"><div class="l">Total SP</div><div class="v" id="cv-sp">—</div></div>
         <div class="char-kpi"><div class="l">Running jobs</div><div class="v" id="cv-jobs">—</div></div>
+        <div class="char-kpi" id="cv-runs-kpi" data-tip="Cumulative runs delivered since this app started tracking — it can't see deliveries from before that.">
+          <div class="l">Runs delivered</div><div class="v" id="cv-runs">—</div>
+        </div>
       </div>
       <div class="char-grid">
         <section class="char-card">
@@ -4082,6 +4133,15 @@ function renderCharData(){
   $("#cv-wallet").textContent=d.wallet!=null?fmtISK(d.wallet):"—";
   $("#cv-sp").textContent=d.total_sp!=null?Math.round(d.total_sp).toLocaleString():"—";
   $("#chip-wallet").textContent=d.wallet!=null?fmtISK(d.wallet)+" ISK":"";
+
+  const rt=d.runs_tracked;
+  if(rt){
+    $("#cv-runs").textContent=rt.total_runs.toLocaleString()+" runs / "+rt.total_jobs.toLocaleString()+" jobs";
+    const since=new Date(rt.since*1000).toLocaleString([],
+      {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    $("#cv-runs-kpi").setAttribute("data-tip",
+      "Cumulative runs delivered since this app started tracking ("+since+") — it can't see deliveries from before that.");
+  }
 
   const jobs=d.jobs||[];
   $("#cv-jobs").textContent=jobs.length;

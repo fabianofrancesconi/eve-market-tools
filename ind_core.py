@@ -385,6 +385,22 @@ def manufacturing_candidates(conn, market_group_ids=None):
     return [dict(r) for r in conn.execute(sql, params)]
 
 
+def candidates_for_blueprints(conn, blueprint_ids):
+    """Candidate rows (same shape as manufacturing_candidates) for specific
+    blueprint ids regardless of category — used to always include favourites."""
+    ids = [int(b) for b in blueprint_ids]
+    if not ids:
+        return []
+    marks = ", ".join("?" for _ in ids)
+    sql = (
+        "SELECT p.blueprint_id, p.product_id, p.quantity AS out_qty, "
+        "       t.type_name, t.market_group_id, t.tech_level, t.volume AS out_volume "
+        "FROM products p JOIN types t ON t.type_id = p.product_id "
+        f"WHERE p.activity_id = ? AND p.blueprint_id IN ({marks})"
+    )
+    return [dict(r) for r in conn.execute(sql, [ACT_MANUFACTURING, *ids])]
+
+
 def materials_for(conn, blueprint_id, activity_id=ACT_MANUFACTURING):
     """Bill of materials for a blueprint activity: [(material_id, base_qty), ...]
     at ME0 (the raw SDE quantities, before any efficiency adjustment)."""

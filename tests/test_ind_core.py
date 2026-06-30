@@ -177,6 +177,20 @@ class TestQueries:
         assert none == []
         assert {c["product_id"] for c in some} == {165, 12005}
 
+    def test_candidates_for_blueprints(self, tmp_path):
+        # Always-include path for favourites: fetch specific blueprints by id,
+        # regardless of category. 681 -> product 165 (manufacturing).
+        ind_core.build_sde_db(tmp_path, session=_fake_session())
+        conn = ind_core.connect_sde(tmp_path)
+        try:
+            rows = ind_core.candidates_for_blueprints(conn, [681, 999999])
+        finally:
+            conn.close()
+        assert len(rows) == 1
+        assert rows[0]["blueprint_id"] == 681
+        assert rows[0]["product_id"] == 165
+        assert ind_core.candidates_for_blueprints(conn, []) == []
+
     def test_materials_for(self, tmp_path):
         conn = self._conn(tmp_path)
         try:

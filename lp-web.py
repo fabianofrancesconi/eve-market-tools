@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.21.2"
+__version__ = "1.22.0"
 
 import argparse
 import base64
@@ -598,7 +598,7 @@ IND_HISTORY_TOP_N = 80
 _IND_PREF_KEYS = ("profiles", "profile", "market_group", "me", "te", "job_rate",
                   "sales_tax", "broker", "runs", "station", "skills_level",
                   "buildable_only", "include_unbuildable", "hide_t2", "owned",
-                  "sort_key", "sort_dir", "min_tradeability")
+                  "sort_key", "sort_dir", "min_tradeability", "favorites")
 
 
 def do_ind_prefs(q):
@@ -654,6 +654,10 @@ def do_ind_scan(q, emit=None):
         owned_ids = set(json.loads(q.get("owned", ["[]"])[0]))
     except (ValueError, TypeError):
         owned_ids = set()
+    try:
+        fav_ids = set(json.loads(q.get("favorites", ["[]"])[0]))
+    except (ValueError, TypeError):
+        fav_ids = set()
     params = _ind_params(q)
 
     s = load_ind_settings()
@@ -673,6 +677,12 @@ def do_ind_scan(q, emit=None):
             candidates = ind_core.manufacturing_candidates(conn, group_ids)
         else:
             candidates = ind_core.manufacturing_candidates(conn)
+        # Favorited blueprints are always included, even outside the chosen
+        # category, so they're "always visible regardless".
+        present_bp = {c["blueprint_id"] for c in candidates}
+        extra_fav = [b for b in fav_ids if b not in present_bp]
+        if extra_fav:
+            candidates += ind_core.candidates_for_blueprints(conn, extra_fav)
         _emit({"type": "progress", "pct": 18,
                "msg": f"{len(candidates):,} manufacturable items — loading recipes…", "sub": ""})
         bps = ind_core.assemble_blueprints(conn, candidates)
@@ -709,29 +719,30 @@ def do_ind_scan(q, emit=None):
         _emit({"type": "progress", "pct": 78, "msg": "Computing profitability…", "sub": ""})
         params.update({"bpo_prices": bpo_prices, "volumes": volumes})
         rows = ind_core.evaluate_industry(bps, prices, adjusted, params)
-        if buildable_only:
-            rows = [r for r in rows if r["buildable"]]
-        # Mark the blueprints the user says they own (drives the split + display).
+        # Flag ownership + favourites; favourites are exempt from every filter so
+        # they're always visible regardless of the current settings.
         for r in rows:
             r["owned"] = r["blueprint_id"] in owned_ids
+            r["favorite"] = r["blueprint_id"] in fav_ids
+        if buildable_only:
+            rows = [r for r in rows if r["buildable"] or r["favorite"]]
         if not include_unbuildable:
-            # Hide items whose blueprint you neither own nor can buy/invent.
-            rows = [r for r in rows if r["bp_available"] or r["owned"]]
+            rows = [r for r in rows if r["bp_available"] or r["owned"] or r["favorite"]]
         if hide_t2:
-            # Drop T2 / invention items (keep only directly-built T1 / non-invented).
             rows = [r for r in rows
-                    if not (r["requires_invention"] or r["tech_level"] == 2)]
+                    if r["favorite"] or not (r["requires_invention"] or r["tech_level"] == 2)]
     finally:
         conn.close()
 
-    # Days-to-sell for the top rows only (one cached call per product type).
-    top = rows[:IND_HISTORY_TOP_N]
-    if top:
+    # Market depth for the top-ranked rows plus every favourite (one cached call
+    # per product type), so favourites always carry a tradeability / days-to-sell.
+    scored = rows[:IND_HISTORY_TOP_N] + [r for r in rows[IND_HISTORY_TOP_N:] if r["favorite"]]
+    if scored:
         _emit({"type": "progress", "pct": 88,
-               "msg": f"Checking market depth for the top {len(top)} items…", "sub": ""})
-        product_ids = {r["product_id"] for r in top}
+               "msg": f"Checking market depth for {len(scored)} items…", "sub": ""})
+        product_ids = {r["product_id"] for r in scored}
         daily = fetch_history_volumes(product_ids, region_id, SESSION, CACHE_DIR)
-        for r in top:
+        for r in scored:
             dv = daily.get(r["product_id"])
             r["daily_vol"] = dv
             r["days_to_sell"] = ((r["out_qty"] * r["runs"]) / dv) if dv else None
@@ -1411,6 +1422,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .sw-eff b { color:var(--c8a040,#c8a040); font-size:15px; }
   .sw-formula { display:block; font-size:10px; color:var(--dim); margin-top:2px; }
   .sw-actions { display:flex; gap:8px; align-items:center; margin-top:6px; }
+  #ind-tbl td.fav-cell { text-align:center; }
+  .fav-star { cursor:pointer; color:var(--dim); font-size:15px; user-select:none; }
+  .fav-star:hover { color:var(--c8a040,#c8a040); }
+  .fav-star.on { color:var(--c8a040,#c8a040); }
+  .ind-fav-btn { margin:0 6px; padding:1px 8px; font-size:11px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--dim); }
+  .ind-fav-btn.on { color:var(--c8a040,#c8a040); border-color:var(--c8a040,#c8a040); }
+  .ind-timer { display:flex; align-items:center; gap:8px; margin:4px 0 6px; font-size:13px; flex-wrap:wrap; }
+  .ind-timer input { width:54px; }
+  .ind-timer-remaining { font-weight:700; color:var(--cyan); font-variant-numeric:tabular-nums; }
+  .ind-timer.done .ind-timer-remaining { color:var(--green2,#4caf76); }
+  .ind-timer-eta { color:var(--dim); font-size:12px; }
   #ind-tbl tr.ind-section td {
     background:var(--panel2); color:var(--dim);
     font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
@@ -1784,7 +1807,7 @@ function saveLS(){
         hide_t2:$("#ind-hidet2").checked?'1':'0',
         min_tradeability:$("#ind-mintrade").value,
         profiles:JSON.stringify(IND.profiles),profile:$("#ind-profile").value,
-        owned:JSON.stringify([...IND.owned]),
+        owned:JSON.stringify([...IND.owned]),favorites:JSON.stringify([...IND.favorites]),
         sort_key:IND.sort.key,sort_dir:IND.sort.dir}
     }));
   }catch(e){}
@@ -2943,7 +2966,8 @@ function openArbChart(row){
 // INDUSTRY TAB
 // ══════════════════════════════════════════════════════════════════════════
 let IND = {rows:[], sort:{key:"isk_per_hour_best", dir:-1}, lastData:null, es:null,
-           groupsLoaded:false, profiles:[], owned:new Set(), savedGroup:null, openDetail:null};
+           groupsLoaded:false, profiles:[], owned:new Set(), favorites:new Set(),
+           timers:{}, savedGroup:null, openDetail:null};
 
 const fmtDur = s => {
   if(s===null||s===undefined) return "—";
@@ -2954,7 +2978,8 @@ const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
 const fmtDaysSell = v => (v===null||v===undefined) ? "—" : v.toFixed(1);
 
 const IND_COLS = [
-  {k:"product_name",       t:"Item",        w:230, tip:"The manufactured item. * = an input has no sell price at the source hub. Open it to mark the blueprint as owned."},
+  {k:"_fav",               t:"★",           w: 34, tip:"Mark as favourite. Favourites pin to the top and stay visible regardless of filters.", raw:true},
+  {k:"product_name",       t:"Item",        w:226, tip:"The manufactured item. * = an input has no sell price at the source hub. Open it to mark the blueprint as owned."},
   {k:"tech_level",         t:"T",           w: 40, tip:"Tech level.", f:v=>v?("T"+v):"—"},
   {k:"isk_per_hour_best",  t:"ISK/hr",      w:115, tip:"Profit per hour of manufacturing time — the headline 'worth it' number.", f:fmtISK, pn:true},
   {k:"profit_best",        t:"Profit/run",  w:110, tip:"Best-of patient/instant profit for one run.", f:fmtISK, pn:true},
@@ -2984,7 +3009,11 @@ function indSortRows(rows){
 }
 
 function indRowHtml(r, idx){
+  const fav=IND.favorites.has(r.blueprint_id);
   const tds=IND_COLS.map(c=>{
+    if(c.k==="_fav"){
+      return `<td class="fav-cell"><span class="fav-star${fav?" on":""}" data-bp="${r.blueprint_id}" title="${fav?"Remove favourite":"Add favourite"}">${fav?"★":"☆"}</span></td>`;
+    }
     let v=r[c.k], txt=c.f?c.f(v,r):(v===null||v===undefined?"—":v);
     if(c.k==="product_name" && r.missing_price) txt+=" *";
     let cls=c.cls||"";
@@ -3002,9 +3031,11 @@ function renderIndTable(){
     const arrow=active?(IND.sort.dir<0?" ▼":" ▲"):"";
     const tip=c.tip?` data-tip="${c.tip.replace(/"/g,'&quot;')}"`:"";
     const w=c.w?` style="width:${c.w}px"`:"";
-    return `<th data-k="${c.k}"${tip}${w}${active?' class="sorted"':''}>${c.t}${arrow}</th>`;
+    const nosort=c.raw?' data-nosort="1"':"";
+    return `<th data-k="${c.k}"${tip}${w}${nosort}${active?' class="sorted"':''}>${c.t}${arrow}</th>`;
   }).join("")+"</tr>";
   thead.querySelectorAll("th").forEach(th=>{
+    if(th.dataset.nosort) return;
     th.onclick=()=>{
       const k=th.dataset.k;
       if(IND.sort.key===k) IND.sort.dir*=-1;
@@ -3014,34 +3045,42 @@ function renderIndTable(){
     };
   });
 
-  // Annotate ownership, apply the tradeability filter, then split: owned on top.
-  IND.rows.forEach(r=>{ r._owned=IND.owned.has(r.blueprint_id); });
+  // Split: favourites pinned on top (always shown), the rest below (filtered).
+  const fav =indSortRows(IND.rows.filter(r=>IND.favorites.has(r.blueprint_id)));
   const minTrade=parseInt($("#ind-mintrade").value)||0;
   // Only drop items KNOWN to be below the threshold. Tradeability is computed for
   // the top-ranked items only, so rows without a score (the long tail) are kept —
   // otherwise a min-trade filter would wipe out a big "All" scan (most unscored).
-  const vis=minTrade>0
-    ? IND.rows.filter(r=>r.tradeability==null || r.tradeability>=minTrade)
-    : IND.rows;
-  const owned=indSortRows(vis.filter(r=>r._owned));
-  const rest =indSortRows(vis.filter(r=>!r._owned));
+  let rest=IND.rows.filter(r=>!IND.favorites.has(r.blueprint_id));
+  if(minTrade>0) rest=rest.filter(r=>r.tradeability==null || r.tradeability>=minTrade);
+  rest=indSortRows(rest);
   const ncol=IND_COLS.length;
   const sect=(label,n)=>`<tr class="ind-section"><td colspan="${ncol}">${label} — ${n}</td></tr>`;
 
   const ordered=[];   // flat list parallel to rendered data rows, for click handling
   let html="";
-  if(owned.length){
-    html+=sect("✓ Blueprints you own", owned.length);
-    owned.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+  if(fav.length){
+    html+=sect("★ Favourites", fav.length);
+    fav.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+    html+=sect("All items", rest.length);
   }
-  html+=sect(owned.length?"Need to acquire":"All items", rest.length);
   rest.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   tbody.innerHTML=html;
 
   tbody.querySelectorAll("tr[data-ridx]").forEach(tr=>{
     const r=ordered[+tr.dataset.ridx];
-    tr.onclick=()=>openIndDetail(r);
+    tr.onclick=ev=>{ if(ev.target.classList.contains("fav-star")) return; openIndDetail(r); };
   });
+  tbody.querySelectorAll(".fav-star").forEach(star=>{
+    star.onclick=ev=>{ ev.stopPropagation(); toggleFavorite(+star.dataset.bp); };
+  });
+}
+
+function toggleFavorite(bp){
+  if(IND.favorites.has(bp)) IND.favorites.delete(bp); else IND.favorites.add(bp);
+  saveIndPrefs();
+  renderIndTable();
+  if(IND.openDetail && IND.openDetail.blueprint_id===bp) renderIndDetail(IND.openDetail);
 }
 
 function renderIndStatus(){
@@ -3081,6 +3120,7 @@ function indParams(extra){
     hide_t2:      $("#ind-hidet2").checked?"1":"0",
     min_tradeability: $("#ind-mintrade").value||"0",
     owned:        JSON.stringify([...IND.owned]),
+    favorites:    JSON.stringify([...IND.favorites]),
   };
   return new URLSearchParams(Object.assign(p, extra||{}));
 }
@@ -3177,6 +3217,29 @@ function renderIndDetail(d){
   else if(d.bp_source==="invention") payback="n/a — invented per run";
   else if(d.bp_market) payback="never at current profit";
   else payback="—";
+  // Crafting timer — prefilled with the batch build time, persisted in localStorage.
+  const tEnd=IND.timers[d.blueprint_id], nowMs=Date.now();
+  let timerHtml;
+  if(tEnd && tEnd>nowMs){
+    timerHtml=`<div class="ind-timer">
+        <span class="ind-timer-remaining" data-end="${tEnd}">${fmtCountdown(tEnd-nowMs)}</span>
+        <span class="ind-timer-eta">ETA ${new Date(tEnd).toLocaleString([],{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})}</span>
+        <button class="ind-timer-cancel secondary" data-bp="${d.blueprint_id}">Reset</button>
+      </div>`;
+  } else if(tEnd){
+    timerHtml=`<div class="ind-timer done">
+        <span class="ind-timer-remaining">✓ Ready — finished ${new Date(tEnd).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
+        <button class="ind-timer-cancel secondary" data-bp="${d.blueprint_id}">Clear</button>
+      </div>`;
+  } else {
+    const secs=Math.round(batchTime||0);
+    const hh=Math.floor(secs/3600), mm=Math.round((secs%3600)/60);
+    timerHtml=`<div class="ind-timer">
+        <input class="ind-timer-h" type="number" min="0" value="${hh}"> h
+        <input class="ind-timer-m" type="number" min="0" max="59" value="${mm}"> m
+        <button class="ind-timer-start primary" data-bp="${d.blueprint_id}">▶ Start</button>
+      </div>`;
+  }
   let invHtml="";
   if(d.invention){
     const iv=d.invention;
@@ -3196,6 +3259,7 @@ function renderIndDetail(d){
   $("#ind-detail").innerHTML=`
     <div class="ind-d-head">
       <b>${d.product.name}</b>
+      <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="Toggle favourite">${IND.favorites.has(d.blueprint_id)?"★ Favourite":"☆ Favourite"}</button>
       <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy</button>
       <button class="ind-own" title="Toggle whether you own this blueprint">${owned?"✓ BP owned":"☐ Mark BP owned"}</button>
       ${tier} · ${n.toLocaleString()} run(s) · source ${d.station_name}
@@ -3227,6 +3291,8 @@ function renderIndDetail(d){
       <span>Blueprint payback</span><b>${payback}</b>
       <span>Tradeability</span><b>${d.tradeability==null?"—":d.tradeability+" / 100"}${d.daily_units!=null?` (${fmtNum(d.daily_units)} units/day)`:""}</b>
     </div>
+    <div class="ind-d-sub">Crafting timer</div>
+    ${timerHtml}
     <div class="ind-d-sub">Materials to buy — ${n.toLocaleString()} run(s)</div>
     <table class="ind-d-mats"><thead><tr><th>Material</th><th class="num">Qty needed</th>
       <th class="num">Unit price</th><th class="num">Total cost</th>
@@ -3242,6 +3308,7 @@ function renderIndDetail(d){
     renderIndTable();     // move the row between owned / need-to-acquire
     renderIndDetail(d);   // refresh this panel (button label + blueprint line)
   };
+  box.querySelector(".ind-fav-btn").onclick=()=>toggleFavorite(d.blueprint_id);
   const copyBtn=box.querySelector(".ind-copy");
   copyBtn.onclick=()=>{
     const done=()=>{ copyBtn.textContent="✓ Copied"; setTimeout(()=>{copyBtn.textContent="⧉ Copy";},1200); };
@@ -3249,7 +3316,41 @@ function renderIndDetail(d){
       navigator.clipboard.writeText(d.product.name).then(done).catch(()=>fallbackCopy(d.product.name,done));
     } else fallbackCopy(d.product.name, done);
   };
+  const startBtn=box.querySelector(".ind-timer-start");
+  if(startBtn) startBtn.onclick=()=>{
+    const h=parseInt(box.querySelector(".ind-timer-h").value)||0;
+    const m=parseInt(box.querySelector(".ind-timer-m").value)||0;
+    const ms=(h*3600+m*60)*1000;
+    if(ms<=0) return;
+    IND.timers[d.blueprint_id]=Date.now()+ms;
+    saveIndTimers();
+    renderIndDetail(d);
+  };
+  const cancelBtn=box.querySelector(".ind-timer-cancel");
+  if(cancelBtn) cancelBtn.onclick=()=>{
+    delete IND.timers[d.blueprint_id];
+    saveIndTimers();
+    renderIndDetail(d);
+  };
 }
+
+const IND_TIMERS_KEY="eve_ind_timers";
+function saveIndTimers(){ try{ localStorage.setItem(IND_TIMERS_KEY, JSON.stringify(IND.timers)); }catch(e){} }
+function loadIndTimers(){ try{ IND.timers=JSON.parse(localStorage.getItem(IND_TIMERS_KEY))||{}; }catch(e){ IND.timers={}; } }
+function fmtCountdown(ms){
+  let s=Math.max(0,Math.floor(ms/1000));
+  const h=Math.floor(s/3600); s-=h*3600;
+  const m=Math.floor(s/60); s-=m*60;
+  return (h?h+"h ":"")+(h||m?m+"m ":"")+s+"s left";
+}
+// Tick the open detail's countdown once a second; re-render when it completes.
+setInterval(()=>{
+  const el=document.querySelector("#ind-detail .ind-timer-remaining[data-end]");
+  if(!el) return;
+  const rem=(+el.dataset.end)-Date.now();
+  if(rem<=0){ if(IND.openDetail) renderIndDetail(IND.openDetail); }
+  else el.textContent=fmtCountdown(rem);
+}, 1000);
 
 function fallbackCopy(text, done){
   // execCommand path for non-secure contexts where navigator.clipboard is absent.
@@ -3486,6 +3587,7 @@ async function loadSettings(){
       renderIndProfiles();
       if(ind.profile) $("#ind-profile").value=ind.profile;
       if(ind.owned){ try{ IND.owned=new Set(JSON.parse(ind.owned)||[]); }catch(e){} }
+      if(ind.favorites){ try{ IND.favorites=new Set(JSON.parse(ind.favorites)||[]); }catch(e){} }
       // Restore last active tab
       if(s.active_tab==="arb") switchTab("arb");
       else if(s.active_tab==="ind") switchTab("ind");
@@ -3516,6 +3618,7 @@ async function loadSettings(){
   document.addEventListener("scroll",()=>{ if(cur){ cur=null; tip.classList.remove("show"); } }, true);
 })();
 
+loadIndTimers();
 loadSettings();
 </script>
 </body>

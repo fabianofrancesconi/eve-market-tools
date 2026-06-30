@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.34.1"
+__version__ = "1.34.2"
 
 import argparse
 import base64
@@ -1709,7 +1709,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #char-orders-tbl td.tx-sell { color:var(--green2); font-weight:600; }
   #char-jobs-tbl td.tl, #char-jobs-tbl th:last-child { text-align:right;
     font-variant-numeric:tabular-nums; }
-  #char-jobs-tbl th:not(:first-child), #char-jobs-tbl td:not(:first-child) { white-space:nowrap; }
+  /* Give the product name a real minimum so auto layout can't crush it down
+     to one character per line — word-break:break-word otherwise lets the
+     browser treat its minimum width as a single glyph while "Manufacturing"
+     and the timer take all the space. The numeric/status columns hug their
+     content; the product column keeps the rest. */
+  #char-jobs-tbl th:first-child, #char-jobs-tbl td:first-child { min-width:8em; }
+  #char-jobs-tbl th:nth-child(2), #char-jobs-tbl td:nth-child(2),
+  #char-jobs-tbl th:nth-child(3), #char-jobs-tbl td:nth-child(3),
+  #char-jobs-tbl th:nth-child(4), #char-jobs-tbl td:nth-child(4) { white-space:nowrap; }
   table.mini { font-size:13px; width:100%; border-collapse:collapse; }
   table.mini th { position:static; background:none; color:var(--dim);
     font-size:10px; letter-spacing:.5px; border-bottom:1px solid var(--line); padding:4px 8px; }
@@ -2209,7 +2217,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         </div>
       </div>
       <div class="char-grid">
-        <section class="char-card">
+        <section class="char-card char-card-wide">
           <h3>Running industry jobs</h3>
           <div class="char-card-scroll">
             <table class="mini" id="char-jobs-tbl"><thead><tr>

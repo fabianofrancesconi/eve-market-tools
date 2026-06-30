@@ -36,7 +36,7 @@ SCOPES = [
     "esi-skills.read_skills.v1",
     "esi-skills.read_skillqueue.v1",
     "esi-wallet.read_character_wallet.v1",
-    "esi-characters.read_loyalty_points.v1",
+    "esi-characters.read_loyalty.v1",
     "esi-industry.read_character_jobs.v1",
 ]
 

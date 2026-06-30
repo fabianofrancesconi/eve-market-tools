@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.35.0"
+__version__ = "1.36.0"
 
 import argparse
 import base64
@@ -1087,6 +1087,7 @@ def do_ind_scan(q, emit=None):
             r["daily_vol"] = dv
             r["days_to_sell"] = ((r["out_qty"] * r["runs"]) / dv) if dv else None
             r["tradeability"] = ind_core.tradeability(dv)
+            r["liq_loaded"] = True   # the rest get scored by the background fill
 
     _emit({"type": "progress", "pct": 97, "msg": "Formatting results…", "sub": ""})
     return {
@@ -1099,6 +1100,30 @@ def do_ind_scan(q, emit=None):
         "favorites_only": favorites_only,
         "rows": rows,
     }
+
+
+def do_ind_liquidity(q):
+    """Background tradeability fill for the Industry table. The scan scores only
+    the top-ranked rows inline (to stay fast); the front end then walks the rest
+    of the catalogue here in chunks, so every item eventually gets a real
+    tradeability without blocking the initial result. One cached ESI market-
+    history call per uncached product type.
+
+    station + comma-separated product type_ids in -> {type_id: {daily_vol,
+    tradeability}} out. daily_vol/tradeability are None for a product the market
+    has never traded; the caller derives days-to-sell from its own batch size."""
+    station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
+    if station_id not in TRADE_HUBS:
+        station_id = JITA_STATION_ID
+    region_id = TRADE_HUBS[station_id]["region_id"]
+    raw = q.get("type_ids", [""])[0]
+    type_ids = [int(x) for x in raw.split(",") if x.strip().isdigit()]
+    daily = fetch_history_volumes(set(type_ids), region_id, SESSION, CACHE_DIR)
+    out = {}
+    for tid in type_ids:
+        dv = daily.get(tid)
+        out[str(tid)] = {"daily_vol": dv, "tradeability": ind_core.tradeability(dv)}
+    return {"liquidity": out}
 
 
 def do_ind_detail(q):
@@ -1291,6 +1316,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(do_ind_groups(q))
             elif parsed.path == "/api/ind/scan":
                 self._handle_sse_scan(q, do_ind_scan, "ind")
+            elif parsed.path == "/api/ind/liquidity":
+                self._send_json(do_ind_liquidity(q))
             elif parsed.path == "/api/ind/detail":
                 self._send_json(do_ind_detail(q))
             elif parsed.path == "/api/auth/config":
@@ -3614,7 +3641,11 @@ function openArbChart(row){
 // ══════════════════════════════════════════════════════════════════════════
 let IND = {rows:[], sort:{key:"isk_per_hour_best", dir:-1}, lastData:null, es:null,
            groupsLoaded:false, profiles:[], owned:new Set(), favorites:new Set(),
-           timers:{}, savedGroup:null, openDetail:null, colOrder:null};
+           timers:{}, savedGroup:null, openDetail:null, colOrder:null,
+           fillTotal:0, fillDone:0};
+// Bumped whenever a scan starts or a new fill begins, so an in-flight background
+// tradeability fill from a previous scan knows to abandon itself.
+let IND_FILL_TOKEN = 0;
 
 const fmtDur = s => {
   if(s===null||s===undefined) return "—";
@@ -3641,8 +3672,8 @@ const IND_COLS = [
   {k:"ask",                t:"Sell",        w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
   {k:"input_volume",       t:"Cargo in",    w: 85, tip:"m³ of materials to haul in for the batch.", f:v=>v?fmtVol(v):"—"},
   {k:"output_volume",      t:"Cargo out",   w: 85, tip:"m³ of finished items to haul out for the batch.", f:v=>v?fmtVol(v):"—"},
-  {k:"days_to_sell",       t:"Days to sell",w: 88, tip:"Batch size ÷ daily traded volume (top items only).", f:fmtDaysSell},
-  {k:"tradeability",       t:"Tradeability",w: 98, tip:"How sellable the product is (0–100), from the daily UNITS traded on the market over ~30 days. Low = the market absorbs little quantity, so it's hard to offload no matter how profitable on paper. Computed for the top-ranked items.", f:v=> v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`},
+  {k:"days_to_sell",       t:"Days to sell",w: 88, tip:"Batch size ÷ daily traded volume. Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : fmtDaysSell(v)},
+  {k:"tradeability",       t:"Tradeability",w: 98, tip:"How sellable the product is (0–100), from the daily UNITS traded on the market over ~30 days. Low = the market absorbs little quantity, so it's hard to offload no matter how profitable on paper. Every scanned item is scored — rows spin while their market history loads, then show '—' if the item has never traded.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
   {k:"buildable",          t:"Build?",      w: 58, tip:"Can every required skill (at the Skills level) make it?", f:v=>v?"✓":"✗"},
 ];
 
@@ -3777,10 +3808,10 @@ function renderIndTable(){
     rest=rest.filter(matches);
   } else {
     const minTrade=parseInt($("#ind-mintrade").value)||0;
-    // Only drop items KNOWN to be below the threshold. Tradeability is computed for
-    // the top-ranked items only, so rows without a score (the long tail) are kept —
-    // otherwise a min-trade filter would wipe out a big "All" scan (most unscored).
-    if(minTrade>0) rest=rest.filter(r=>r.tradeability==null || r.tradeability>=minTrade);
+    // Keep rows still loading their score (the background fill hasn't reached them
+    // yet) so the filter doesn't flicker the table as it streams in. Once a row is
+    // loaded, a null score means "never traded" and is dropped by any threshold.
+    if(minTrade>0) rest=rest.filter(r=> !r.liq_loaded || (r.tradeability!=null && r.tradeability>=minTrade));
   }
   const fav=indSortRows(favRows);
   rest=indSortRows(rest);
@@ -3827,9 +3858,13 @@ function renderIndStatus(){
       +`<span class="ts">press Scan for full results</span>`);
     return;
   }
+  const fillPill = IND.fillTotal>0
+    ? `<span class="pill">${_SPIN} scoring tradeability <b>${IND.fillDone.toLocaleString()}</b> / ${IND.fillTotal.toLocaleString()}</span>`
+    : "";
   setStatus(
     `<span class="pill"><b>${d.count.toLocaleString()}</b> items · source <b>${d.station_name}</b></span>`
     +`<span class="pill">batch <b>${d.runs.toLocaleString()}</b> runs</span>`
+    +fillPill
     +`<span class="ts">scan ${fmtTs(d.scanned_at)}</span>`);
 }
 
@@ -3870,6 +3905,7 @@ function indParams(extra){
 
 function scanInd(refreshSde){
   if(IND.es){ IND.es.close(); IND.es=null; }
+  IND_FILL_TOKEN++; IND.fillTotal=0;   // abandon any background fill from a prior scan
   const btn=$("#ind-go"); btn.disabled=true; btn.textContent="Scanning…";
   const p=indParams(refreshSde?{refresh_sde:"1"}:null);
   showIndProgress("Loading blueprint database…","",1);
@@ -3884,6 +3920,7 @@ function scanInd(refreshSde){
       es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
       IND.rows=data.rows; IND.lastData=data;
       hideIndProgress(); renderIndStatus(); renderIndTable();
+      fillIndTradeability();   // score the long tail in the background
     } else if(data.type==="error"){
       es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
       hideIndProgress(); setStatus(data.error, true);
@@ -3893,6 +3930,53 @@ function scanInd(refreshSde){
     es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
     hideIndProgress(); setStatus("Connection error — server may have stopped.", true);
   };
+}
+
+// The scan scores only the top-ranked rows inline (to return fast). This walks
+// the rest of the catalogue afterwards in chunks, fetching market history per
+// product so EVERY item ends up with a real tradeability — gracefully: pending
+// rows spin, a status pill counts progress, and the table fills in as it lands.
+// A newer scan/fill cancels this one via IND_FILL_TOKEN.
+async function fillIndTradeability(){
+  const token=++IND_FILL_TOKEN;
+  const station=(IND.lastData && IND.lastData.station_id) || $("#ind-station").value;
+  // Group still-pending rows by product type so one history lookup updates every
+  // blueprint that builds the same item.
+  const byProduct=new Map();
+  for(const r of IND.rows){
+    if(r.liq_loaded) continue;
+    if(!byProduct.has(r.product_id)) byProduct.set(r.product_id, []);
+    byProduct.get(r.product_id).push(r);
+  }
+  const ids=[...byProduct.keys()];
+  if(!ids.length){ IND.fillTotal=0; renderIndStatus(); return; }
+  IND.fillTotal=ids.length; IND.fillDone=0; renderIndStatus();
+  const CHUNK=60;
+  for(let i=0;i<ids.length;i+=CHUNK){
+    if(token!==IND_FILL_TOKEN) return;   // superseded by a newer scan
+    const chunk=ids.slice(i,i+CHUNK);
+    let liq=null;
+    try{
+      const p=new URLSearchParams({station:station, type_ids:chunk.join(",")});
+      const d=await (await fetch("/api/ind/liquidity?"+p)).json();
+      liq=d.liquidity||null;
+    }catch(e){ liq=null; }
+    if(token!==IND_FILL_TOKEN) return;
+    for(const pid of chunk){
+      const e=liq && liq[pid];
+      for(const r of (byProduct.get(pid)||[])){
+        if(e){
+          r.daily_vol=e.daily_vol;
+          r.tradeability=e.tradeability;
+          r.days_to_sell=(e.daily_vol>0)?((r.out_qty*r.runs)/e.daily_vol):null;
+        }
+        r.liq_loaded=true;   // clear the spinner even on a failed/empty fetch
+      }
+    }
+    IND.fillDone=Math.min(i+chunk.length, ids.length);
+    renderIndStatus(); renderIndTable();
+  }
+  IND.fillTotal=0; renderIndStatus();
 }
 
 // Loads ONLY the favourited blueprints, silently and without touching saved

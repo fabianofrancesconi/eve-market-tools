@@ -931,6 +931,60 @@ class TestIndustryRoutes:
         assert status == 404
 
 
+class TestIndustryTradeabilityFill:
+    """v1.36.0: the scan scores only the top rows inline; a background fill
+    (/api/ind/liquidity) scores every other item in chunks, with a spinner."""
+
+    def test_liquidity_scores_each_type(self, tmp_server):
+        base, _ = tmp_server
+        fake = {34: 1000.0, 35: None, 36: 0.0}  # traded / never traded / zero vol
+        with patch.object(lp_web, "fetch_history_volumes", return_value=fake):
+            data, status = http_get(f"{base}/api/ind/liquidity?type_ids=34,35,36")
+        assert status == 200
+        liq = data["liquidity"]
+        assert liq["34"]["daily_vol"] == 1000.0
+        assert liq["34"]["tradeability"] > 0
+        # Never traded -> no daily volume and no score (renders "—", not a 0).
+        assert liq["35"]["daily_vol"] is None
+        assert liq["35"]["tradeability"] is None
+        # Traded but zero recent volume -> a real, lowest score.
+        assert liq["36"]["tradeability"] == 0
+
+    def test_liquidity_parses_only_integer_ids(self, tmp_server):
+        base, _ = tmp_server
+        seen = {}
+
+        def fake(ids, region, sess, cache, **k):
+            seen["ids"] = set(ids)
+            return {}
+
+        with patch.object(lp_web, "fetch_history_volumes", side_effect=fake):
+            http_get(f"{base}/api/ind/liquidity?type_ids=34,abc,,36")
+        assert seen["ids"] == {34, 36}
+
+    def test_liquidity_empty_when_no_ids(self, tmp_server):
+        base, _ = tmp_server
+        with patch.object(lp_web, "fetch_history_volumes", return_value={}):
+            data, status = http_get(f"{base}/api/ind/liquidity?type_ids=")
+        assert status == 200
+        assert data["liquidity"] == {}
+
+    def test_scan_marks_scored_rows_loaded(self):
+        # The scan must flag the rows it scored inline so the client only spins +
+        # backfills the unscored remainder.
+        src = Path(lp_web.__file__).read_text(encoding="utf-8")
+        assert 'r["liq_loaded"] = True' in src
+
+    def test_frontend_background_fill_wired(self):
+        html = lp_web.INDEX_HTML
+        assert "function fillIndTradeability(" in html
+        assert "/api/ind/liquidity?" in html
+        assert "fillIndTradeability();" in html        # kicked off after a scan
+        assert "IND_FILL_TOKEN" in html                # stale-fill cancellation
+        # Pending rows spin in both market-depth columns until their score lands.
+        assert "!r.liq_loaded ? _SPIN" in html
+
+
 # ---------------------------------------------------------------------------
 # Delivered-runs counter (character tab) — cumulative, persisted, baseline on
 # first sight so history before this feature existed is never counted.

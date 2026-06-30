@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.21.1"
+__version__ = "1.21.2"
 
 import argparse
 import base64
@@ -1394,7 +1394,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
   /* Highlight the blueprint buy-in price (the thing you must purchase). */
   #ind-tbl td.bp-buy { color:var(--c8a040, #c8a040); font-weight:600; }
   .ind-d-grid b.bp-buy { color:#c8a040; }
-  #ind-tbl td.have-cell { text-align:center; }
   /* Build-location wizard modal */
   .ind-modal { position:fixed; inset:0; background:rgba(0,0,0,.6);
     display:flex; align-items:center; justify-content:center; z-index:50; }
@@ -2955,8 +2954,7 @@ const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
 const fmtDaysSell = v => (v===null||v===undefined) ? "—" : v.toFixed(1);
 
 const IND_COLS = [
-  {k:"_have",              t:"Have?",       w: 50, tip:"Tick the blueprints you already own. Owned ones move to the top section and drop the buy-in.", raw:true},
-  {k:"product_name",       t:"Item",        w:220, tip:"The manufactured item. * = an input has no sell price at the source hub."},
+  {k:"product_name",       t:"Item",        w:230, tip:"The manufactured item. * = an input has no sell price at the source hub. Open it to mark the blueprint as owned."},
   {k:"tech_level",         t:"T",           w: 40, tip:"Tech level.", f:v=>v?("T"+v):"—"},
   {k:"isk_per_hour_best",  t:"ISK/hr",      w:115, tip:"Profit per hour of manufacturing time — the headline 'worth it' number.", f:fmtISK, pn:true},
   {k:"profit_best",        t:"Profit/run",  w:110, tip:"Best-of patient/instant profit for one run.", f:fmtISK, pn:true},
@@ -2987,9 +2985,6 @@ function indSortRows(rows){
 
 function indRowHtml(r, idx){
   const tds=IND_COLS.map(c=>{
-    if(c.k==="_have"){
-      return `<td class="have-cell"><input type="checkbox" class="have-box" data-bp="${r.blueprint_id}"${r._owned?" checked":""}></td>`;
-    }
     let v=r[c.k], txt=c.f?c.f(v,r):(v===null||v===undefined?"—":v);
     if(c.k==="product_name" && r.missing_price) txt+=" *";
     let cls=c.cls||"";
@@ -3007,11 +3002,9 @@ function renderIndTable(){
     const arrow=active?(IND.sort.dir<0?" ▼":" ▲"):"";
     const tip=c.tip?` data-tip="${c.tip.replace(/"/g,'&quot;')}"`:"";
     const w=c.w?` style="width:${c.w}px"`:"";
-    const sortable=c.k!=="_have";
-    return `<th data-k="${c.k}"${tip}${w}${active?' class="sorted"':''}${sortable?"":' data-nosort="1"'}>${c.t}${arrow}</th>`;
+    return `<th data-k="${c.k}"${tip}${w}${active?' class="sorted"':''}>${c.t}${arrow}</th>`;
   }).join("")+"</tr>";
   thead.querySelectorAll("th").forEach(th=>{
-    if(th.dataset.nosort) return;
     th.onclick=()=>{
       const k=th.dataset.k;
       if(IND.sort.key===k) IND.sort.dir*=-1;
@@ -3047,16 +3040,7 @@ function renderIndTable(){
 
   tbody.querySelectorAll("tr[data-ridx]").forEach(tr=>{
     const r=ordered[+tr.dataset.ridx];
-    tr.onclick=ev=>{ if(ev.target.classList.contains("have-box")) return; openIndDetail(r); };
-  });
-  tbody.querySelectorAll(".have-box").forEach(box=>{
-    box.onclick=ev=>{
-      ev.stopPropagation();
-      const id=+box.dataset.bp;
-      if(box.checked) IND.owned.add(id); else IND.owned.delete(id);
-      saveIndPrefs();
-      renderIndTable();
-    };
+    tr.onclick=()=>openIndDetail(r);
   });
 }
 

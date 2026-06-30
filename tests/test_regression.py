@@ -21,6 +21,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 # ---------------------------------------------------------------------------
 # Load lp-web.py (hyphen in filename requires importlib)
@@ -958,3 +959,57 @@ class TestDeliveredRunsTracker:
         rt2 = lp_web._track_delivered_jobs(2, [self._job(1), self._job(2, runs=9)], {})
         assert rt1["total_runs"] == 7
         assert rt2["total_runs"] == 9
+
+
+# ---------------------------------------------------------------------------
+# Character data bundle (v1.32.0) — a failing market-orders call (missing
+# scope on the user's own EVE app, or stale token) must not take down the
+# rest of the character tab (wallet, jobs, LP) with it.
+# ---------------------------------------------------------------------------
+
+class TestCharDataOrdersIsolation:
+    def _login(self, monkeypatch):
+        import time as _time
+        monkeypatch.setattr(lp_web, "_AUTH", {
+            "access_token": "TOK", "refresh_token": "RT", "character_id": 42,
+            "name": "Test Char", "scopes": [], "expires_at": _time.time() + 3600,
+        })
+
+    def _http_error(self, status):
+        resp = MagicMock(status_code=status)
+        return requests.HTTPError(response=resp)
+
+    def test_orders_failure_does_not_break_rest_of_bundle(self, tmp_path, monkeypatch):
+        self._login(monkeypatch)
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", tmp_path / "jobs.json")
+        monkeypatch.setattr(lp_web.sso_core, "fetch_wallet", lambda *a, **k: 1_000_000.0)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skills",
+                            lambda *a, **k: {"total_sp": 5_000_000, "skills": []})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skillqueue", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: [])
+
+        def _raise_403(*a, **k):
+            raise self._http_error(403)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", _raise_403)
+
+        out = lp_web.do_char_data({})
+        assert out["wallet"] == 1_000_000.0
+        assert out["total_sp"] == 5_000_000
+        assert out["market_orders"] == []
+        assert "esi-markets.read_character_orders.v1" in out["market_orders_error"]
+
+    def test_orders_success_has_no_error(self, tmp_path, monkeypatch):
+        self._login(monkeypatch)
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", tmp_path / "jobs.json")
+        monkeypatch.setattr(lp_web.sso_core, "fetch_wallet", lambda *a, **k: 0.0)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skills",
+                            lambda *a, **k: {"total_sp": 0, "skills": []})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skillqueue", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: [])
+
+        out = lp_web.do_char_data({})
+        assert out["market_orders"] == []
+        assert out["market_orders_error"] is None

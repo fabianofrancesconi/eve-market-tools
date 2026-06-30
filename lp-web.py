@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.32.0"
+__version__ = "1.32.1"
 
 import argparse
 import base64
@@ -310,8 +310,21 @@ def do_char_data(q):
     # include_completed so delivered jobs (last 90 days) surface for the runs-
     # delivered counter; the active-jobs table below filters them back out.
     jobs = sso_core.fetch_industry_jobs(token, cid, SESSION, include_completed=True)
-    orders = sso_core.fetch_market_orders(token, cid, SESSION)
-    orders.sort(key=lambda o: o.get("issued") or "", reverse=True)
+    # Orders needs a scope (esi-markets.read_character_orders.v1) added after
+    # earlier logins, and that scope also has to be enabled for the user's own
+    # registered EVE app on developers.eveonline.com — if either is missing
+    # ESI 403s. Isolate that failure so the rest of the character tab (wallet,
+    # skills, jobs, LP) still loads instead of the whole bundle 500ing.
+    orders, orders_error = [], None
+    try:
+        orders = sso_core.fetch_market_orders(token, cid, SESSION)
+        orders.sort(key=lambda o: o.get("issued") or "", reverse=True)
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "?"
+        orders_error = (f"Couldn't load market orders ({status}). Make sure "
+                        "'esi-markets.read_character_orders.v1' is enabled for your "
+                        "EVE application at developers.eveonline.com, then log out and "
+                        "back in.")
 
     # Resolve every type/skill name referenced by jobs, the skill queue and
     # open orders in one call.
@@ -396,6 +409,7 @@ def do_char_data(q):
         "jobs": out_jobs,
         "runs_tracked": runs_tracked,
         "market_orders": orders_out,
+        "market_orders_error": orders_error,
     }
 
 
@@ -1650,6 +1664,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .char-card-wide { grid-column:1/-1; }
   .char-card-sub { color:var(--dim); font-size:11px; font-weight:400; margin-left:6px; }
   .char-none { color:var(--dim); font-size:13px; padding:10px 4px; }
+  .char-none.char-none-warn { color:var(--gold); }
   #char-orders-tbl td.tx-buy { color:var(--red); font-weight:600; }
   #char-orders-tbl td.tx-sell { color:var(--green2); font-weight:600; }
   #char-jobs-tbl td.tl, #char-jobs-tbl th:last-child { text-align:right;
@@ -4219,6 +4234,8 @@ function renderCharData(){
 
   const orders=d.market_orders||[];
   $("#char-orders-empty").classList.toggle("hidden", orders.length>0);
+  $("#char-orders-empty").classList.toggle("char-none-warn", !!d.market_orders_error);
+  $("#char-orders-empty").textContent=d.market_orders_error||"No open orders.";
   $("#char-orders-tbl").classList.toggle("hidden", orders.length===0);
   $("#char-orders-tbl tbody").innerHTML=orders.map(o=>{
     const issuedMs=o.issued?Date.parse(o.issued):NaN;

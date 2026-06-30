@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.36.0"
+__version__ = "1.37.0"
 
 import argparse
 import base64
@@ -48,7 +48,8 @@ from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
     TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_prices,
     fetch_history_volumes,
-    fetch_orderbook_jita, fetch_order_rank, fetch_prices, fetch_sell_order_stats, get_offers,
+    fetch_orderbook_jita, fetch_order_rank, fetch_prices, fetch_prices_esi,
+    fetch_sell_order_stats, get_offers,
     load_json, resolve_corp_id, resolve_corp_name, resolve_names, resolve_station_region,
     resolve_volumes, save_json, suggested_list_price,
 )
@@ -976,6 +977,7 @@ def do_ind_scan(q, emit=None):
         station_id = JITA_STATION_ID
     region_id = TRADE_HUBS[station_id]["region_id"]
     refresh_sde = q.get("refresh_sde", ["0"])[0] in ("1", "true", "on")
+    refresh_prices = q.get("refresh_prices", ["0"])[0] in ("1", "true", "on")
     buildable_only = q.get("buildable_only", ["0"])[0] in ("1", "true", "on")
     include_unbuildable = q.get("include_unbuildable", ["0"])[0] in ("1", "true", "on")
     hide_t2 = q.get("hide_t2", ["0"])[0] in ("1", "true", "on")
@@ -1038,8 +1040,16 @@ def do_ind_scan(q, emit=None):
 
         _emit({"type": "progress", "pct": 30,
                "msg": f"Pricing {len(type_ids):,} item types at "
-                      f"{TRADE_HUBS[station_id]['name']}…", "sub": ""})
-        prices = fetch_prices(type_ids, SESSION, station_id)
+                      f"{TRADE_HUBS[station_id]['name']} (ESI direct)…", "sub": ""})
+
+        def _price_progress(idx, total):
+            pct = 30 + int(28 * idx / max(total, 1))
+            _emit({"type": "progress", "pct": pct,
+                   "msg": f"Pricing {idx:,}/{total:,} types…", "sub": ""})
+
+        prices = fetch_prices_esi(type_ids, SESSION, station_id=station_id,
+                                  region_id=region_id, cache_dir=CACHE_DIR,
+                                  refresh=refresh_prices, emit=_price_progress)
         adjusted = ind_core.fetch_adjusted_prices(SESSION, CACHE_DIR)
         volumes = ind_core.volumes_for(conn, type_ids)
 
@@ -2204,6 +2214,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <label class="check-field" data-tip="Only show items every required skill (at the Skills @ level) can build."><input type="checkbox" id="ind-buildable"> Buildable only</label>
       <label class="check-field" data-tip="Also show items whose blueprint you don't own and isn't on sale (a T1 BPO with no market order). Off = only craftable things."><input type="checkbox" id="ind-unobtainable"> Include unobtainable</label>
       <label class="check-field" data-tip="Hide T2 / invention items — show only directly-built T1 items."><input type="checkbox" id="ind-hidet2"> Hide T2</label>
+      <button id="ind-refresh-prices" class="secondary" data-tip="Force re-fetch live market prices from ESI (bypasses 5-min cache).">⟳ Refresh Prices</button>
       <button id="ind-refresh" class="secondary" data-tip="Re-download the blueprint database (SDE) from Fuzzwork. Only needed after a game patch.">⟳ Refresh SDE</button>
     </div>
   </div>
@@ -3654,7 +3665,7 @@ const fmtDur = s => {
   return h>0 ? `${h}h ${m}m` : `${m}m`;
 };
 const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
-const fmtDaysSell = v => (v===null||v===undefined) ? "—" : v.toFixed(1);
+const fmtDaysSell = v => (v===null||v===undefined) ? "—" : (v<1 ? "<1 d" : v.toFixed(1)+" d");
 
 const IND_COLS = [
   {k:"_fav",               t:"★",           w: 30, tip:"Mark as favourite. Favourites pin to the top and stay visible regardless of filters.", raw:true},
@@ -3903,11 +3914,14 @@ function indParams(extra){
   return new URLSearchParams(Object.assign(p, extra||{}));
 }
 
-function scanInd(refreshSde){
+function scanInd(refreshSde, refreshPrices){
   if(IND.es){ IND.es.close(); IND.es=null; }
   IND_FILL_TOKEN++; IND.fillTotal=0;   // abandon any background fill from a prior scan
   const btn=$("#ind-go"); btn.disabled=true; btn.textContent="Scanning…";
-  const p=indParams(refreshSde?{refresh_sde:"1"}:null);
+  const extra={};
+  if(refreshSde) extra.refresh_sde="1";
+  if(refreshPrices) extra.refresh_prices="1";
+  const p=indParams(Object.keys(extra).length?extra:null);
   showIndProgress("Loading blueprint database…","",1);
   setStatus("Scanning…");
   const es=new EventSource("/api/ind/scan?"+p); IND.es=es;
@@ -4488,7 +4502,7 @@ $("#cfg-save").onclick=async()=>{
   closeAuthCfg();
   setStatus('<span class="pill">EVE login settings saved</span>');
 };
-$("#ind-usechar").onchange=()=>{ saveLS(); saveIndPrefs(); if(IND.lastData) scanInd(false); };
+$("#ind-usechar").onchange=()=>{ saveLS(); saveIndPrefs(); if(IND.lastData) scanInd(false,false); };
 
 // Re-pull character data (wallet, jobs, skill queue, LP) on EVE's cache cadence
 // so the job timers stay current. The per-second ticker handles the countdown
@@ -4606,8 +4620,9 @@ function saveIndPrefs(){
 }
 
 // wiring
-$("#ind-go").onclick=()=>scanInd(false);
-$("#ind-refresh").onclick=()=>scanInd(true);
+$("#ind-go").onclick=()=>scanInd(false,false);
+$("#ind-refresh-prices").onclick=()=>scanInd(false,true);
+$("#ind-refresh").onclick=()=>scanInd(true,false);
 // Recompute the batch-scaled columns (profit×N, cargo in/out, days-to-sell) from
 // each row's per-run building blocks, so changing the run count updates the table
 // live without a rescan.

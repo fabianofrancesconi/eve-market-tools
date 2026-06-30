@@ -58,8 +58,8 @@ ADV_INDUSTRY_TIME_PER_LEVEL = 0.03
 # a log scale. What matters for a producer is how many units the market actually
 # absorbs per day (not how many separate transactions). An item moving this many
 # units/day scores ~100; the log curve spreads out the low end, which is exactly
-# where "is there a market at all?" matters. 1000 units/day = comfortably liquid.
-TRADEABILITY_FULL = 1000.0
+# where "is there a market at all?" matters.
+TRADEABILITY_FULL = 5000.0
 
 # Rows inserted per executemany batch when importing a CSV.
 _INSERT_BATCH = 5000
@@ -538,8 +538,9 @@ def tradeability(daily_volume):
     look profitable on paper but whose market can't absorb meaningful quantity.
 
       0 units/day              -> 0   (you can't realistically sell it)
-      ~10/day                  -> ~35
-      ~100/day                 -> ~67
+      ~10/day                  -> ~28
+      ~100/day                 -> ~54
+      ~1000/day                -> ~81
       >= TRADEABILITY_FULL/day -> 100
 
     Log scale (traded volume spans orders of magnitude), clamped to [0, 100].

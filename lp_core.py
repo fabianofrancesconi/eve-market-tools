@@ -12,7 +12,7 @@ import json
 import math
 import statistics
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -132,6 +132,96 @@ def fetch_prices(type_ids, session, station_id=JITA_STATION_ID):
                 "sell_volume": float(sell.get("volume") or 0),
                 "buy_volume": float(buy.get("volume") or 0),
             }
+    return out
+
+
+# --- ESI-direct pricing (live orders, cached) --------------------------------
+PRICE_CACHE_TTL = 300  # 5 minutes — matches ESI's cache header for market orders
+
+def _esi_orders_for_type(type_id, session, station_id, region_id):
+    """Fetch all orders for one type in a region from ESI, filter to station."""
+    orders, page = [], 1
+    while True:
+        r = session.get(f"{ESI}/markets/{region_id}/orders/",
+                        params={"type_id": type_id, "order_type": "all", "page": page},
+                        headers=HEADERS, timeout=30)
+        if r.status_code != 200:
+            break
+        batch = r.json()
+        if not batch:
+            break
+        orders.extend(batch)
+        if page >= int(r.headers.get("X-Pages", 1)):
+            break
+        page += 1
+    return [o for o in orders if o.get("location_id") == station_id]
+
+
+def _summarise_orders(orders):
+    """From a list of ESI orders at one station, compute sell_min, buy_max,
+    sell_volume, buy_volume."""
+    sells = [o for o in orders if not o["is_buy_order"]]
+    buys = [o for o in orders if o["is_buy_order"]]
+    sell_min = min((o["price"] for o in sells), default=0) or None
+    buy_max = max((o["price"] for o in buys), default=0) or None
+    sell_volume = sum(o["volume_remain"] for o in sells)
+    buy_volume = sum(o["volume_remain"] for o in buys)
+    return {
+        "sell_min": sell_min,
+        "buy_max": buy_max,
+        "sell_volume": float(sell_volume),
+        "buy_volume": float(buy_volume),
+    }
+
+
+def fetch_prices_esi(type_ids, session, station_id=JITA_STATION_ID,
+                     region_id=JITA_REGION_ID, cache_dir=None, refresh=False,
+                     emit=None):
+    """Like fetch_prices() but queries ESI directly for live orders per type,
+    with a 5-minute disk cache. More accurate than Fuzzwork aggregates (no lag,
+    real order depth). Pass refresh=True to bypass the cache."""
+    if cache_dir is None:
+        cache_dir = default_cache_dir()
+    cache_path = Path(cache_dir) / f"esi_prices_{station_id}.json"
+    now = time.time()
+    cached = {}
+    if not refresh:
+        cached = load_json(cache_path, {})
+        ts = cached.get("_ts", 0)
+        if now - ts < PRICE_CACHE_TTL:
+            ids = sorted(set(type_ids))
+            out = {}
+            for tid in ids:
+                entry = cached.get(str(tid))
+                if entry:
+                    out[tid] = entry
+            missing = [tid for tid in ids if tid not in out]
+            if not missing:
+                return out
+        else:
+            cached = {}
+
+    ids = sorted(set(type_ids))
+    out = {}
+    total = len(ids)
+    for idx, tid in enumerate(ids):
+        entry = cached.get(str(tid))
+        if entry and not refresh:
+            out[tid] = entry
+            continue
+        try:
+            orders = _esi_orders_for_type(tid, session, station_id, region_id)
+            out[tid] = _summarise_orders(orders)
+        except Exception:
+            out[tid] = {"sell_min": None, "buy_max": None,
+                        "sell_volume": 0.0, "buy_volume": 0.0}
+        if emit and idx % 20 == 0:
+            emit(idx, total)
+
+    to_save = {"_ts": now}
+    for tid, v in out.items():
+        to_save[str(tid)] = v
+    save_json(cache_path, to_save)
     return out
 
 
@@ -305,14 +395,23 @@ def resolve_volumes(type_ids, session, cache_dir):
 
 
 def _median_daily_volume(history, days=HISTORY_DAYS):
-    """Median of the last `days` daily traded volumes from an ESI history list.
-    Median (not mean) so a single whale day doesn't inflate the rate. None when
-    there's no usable history."""
-    vols = [d.get("volume") for d in history[-days:]]
-    vols = [v for v in vols if v is not None]
-    if not vols:
+    """Average daily volume over the last `days` CALENDAR days. ESI history
+    omits days with zero trades, so we fill gaps with 0 to get the true daily
+    rate.  Mean (not median) because median-with-zeros collapses to 0 for
+    items that trade sporadically.  None when there's no usable history."""
+    if not history:
         return None
-    return statistics.median(vols)
+    last_date = datetime.strptime(history[-1]["date"], "%Y-%m-%d")
+    start_date = last_date - timedelta(days=days - 1)
+    vol_by_date = {}
+    for entry in history:
+        d = datetime.strptime(entry["date"], "%Y-%m-%d")
+        if d >= start_date:
+            vol_by_date[d] = entry.get("volume") or 0
+    total = sum(vol_by_date.values())
+    if total == 0:
+        return 0
+    return total / days
 
 
 def _median_daily_avg_price(history, days=HISTORY_DAYS):

@@ -16,36 +16,58 @@ import lp_core
 # _median_daily_volume
 # ---------------------------------------------------------------------------
 
+def _hist_consecutive(volumes, end_date="2024-06-30"):
+    """Build a history list with one entry per volume on consecutive dates."""
+    from datetime import datetime, timedelta
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+    start = end - timedelta(days=len(volumes) - 1)
+    return [{"date": (start + timedelta(days=i)).strftime("%Y-%m-%d"),
+             "volume": v} for i, v in enumerate(volumes)]
+
+
 class TestMedianDailyVolume:
-    def test_median_of_volumes(self):
-        hist = [{"volume": 100}, {"volume": 300}, {"volume": 200}]
+    def test_average_of_consecutive_volumes(self):
+        # 30 consecutive days, each traded -> mean of the volumes
+        hist = _hist_consecutive([100, 300, 200] * 10)
         assert lp_core._median_daily_volume(hist) == 200
 
     def test_empty_history_is_none(self):
         assert lp_core._median_daily_volume([]) is None
 
-    def test_skips_none_volumes(self):
-        hist = [{"volume": None}, {"volume": 50}, {"volume": 150}]
-        assert lp_core._median_daily_volume(hist) == 100
+    def test_sparse_trading_fills_zeros(self):
+        # Only 3 days out of 30 trade -> average is total / 30
+        from datetime import datetime, timedelta
+        end = datetime(2024, 6, 30)
+        hist = [
+            {"date": (end - timedelta(days=20)).strftime("%Y-%m-%d"), "volume": 300},
+            {"date": (end - timedelta(days=10)).strftime("%Y-%m-%d"), "volume": 300},
+            {"date": end.strftime("%Y-%m-%d"), "volume": 300},
+        ]
+        result = lp_core._median_daily_volume(hist, days=30)
+        assert abs(result - 900 / 30) < 0.01
 
-    def test_all_none_is_none(self):
-        assert lp_core._median_daily_volume([{"volume": None}, {}]) is None
+    def test_zero_total_returns_zero(self):
+        hist = _hist_consecutive([0, 0, 0])
+        assert lp_core._median_daily_volume(hist, days=3) == 0
 
-    def test_uses_only_last_n_days(self):
-        # 40 days: first 10 are huge whale days that must be ignored when
-        # HISTORY_DAYS=30 keeps only the tail of steady 10-unit days.
-        hist = [{"volume": 1_000_000} for _ in range(10)] + \
-               [{"volume": 10} for _ in range(30)]
-        assert lp_core._median_daily_volume(hist, days=30) == 10
+    def test_uses_only_last_n_calendar_days(self):
+        # Old entries outside the window are ignored
+        from datetime import datetime, timedelta
+        end = datetime(2024, 6, 30)
+        old_entry = {"date": (end - timedelta(days=40)).strftime("%Y-%m-%d"),
+                     "volume": 1_000_000}
+        recent = {"date": end.strftime("%Y-%m-%d"), "volume": 300}
+        hist = [old_entry, recent]
+        result = lp_core._median_daily_volume(hist, days=30)
+        assert abs(result - 300 / 30) < 0.01
 
 
 # ---------------------------------------------------------------------------
 # fetch_history_volumes
 # ---------------------------------------------------------------------------
 
-_HIST = [{"date": "2024-01-01", "volume": 100},
-         {"date": "2024-01-02", "volume": 300},
-         {"date": "2024-01-03", "volume": 200}]
+_HIST = [{"date": f"2024-01-{i+1:02d}", "volume": 200}
+         for i in range(30)]
 
 
 class TestFetchHistoryVolumes:

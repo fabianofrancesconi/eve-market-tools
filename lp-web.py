@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.42.0"
+__version__ = "1.43.0"
 
 import argparse
 import base64
@@ -998,7 +998,8 @@ IND_HISTORY_TOP_N = 80
 _IND_PREF_KEYS = ("profiles", "profile", "market_group", "me", "te", "job_rate",
                   "sales_tax", "broker", "runs", "station", "skills_level",
                   "buildable_only", "include_unbuildable", "hide_t2", "owned",
-                  "sort_key", "sort_dir", "min_tradeability", "favorites", "col_order")
+                  "sort_key", "sort_dir", "min_tradeability", "favorites", "col_order",
+                  "col_widths", "col_vis")
 
 
 def do_ind_prefs(q):
@@ -2046,6 +2047,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-prereq { font-size:10px; color:var(--dim); font-style:italic; }
   #ind-tbl th { cursor:pointer; user-select:none; }
   #ind-tbl th[data-nosort] { cursor:default; }
+  #ind-tbl th, #ind-tbl td { overflow:hidden; text-overflow:ellipsis; }
+  #ind-tbl td:first-child, #ind-tbl th:first-child { white-space:normal; word-break:break-word;
+    overflow:visible; text-overflow:clip; line-height:1.3; }
   /* Highlight the blueprint buy-in price (the thing you must purchase). */
   #ind-tbl td.bp-buy { color:var(--c8a040, #c8a040); font-weight:600; }
   .ind-d-grid b.bp-buy { color:#c8a040; }
@@ -2306,9 +2310,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <label class="check-field" data-tip="Also show items whose blueprint you don't own and isn't on sale (a T1 BPO with no market order). Off = only craftable things."><input type="checkbox" id="ind-unobtainable"> Include unobtainable</label>
       <label class="check-field" data-tip="Hide T2 / invention items — show only directly-built T1 items."><input type="checkbox" id="ind-hidet2"> Hide T2</label>
       <button id="ind-refresh" class="secondary" data-tip="Re-download the blueprint database (SDE) from Fuzzwork. Only needed after a game patch.">⟳ Refresh SDE</button>
+      <button id="indColPickerBtn" class="secondary" data-tip="Choose visible columns">Columns ▾</button>
     </div>
   </div>
 </div>
+<div id="indColPicker" class="col-picker hidden"></div>
 
 <div id="statusbar"></div>
 
@@ -2334,7 +2340,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="prog-sub" id="ind-prog-sub"></div>
     </div>
     <div id="ind-detail" class="hidden"></div>
-    <table id="ind-tbl"><thead></thead><tbody></tbody></table>
+    <table id="ind-tbl"><colgroup id="ind-cg"></colgroup><thead></thead><tbody></tbody></table>
   </div>
   <div id="char-tablewrap" class="tablewrap hidden">
     <div id="char-empty" class="char-empty">
@@ -2557,7 +2563,9 @@ function settingsBlob(){
       min_tradeability:$("#ind-mintrade").value,
       profiles:JSON.stringify(IND.profiles),profile:$("#ind-profile").value,
       owned:JSON.stringify([...IND.owned]),favorites:JSON.stringify([...IND.favorites]),
-      sort_key:IND.sort.key,sort_dir:IND.sort.dir}
+      sort_key:IND.sort.key,sort_dir:IND.sort.dir,
+      col_order:JSON.stringify(IND.colOrder),col_widths:JSON.stringify(IND.colw),
+      col_vis:JSON.stringify(IND.colVis)}
   };
 }
 // Debounced push of the full settings blob to the server so every device the
@@ -3756,6 +3764,7 @@ function openArbChart(row){
 let IND = {rows:[], sort:{key:"isk_per_hour_best", dir:-1}, lastData:null, es:null,
            groupsLoaded:false, profiles:[], owned:new Set(), favorites:new Set(),
            timers:{}, savedGroup:null, openDetail:null, colOrder:null,
+           colw:{}, colVis:{},
            fillTotal:0, fillDone:0};
 // Bumped whenever a scan starts or a new fill begins, so an in-flight background
 // tradeability fill from a previous scan knows to abandon itself.
@@ -3793,6 +3802,7 @@ const IND_COLS = [
 
 const IND_COL_BY_KEY=Object.fromEntries(IND_COLS.map(c=>[c.k,c]));
 IND.colOrder=IND_COLS.map(c=>c.k);   // user-reorderable; persisted with the rest of the IND prefs
+IND_COLS.forEach(c=>{ IND.colVis[c.k]=true; IND.colw[c.k]=c.w; });
 // Resolve IND.colOrder to column objects, dropping unknown keys and appending any
 // columns not yet listed (so a saved order survives IND_COLS additions/removals).
 function indOrderedCols(){
@@ -3800,6 +3810,31 @@ function indOrderedCols(){
   for(const k of IND.colOrder){ const c=IND_COL_BY_KEY[k]; if(c&&!seen.has(k)){ out.push(c); seen.add(k); } }
   for(const c of IND_COLS) if(!seen.has(c.k)){ out.push(c); seen.add(c.k); }
   return out;
+}
+function indVisCols(){ return indOrderedCols().filter(c=>IND.colVis[c.k]!==false); }
+function indSetColgroup(){
+  $("#ind-cg").innerHTML=indVisCols().map(c=>`<col style="width:${IND.colw[c.k]||c.w}px">`).join("");
+}
+
+let IND_RESIZING=false;
+function startIndResize(e, key){
+  e.preventDefault(); e.stopPropagation();
+  IND_RESIZING=true;
+  e.target.classList.add("active");
+  document.body.classList.add("col-resizing");
+  $("#ind-tbl").style.tableLayout="fixed";
+  const startX=e.clientX, startW=IND.colw[key]||80;
+  function mm(ev){ IND.colw[key]=Math.max(40,startW+(ev.clientX-startX)); indSetColgroup(); }
+  function mu(){
+    document.removeEventListener("mousemove",mm);
+    document.removeEventListener("mouseup",mu);
+    e.target.classList.remove("active");
+    document.body.classList.remove("col-resizing");
+    saveIndPrefs();
+    setTimeout(()=>{ IND_RESIZING=false; },0);
+  }
+  document.addEventListener("mousemove",mm);
+  document.addEventListener("mouseup",mu);
 }
 
 // ── Industry column drag-to-reorder (mirrors the LP store) ─────────────────
@@ -3853,6 +3888,29 @@ function wireIndColDrag(th){
   });
 }
 
+// ── Industry column picker (mirrors the LP store) ───────────────────────────
+(function(){
+  const btn=document.getElementById("indColPickerBtn");
+  const picker=document.getElementById("indColPicker");
+  function renderPicker(){
+    picker.innerHTML=IND_COLS.map(c=>`<label><input type="checkbox" data-k="${c.k}"${IND.colVis[c.k]!==false?' checked':''}> ${c.t}</label>`).join("");
+    picker.querySelectorAll("input").forEach(cb=>{
+      cb.onchange=()=>{ IND.colVis[cb.dataset.k]=cb.checked; renderIndTable(); saveIndPrefs(); };
+    });
+  }
+  btn.onclick=e=>{
+    e.stopPropagation();
+    if(!picker.classList.contains("hidden")){ picker.classList.add("hidden"); return; }
+    renderPicker();
+    const r=btn.getBoundingClientRect();
+    picker.style.top=(r.bottom+4)+"px";
+    picker.style.left=r.left+"px";
+    picker.classList.remove("hidden");
+  };
+  document.addEventListener("click",()=>picker.classList.add("hidden"));
+  picker.addEventListener("click",e=>e.stopPropagation());
+})();
+
 function indSortRows(rows){
   const k=IND.sort.key, d=IND.sort.dir;
   return [...rows].sort((a,b)=>{
@@ -3866,7 +3924,7 @@ function indSortRows(rows){
 
 function indRowHtml(r, idx){
   const fav=IND.favorites.has(r.blueprint_id);
-  const tds=indOrderedCols().map(c=>{
+  const tds=indVisCols().map(c=>{
     if(c.k==="_fav"){
       return `<td class="fav-cell"><span class="fav-star${fav?" on":""}" data-bp="${r.blueprint_id}" title="${fav?"Remove favourite":"Add favourite"}">${fav?"★":"☆"}</span></td>`;
     }
@@ -3889,18 +3947,22 @@ function indRowHtml(r, idx){
 
 function renderIndTable(){
   const thead=$("#ind-tbl thead"), tbody=$("#ind-tbl tbody");
-  thead.innerHTML="<tr>"+indOrderedCols().map(c=>{
+  const vc=indVisCols();
+  $("#ind-tbl").style.tableLayout="fixed";
+  indSetColgroup();
+  thead.innerHTML="<tr>"+vc.map(c=>{
     const active=IND.sort.key===c.k;
     const arrow=active?(IND.sort.dir<0?" ▼":" ▲"):"";
     const tip=c.tip?` data-tip="${c.tip.replace(/"/g,'&quot;')}"`:"";
-    const w=c.w?` style="width:${c.w}px"`:"";
     const nosort=c.raw?' data-nosort="1"':"";
-    return `<th draggable="true" data-k="${c.k}"${tip}${w}${nosort}${active?' class="sorted"':''}>${c.t}${arrow}</th>`;
+    return `<th draggable="true" data-k="${c.k}"${tip}${nosort}${active?' class="sorted"':''}>${c.t}${arrow}<span class="resizer"></span></th>`;
   }).join("")+"</tr>";
-  thead.querySelectorAll("th").forEach(th=>{
+  thead.querySelectorAll("th").forEach((th,i)=>{
     wireIndColDrag(th);   // every column can be dragged to reorder
+    th.querySelector(".resizer").addEventListener("mousedown",e=>startIndResize(e,vc[i].k));
     if(th.dataset.nosort) return;
     th.onclick=()=>{
+      if(IND_RESIZING){ IND_RESIZING=false; return; }
       if(IND_DRAG_KEY) return;   // tail end of a reorder, not a sort click
       const k=th.dataset.k;
       if(IND.sort.key===k) IND.sort.dir*=-1;
@@ -3929,7 +3991,7 @@ function renderIndTable(){
   }
   const fav=indSortRows(favRows);
   rest=indSortRows(rest);
-  const ncol=IND_COLS.length;
+  const ncol=vc.length;
   const sect=(label,n)=>`<tr class="ind-section"><td colspan="${ncol}">${label} — ${n}</td></tr>`;
 
   const ordered=[];   // flat list parallel to rendered data rows, for click handling
@@ -4743,6 +4805,8 @@ function saveIndPrefs(){
     sort_key: IND.sort.key,
     sort_dir: String(IND.sort.dir),
     col_order: JSON.stringify(IND.colOrder),
+    col_widths: JSON.stringify(IND.colw),
+    col_vis: JSON.stringify(IND.colVis),
   });
   fetch("/api/ind/prefs?"+p).catch(()=>{}); saveLS();
 }
@@ -4873,6 +4937,14 @@ async function loadSettings(){
       if(ind.col_order){ try{
         const ord=typeof ind.col_order==="string"?JSON.parse(ind.col_order):ind.col_order;
         if(Array.isArray(ord)&&ord.length) IND.colOrder=ord;  // indOrderedCols() drops unknown / appends new
+      }catch(e){} }
+      if(ind.col_widths){ try{
+        const cw=typeof ind.col_widths==="string"?JSON.parse(ind.col_widths):ind.col_widths;
+        if(cw&&typeof cw==="object") Object.assign(IND.colw,cw);
+      }catch(e){} }
+      if(ind.col_vis){ try{
+        const cv=typeof ind.col_vis==="string"?JSON.parse(ind.col_vis):ind.col_vis;
+        if(cv&&typeof cv==="object") IND_COLS.forEach(c=>{ if(c.k in cv) IND.colVis[c.k]=!!cv[c.k]; });
       }catch(e){} }
       if(ind.station) $("#ind-station").value=ind.station;
       if(ind.me!==undefined&&ind.me!=="") $("#ind-me").value=ind.me;

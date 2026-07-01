@@ -987,15 +987,44 @@ class TestIndustryRoutes:
         saved = json.loads((tmp_path / "ind.json").read_text())
         assert saved["col_order"] == order
 
+    def test_ind_prefs_persists_col_widths_and_vis(self, tmp_server, tmp_path, monkeypatch):
+        base, _ = tmp_server
+        monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
+        widths = '{"product_name":260}'
+        vis = '{"ask":false}'
+        body, status = http_get(
+            f"{base}/api/ind/prefs?col_widths={urllib.parse.quote(widths)}"
+            f"&col_vis={urllib.parse.quote(vis)}")
+        assert status == 200 and body["ok"] is True
+        saved = json.loads((tmp_path / "ind.json").read_text())
+        assert saved["col_widths"] == widths
+        assert saved["col_vis"] == vis
+
     def test_ind_columns_reorderable(self):
         html = lp_web.INDEX_HTML
         # Headers are draggable and the order is resolved through indOrderedCols().
         assert "function indOrderedCols(" in html
         assert "function reorderIndCols(" in html
-        assert "thead.innerHTML=\"<tr>\"+indOrderedCols()" in html
+        # Rendering is scoped to visible columns, which are built on the order.
+        assert "function indVisCols(){ return indOrderedCols()" in html
+        assert "thead.innerHTML=\"<tr>\"+vc.map" in html
         # Order is saved and restored.
         assert "col_order: JSON.stringify(IND.colOrder)" in html
         assert "if(ind.col_order){ try{" in html
+
+    def test_ind_columns_resizable_and_toggleable(self):
+        html = lp_web.INDEX_HTML
+        # Resize: colgroup + resizer handle + drag wiring, mirroring the LP store.
+        assert '<table id="ind-tbl"><colgroup id="ind-cg">' in html
+        assert "function startIndResize(" in html
+        assert '<span class="resizer"></span>' in html
+        # Visibility: a Columns picker toggles IND.colVis and re-renders.
+        assert 'id="indColPickerBtn"' in html
+        assert 'id="indColPicker"' in html
+        assert "IND.colVis[cb.dataset.k]=cb.checked" in html
+        # Widths/visibility ride along with the rest of the industry prefs.
+        assert "col_widths: JSON.stringify(IND.colw)" in html
+        assert "col_vis: JSON.stringify(IND.colVis)" in html
 
     def test_unknown_ind_subpath_404(self, tmp_server):
         base, _ = tmp_server

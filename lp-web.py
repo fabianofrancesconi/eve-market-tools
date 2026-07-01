@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.57.2"
+__version__ = "1.57.3"
 
 import argparse
 import base64
@@ -1942,6 +1942,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .redrow label { color:var(--dim); font-size:13px; white-space:nowrap; }
   .redrow input { width:90px; font-size:15px; font-weight:600; }
   .redrow .maxlink { font-size:12px; color:var(--dim); }
+  .redrow .maxlink + .maxlink::before { content:"·"; margin-right:10px; color:var(--dim2); }
   .kpis { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin:12px 0; }
   .kpi {
     background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
@@ -3100,12 +3101,16 @@ function renderDetail(){
       <label>Redemptions</label>
       <input id="reds" type="number" min="1" value="${def}">
       <span class="maxlink">max LP affords: <a href="#" id="maxLink">${fmtNum(d.max_units)}</a></span>
+      ${AUTH.loggedIn&&AUTH.data&&AUTH.data.wallet!=null&&d.total_cost>0
+        ?`<span class="maxlink">max ISK affords: <a href="#" id="maxIskLink">${fmtNum(Math.floor(AUTH.data.wallet/d.total_cost))}</a></span>`:''}
     </div>
     <div id="dbody"></div>`;
   $("#closeBtn").onclick=closeDetail;
   $("#reds").oninput=renderBody;
   const ml=$("#maxLink");
   if(ml) ml.onclick=e=>{ e.preventDefault(); $("#reds").value=Math.max(d.max_units,1); renderBody(); };
+  const mil=document.getElementById("maxIskLink");
+  if(mil) mil.onclick=e=>{ e.preventDefault(); $("#reds").value=Math.max(Math.floor(AUTH.data.wallet/d.total_cost),1); renderBody(); };
   renderBody();
   const regionId=_STATION_TO_REGION[parseInt(STATE.ctx.station)]||10000002;
   requestAnimationFrame(()=>{

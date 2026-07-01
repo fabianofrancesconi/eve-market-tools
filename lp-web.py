@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.54.0"
+__version__ = "1.55.0"
 
 import argparse
 import base64
@@ -1041,7 +1041,7 @@ def do_arb_scan(q, emit=None):
 IND_HISTORY_TOP_N = 80
 
 _IND_PREF_KEYS = ("profiles", "profile", "market_group", "job_rate",
-                  "sales_tax", "broker", "runs", "station",
+                  "sales_tax", "broker", "station",
                   "buildable_only", "include_unbuildable", "hide_t2",
                   "sort_key", "sort_dir", "min_tradeability", "favorites", "col_order",
                   "col_widths", "col_vis")
@@ -2061,8 +2061,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .arb-chart-head h3 { font-size:16px; font-weight:700; color:var(--cyan); margin:0; }
 
   /* ── Industry ────────────────────────────────────────────────────── */
-  .ind-presets { display:inline-flex; gap:3px; margin-left:4px; }
-  .ind-preset { padding:4px 7px; font-size:11px; }
+  .ind-d-runs-label { font-size:12px; }
+  .ind-d-runs-label input { font-size:12px; border:1px solid #555; background:#1e1e2a; color:#eee; border-radius:4px; padding:2px 4px; }
   #ind-detail {
     background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
     padding:12px 14px; margin-bottom:12px;
@@ -2330,21 +2330,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
   </div>
-  <!-- Output volume & sellability filter -->
+  <!-- Filters -->
   <div class="ctrl-group">
-    <span class="ctrl-cap">Output</span>
+    <span class="ctrl-cap">Filter</span>
     <div class="ctrl-fields">
-      <div class="field" data-tip="How many production runs to model. Updates profit, cargo and days-to-sell live. Use the 1 / 100 / 10k presets or type a number.">
-        <label>Batch (runs)</label>
-        <div class="field-row">
-          <input id="ind-runs" type="number" min="1" value="1" style="width:65px">
-          <span class="ind-presets">
-            <button class="ind-preset secondary" data-n="1">1</button>
-            <button class="ind-preset secondary" data-n="100">100</button>
-            <button class="ind-preset secondary" data-n="10000">10k</button>
-          </span>
-        </div>
-      </div>
       <div class="field" data-tip="Hide items whose tradeability is below this (0–100). 0 = no filter. Tradeability is scored for the top-ranked items; items further down the list (not yet scored) are kept, so this trims the illiquid top picks without wiping out a big scan.">
         <label>Min trade</label><input id="ind-mintrade" type="number" min="0" max="100" value="0" style="width:60px">
       </div>
@@ -2615,7 +2604,7 @@ function settingsBlob(){
       avoid_lowsec:ARB.avoidLowsec?'1':'0'},
     ind:{market_group:$("#ind-group").value,station:$("#ind-station").value,
       job_rate:$("#ind-jobrate").value,
-      sales_tax:$("#ind-tax").value,broker:$("#ind-broker").value,runs:$("#ind-runs").value,
+      sales_tax:$("#ind-tax").value,broker:$("#ind-broker").value,
       buildable_only:$("#ind-buildable").checked?'1':'0',
       include_unbuildable:$("#ind-unobtainable").checked?'1':'0',
       hide_t2:$("#ind-hidet2").checked?'1':'0',
@@ -3832,7 +3821,7 @@ function openArbChart(row){
 let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es:null,
            groupsLoaded:false, profiles:[], favorites:new Set(),
            timers:{}, savedGroup:null, openDetail:null, colOrder:null,
-           colw:{}, colVis:{},
+           colw:{}, colVis:{}, detailRuns:1,
            fillTotal:0, fillDone:0};
 // Bumped whenever a scan starts or a new fill begins, so an in-flight background
 // tradeability fill from a previous scan knows to abandon itself.
@@ -3856,8 +3845,6 @@ const IND_COLS = [
   {k:"isk_per_hour_instant",t:"ISK/hr instant",w:110, tip:"Profit per hour when selling instantly at the highest bid.", f:fmtISK, pn:true},
   {k:"profit_patient",     t:"Profit list",    w:105, tip:"Profit per run selling at the lowest ask (patient list order).", f:fmtISK, pn:true},
   {k:"profit_instant",     t:"Profit instant", w:105, tip:"Profit per run selling instantly at the highest bid.", f:fmtISK, pn:true},
-  {k:"total_profit_patient",t:"Profit×N list", w:108, tip:"Batch profit (all runs) selling at the lowest ask.", f:fmtISK, pn:true},
-  {k:"total_profit_instant",t:"Profit×N instant",w:108, tip:"Batch profit (all runs) selling instantly at the highest bid.", f:fmtISK, pn:true},
   {k:"margin_patient",     t:"Margin list",    w: 75, tip:"Profit as % of cost when selling at the lowest ask.", f:fmtPct1, pn:true},
   {k:"margin_instant",     t:"Margin instant", w: 75, tip:"Profit as % of cost when selling instantly at the highest bid.", f:fmtPct1, pn:true},
   {k:"build_time",         t:"Build time",     w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
@@ -3865,9 +3852,9 @@ const IND_COLS = [
   {k:"bp_price",           t:"BP price",       w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'owned' = you have it.", f:(v,r)=> r.owned_bp_me_te?"owned":(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
   {k:"payback_runs",       t:"Payback",        w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r.owned_bp_me_te?"—":(v==null?"—":fmtNum(v)+" runs")},
   {k:"ask",                t:"Sell price",     w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
-  {k:"input_volume",       t:"Cargo in",       w: 85, tip:"m³ of materials to haul in for the batch.", f:v=>v?fmtVol(v):"—"},
-  {k:"output_volume",      t:"Cargo out",      w: 85, tip:"m³ of finished items to haul out for the batch.", f:v=>v?fmtVol(v):"—"},
-  {k:"days_to_sell",       t:"Days to sell",   w: 88, tip:"Batch size ÷ daily traded volume. Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : fmtDaysSell(v)},
+  {k:"in_vol_run",         t:"Cargo in",       w: 85, tip:"m³ of materials to haul in per run.", f:v=>v?fmtVol(v):"—"},
+  {k:"out_vol_run",        t:"Cargo out",      w: 85, tip:"m³ of finished items to haul out per run.", f:v=>v?fmtVol(v):"—"},
+  {k:"days_to_sell",       t:"Days to sell",   w: 88, tip:"How many days to sell one run's output (output qty ÷ daily volume). Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : fmtDaysSell(v)},
   {k:"tradeability",       t:"Tradeability",   w: 98, tip:"How sellable the product is (0–100), from the daily UNITS traded on the market over ~30 days. Low = the market absorbs little quantity, so it's hard to offload no matter how profitable on paper. Every scanned item is scored — rows spin while their market history loads, then show '—' if the item has never traded.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
   {k:"buildable",          t:"Buildable?",     w: 58, tip:"Can every required skill (at the Skills level) make it?", f:v=>v?"✓":"✗"},
 ];
@@ -4116,7 +4103,6 @@ function renderIndStatus(){
     : "";
   setStatus(
     `<span class="pill"><b>${d.count.toLocaleString()}</b> items · source <b>${d.station_name}</b></span>`
-    +`<span class="pill">batch <b>${d.runs.toLocaleString()}</b> runs</span>`
     +fillPill
     +`<span class="ts">scan ${fmtTs(d.scanned_at)}</span>`);
 }
@@ -4141,7 +4127,7 @@ function indParams(extra){
     job_rate:     $("#ind-jobrate").value||"0",
     sales_tax:    $("#ind-tax").value||"0",
     broker:       $("#ind-broker").value||"0",
-    runs:         $("#ind-runs").value||"1",
+    runs:         "1",
     buildable_only:$("#ind-buildable").checked?"1":"0",
     include_unbuildable:$("#ind-unobtainable").checked?"1":"0",
     hide_t2:      $("#ind-hidet2").checked?"1":"0",
@@ -4264,7 +4250,7 @@ function openIndDetail(row){
 function renderIndDetail(d){
   IND.openDetail=d;   // remembered so a batch-size change can re-render this panel
   const isk=v=>v===null||v===undefined?"—":fmtISK(v);
-  const n=Math.max(1, parseInt($("#ind-runs").value)||1);
+  const n=Math.max(1, IND.detailRuns||1);
   // Batch figures are derived from per-run values × current run count, so they
   // track the Batch (runs) field live (no re-fetch needed).
   // Materials table = the shopping list for the whole batch: every column scales
@@ -4377,7 +4363,7 @@ function renderIndDetail(d){
       <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
       <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy</button>
       <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
-      ${tier} · ${n.toLocaleString()} run(s) · source ${d.station_name}
+      ${tier} · <label class="ind-d-runs-label">Runs <input class="ind-d-runs" type="number" min="1" value="${n}" style="width:55px"></label> · source ${d.station_name}
       <span class="ind-d-close" title="Close">✕</span>
     </div>
     <div class="ind-d-body">
@@ -4501,6 +4487,11 @@ function renderIndDetail(d){
       renderIndDetail(fresh);
     }).catch(()=>{ pullBtn.disabled=false; pullBtn.textContent="⟳ Pull live prices"; });
   };
+  const runsInput=box.querySelector(".ind-d-runs");
+  runsInput.addEventListener("input", ()=>{
+    IND.detailRuns=Math.max(1, parseInt(runsInput.value)||1);
+    renderIndDetail(d);
+  });
 }
 
 function fmtCountdown(ms){
@@ -4891,26 +4882,6 @@ function saveIndPrefs(){
 // wiring
 $("#ind-go").onclick=()=>scanInd(false);
 $("#ind-refresh").onclick=()=>scanInd(true);
-// Recompute the batch-scaled columns (profit×N, cargo in/out, days-to-sell) from
-// each row's per-run building blocks, so changing the run count updates the table
-// live without a rescan.
-function applyIndRuns(){
-  const n=Math.max(1, parseInt($("#ind-runs").value)||1);
-  IND.rows.forEach(r=>{
-    r.runs=n;
-    r.total_profit_patient = r.profit_patient==null?null:r.profit_patient*n;
-    r.total_profit_instant = r.profit_instant==null?null:r.profit_instant*n;
-    r.input_volume = r.in_vol_run==null?null:r.in_vol_run*n;
-    r.output_volume = r.out_vol_run==null?null:r.out_vol_run*n;
-    r.days_to_sell = r.daily_vol?((r.out_qty*n)/r.daily_vol):null;
-  });
-  if(IND.lastData) IND.lastData.runs=n;
-}
-function onIndRunsChanged(){
-  applyIndRuns(); saveIndPrefs(); renderIndStatus(); renderIndTable();
-  const box=$("#ind-detail");
-  if(IND.openDetail && !box.classList.contains("hidden")) renderIndDetail(IND.openDetail);
-}
 
 $("#ind-profile").addEventListener("change", applyIndProfile);
 // Build-location wizard wiring
@@ -4927,10 +4898,6 @@ $("#indStructModal").addEventListener("click", e=>{ if(e.target.id==="indStructM
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#indStructModal").classList.contains("hidden")) closeStructWizard(); });
 // Typing a custom job-cost % detaches from the saved build location.
 $("#ind-jobrate").addEventListener("input", ()=>{ $("#ind-profile").value=""; });
-document.querySelectorAll(".ind-preset").forEach(b=>{
-  b.onclick=()=>{ $("#ind-runs").value=b.dataset.n; onIndRunsChanged(); };
-});
-$("#ind-runs").addEventListener("input", onIndRunsChanged);
 ["#ind-group","#ind-station","#ind-jobrate","#ind-tax",
  "#ind-broker"].forEach(sel=>{
   const el=$(sel); if(!el) return;
@@ -5037,7 +5004,6 @@ async function loadSettings(){
       if(ind.job_rate) $("#ind-jobrate").value=ind.job_rate;
       if(ind.sales_tax) $("#ind-tax").value=ind.sales_tax;
       if(ind.broker) $("#ind-broker").value=ind.broker;
-      if(ind.runs) $("#ind-runs").value=ind.runs;
       if(ind.buildable_only==="1") $("#ind-buildable").checked=true;
       if(ind.include_unbuildable==="1") $("#ind-unobtainable").checked=true;
       if(ind.hide_t2==="1") $("#ind-hidet2").checked=true;

@@ -901,7 +901,14 @@ def evaluate_industry(candidates, prices, adjusted, params):
     for bp in candidates:
         pid = bp["product_id"]
         out_qty = bp.get("out_qty") or 1
-        bp_me, bp_te = owned_me_te.get(bp["blueprint_id"], (me, te))
+        owned_entry = owned_me_te.get(bp["blueprint_id"])
+        if owned_entry:
+            bp_me, bp_te = owned_entry[0], owned_entry[1]
+            bp_is_bpo = owned_entry[2] if len(owned_entry) > 2 else True
+            bp_max_runs = owned_entry[3] if len(owned_entry) > 3 else -1
+        else:
+            bp_me, bp_te = me, te
+            bp_is_bpo, bp_max_runs = False, 0
         cost = manufacturing_cost(bp, prices, adjusted, job_rate, bp_me)
 
         # Blueprint economics differ by tech tier (assuming you own nothing):
@@ -989,6 +996,8 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "me_used": bp_me,
             "te_used": bp_te,
             "owned_bp_me_te": bp["blueprint_id"] in owned_me_te,
+            "owned_is_bpo": bp_is_bpo,
+            "owned_max_runs": bp_max_runs,
         })
 
     rows.sort(key=lambda r: (r["isk_per_hour_patient"] if r["isk_per_hour_patient"] is not None

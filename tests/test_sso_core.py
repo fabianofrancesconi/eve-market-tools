@@ -240,7 +240,32 @@ def test_owned_blueprint_lookup_keeps_best_researched_copy():
         {"type_id": 2047, "material_efficiency": 10, "time_efficiency": 18},
         {"type_id": 2048, "material_efficiency": 4, "time_efficiency": 6},
     ]
-    assert sso_core.owned_blueprint_lookup(bps) == {2047: (10, 18), 2048: (4, 6)}
+    result = sso_core.owned_blueprint_lookup(bps)
+    assert result[2047][:2] == (10, 18)
+    assert result[2047][2] is True   # BPO (default when quantity not set)
+    assert result[2048][:2] == (4, 6)
+
+
+def test_owned_blueprint_lookup_prefers_bpo_over_bpc():
+    bps = [
+        {"type_id": 100, "material_efficiency": 5, "time_efficiency": 10,
+         "quantity": -2, "runs": 3},
+        {"type_id": 100, "material_efficiency": 2, "time_efficiency": 4,
+         "quantity": -1, "runs": -1},
+    ]
+    result = sso_core.owned_blueprint_lookup(bps)
+    assert result[100] == (2, 4, True, -1)
+
+
+def test_owned_blueprint_lookup_bpc_tracks_max_runs():
+    bps = [
+        {"type_id": 200, "material_efficiency": 0, "time_efficiency": 0,
+         "quantity": -2, "runs": 5},
+        {"type_id": 200, "material_efficiency": 0, "time_efficiency": 0,
+         "quantity": -2, "runs": 10},
+    ]
+    result = sso_core.owned_blueprint_lookup(bps)
+    assert result[200] == (0, 0, False, 10)
 
 
 def test_owned_blueprint_lookup_of_empty():

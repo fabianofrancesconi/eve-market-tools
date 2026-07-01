@@ -260,19 +260,29 @@ def skill_profile_from_skills(skills_resp):
 
 
 def owned_blueprint_lookup(blueprints_resp):
-    """ESI blueprints response -> {type_id: (material_efficiency,
-    time_efficiency)} for the Industry planner's "my blueprints" override. When
-    a character owns several copies of the same blueprint type (e.g. one BPO at
-    ME 9 and another still at ME 0), keeps the best-researched copy — the one
-    you'd actually build with."""
+    """ESI blueprints response -> {type_id: (me, te, is_bpo, max_runs)} for the
+    Industry planner. When a character owns several copies of the same blueprint
+    type, prefers BPOs over BPCs (infinite runs), then highest ME/TE. max_runs
+    is -1 for BPOs (unlimited), or the highest remaining runs across BPCs."""
     best = {}
     for b in blueprints_resp or []:
         tid = b.get("type_id")
         if tid is None:
             continue
-        me, te = int(b.get("material_efficiency") or 0), int(b.get("time_efficiency") or 0)
-        if tid not in best or (me, te) > best[tid]:
-            best[tid] = (me, te)
+        me = int(b.get("material_efficiency") or 0)
+        te = int(b.get("time_efficiency") or 0)
+        qty = b.get("quantity", -1)
+        runs = int(b.get("runs") or -1)
+        is_bpo = (qty == -1)
+        prev = best.get(tid)
+        if prev is None:
+            best[tid] = (me, te, is_bpo, runs)
+        elif is_bpo and not prev[2]:
+            best[tid] = (me, te, is_bpo, -1)
+        elif is_bpo == prev[2] and (me, te) > (prev[0], prev[1]):
+            best[tid] = (me, te, is_bpo, max(runs, prev[3]) if not is_bpo else -1)
+        elif not is_bpo and not prev[2] and runs > prev[3]:
+            best[tid] = (prev[0], prev[1], False, runs)
     return best
 
 

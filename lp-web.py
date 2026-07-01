@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.55.1"
+__version__ = "1.56.0"
 
 import argparse
 import base64
@@ -1266,7 +1266,7 @@ def do_ind_detail(q):
         params["skill_profile"] = _CHAR_SKILL_PROFILE
     owned_me_te = _CHAR_BP_ME_TE.get(blueprint_id)
     if owned_me_te:
-        params["me"], params["te"] = owned_me_te
+        params["me"], params["te"] = owned_me_te[0], owned_me_te[1]
 
     conn = ind_core.connect_sde(CACHE_DIR)
     try:
@@ -1323,7 +1323,9 @@ def do_ind_detail(q):
     detail["station_name"] = TRADE_HUBS[station_id]["name"]
     detail["bp_market"] = bp_market
     detail["missing_skills"] = skills_missing
-    detail["owned_me_te"] = ({"me": owned_me_te[0], "te": owned_me_te[1]}
+    detail["owned_me_te"] = ({"me": owned_me_te[0], "te": owned_me_te[1],
+                              "is_bpo": owned_me_te[2] if len(owned_me_te) > 2 else True,
+                              "max_runs": owned_me_te[3] if len(owned_me_te) > 3 else -1}
                              if owned_me_te else None)
     # Tradeability for this product (daily units traded, ~30d median).
     dv = fetch_history_volumes([bp["product_id"]],
@@ -3850,7 +3852,7 @@ const IND_COLS = [
   {k:"margin_instant",     t:"Margin instant", w: 75, tip:"Profit as % of cost when selling instantly at the highest bid.", f:fmtPct1, pn:true},
   {k:"build_time",         t:"Build time",     w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
   {k:"total_cost",         t:"Cost/run",       w: 98, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
-  {k:"bp_price",           t:"BP price",       w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'owned' = you have it.", f:(v,r)=> r.owned_bp_me_te?"owned":(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
+  {k:"bp_price",           t:"BP price",       w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'BPO' = you own the original. 'BPC (N)' = you have a limited-run copy.", f:(v,r)=> r.owned_bp_me_te?(r.owned_is_bpo?"BPO":`BPC (${r.owned_max_runs})`):(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
   {k:"payback_runs",       t:"Payback",        w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r.owned_bp_me_te?"—":(v==null?"—":fmtNum(v)+" runs")},
   {k:"ask",                t:"Sell price",     w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
   {k:"in_vol_run",         t:"Cargo in",       w: 85, tip:"m³ of materials to haul in per run.", f:v=>v?fmtVol(v):"—"},
@@ -4301,11 +4303,19 @@ function renderIndDetail(d){
     ? d.total_cost/(qty*(1-d.sales_tax)) : null;
   const tier=d.product.tech_level?("T"+d.product.tech_level):"";
   const esiOwned = !!d.owned_me_te;
+  const isBpo = esiOwned && d.owned_me_te.is_bpo;
+  const bpcRuns = esiOwned && !isBpo ? d.owned_me_te.max_runs : null;
+  const ownedLabel = isBpo
+    ? `BPO (ME ${d.owned_me_te.me} / TE ${d.owned_me_te.te})`
+    : esiOwned ? `BPC · ${bpcRuns} run${bpcRuns===1?"":"s"} left (ME ${d.owned_me_te.me} / TE ${d.owned_me_te.te})`
+    : null;
   let bpSrc;
-  if(esiOwned && d.bp_market){
-    bpSrc = `Owned (ME ${d.owned_me_te.me} / TE ${d.owned_me_te.te}) · market ${isk(d.bp_market.price)} at ${d.bp_market.station}`;
+  if(esiOwned && !isBpo && d.bp_market){
+    bpSrc = `${ownedLabel} — <b>buy BPO ${isk(d.bp_market.price)}</b> at ${d.bp_market.station}`;
+  } else if(esiOwned && d.bp_market){
+    bpSrc = `${ownedLabel} · market ${isk(d.bp_market.price)} at ${d.bp_market.station}`;
   } else if(esiOwned){
-    bpSrc = `Owned (ME ${d.owned_me_te.me} / TE ${d.owned_me_te.te})`;
+    bpSrc = ownedLabel;
   } else if(d.bp_market){
     bpSrc = `Buy BPO ${isk(d.bp_market.price)} at ${d.bp_market.station}`
           + ` · ${fmtNum(d.bp_market.orders)} on sale in ${d.bp_market.region}`;

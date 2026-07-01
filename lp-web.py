@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.56.0"
+__version__ = "1.56.1"
 
 import argparse
 import base64
@@ -2066,6 +2066,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-d-runs-wrap { display:inline-flex; align-items:center; gap:3px; font-size:12px; }
   .ind-d-runs-wrap input { font-size:12px; border:1px solid #555; background:#1e1e2a; color:#eee; border-radius:4px; padding:2px 4px; }
   .ind-d-runs-wrap button { font-size:11px; padding:2px 6px; cursor:pointer; }
+  .ind-bpc-warn { background:#3a2800; border:1px solid #b8860b; border-radius:6px; padding:8px 12px; margin-bottom:10px; color:#ffd080; font-size:13px; line-height:1.5; }
+  .ind-bpc-warn b { color:#ffe4a0; }
+  .ind-bpc-warn .ind-bpc-buy { display:block; margin-top:6px; color:#fff; font-weight:700; font-size:14px; }
   #ind-detail {
     background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
     padding:12px 14px; margin-bottom:12px;
@@ -4378,6 +4381,12 @@ function renderIndDetail(d){
       <span class="ind-d-close" title="Close">✕</span>
     </div>
     <div class="ind-d-body">
+    ${esiOwned && !isBpo ? `<div class="ind-bpc-warn">
+      ⚠ You only have a <b>Blueprint Copy</b> with <b>${bpcRuns} run${bpcRuns===1?"":"s"}</b> remaining — it will be consumed.
+      ${d.bp_market
+        ? `<span class="ind-bpc-buy">Buy permanent BPO: ${isk(d.bp_market.price)} at ${d.bp_market.station} (${fmtNum(d.bp_market.orders)} on sale in ${d.bp_market.region})</span>`
+        : `<span class="ind-bpc-buy">No BPO on the market in The Forge — check contracts or other regions.</span>`}
+    </div>` : ""}
     <div class="ind-d-grid">
       <div class="ind-d-sub">Per unit (sell price)</div>
       <span>Sell @ ask — list</span><b>${isk(d.ask)}</b>

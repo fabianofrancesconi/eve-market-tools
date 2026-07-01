@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.55.0"
+__version__ = "1.55.1"
 
 import argparse
 import base64
@@ -2061,8 +2061,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .arb-chart-head h3 { font-size:16px; font-weight:700; color:var(--cyan); margin:0; }
 
   /* ── Industry ────────────────────────────────────────────────────── */
-  .ind-d-runs-label { font-size:12px; }
-  .ind-d-runs-label input { font-size:12px; border:1px solid #555; background:#1e1e2a; color:#eee; border-radius:4px; padding:2px 4px; }
+  .ind-d-runs-wrap { display:inline-flex; align-items:center; gap:3px; font-size:12px; }
+  .ind-d-runs-wrap input { font-size:12px; border:1px solid #555; background:#1e1e2a; color:#eee; border-radius:4px; padding:2px 4px; }
+  .ind-d-runs-wrap button { font-size:11px; padding:2px 6px; cursor:pointer; }
   #ind-detail {
     background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
     padding:12px 14px; margin-bottom:12px;
@@ -4363,7 +4364,7 @@ function renderIndDetail(d){
       <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
       <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy</button>
       <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
-      ${tier} · <label class="ind-d-runs-label">Runs <input class="ind-d-runs" type="number" min="1" value="${n}" style="width:55px"></label> · source ${d.station_name}
+      ${tier} · <span class="ind-d-runs-wrap">Runs <input class="ind-d-runs" type="number" min="1" value="${n}" style="width:55px"><button class="ind-d-runs-pre" data-n="1">1</button><button class="ind-d-runs-pre" data-n="10">10</button><button class="ind-d-runs-pre" data-n="100">100</button><button class="ind-d-runs-pre" data-n="10000">10k</button><button class="ind-d-runs-mul" data-m="10">×10</button></span> · source ${d.station_name}
       <span class="ind-d-close" title="Close">✕</span>
     </div>
     <div class="ind-d-body">
@@ -4488,9 +4489,13 @@ function renderIndDetail(d){
     }).catch(()=>{ pullBtn.disabled=false; pullBtn.textContent="⟳ Pull live prices"; });
   };
   const runsInput=box.querySelector(".ind-d-runs");
-  runsInput.addEventListener("input", ()=>{
-    IND.detailRuns=Math.max(1, parseInt(runsInput.value)||1);
-    renderIndDetail(d);
+  const setRuns=v=>{ IND.detailRuns=Math.max(1,v); renderIndDetail(d); };
+  runsInput.addEventListener("input", ()=>setRuns(parseInt(runsInput.value)||1));
+  box.querySelectorAll(".ind-d-runs-pre").forEach(b=>{
+    b.onclick=()=>setRuns(+b.dataset.n);
+  });
+  box.querySelectorAll(".ind-d-runs-mul").forEach(b=>{
+    b.onclick=()=>setRuns(IND.detailRuns*(+b.dataset.m));
   });
 }
 

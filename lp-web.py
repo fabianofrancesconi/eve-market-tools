@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.52.0"
+__version__ = "1.53.0"
 
 import argparse
 import base64
@@ -4313,8 +4313,10 @@ function renderIndDetail(d){
   const tier=d.product.tech_level?("T"+d.product.tech_level):"";
   const esiOwned = !!d.owned_me_te;
   let bpSrc;
-  if(esiOwned){
-    bpSrc = `You own this blueprint (ME ${d.owned_me_te.me} / TE ${d.owned_me_te.te})`;
+  if(esiOwned && d.bp_market){
+    bpSrc = `Owned (ME ${d.owned_me_te.me} / TE ${d.owned_me_te.te}) · market ${isk(d.bp_market.price)} at ${d.bp_market.station}`;
+  } else if(esiOwned){
+    bpSrc = `Owned (ME ${d.owned_me_te.me} / TE ${d.owned_me_te.te})`;
   } else if(d.bp_market){
     bpSrc = `Buy BPO ${isk(d.bp_market.price)} at ${d.bp_market.station}`
           + ` · ${fmtNum(d.bp_market.orders)} on sale in ${d.bp_market.region}`;

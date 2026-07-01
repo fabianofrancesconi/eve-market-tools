@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.51.0"
+__version__ = "1.52.0"
 
 import argparse
 import base64
@@ -1042,7 +1042,7 @@ IND_HISTORY_TOP_N = 80
 
 _IND_PREF_KEYS = ("profiles", "profile", "market_group", "job_rate",
                   "sales_tax", "broker", "runs", "station",
-                  "buildable_only", "include_unbuildable", "hide_t2", "hidden",
+                  "buildable_only", "include_unbuildable", "hide_t2",
                   "sort_key", "sort_dir", "min_tradeability", "favorites", "col_order",
                   "col_widths", "col_vis")
 
@@ -2621,7 +2621,7 @@ function settingsBlob(){
       hide_t2:$("#ind-hidet2").checked?'1':'0',
       min_tradeability:$("#ind-mintrade").value,
       profiles:JSON.stringify(IND.profiles),profile:$("#ind-profile").value,
-      hidden:JSON.stringify([...IND.hidden]),favorites:JSON.stringify([...IND.favorites]),
+      favorites:JSON.stringify([...IND.favorites]),
       sort_key:IND.sort.key,sort_dir:IND.sort.dir,
       col_order:JSON.stringify(IND.colOrder),col_widths:JSON.stringify(IND.colw),
       col_vis:JSON.stringify(IND.colVis)}
@@ -3830,7 +3830,7 @@ function openArbChart(row){
 // INDUSTRY TAB
 // ══════════════════════════════════════════════════════════════════════════
 let IND = {rows:[], sort:{key:"isk_per_hour_best", dir:-1}, lastData:null, es:null,
-           groupsLoaded:false, profiles:[], hidden:new Set(), favorites:new Set(),
+           groupsLoaded:false, profiles:[], favorites:new Set(),
            timers:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{},
            fillTotal:0, fillDone:0};
@@ -3854,6 +3854,8 @@ const IND_COLS = [
   {k:"_timer",             t:"⏱ Timer",     w: 84, tip:"Live countdown for your running manufacturing job on this blueprint, pulled from EVE (refreshed every 5 min). Log in with EVE to populate.", raw:true},
   {k:"isk_per_hour_best",  t:"ISK/hr",      w:110, tip:"Profit per hour of manufacturing time — the headline 'worth it' number.", f:fmtISK, pn:true},
   {k:"profit_best",        t:"Profit/run",  w:105, tip:"Best-of patient/instant profit for one run.", f:fmtISK, pn:true},
+  {k:"profit_patient",     t:"Profit list", w:105, tip:"Profit per run selling at the lowest ask (patient/list order).", f:fmtISK, pn:true},
+  {k:"profit_instant",     t:"Profit inst", w:105, tip:"Profit per run selling instantly at the highest bid.", f:fmtISK, pn:true},
   {k:"total_profit_best",  t:"Profit×N",    w:108, tip:"Profit across the whole batch (Runs).", f:fmtISK, pn:true},
   {k:"margin_best",        t:"Margin",      w: 65, tip:"Profit as a % of total cost.", f:fmtPct1, pn:true},
   {k:"build_time",         t:"Build",       w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
@@ -4043,7 +4045,7 @@ function renderIndTable(){
   // Split into three sections: My Blueprints (ESI-owned, not hidden),
   // Watchlist (favorites for BPs you don't own), All items (the rest).
   const search=($("#ind-search").value||"").trim().toLowerCase();
-  const inMyBps=r=>r.owned_bp_me_te && !IND.hidden.has(r.blueprint_id);
+  const inMyBps=r=>r.owned_bp_me_te;
   const inWatch=r=>IND.favorites.has(r.blueprint_id) && !inMyBps(r);
   let myBps=IND.rows.filter(inMyBps);
   let watchlist=IND.rows.filter(inWatch);
@@ -4142,7 +4144,6 @@ function indParams(extra){
     include_unbuildable:$("#ind-unobtainable").checked?"1":"0",
     hide_t2:      $("#ind-hidet2").checked?"1":"0",
     min_tradeability: $("#ind-mintrade").value||"0",
-    hidden:       JSON.stringify([...IND.hidden]),
     favorites:    JSON.stringify([...IND.favorites]),
   };
   return new URLSearchParams(Object.assign(p, extra||{}));
@@ -4371,7 +4372,6 @@ function renderIndDetail(d){
       <b>${d.product.name}</b>
       <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
       <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy</button>
-      ${esiOwned?`<button class="ind-hide" title="Hide from My Blueprints section">${IND.hidden.has(d.blueprint_id)?"👁 Show in My BPs":"Hide from My BPs"}</button>`:""}
       <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
       ${tier} · ${n.toLocaleString()} run(s) · source ${d.station_name}
       <span class="ind-d-close" title="Close">✕</span>
@@ -4480,14 +4480,6 @@ function renderIndDetail(d){
   // Clicking the header bar itself (not its buttons) collapses the detail view.
   const head=box.querySelector(".ind-d-head");
   head.onclick=ev=>{ if(!ev.target.closest("button")) closeDetail(); };
-  const hideBtn=box.querySelector(".ind-hide");
-  if(hideBtn) hideBtn.onclick=()=>{
-    if(IND.hidden.has(d.blueprint_id)) IND.hidden.delete(d.blueprint_id);
-    else IND.hidden.add(d.blueprint_id);
-    saveIndPrefs();
-    renderIndTable();
-    renderIndDetail(d);
-  };
   box.querySelector(".ind-fav-btn").onclick=()=>toggleFavorite(d.blueprint_id);
   const copyBtn=box.querySelector(".ind-copy");
   copyBtn.onclick=()=>{
@@ -4883,7 +4875,6 @@ function saveIndPrefs(){
   const p=indParams({
     profiles: JSON.stringify(IND.profiles),
     profile:  $("#ind-profile").value,
-    hidden:   JSON.stringify([...IND.hidden]),
     sort_key: IND.sort.key,
     sort_dir: String(IND.sort.dir),
     col_order: JSON.stringify(IND.colOrder),
@@ -5049,7 +5040,6 @@ async function loadSettings(){
       if(ind.profiles){ try{ IND.profiles=JSON.parse(ind.profiles)||[]; }catch(e){} }
       renderIndProfiles();
       if(ind.profile) $("#ind-profile").value=ind.profile;
-      if(ind.hidden){ try{ IND.hidden=new Set(JSON.parse(ind.hidden)||[]); }catch(e){} }
       if(ind.favorites){ try{ IND.favorites=new Set(JSON.parse(ind.favorites)||[]); }catch(e){} }
       // Restore the last-used tab saved server-side. A tab URL overrides this
       // just below; don't re-push history for either.

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.57.1"
+__version__ = "1.57.2"
 
 import argparse
 import base64
@@ -1605,6 +1605,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
     border-radius:50%; animation:spin .7s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
 
+  /* ── Initial loading placeholder ─────────────────────────────────── */
+  .init-loading {
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:12px; padding-top:min(18vh, 140px); color:var(--dim); font-size:13px;
+    animation:initFadeIn .3s ease .15s both;
+  }
+  @keyframes initFadeIn { from { opacity:0; } to { opacity:1; } }
+  .init-loading .init-spinner {
+    width:22px; height:22px;
+    border:2.5px solid var(--line2); border-top-color:var(--cyan);
+    border-radius:50%; animation:spin .8s linear infinite;
+  }
+
   /* ── Custom tooltip (replaces native title=) ─────────────────────── */
   #tooltip {
     position:fixed; z-index:9999; max-width:280px;
@@ -2437,6 +2450,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <main>
   <!-- LP tab -->
   <div id="lp-tablewrap" class="tablewrap">
+    <div id="init-loading" class="init-loading">
+      <div class="init-spinner"></div>
+      <span>Loading…</span>
+    </div>
     <table id="tbl"><colgroup id="cg"></colgroup><thead></thead><tbody></tbody></table>
   </div>
   <!-- ARB tab -->
@@ -2907,6 +2924,7 @@ function wireLPColDrag(th){
 }
 
 function renderTable(){
+  const _il=$("#init-loading"); if(_il) _il.remove();
   computeTradeability();
   const thead=$("#tbl thead"), tbody=$("#tbl tbody");
   const vc=visCols();
@@ -2963,6 +2981,7 @@ function renderTable(){
 }
 
 async function scan(forceRefresh=false){
+  const _il=$("#init-loading"); if(_il) _il.remove();
   const corp=$("#corp").value.trim();
   if(!corp){ setStatus("Enter a corporation name.",true); return; }
   const btn=$("#refresh");

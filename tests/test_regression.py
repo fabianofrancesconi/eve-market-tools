@@ -1044,6 +1044,12 @@ class TestIndustryRoutes:
         assert "col_widths: JSON.stringify(IND.colw)" in html
         assert "col_vis: JSON.stringify(IND.colVis)" in html
 
+    def test_ind_search_has_clear_button(self):
+        html = lp_web.INDEX_HTML
+        assert 'id="ind-search-clear" class="ind-search-clear hidden"' in html
+        assert "function updateIndSearchClear(){" in html
+        assert '$("#ind-search-clear").addEventListener("click"' in html
+
     def test_unknown_ind_subpath_404(self, tmp_server):
         base, _ = tmp_server
         body, status = http_get(f"{base}/api/ind/bogus")

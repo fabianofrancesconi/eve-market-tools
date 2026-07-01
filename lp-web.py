@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.45.0"
+__version__ = "1.46.0"
 
 import argparse
 import base64
@@ -1622,6 +1622,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
     position:absolute; left:8px; top:50%; transform:translateY(-50%);
     color:var(--dim); font-size:13px; pointer-events:none; user-select:none;
   }
+  .ind-search-wrap { position:relative; }
+  .ind-search-wrap input { padding-right:22px; }
+  .ind-search-clear {
+    position:absolute; right:3px; top:50%; transform:translateY(-50%);
+    width:16px; height:16px; padding:0; line-height:1;
+    background:none; border:none; color:var(--dim); font-size:12px;
+    cursor:pointer; border-radius:3px;
+  }
+  .ind-search-clear:hover { color:var(--fg); background:var(--panel3); }
+  .ind-search-clear.hidden { display:none; }
   .corp-drop {
     position:fixed; z-index:200;
     background:var(--panel2); border:1px solid var(--cyan2);
@@ -2308,7 +2318,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <label>Min trade</label><input id="ind-mintrade" type="number" min="0" max="100" value="0" style="width:60px">
       </div>
       <div class="field" data-tip="Search by item name. Overrides every other display filter (min trade, etc.) while typing — matches against all scanned items.">
-        <label>Search</label><input id="ind-search" type="text" placeholder="item name…" style="width:140px">
+        <label>Search</label>
+        <div class="ind-search-wrap">
+          <input id="ind-search" type="text" placeholder="item name…" style="width:140px">
+          <button id="ind-search-clear" class="ind-search-clear hidden" title="Clear search" type="button">✕</button>
+        </div>
       </div>
     </div>
   </div>
@@ -4874,7 +4888,16 @@ $("#ind-runs").addEventListener("input", onIndRunsChanged);
 ["#ind-buildable","#ind-unobtainable","#ind-hidet2"].forEach(sel=>$(sel).addEventListener("change", saveIndPrefs));
 // Min-tradeability is a client-side filter — re-render immediately (no rescan).
 $("#ind-mintrade").addEventListener("input", ()=>{ saveIndPrefs(); renderIndTable(); });
-$("#ind-search").addEventListener("input", renderIndTable);
+function updateIndSearchClear(){
+  $("#ind-search-clear").classList.toggle("hidden", !$("#ind-search").value);
+}
+$("#ind-search").addEventListener("input", ()=>{ updateIndSearchClear(); renderIndTable(); });
+$("#ind-search-clear").addEventListener("click", ()=>{
+  $("#ind-search").value="";
+  updateIndSearchClear();
+  renderIndTable();
+  $("#ind-search").focus();
+});
 
 // ══════════════════════════════════════════════════════════════════════════
 // Init

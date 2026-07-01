@@ -448,6 +448,24 @@ class TestDoLiquidity:
 
 
 # ---------------------------------------------------------------------------
+# SESSION retry on stale pooled connections
+# ---------------------------------------------------------------------------
+
+class TestSessionRetry:
+    """Bug: leaving the page open for a while left SESSION holding a pooled
+    keep-alive connection that ESI/Fuzzwork had since closed server-side. The
+    next reused connection raised ConnectionError('RemoteDisconnected'),
+    uncaught, surfacing a raw 500 in the UI. A mounted Retry adapter should
+    retry transparently on a fresh connection instead."""
+
+    def test_https_and_http_adapters_have_retry_mounted(self):
+        for scheme in ("https://", "http://"):
+            adapter = lp_web.SESSION.get_adapter(scheme + "example.com")
+            assert adapter.max_retries.total >= 1
+            assert adapter.max_retries.connect >= 1
+
+
+# ---------------------------------------------------------------------------
 # /api/settings endpoint
 # ---------------------------------------------------------------------------
 

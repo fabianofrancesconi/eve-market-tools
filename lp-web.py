@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.43.0"
+__version__ = "1.44.0"
 
 import argparse
 import base64
@@ -41,6 +41,8 @@ _FAVICON_SVG = (
 _FAVICON_B64 = base64.b64encode(_FAVICON_SVG).decode()
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 import arb_core
 import ind_core
@@ -56,6 +58,15 @@ from lp_core import (
 )
 
 SESSION = requests.Session()
+# The server process (and this session's pooled keep-alive connections) lives
+# for as long as the browser tab is open. ESI/Fuzzwork close idle connections
+# server-side after a while, so the next reused pooled connection raises
+# ConnectionError("Remote end closed connection without response") — retry
+# transparently on a fresh connection instead of surfacing that to the UI.
+_RETRY = Retry(total=3, connect=3, read=3, backoff_factor=0.3,
+               status_forcelist=(502, 503, 504))
+SESSION.mount("https://", HTTPAdapter(max_retries=_RETRY))
+SESSION.mount("http://", HTTPAdapter(max_retries=_RETRY))
 CACHE_DIR = default_cache_dir()
 SETTINGS_PATH = CACHE_DIR / "lp_web_settings.json"
 ARB_SETTINGS_PATH = CACHE_DIR / "arb_settings.json"

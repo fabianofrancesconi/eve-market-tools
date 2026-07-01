@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.40.0"
+__version__ = "1.41.0"
 
 import argparse
 import base64
@@ -342,8 +342,14 @@ def do_char_data(q):
 
     runs_tracked = _track_delivered_jobs(cid, jobs, names)
 
-    activity_label = {ind_core.ACT_MANUFACTURING: "Manufacturing",
-                      ind_core.ACT_INVENTION: "Invention"}
+    activity_label = {1: "Manufacturing",
+                      3: "TE Research",
+                      4: "ME Research",
+                      5: "Copying",
+                      7: "Reverse Engineering",
+                      8: "Invention",
+                      9: "Reactions",
+                      11: "Reactions"}
     out_jobs = []
     for j in jobs:
         if j.get("status") not in ("active", "paused", "ready"):
@@ -4380,7 +4386,14 @@ async function doLogout(){
 }
 
 async function refreshCharData(){
-  let d; try{ d=await (await fetch("/api/char/data")).json(); }catch(e){ return; }
+  let d;
+  try{ d=await (await fetch("/api/char/data")).json(); }
+  catch(e){
+    // Network error — retry after a short delay instead of waiting another full cycle.
+    setTimeout(()=>{ if(AUTH.loggedIn) refreshCharData(); }, 10000);
+    charRefreshDeadline=Date.now()+10000; tickCharRefreshTimer();
+    return;
+  }
   if(d.error){ setStatus(authEsc(d.error), true); return; }
   AUTH.data=d;
   charRefreshDeadline=Date.now()+CHAR_REFRESH_MS; tickCharRefreshTimer();
@@ -4529,6 +4542,13 @@ $("#ind-usechar").onchange=()=>{ saveLS(); saveIndPrefs(); if(IND.lastData) scan
 // so the job timers stay current. The per-second ticker handles the countdown
 // itself; this just refreshes the underlying job list every 5 minutes.
 setInterval(()=>{ if(AUTH.loggedIn) refreshCharData(); }, CHAR_REFRESH_MS);
+
+// When the tab returns from background (sleep, alt-tab, phone lock), the
+// setInterval may have drifted far past the deadline. Refresh immediately.
+document.addEventListener("visibilitychange", ()=>{
+  if(document.hidden || !AUTH.loggedIn) return;
+  if(Date.now() >= charRefreshDeadline) refreshCharData();
+});
 
 function fallbackCopy(text, done){
   // execCommand path for non-secure contexts where navigator.clipboard is absent.

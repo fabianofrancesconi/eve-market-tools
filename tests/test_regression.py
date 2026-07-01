@@ -468,6 +468,78 @@ class TestApiSettingsEndpoint:
         data, _ = http_get(f"{base}/api/settings")
         assert "arb" in data
 
+    def test_not_logged_in_reports_unsynced(self, tmp_server, monkeypatch):
+        base, _ = tmp_server
+        monkeypatch.setattr(lp_web, "_AUTH", {})
+        data, _ = http_get(f"{base}/api/settings")
+        assert data["_server_synced"] is False
+        assert data["_logged_in"] is False
+
+    def test_logged_in_without_prior_sync_falls_back_to_files(self, tmp_server, monkeypatch, tmp_path):
+        base, _ = tmp_server
+        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
+        monkeypatch.setattr(lp_web, "_AUTH", {"character_id": 42})
+        data, _ = http_get(f"{base}/api/settings")
+        assert data["_server_synced"] is False
+        assert data["_logged_in"] is True
+
+    def test_logged_in_with_prior_sync_returns_synced_blob(self, tmp_server, monkeypatch, tmp_path):
+        base, _ = tmp_server
+        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
+        monkeypatch.setattr(lp_web, "_AUTH", {"character_id": 42})
+        lp_web.save_user_settings(42, {"active_tab": "ind"})
+        data, _ = http_get(f"{base}/api/settings")
+        assert data["_server_synced"] is True
+        assert data["active_tab"] == "ind"
+
+
+# ---------------------------------------------------------------------------
+# Per-character settings sync (SQLite)
+# ---------------------------------------------------------------------------
+
+class TestUserSettingsSync:
+    def test_roundtrip(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
+        lp_web.save_user_settings(7, {"col_order": ["name", "ask"]})
+        assert lp_web.load_user_settings(7) == {"col_order": ["name", "ask"]}
+
+    def test_missing_character_returns_none(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
+        assert lp_web.load_user_settings(999) is None
+
+    def test_save_overwrites_previous_blob(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
+        lp_web.save_user_settings(7, {"active_tab": "lp"})
+        lp_web.save_user_settings(7, {"active_tab": "arb"})
+        assert lp_web.load_user_settings(7) == {"active_tab": "arb"}
+
+    def test_settings_are_isolated_per_character(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
+        lp_web.save_user_settings(1, {"active_tab": "lp"})
+        lp_web.save_user_settings(2, {"active_tab": "ind"})
+        assert lp_web.load_user_settings(1) == {"active_tab": "lp"}
+        assert lp_web.load_user_settings(2) == {"active_tab": "ind"}
+
+    def test_sync_without_login_is_a_noop(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
+        monkeypatch.setattr(lp_web, "_AUTH", {})
+        result = lp_web.do_settings_sync({"blob": ['{"active_tab":"lp"}']})
+        assert result == {"ok": True, "synced": False}
+        assert not (tmp_path / "user_settings.sqlite").exists()
+
+    def test_sync_while_logged_in_persists_blob(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
+        monkeypatch.setattr(lp_web, "_AUTH", {"character_id": 42})
+        result = lp_web.do_settings_sync({"blob": ['{"active_tab":"ind","col_widths":{"name":120}}']})
+        assert result == {"ok": True, "synced": True}
+        assert lp_web.load_user_settings(42) == {"active_tab": "ind", "col_widths": {"name": 120}}
+
+    def test_sync_rejects_invalid_json(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
+        monkeypatch.setattr(lp_web, "_AUTH", {"character_id": 42})
+        with pytest.raises(LPError):
+            lp_web.do_settings_sync({"blob": ["not json"]})
+
 
 # ---------------------------------------------------------------------------
 # HTTP routing

@@ -12,12 +12,13 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.41.0"
+__version__ = "1.42.0"
 
 import argparse
 import base64
 import json
 import secrets
+import sqlite3
 import sys
 import threading
 import time
@@ -61,6 +62,7 @@ ARB_SETTINGS_PATH = CACHE_DIR / "arb_settings.json"
 IND_SETTINGS_PATH = CACHE_DIR / "ind_settings.json"
 AUTH_SETTINGS_PATH = CACHE_DIR / "auth_settings.json"  # client_id + callback_url
 JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-run counter
+USER_SETTINGS_DB_PATH = CACHE_DIR / "user_settings.sqlite"  # per-character synced settings
 REFRESHED_CORPS = set()
 
 # ── EVE SSO state (single process, single user) ───────────────────────────────
@@ -123,6 +125,51 @@ def load_ind_settings():
 
 def save_ind_settings(d):
     save_json(IND_SETTINGS_PATH, d)
+
+
+# ── Per-character synced settings ────────────────────────────────────────────
+# Full client-side settings blob, keyed by EVE character_id, so the same
+# character sees identical settings (columns, filters, tabs, ...) on any
+# device. Only used once a character is logged in via SSO; unauthenticated
+# use keeps the file-based settings above (single local "device").
+
+def _user_settings_conn():
+    USER_SETTINGS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(USER_SETTINGS_DB_PATH)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS user_settings ("
+        "character_id INTEGER PRIMARY KEY, settings_json TEXT NOT NULL, "
+        "updated_at REAL NOT NULL)"
+    )
+    return conn
+
+
+def load_user_settings(character_id):
+    """Return the synced settings dict for `character_id`, or None if this
+    character has never synced settings from any device yet."""
+    conn = _user_settings_conn()
+    try:
+        row = conn.execute(
+            "SELECT settings_json FROM user_settings WHERE character_id = ?",
+            (character_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return json.loads(row[0]) if row else None
+
+
+def save_user_settings(character_id, data):
+    conn = _user_settings_conn()
+    try:
+        conn.execute(
+            "INSERT INTO user_settings (character_id, settings_json, updated_at) "
+            "VALUES (?, ?, ?) ON CONFLICT(character_id) DO UPDATE SET "
+            "settings_json = excluded.settings_json, updated_at = excluded.updated_at",
+            (character_id, json.dumps(data), time.time()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ── EVE SSO helpers ───────────────────────────────────────────────────────────
@@ -665,6 +712,23 @@ def get_npc_corps():
                   f"{type(e).__name__}: {e}", file=sys.stderr)
             return []
     return NPC_CORPS
+
+
+def do_settings_sync(q):
+    """Push the full client-side settings blob for the logged-in character to
+    the server, so other devices see the same columns/filters/etc. No-op when
+    no character is logged in (unauthenticated use keeps the per-field
+    /api/prefs, /api/arb/prefs, /api/ind/prefs endpoints as its only store)."""
+    character_id = _AUTH.get("character_id")
+    if not character_id:
+        return {"ok": True, "synced": False}
+    blob = q.get("blob", ["{}"])[0]
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError:
+        raise LPError("Invalid settings payload.")
+    save_user_settings(character_id, data)
+    return {"ok": True, "synced": True}
 
 
 def do_prefs(q):
@@ -1314,10 +1378,20 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/corps":
                 self._send_json(get_npc_corps())
             elif parsed.path == "/api/settings":
-                merged = load_settings()
-                merged["arb"] = load_arb_settings()
-                merged["ind"] = load_ind_settings()
-                self._send_json(merged)
+                character_id = _AUTH.get("character_id")
+                synced = load_user_settings(character_id) if character_id else None
+                if synced is not None:
+                    synced["_server_synced"] = True
+                    self._send_json(synced)
+                else:
+                    merged = load_settings()
+                    merged["arb"] = load_arb_settings()
+                    merged["ind"] = load_ind_settings()
+                    merged["_server_synced"] = False
+                    merged["_logged_in"] = bool(character_id)
+                    self._send_json(merged)
+            elif parsed.path == "/api/settings/sync":
+                self._send_json(do_settings_sync(q))
             elif parsed.path == "/api/prefs":
                 self._send_json(do_prefs(q))
             elif parsed.path == "/api/scan":
@@ -2455,38 +2529,51 @@ function setStatus(html,err){
   const s=$("#statusbar"); s.innerHTML=html; s.className=err?"err":"";
 }
 
-// ── localStorage persistence ──────────────────────────────────────────────
+// ── localStorage + server-synced persistence ────────────────────────────────
 const LS_KEY='eve-scanner';
+function settingsBlob(){
+  return {
+    corp:$("#corp").value,lp:$("#lp").value,
+    maxspread:$("#maxspread").value,tax:pctToFrac($("#tax").value),broker:pctToFrac($("#broker").value),
+    market:$("#market").value,
+    sort_key:STATE.sort.key,sort_dir:STATE.sort.dir,
+    col_widths:STATE.colw,col_order:STATE.colOrder,col_layout_v:COL_LAYOUT_VERSION,col_vis:STATE.colVis,
+    hide_illiquid:STATE.hideIlliquid?'1':'0',
+    hide_unaffordable:STATE.hideUnaffordable?'1':'0',
+    trade_weight:STATE.tradeWeight,
+    active_tab:ACTIVE_TAB,
+    arb:{region:$("#arb-region").value,cross_station:$("#arb-cross").value,
+      sales_tax:pctToFrac($("#arb-tax").value),min_isk:$("#arb-minisk").value,
+      max_jumps:$("#arb-maxjumps").value,route_flag:$("#arb-route").value,
+      avoid_lowsec:ARB.avoidLowsec?'1':'0'},
+    ind:{market_group:$("#ind-group").value,station:$("#ind-station").value,
+      me:$("#ind-me").value,te:$("#ind-te").value,job_rate:$("#ind-jobrate").value,
+      sales_tax:$("#ind-tax").value,broker:$("#ind-broker").value,runs:$("#ind-runs").value,
+      skills_level:$("#ind-skills").value,
+      use_char_skills:$("#ind-usechar").checked?'1':'0',
+      buildable_only:$("#ind-buildable").checked?'1':'0',
+      include_unbuildable:$("#ind-unobtainable").checked?'1':'0',
+      hide_t2:$("#ind-hidet2").checked?'1':'0',
+      min_tradeability:$("#ind-mintrade").value,
+      profiles:JSON.stringify(IND.profiles),profile:$("#ind-profile").value,
+      owned:JSON.stringify([...IND.owned]),favorites:JSON.stringify([...IND.favorites]),
+      sort_key:IND.sort.key,sort_dir:IND.sort.dir}
+  };
+}
+// Debounced push of the full settings blob to the server so every device the
+// logged-in character uses converges on the same columns/filters/etc. Cheap
+// no-op server-side when nobody is logged in.
+let _settingsSyncTimer=null;
+function syncSettingsToServer(blob){
+  clearTimeout(_settingsSyncTimer);
+  _settingsSyncTimer=setTimeout(()=>{
+    fetch(`/api/settings/sync?blob=${encodeURIComponent(JSON.stringify(blob))}`).catch(()=>{});
+  }, 800);
+}
 function saveLS(){
-  try{
-    localStorage.setItem(LS_KEY,JSON.stringify({
-      corp:$("#corp").value,lp:$("#lp").value,
-      maxspread:$("#maxspread").value,tax:pctToFrac($("#tax").value),broker:pctToFrac($("#broker").value),
-      market:$("#market").value,
-      sort_key:STATE.sort.key,sort_dir:STATE.sort.dir,
-      col_widths:STATE.colw,col_order:STATE.colOrder,col_layout_v:COL_LAYOUT_VERSION,col_vis:STATE.colVis,
-      hide_illiquid:STATE.hideIlliquid?'1':'0',
-      hide_unaffordable:STATE.hideUnaffordable?'1':'0',
-      trade_weight:STATE.tradeWeight,
-      active_tab:ACTIVE_TAB,
-      arb:{region:$("#arb-region").value,cross_station:$("#arb-cross").value,
-        sales_tax:pctToFrac($("#arb-tax").value),min_isk:$("#arb-minisk").value,
-        max_jumps:$("#arb-maxjumps").value,route_flag:$("#arb-route").value,
-        avoid_lowsec:ARB.avoidLowsec?'1':'0'},
-      ind:{market_group:$("#ind-group").value,station:$("#ind-station").value,
-        me:$("#ind-me").value,te:$("#ind-te").value,job_rate:$("#ind-jobrate").value,
-        sales_tax:$("#ind-tax").value,broker:$("#ind-broker").value,runs:$("#ind-runs").value,
-        skills_level:$("#ind-skills").value,
-        use_char_skills:$("#ind-usechar").checked?'1':'0',
-        buildable_only:$("#ind-buildable").checked?'1':'0',
-        include_unbuildable:$("#ind-unobtainable").checked?'1':'0',
-        hide_t2:$("#ind-hidet2").checked?'1':'0',
-        min_tradeability:$("#ind-mintrade").value,
-        profiles:JSON.stringify(IND.profiles),profile:$("#ind-profile").value,
-        owned:JSON.stringify([...IND.owned]),favorites:JSON.stringify([...IND.favorites]),
-        sort_key:IND.sort.key,sort_dir:IND.sort.dir}
-    }));
-  }catch(e){}
+  const blob=settingsBlob();
+  try{ localStorage.setItem(LS_KEY,JSON.stringify(blob)); }catch(e){}
+  syncSettingsToServer(blob);
 }
 
 // ── Tab switching ─────────────────────────────────────────────────────────
@@ -4717,9 +4804,21 @@ $("#ind-search").addEventListener("input", renderIndTable);
 // ══════════════════════════════════════════════════════════════════════════
 updateArbJumpsVisibility();  // reflect default cross-station selection before settings load
 async function loadSettings(){
+  let server=null;
+  try{ server=await (await fetch("/api/settings")).json(); }catch(e){}
   let s=null;
-  try{ s=JSON.parse(localStorage.getItem(LS_KEY)); }catch(e){}
-  if(!s){ try{ s=await (await fetch("/api/settings")).json(); }catch(e){} }
+  if(server && server._server_synced){
+    // This character has synced settings from some device before — that's
+    // the cross-device source of truth, takes priority over this browser's
+    // local copy.
+    s=server;
+  } else {
+    try{ s=JSON.parse(localStorage.getItem(LS_KEY)); }catch(e){}
+    if(!s) s=server;
+    // First login on this character, before any device has synced yet — seed
+    // the server row now so other devices see something right away.
+    if(s && server && server._logged_in) syncSettingsToServer(s);
+  }
   if(s && Object.keys(s).length){
       if(s.corp) $("#corp").value=s.corp;
       if(s.lp)   $("#lp").value=s.lp;

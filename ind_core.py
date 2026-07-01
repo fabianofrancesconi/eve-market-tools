@@ -1001,6 +1001,7 @@ def build_industry_detail(bp, prices, names, volumes, params):
     components, the blueprint buy-in / invention cost, output, and revenue/profit
     in both sell modes. Mirrors lp_core.build_detail()."""
     me = params.get("me", 0)
+    te = params.get("te", 0)
     n = max(1, int(params.get("runs", 1)))
     job_rate = params.get("job_rate", 0.0)
     sales_tax = params.get("sales_tax", 0.0)
@@ -1079,9 +1080,11 @@ def build_industry_detail(bp, prices, names, volumes, params):
         "revenue_instant": rev_instant,
         "profit_patient": profit_patient,
         "profit_instant": profit_instant,
-        "build_time": build_time(bp.get("base_time"), params.get("te", 0),
+        "build_time": build_time(bp.get("base_time"), te,
                                  params.get("skill_profile"),
                                  params.get("skills_level", 0)),
+        "me_used": me,
+        "te_used": te,
         "runs": n,
         # cargo for the whole batch
         "input_volume_batch": input_volume * n,

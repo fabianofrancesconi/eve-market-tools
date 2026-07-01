@@ -976,6 +976,22 @@ class TestApiHistoryEndpoint:
 # web wiring (settings merge, prefs persistence, unknown-subpath status).
 # ---------------------------------------------------------------------------
 
+class TestIndustryLoginRequired:
+    """The Industry planner has no manual ME/TE/skill inputs — it only means
+    anything with a real character's owned blueprints and trained skills, so
+    login is mandatory rather than an optional fallback."""
+
+    def test_scan_without_login_raises(self, monkeypatch):
+        monkeypatch.setattr(lp_web, "_AUTH", {})
+        with pytest.raises(LPError):
+            lp_web.do_ind_scan({})
+
+    def test_detail_without_login_raises(self, monkeypatch):
+        monkeypatch.setattr(lp_web, "_AUTH", {})
+        with pytest.raises(LPError):
+            lp_web.do_ind_detail({"blueprint_id": ["681"]})
+
+
 class TestIndustryRoutes:
     def test_settings_includes_ind_key(self, tmp_server):
         base, _ = tmp_server
@@ -987,12 +1003,22 @@ class TestIndustryRoutes:
         base, _ = tmp_server
         monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
         body, status = http_get(
-            f"{base}/api/ind/prefs?me=10&job_rate=6&profile=2&hide_t2=1")
+            f"{base}/api/ind/prefs?job_rate=6&profile=2&hide_t2=1")
         assert status == 200 and body["ok"] is True
         saved = json.loads((tmp_path / "ind.json").read_text())
-        assert saved["me"] == "10"
         assert saved["job_rate"] == "6"
         assert saved["hide_t2"] == "1"
+
+    def test_ind_prefs_me_te_skills_not_persisted(self, tmp_server, tmp_path, monkeypatch):
+        # ME/TE/skills level are no longer user-settable — they're always the
+        # real (0 = unresearched/untrained) baseline, overridden per-blueprint
+        # with the logged-in character's own data. Nothing to persist.
+        base, _ = tmp_server
+        monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
+        body, status = http_get(f"{base}/api/ind/prefs?me=10&te=20&skills_level=5")
+        assert status == 200 and body["ok"] is True
+        saved = json.loads((tmp_path / "ind.json").read_text())
+        assert "me" not in saved and "te" not in saved and "skills_level" not in saved
 
     def test_ind_prefs_persists_col_order(self, tmp_server, tmp_path, monkeypatch):
         # The industry column order must survive a reload, like the LP store.

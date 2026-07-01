@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.49.0"
+__version__ = "1.50.0"
 
 import argparse
 import base64
@@ -227,6 +227,14 @@ def _restore_auth():
             "access_token": None,
             "expires_at": 0,
         })
+
+
+def _require_login():
+    """Raise LPError unless a character is logged in. The Industry planner has
+    no manual ME/TE/skill inputs — it needs a real character's owned blueprints
+    and trained skills to mean anything, so login isn't optional for it."""
+    if not _AUTH.get("refresh_token"):
+        raise LPError("Log in with EVE to use the Industry planner.")
 
 
 def _access_token():
@@ -1032,8 +1040,8 @@ def do_arb_scan(q, emit=None):
 # broad scan while still covering everything worth looking at.
 IND_HISTORY_TOP_N = 80
 
-_IND_PREF_KEYS = ("profiles", "profile", "market_group", "me", "te", "job_rate",
-                  "sales_tax", "broker", "runs", "station", "skills_level",
+_IND_PREF_KEYS = ("profiles", "profile", "market_group", "job_rate",
+                  "sales_tax", "broker", "runs", "station",
                   "buildable_only", "include_unbuildable", "hide_t2", "owned",
                   "sort_key", "sort_dir", "min_tradeability", "favorites", "col_order",
                   "col_widths", "col_vis")
@@ -1061,20 +1069,27 @@ def do_ind_groups(q):
 
 def _ind_params(q):
     """Parse the shared scan/detail knobs. Percentages (job rate, taxes) come
-    from the UI as whole numbers and are converted to fractions here."""
+    from the UI as whole numbers and are converted to fractions here.
+
+    me/te/skills_level are NOT user-settable: they're the real (0 = unresearched
+    / untrained) baseline, overridden per-blueprint in do_ind_scan/do_ind_detail
+    with the logged-in character's actual owned-blueprint ME/TE and trained
+    skill levels wherever ESI has that data."""
     return {
-        "me": int(float(q.get("me", ["0"])[0] or 0)),
-        "te": int(float(q.get("te", ["0"])[0] or 0)),
+        "me": 0,
+        "te": 0,
         "job_rate": float(q.get("job_rate", ["6"])[0] or 0) / 100.0,
         "sales_tax": float(q.get("sales_tax", ["4.5"])[0] or 0) / 100.0,
         "broker_fee": float(q.get("broker", ["1.5"])[0] or 0) / 100.0,
         "runs": max(1, int(float(q.get("runs", ["1"])[0] or 1))),
-        "skills_level": int(float(q.get("skills_level", ["5"])[0] or 0)),
+        "skills_level": 0,
     }
 
 
 def do_ind_scan(q, emit=None):
     """Rank manufacturable items by profitability. Streams SSE progress."""
+    _require_login()
+
     def _emit(d):
         if emit:
             emit(d)
@@ -1243,6 +1258,7 @@ def do_ind_liquidity(q):
 def do_ind_detail(q):
     """Full breakdown for one blueprint, with accurate (ESI packaged) cargo
     volumes resolved lazily for just this item's inputs and output."""
+    _require_login()
     blueprint_id = int(q["blueprint_id"][0])
     station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
     if station_id not in TRADE_HUBS:
@@ -2294,21 +2310,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
   </div>
-  <!-- Blueprint research level -->
-  <div class="ctrl-group">
-    <span class="ctrl-cap">Blueprint</span>
-    <div class="ctrl-fields">
-      <div class="field" data-tip="ME = Material Efficiency of the blueprint (0–10). Higher ME means fewer materials consumed per run (up to −10% at ME 10). Used as the fallback assumption for any blueprint you don't own (or when logged out) — log in with EVE and this is overridden automatically with the real ME of any blueprint you own.">
-        <label>ME</label><input id="ind-me" type="number" min="0" max="10" value="10" style="width:55px">
-      </div>
-      <div class="field" data-tip="TE = Time Efficiency of the blueprint (0–20). Higher TE means faster builds (up to −20% build time at TE 20). Used as the fallback assumption for any blueprint you don't own (or when logged out) — log in with EVE and this is overridden automatically with the real TE of any blueprint you own.">
-        <label>TE</label><input id="ind-te" type="number" min="0" max="20" value="20" style="width:55px">
-      </div>
-      <div class="field" data-tip="Assume every skill the blueprint requires is trained to this level (0–5), for any skill your character hasn't actually trained (or when logged out). Log in with EVE and your real trained skill levels are used automatically wherever available.">
-        <label>Skills @</label><input id="ind-skills" type="number" min="0" max="5" value="5" style="width:55px">
-      </div>
-    </div>
-  </div>
   <!-- Costs & fees -->
   <div class="ctrl-group">
     <span class="ctrl-cap">Costs &amp; fees</span>
@@ -2365,7 +2366,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span class="ctrl-cap">Actions</span>
     <div class="ctrl-fields">
       <button id="ind-go" class="primary">Scan</button>
-      <label class="check-field" data-tip="Only show items every required skill (at the Skills @ level) can build."><input type="checkbox" id="ind-buildable"> Buildable only</label>
+      <label class="check-field" data-tip="Only show items every required skill your character has actually trained to the needed level can build."><input type="checkbox" id="ind-buildable"> Buildable only</label>
       <label class="check-field" data-tip="Also show items whose blueprint you don't own and isn't on sale (a T1 BPO with no market order). Off = only craftable things."><input type="checkbox" id="ind-unobtainable"> Include unobtainable</label>
       <label class="check-field" data-tip="Hide T2 / invention items — show only directly-built T1 items."><input type="checkbox" id="ind-hidet2"> Hide T2</label>
       <button id="ind-refresh" class="secondary" data-tip="Re-download the blueprint database (SDE) from Fuzzwork. Only needed after a game patch.">⟳ Refresh SDE</button>
@@ -2392,6 +2393,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <table id="arb-tbl"><colgroup id="arb-cg"></colgroup><thead></thead><tbody></tbody></table>
   </div>
   <!-- Industry tab -->
+  <div id="ind-empty" class="char-empty hidden">
+    <p>Log in with your EVE Online account to use the Industry planner.</p>
+    <button id="ind-login-btn" class="auth-btn primary-btn">Log in with EVE</button>
+  </div>
   <div id="ind-tablewrap" class="tablewrap hidden">
     <div id="ind-progress" class="hidden">
       <div class="prog-label" id="ind-prog-label">Initializing…</div>
@@ -2613,9 +2618,8 @@ function settingsBlob(){
       max_jumps:$("#arb-maxjumps").value,route_flag:$("#arb-route").value,
       avoid_lowsec:ARB.avoidLowsec?'1':'0'},
     ind:{market_group:$("#ind-group").value,station:$("#ind-station").value,
-      me:$("#ind-me").value,te:$("#ind-te").value,job_rate:$("#ind-jobrate").value,
+      job_rate:$("#ind-jobrate").value,
       sales_tax:$("#ind-tax").value,broker:$("#ind-broker").value,runs:$("#ind-runs").value,
-      skills_level:$("#ind-skills").value,
       buildable_only:$("#ind-buildable").checked?'1':'0',
       include_unbuildable:$("#ind-unobtainable").checked?'1':'0',
       hide_t2:$("#ind-hidet2").checked?'1':'0',
@@ -2661,22 +2665,31 @@ function switchTab(tab, opts){
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===tab));
   $("#lp-controls").classList.toggle("hidden", tab!=="lp");
   $("#arb-controls").classList.toggle("hidden", tab!=="arb");
-  $("#ind-controls").classList.toggle("hidden", tab!=="ind");
   $("#lp-tablewrap").classList.toggle("hidden", tab!=="lp");
   $("#arb-tablewrap").classList.toggle("hidden", tab!=="arb");
-  $("#ind-tablewrap").classList.toggle("hidden", tab!=="ind");
   $("#char-tablewrap").classList.toggle("hidden", tab!=="char");
+  updateIndGate();
   if(tab!=="lp") closeDetail();
   setStatus("");
   document.title = tab==="lp" ? "EVE LP Store Scanner"
                 : tab==="arb" ? "EVE Arbitrage Scanner"
                 : tab==="char" ? "EVE Character" : "EVE Industry Planner";
   fetch(`/api/prefs?active_tab=${tab}`).catch(()=>{}); saveLS();
-  if(tab==="ind"){
+  if(tab==="ind" && AUTH.loggedIn){
     if(!IND.groupsLoaded) loadIndGroups();
     renderIndTable(); renderIndStatus();   // show whatever's loaded (e.g. a favourites preview) immediately
   }
   if(tab==="char" && AUTH.loggedIn) refreshCharData();
+}
+// The Industry planner has no manual ME/TE/skill inputs — it needs a real
+// character's owned blueprints and trained skills, so it's gated behind login
+// exactly like the Character tab, just without hiding the nav entry (so a
+// logged-out visitor can discover why it needs EVE login).
+function updateIndGate(){
+  const show = ACTIVE_TAB==="ind" && AUTH.loggedIn;
+  $("#ind-controls").classList.toggle("hidden", !show);
+  $("#ind-tablewrap").classList.toggle("hidden", !show);
+  $("#ind-empty").classList.toggle("hidden", !(ACTIVE_TAB==="ind" && !AUTH.loggedIn));
 }
 document.querySelectorAll(".tab").forEach(t=>{
   t.onclick = ()=>switchTab(t.dataset.tab);
@@ -4120,13 +4133,10 @@ function indParams(extra){
   const p={
     market_group: $("#ind-group").value,
     station:      $("#ind-station").value,
-    me:           $("#ind-me").value||"0",
-    te:           $("#ind-te").value||"0",
     job_rate:     $("#ind-jobrate").value||"0",
     sales_tax:    $("#ind-tax").value||"0",
     broker:       $("#ind-broker").value||"0",
     runs:         $("#ind-runs").value||"1",
-    skills_level: $("#ind-skills").value||"0",
     buildable_only:$("#ind-buildable").checked?"1":"0",
     include_unbuildable:$("#ind-unobtainable").checked?"1":"0",
     hide_t2:      $("#ind-hidet2").checked?"1":"0",
@@ -4390,8 +4400,8 @@ function renderIndDetail(d){
       <div class="ind-d-sub">Blueprint &amp; market</div>
       <span>Blueprint</span><b class="bp-buy">${bpSrc}</b>
       <span>ME / TE used</span><b>${d.owned_me_te
-          ? `${d.owned_me_te.me} / ${d.owned_me_te.te} (your blueprint)`
-          : `${$("#ind-me").value||0} / ${$("#ind-te").value||0} (assumed)`}</b>
+          ? `${d.me_used} / ${d.te_used} (your blueprint)`
+          : `${d.me_used} / ${d.te_used} (unresearched — you don't own this blueprint)`}</b>
       <span>Blueprint payback</span><b>${payback}</b>
       <span>Tradeability</span><b>${d.tradeability==null?"—":d.tradeability+" / 100"}${d.daily_units!=null?` (${fmtNum(d.daily_units)} units/day)`:""}</b>
     </div>
@@ -4564,6 +4574,7 @@ function renderAuthChip(){
   $("#char-body").classList.toggle("hidden", !AUTH.loggedIn);
   if(AUTH.loggedIn) $("#chip-name").textContent=AUTH.name||"Capsuleer";
   if(ACTIVE_TAB==="char" && !AUTH.loggedIn) switchTab("ind");
+  else updateIndGate();
 }
 
 async function checkAuth(){
@@ -4736,6 +4747,7 @@ function updateMyLpBadge(){
 
 $("#login-eve").onclick=doLogin;
 $("#char-login-btn").onclick=doLogin;
+$("#ind-login-btn").onclick=doLogin;
 $("#login-cfg").onclick=()=>{ const p=$("#auth-cfg-pop"); p.classList.contains("hidden")?openAuthCfg():closeAuthCfg(); };
 $("#logout-eve").onclick=e=>{ e.stopPropagation(); doLogout(); };
 $("#char-chip").onclick=()=>switchTab("char");
@@ -4921,8 +4933,8 @@ document.querySelectorAll(".ind-preset").forEach(b=>{
   b.onclick=()=>{ $("#ind-runs").value=b.dataset.n; onIndRunsChanged(); };
 });
 $("#ind-runs").addEventListener("input", onIndRunsChanged);
-["#ind-group","#ind-station","#ind-me","#ind-te","#ind-jobrate","#ind-tax",
- "#ind-broker","#ind-skills"].forEach(sel=>{
+["#ind-group","#ind-station","#ind-jobrate","#ind-tax",
+ "#ind-broker"].forEach(sel=>{
   const el=$(sel); if(!el) return;
   el.addEventListener("change", saveIndPrefs);
 });
@@ -5024,13 +5036,10 @@ async function loadSettings(){
         if(cv&&typeof cv==="object") IND_COLS.forEach(c=>{ if(c.k in cv) IND.colVis[c.k]=!!cv[c.k]; });
       }catch(e){} }
       if(ind.station) $("#ind-station").value=ind.station;
-      if(ind.me!==undefined&&ind.me!=="") $("#ind-me").value=ind.me;
-      if(ind.te!==undefined&&ind.te!=="") $("#ind-te").value=ind.te;
       if(ind.job_rate) $("#ind-jobrate").value=ind.job_rate;
       if(ind.sales_tax) $("#ind-tax").value=ind.sales_tax;
       if(ind.broker) $("#ind-broker").value=ind.broker;
       if(ind.runs) $("#ind-runs").value=ind.runs;
-      if(ind.skills_level!==undefined&&ind.skills_level!=="") $("#ind-skills").value=ind.skills_level;
       if(ind.buildable_only==="1") $("#ind-buildable").checked=true;
       if(ind.include_unbuildable==="1") $("#ind-unobtainable").checked=true;
       if(ind.hide_t2==="1") $("#ind-hidet2").checked=true;

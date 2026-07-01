@@ -882,7 +882,7 @@ def evaluate_industry(candidates, prices, adjusted, params):
     of a blueprint you actually own, overriding the uniform me/te for that row
     only).
 
-    Rows are sorted by isk_per_hour_best (None last)."""
+    Rows are sorted by isk_per_hour_patient (None last)."""
     me = params.get("me", 0)
     te = params.get("te", 0)
     job_rate = params.get("job_rate", 0.0)
@@ -974,7 +974,8 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "isk_per_hour_instant": iph(profit_instant),
             "isk_per_hour_best": iph(profit_best),
             "runs": n,
-            "total_profit_best": None if profit_best is None else profit_best * n,
+            "total_profit_patient": None if profit_patient is None else profit_patient * n,
+            "total_profit_instant": None if profit_instant is None else profit_instant * n,
             "input_volume": in_vol * n,
             "output_volume": None if out_vol is None else out_vol * n,
             # Per-run building blocks so the UI can rescale batch columns live
@@ -990,7 +991,7 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "owned_bp_me_te": bp["blueprint_id"] in owned_me_te,
         })
 
-    rows.sort(key=lambda r: (r["isk_per_hour_best"] if r["isk_per_hour_best"] is not None
+    rows.sort(key=lambda r: (r["isk_per_hour_patient"] if r["isk_per_hour_patient"] is not None
                              else float("-inf")), reverse=True)
     return rows
 

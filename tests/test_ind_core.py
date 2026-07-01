@@ -390,7 +390,8 @@ class TestEvaluateIndustry:
 
     def test_batch_scaling_cargo_and_days(self):
         r = self._row(runs=100, volumes=_VOLUMES, daily_vols={165: 50})
-        assert r["total_profit_best"] == pytest.approx(81_200.0)
+        assert r["total_profit_patient"] == pytest.approx(81_200.0)
+        assert r["total_profit_instant"] == pytest.approx(66_200.0)
         # input per run = 100*0.01 + 50*0.01 = 1.5 ; *100 = 150
         assert r["input_volume"] == pytest.approx(150.0)
         # output per run = 1*2500 ; *100 = 250000
@@ -402,14 +403,14 @@ class TestEvaluateIndustry:
         assert self._row(skill_profile={3380: 1})["buildable"] is True
         assert self._row(skill_profile={})["buildable"] is False
 
-    def test_sorted_by_isk_per_hour_best_none_last(self):
+    def test_sorted_by_isk_per_hour_patient_none_last(self):
         cheap = _bp(blueprint_id=2, product_id=999, product_name="Junk")
         rows = ind_core.evaluate_industry(
             [_bp(), cheap],
             _prices({999: {"sell_min": None, "buy_max": None}}),
             _ADJUSTED, _params())
         assert rows[0]["product_id"] == 165          # profitable first
-        assert rows[-1]["isk_per_hour_best"] is None  # unpriced output last
+        assert rows[-1]["isk_per_hour_patient"] is None  # unpriced output last
 
     def test_owned_me_te_overrides_uniform_assumption_for_that_row_only(self):
         owned = _bp()               # blueprint_id 681

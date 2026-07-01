@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.53.0"
+__version__ = "1.54.0"
 
 import argparse
 import base64
@@ -3829,7 +3829,7 @@ function openArbChart(row){
 // ══════════════════════════════════════════════════════════════════════════
 // INDUSTRY TAB
 // ══════════════════════════════════════════════════════════════════════════
-let IND = {rows:[], sort:{key:"isk_per_hour_best", dir:-1}, lastData:null, es:null,
+let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es:null,
            groupsLoaded:false, profiles:[], favorites:new Set(),
            timers:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{},
@@ -3848,26 +3848,28 @@ const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
 const fmtDaysSell = v => (v===null||v===undefined) ? "—" : (v<1 ? "<1 d" : v.toFixed(1)+" d");
 
 const IND_COLS = [
-  {k:"_fav",               t:"★",           w: 30, tip:"Add to Watchlist — track blueprints you don't own. Your owned blueprints appear in 'My Blueprints' automatically.", raw:true},
-  {k:"product_name",       t:"Item",        w:210, tip:"The manufactured item. * = an input has no sell price at the source hub."},
-  {k:"tech_level",         t:"Tech",        w: 46, tip:"Tech level.", f:v=>v?("T"+v):"—"},
-  {k:"_timer",             t:"⏱ Timer",     w: 84, tip:"Live countdown for your running manufacturing job on this blueprint, pulled from EVE (refreshed every 5 min). Log in with EVE to populate.", raw:true},
-  {k:"isk_per_hour_best",  t:"ISK/hr",      w:110, tip:"Profit per hour of manufacturing time — the headline 'worth it' number.", f:fmtISK, pn:true},
-  {k:"profit_best",        t:"Profit/run",  w:105, tip:"Best-of patient/instant profit for one run.", f:fmtISK, pn:true},
-  {k:"profit_patient",     t:"Profit list", w:105, tip:"Profit per run selling at the lowest ask (patient/list order).", f:fmtISK, pn:true},
-  {k:"profit_instant",     t:"Profit inst", w:105, tip:"Profit per run selling instantly at the highest bid.", f:fmtISK, pn:true},
-  {k:"total_profit_best",  t:"Profit×N",    w:108, tip:"Profit across the whole batch (Runs).", f:fmtISK, pn:true},
-  {k:"margin_best",        t:"Margin",      w: 65, tip:"Profit as a % of total cost.", f:fmtPct1, pn:true},
-  {k:"build_time",         t:"Build",       w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
-  {k:"total_cost",         t:"Cost/run",    w: 98, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
-  {k:"bp_price",           t:"BP price",    w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'owned' = you have it.", f:(v,r)=> r.owned_bp_me_te?"owned":(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
-  {k:"payback_runs",       t:"Payback",     w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r.owned_bp_me_te?"—":(v==null?"—":fmtNum(v)+" runs")},
-  {k:"ask",                t:"Sell",        w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
-  {k:"input_volume",       t:"Cargo in",    w: 85, tip:"m³ of materials to haul in for the batch.", f:v=>v?fmtVol(v):"—"},
-  {k:"output_volume",      t:"Cargo out",   w: 85, tip:"m³ of finished items to haul out for the batch.", f:v=>v?fmtVol(v):"—"},
-  {k:"days_to_sell",       t:"Days to sell",w: 88, tip:"Batch size ÷ daily traded volume. Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : fmtDaysSell(v)},
-  {k:"tradeability",       t:"Tradeability",w: 98, tip:"How sellable the product is (0–100), from the daily UNITS traded on the market over ~30 days. Low = the market absorbs little quantity, so it's hard to offload no matter how profitable on paper. Every scanned item is scored — rows spin while their market history loads, then show '—' if the item has never traded.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
-  {k:"buildable",          t:"Build?",      w: 58, tip:"Can every required skill (at the Skills level) make it?", f:v=>v?"✓":"✗"},
+  {k:"_fav",               t:"★",              w: 30, tip:"Add to Watchlist — track blueprints you don't own. Your owned blueprints appear in 'My Blueprints' automatically.", raw:true},
+  {k:"product_name",       t:"Item",           w:210, tip:"The manufactured item. * = an input has no sell price at the source hub."},
+  {k:"tech_level",         t:"Tech",           w: 46, tip:"Tech level.", f:v=>v?("T"+v):"—"},
+  {k:"_timer",             t:"⏱ Timer",        w: 84, tip:"Live countdown for your running manufacturing job on this blueprint, pulled from EVE (refreshed every 5 min). Log in with EVE to populate.", raw:true},
+  {k:"isk_per_hour_patient",t:"ISK/hr list",   w:110, tip:"Profit per hour when selling at the lowest ask (patient list order).", f:fmtISK, pn:true},
+  {k:"isk_per_hour_instant",t:"ISK/hr instant",w:110, tip:"Profit per hour when selling instantly at the highest bid.", f:fmtISK, pn:true},
+  {k:"profit_patient",     t:"Profit list",    w:105, tip:"Profit per run selling at the lowest ask (patient list order).", f:fmtISK, pn:true},
+  {k:"profit_instant",     t:"Profit instant", w:105, tip:"Profit per run selling instantly at the highest bid.", f:fmtISK, pn:true},
+  {k:"total_profit_patient",t:"Profit×N list", w:108, tip:"Batch profit (all runs) selling at the lowest ask.", f:fmtISK, pn:true},
+  {k:"total_profit_instant",t:"Profit×N instant",w:108, tip:"Batch profit (all runs) selling instantly at the highest bid.", f:fmtISK, pn:true},
+  {k:"margin_patient",     t:"Margin list",    w: 75, tip:"Profit as % of cost when selling at the lowest ask.", f:fmtPct1, pn:true},
+  {k:"margin_instant",     t:"Margin instant", w: 75, tip:"Profit as % of cost when selling instantly at the highest bid.", f:fmtPct1, pn:true},
+  {k:"build_time",         t:"Build time",     w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
+  {k:"total_cost",         t:"Cost/run",       w: 98, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
+  {k:"bp_price",           t:"BP price",       w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'owned' = you have it.", f:(v,r)=> r.owned_bp_me_te?"owned":(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
+  {k:"payback_runs",       t:"Payback",        w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r.owned_bp_me_te?"—":(v==null?"—":fmtNum(v)+" runs")},
+  {k:"ask",                t:"Sell price",     w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
+  {k:"input_volume",       t:"Cargo in",       w: 85, tip:"m³ of materials to haul in for the batch.", f:v=>v?fmtVol(v):"—"},
+  {k:"output_volume",      t:"Cargo out",      w: 85, tip:"m³ of finished items to haul out for the batch.", f:v=>v?fmtVol(v):"—"},
+  {k:"days_to_sell",       t:"Days to sell",   w: 88, tip:"Batch size ÷ daily traded volume. Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : fmtDaysSell(v)},
+  {k:"tradeability",       t:"Tradeability",   w: 98, tip:"How sellable the product is (0–100), from the daily UNITS traded on the market over ~30 days. Low = the market absorbs little quantity, so it's hard to offload no matter how profitable on paper. Every scanned item is scored — rows spin while their market history loads, then show '—' if the item has never traded.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
+  {k:"buildable",          t:"Buildable?",     w: 58, tip:"Can every required skill (at the Skills level) make it?", f:v=>v?"✓":"✗"},
 ];
 
 const IND_COL_BY_KEY=Object.fromEntries(IND_COLS.map(c=>[c.k,c]));
@@ -4896,7 +4898,8 @@ function applyIndRuns(){
   const n=Math.max(1, parseInt($("#ind-runs").value)||1);
   IND.rows.forEach(r=>{
     r.runs=n;
-    r.total_profit_best = r.profit_best==null?null:r.profit_best*n;
+    r.total_profit_patient = r.profit_patient==null?null:r.profit_patient*n;
+    r.total_profit_instant = r.profit_instant==null?null:r.profit_instant*n;
     r.input_volume = r.in_vol_run==null?null:r.in_vol_run*n;
     r.output_volume = r.out_vol_run==null?null:r.out_vol_run*n;
     r.days_to_sell = r.daily_vol?((r.out_qty*n)/r.daily_vol):null;

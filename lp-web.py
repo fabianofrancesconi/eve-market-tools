@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.50.0"
+__version__ = "1.51.0"
 
 import argparse
 import base64
@@ -1042,7 +1042,7 @@ IND_HISTORY_TOP_N = 80
 
 _IND_PREF_KEYS = ("profiles", "profile", "market_group", "job_rate",
                   "sales_tax", "broker", "runs", "station",
-                  "buildable_only", "include_unbuildable", "hide_t2", "owned",
+                  "buildable_only", "include_unbuildable", "hide_t2", "hidden",
                   "sort_key", "sort_dir", "min_tradeability", "favorites", "col_order",
                   "col_widths", "col_vis")
 
@@ -1107,10 +1107,6 @@ def do_ind_scan(q, emit=None):
     # of category — used to show favorites immediately on tab load, before the
     # user runs a real scan. Doesn't touch saved settings.
     favorites_only = q.get("favorites_only", ["0"])[0] in ("1", "true", "on")
-    try:
-        owned_ids = set(json.loads(q.get("owned", ["[]"])[0]))
-    except (ValueError, TypeError):
-        owned_ids = set()
     try:
         fav_ids = set(int(b) for b in json.loads(q.get("favorites", ["[]"])[0]))
     except (ValueError, TypeError):
@@ -1188,24 +1184,24 @@ def do_ind_scan(q, emit=None):
         _emit({"type": "progress", "pct": 78, "msg": "Computing profitability…", "sub": ""})
         params.update({"bpo_prices": bpo_prices, "volumes": volumes})
         rows = ind_core.evaluate_industry(bps, prices, adjusted, params)
-        # Flag ownership + favourites; favourites are exempt from every filter so
+        # Flag favourites; favourites are exempt from every filter so
         # they're always visible regardless of the current settings.
         for r in rows:
-            r["owned"] = r["blueprint_id"] in owned_ids
             r["favorite"] = r["blueprint_id"] in fav_ids
         if buildable_only:
             rows = [r for r in rows if r["buildable"] or r["favorite"]]
         if not include_unbuildable:
-            rows = [r for r in rows if r["bp_available"] or r["owned"] or r["favorite"]]
+            rows = [r for r in rows if r["bp_available"] or r["owned_bp_me_te"] or r["favorite"]]
         if hide_t2:
             rows = [r for r in rows
                     if r["favorite"] or not (r["requires_invention"] or r["tech_level"] == 2)]
     finally:
         conn.close()
 
-    # Market depth for the top-ranked rows plus every favourite (one cached call
-    # per product type), so favourites always carry a tradeability / days-to-sell.
-    scored = rows[:IND_HISTORY_TOP_N] + [r for r in rows[IND_HISTORY_TOP_N:] if r["favorite"]]
+    # Market depth for the top-ranked rows plus every favourite and owned BP (one
+    # cached call per product type), so pinned sections always carry a score.
+    scored = rows[:IND_HISTORY_TOP_N] + [r for r in rows[IND_HISTORY_TOP_N:]
+                                         if r["favorite"] or r["owned_bp_me_te"]]
     if scored:
         _emit({"type": "progress", "pct": 88,
                "msg": f"Checking market depth for {len(scored)} items…", "sub": ""})
@@ -2625,7 +2621,7 @@ function settingsBlob(){
       hide_t2:$("#ind-hidet2").checked?'1':'0',
       min_tradeability:$("#ind-mintrade").value,
       profiles:JSON.stringify(IND.profiles),profile:$("#ind-profile").value,
-      owned:JSON.stringify([...IND.owned]),favorites:JSON.stringify([...IND.favorites]),
+      hidden:JSON.stringify([...IND.hidden]),favorites:JSON.stringify([...IND.favorites]),
       sort_key:IND.sort.key,sort_dir:IND.sort.dir,
       col_order:JSON.stringify(IND.colOrder),col_widths:JSON.stringify(IND.colw),
       col_vis:JSON.stringify(IND.colVis)}
@@ -3834,7 +3830,7 @@ function openArbChart(row){
 // INDUSTRY TAB
 // ══════════════════════════════════════════════════════════════════════════
 let IND = {rows:[], sort:{key:"isk_per_hour_best", dir:-1}, lastData:null, es:null,
-           groupsLoaded:false, profiles:[], owned:new Set(), favorites:new Set(),
+           groupsLoaded:false, profiles:[], hidden:new Set(), favorites:new Set(),
            timers:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{},
            fillTotal:0, fillDone:0};
@@ -3852,8 +3848,8 @@ const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
 const fmtDaysSell = v => (v===null||v===undefined) ? "—" : (v<1 ? "<1 d" : v.toFixed(1)+" d");
 
 const IND_COLS = [
-  {k:"_fav",               t:"★",           w: 30, tip:"Mark as favourite. Favourites pin to the top and stay visible regardless of filters.", raw:true},
-  {k:"product_name",       t:"Item",        w:210, tip:"The manufactured item. * = an input has no sell price at the source hub. Open it to mark the blueprint as owned."},
+  {k:"_fav",               t:"★",           w: 30, tip:"Add to Watchlist — track blueprints you don't own. Your owned blueprints appear in 'My Blueprints' automatically.", raw:true},
+  {k:"product_name",       t:"Item",        w:210, tip:"The manufactured item. * = an input has no sell price at the source hub."},
   {k:"tech_level",         t:"Tech",        w: 46, tip:"Tech level.", f:v=>v?("T"+v):"—"},
   {k:"_timer",             t:"⏱ Timer",     w: 84, tip:"Live countdown for your running manufacturing job on this blueprint, pulled from EVE (refreshed every 5 min). Log in with EVE to populate.", raw:true},
   {k:"isk_per_hour_best",  t:"ISK/hr",      w:110, tip:"Profit per hour of manufacturing time — the headline 'worth it' number.", f:fmtISK, pn:true},
@@ -3862,8 +3858,8 @@ const IND_COLS = [
   {k:"margin_best",        t:"Margin",      w: 65, tip:"Profit as a % of total cost.", f:fmtPct1, pn:true},
   {k:"build_time",         t:"Build",       w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
   {k:"total_cost",         t:"Cost/run",    w: 98, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
-  {k:"bp_price",           t:"BP price",    w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'owned' = you have it.", f:(v,r)=> r._owned?"owned":(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
-  {k:"payback_runs",       t:"Payback",     w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r._owned?"—":(v==null?"—":fmtNum(v)+" runs")},
+  {k:"bp_price",           t:"BP price",    w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'owned' = you have it.", f:(v,r)=> r.owned_bp_me_te?"owned":(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
+  {k:"payback_runs",       t:"Payback",     w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r.owned_bp_me_te?"—":(v==null?"—":fmtNum(v)+" runs")},
   {k:"ask",                t:"Sell",        w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
   {k:"input_volume",       t:"Cargo in",    w: 85, tip:"m³ of materials to haul in for the batch.", f:v=>v?fmtVol(v):"—"},
   {k:"output_volume",      t:"Cargo out",   w: 85, tip:"m³ of finished items to haul out for the batch.", f:v=>v?fmtVol(v):"—"},
@@ -3998,7 +3994,7 @@ function indRowHtml(r, idx){
   const fav=IND.favorites.has(r.blueprint_id);
   const tds=indVisCols().map(c=>{
     if(c.k==="_fav"){
-      return `<td class="fav-cell"><span class="fav-star${fav?" on":""}" data-bp="${r.blueprint_id}" title="${fav?"Remove favourite":"Add favourite"}">${fav?"★":"☆"}</span></td>`;
+      return `<td class="fav-cell"><span class="fav-star${fav?" on":""}" data-bp="${r.blueprint_id}" title="${fav?"Remove from Watchlist":"Add to Watchlist"}">${fav?"★":"☆"}</span></td>`;
     }
     if(c.k==="_timer"){
       const end=IND.timers[r.blueprint_id];
@@ -4044,35 +4040,40 @@ function renderIndTable(){
     };
   });
 
-  // Split: favourites pinned on top (always shown), the rest below (filtered).
+  // Split into three sections: My Blueprints (ESI-owned, not hidden),
+  // Watchlist (favorites for BPs you don't own), All items (the rest).
   const search=($("#ind-search").value||"").trim().toLowerCase();
-  let favRows=IND.rows.filter(r=>IND.favorites.has(r.blueprint_id));
-  let rest=IND.rows.filter(r=>!IND.favorites.has(r.blueprint_id));
+  const inMyBps=r=>r.owned_bp_me_te && !IND.hidden.has(r.blueprint_id);
+  const inWatch=r=>IND.favorites.has(r.blueprint_id) && !inMyBps(r);
+  let myBps=IND.rows.filter(inMyBps);
+  let watchlist=IND.rows.filter(inWatch);
+  let rest=IND.rows.filter(r=>!inMyBps(r) && !inWatch(r));
   if(search){
-    // Search overrides every other display filter — match by name across the
-    // whole scan, favourites included, regardless of min-trade etc.
     const matches=r=>(r.product_name||"").toLowerCase().includes(search);
-    favRows=favRows.filter(matches);
+    myBps=myBps.filter(matches);
+    watchlist=watchlist.filter(matches);
     rest=rest.filter(matches);
   } else {
     const minTrade=parseInt($("#ind-mintrade").value)||0;
-    // Keep rows still loading their score (the background fill hasn't reached them
-    // yet) so the filter doesn't flicker the table as it streams in. Once a row is
-    // loaded, a null score means "never traded" and is dropped by any threshold.
     if(minTrade>0) rest=rest.filter(r=> !r.liq_loaded || (r.tradeability!=null && r.tradeability>=minTrade));
   }
-  const fav=indSortRows(favRows);
+  myBps=indSortRows(myBps);
+  watchlist=indSortRows(watchlist);
   rest=indSortRows(rest);
   const ncol=vc.length;
   const sect=(label,n)=>`<tr class="ind-section"><td colspan="${ncol}">${label} — ${n}</td></tr>`;
 
   const ordered=[];   // flat list parallel to rendered data rows, for click handling
   let html="";
-  if(fav.length){
-    html+=sect("★ Favourites", fav.length);
-    fav.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
-    html+=sect("All items", rest.length);
+  if(myBps.length){
+    html+=sect("My Blueprints", myBps.length);
+    myBps.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   }
+  if(watchlist.length){
+    html+=sect("★ Watchlist", watchlist.length);
+    watchlist.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+  }
+  if(myBps.length || watchlist.length) html+=sect("All items", rest.length);
   rest.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   tbody.innerHTML=html;
 
@@ -4102,7 +4103,7 @@ function toggleFavorite(bp){
 function renderIndStatus(){
   const d=IND.lastData; if(!d||ACTIVE_TAB!=="ind") return;
   if(d.favorites_only){
-    setStatus(`<span class="pill">★ <b>${d.count.toLocaleString()}</b> favourite${d.count===1?"":"s"} loaded</span>`
+    setStatus(`<span class="pill">★ <b>${d.count.toLocaleString()}</b> watchlist item${d.count===1?"":"s"} loaded</span>`
       +`<span class="ts">press Scan for full results</span>`);
     return;
   }
@@ -4141,7 +4142,7 @@ function indParams(extra){
     include_unbuildable:$("#ind-unobtainable").checked?"1":"0",
     hide_t2:      $("#ind-hidet2").checked?"1":"0",
     min_tradeability: $("#ind-mintrade").value||"0",
-    owned:        JSON.stringify([...IND.owned]),
+    hidden:       JSON.stringify([...IND.hidden]),
     favorites:    JSON.stringify([...IND.favorites]),
   };
   return new URLSearchParams(Object.assign(p, extra||{}));
@@ -4309,10 +4310,10 @@ function renderIndDetail(d){
       && d.total_cost!=null && qty>0 && d.sales_tax!=null && d.sales_tax<1)
     ? d.total_cost/(qty*(1-d.sales_tax)) : null;
   const tier=d.product.tech_level?("T"+d.product.tech_level):"";
-  const owned = IND.owned.has(d.blueprint_id);
+  const esiOwned = !!d.owned_me_te;
   let bpSrc;
-  if(owned){
-    bpSrc = "You own this blueprint";
+  if(esiOwned){
+    bpSrc = `You own this blueprint (ME ${d.owned_me_te.me} / TE ${d.owned_me_te.te})`;
   } else if(d.bp_market){
     bpSrc = `Buy BPO ${isk(d.bp_market.price)} at ${d.bp_market.station}`
           + ` · ${fmtNum(d.bp_market.orders)} on sale in ${d.bp_market.region}`;
@@ -4368,9 +4369,9 @@ function renderIndDetail(d){
   $("#ind-detail").innerHTML=`
     <div class="ind-d-head">
       <b>${d.product.name}</b>
-      <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="Toggle favourite">${IND.favorites.has(d.blueprint_id)?"★ Favourite":"☆ Favourite"}</button>
+      <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
       <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy</button>
-      <button class="ind-own" title="Toggle whether you own this blueprint">${owned?"✓ BP owned":"☐ Mark BP owned"}</button>
+      ${esiOwned?`<button class="ind-hide" title="Hide from My Blueprints section">${IND.hidden.has(d.blueprint_id)?"👁 Show in My BPs":"Hide from My BPs"}</button>`:""}
       <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
       ${tier} · ${n.toLocaleString()} run(s) · source ${d.station_name}
       <span class="ind-d-close" title="Close">✕</span>
@@ -4401,7 +4402,7 @@ function renderIndDetail(d){
       <span>Blueprint</span><b class="bp-buy">${bpSrc}</b>
       <span>ME / TE used</span><b>${d.owned_me_te
           ? `${d.me_used} / ${d.te_used} (your blueprint)`
-          : `${d.me_used} / ${d.te_used} (unresearched — you don't own this blueprint)`}</b>
+          : `${d.me_used} / ${d.te_used} (unresearched — not in your blueprints)`}</b>
       <span>Blueprint payback</span><b>${payback}</b>
       <span>Tradeability</span><b>${d.tradeability==null?"—":d.tradeability+" / 100"}${d.daily_units!=null?` (${fmtNum(d.daily_units)} units/day)`:""}</b>
     </div>
@@ -4479,12 +4480,13 @@ function renderIndDetail(d){
   // Clicking the header bar itself (not its buttons) collapses the detail view.
   const head=box.querySelector(".ind-d-head");
   head.onclick=ev=>{ if(!ev.target.closest("button")) closeDetail(); };
-  box.querySelector(".ind-own").onclick=()=>{
-    if(IND.owned.has(d.blueprint_id)) IND.owned.delete(d.blueprint_id);
-    else IND.owned.add(d.blueprint_id);
+  const hideBtn=box.querySelector(".ind-hide");
+  if(hideBtn) hideBtn.onclick=()=>{
+    if(IND.hidden.has(d.blueprint_id)) IND.hidden.delete(d.blueprint_id);
+    else IND.hidden.add(d.blueprint_id);
     saveIndPrefs();
-    renderIndTable();     // move the row between owned / need-to-acquire
-    renderIndDetail(d);   // refresh this panel (button label + blueprint line)
+    renderIndTable();
+    renderIndDetail(d);
   };
   box.querySelector(".ind-fav-btn").onclick=()=>toggleFavorite(d.blueprint_id);
   const copyBtn=box.querySelector(".ind-copy");
@@ -4881,7 +4883,7 @@ function saveIndPrefs(){
   const p=indParams({
     profiles: JSON.stringify(IND.profiles),
     profile:  $("#ind-profile").value,
-    owned:    JSON.stringify([...IND.owned]),
+    hidden:   JSON.stringify([...IND.hidden]),
     sort_key: IND.sort.key,
     sort_dir: String(IND.sort.dir),
     col_order: JSON.stringify(IND.colOrder),
@@ -5047,7 +5049,7 @@ async function loadSettings(){
       if(ind.profiles){ try{ IND.profiles=JSON.parse(ind.profiles)||[]; }catch(e){} }
       renderIndProfiles();
       if(ind.profile) $("#ind-profile").value=ind.profile;
-      if(ind.owned){ try{ IND.owned=new Set(JSON.parse(ind.owned)||[]); }catch(e){} }
+      if(ind.hidden){ try{ IND.hidden=new Set(JSON.parse(ind.hidden)||[]); }catch(e){} }
       if(ind.favorites){ try{ IND.favorites=new Set(JSON.parse(ind.favorites)||[]); }catch(e){} }
       // Restore the last-used tab saved server-side. A tab URL overrides this
       // just below; don't re-push history for either.

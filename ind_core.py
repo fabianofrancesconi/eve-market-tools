@@ -637,6 +637,7 @@ def cheapest_sell_location(orders):
     cheapest = min(sells, key=lambda o: o["price"])
     return {"price": cheapest["price"],
             "location_id": cheapest["location_id"],
+            "system_id": cheapest.get("system_id"),
             "orders": len(sells)}
 
 

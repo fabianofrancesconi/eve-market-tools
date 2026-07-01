@@ -12,10 +12,11 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.57.0"
+__version__ = "1.57.1"
 
 import argparse
 import base64
+import concurrent.futures
 import json
 import secrets
 import sqlite3
@@ -105,6 +106,14 @@ REGION_NAMES = {
     10000032: "Sinq Laison (Dodixie)",
     10000042: "Metropolis (Hek)",
     10000030: "Heimatar (Rens)",
+}
+
+HUB_SYSTEM_IDS = {
+    60003760: 30000142,   # Jita
+    60008494: 30002187,   # Amarr
+    60004588: 30002510,   # Rens
+    60011866: 30002659,   # Dodixie
+    60005686: 30002053,   # Hek
 }
 
 # Arb lookup caches — loaded lazily from disk on first arb scan, updated in-memory.
@@ -1321,6 +1330,7 @@ def do_ind_detail(q):
     detail = ind_core.build_industry_detail(bp, prices, names, volumes, params)
     detail["product"]["tech_level"] = bp.get("tech_level")
     detail["station_name"] = TRADE_HUBS[station_id]["name"]
+    detail["region_name"] = REGION_NAMES.get(region_id, f"region {region_id}")
     detail["bp_market"] = bp_market
     detail["missing_skills"] = skills_missing
     detail["owned_me_te"] = ({"me": owned_me_te[0], "te": owned_me_te[1],
@@ -1337,28 +1347,55 @@ def do_ind_detail(q):
     return detail
 
 
+_BPO_SEARCH_REGIONS = [
+    10000002, 10000043, 10000032, 10000042, 10000030,  # main hubs
+    10000016, 10000020, 10000028, 10000033, 10000036,  # Lonetrek, Tash-Murkon, Molden Heath, The Citadel, Devoid
+    10000037, 10000038, 10000041, 10000044, 10000048,  # Everyshore, The Bleak Lands, Syndicate, Solitude, Placid
+    10000049, 10000052, 10000054, 10000064, 10000065,  # Khanid, Kador, Aridia, Essence, Kor-Azor
+    10000067, 10000068, 10000001, 10000005, 10000007,  # Genesis, Verge Vendor, Derelik, Detorid, Domain (dup safe)
+    10000069, 10000046, 10000010, 10000011, 10000015,  # Black Rise, Fade, Tribute, Vale of the Silent, Venal
+]
+
+
 def do_ind_bpo_search(q):
-    """Search all trade-hub regions for a BPO that isn't available in the
-    user's current region. Returns the cheapest sell across all regions."""
+    """Search all major regions for a BPO that isn't available in the user's
+    current region. Returns the cheapest sell with jump distance."""
     _require_login()
+    _ensure_arb_caches()
     blueprint_id = int(q["blueprint_id"][0])
     station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
     if station_id not in TRADE_HUBS:
         station_id = JITA_STATION_ID
     current_region = TRADE_HUBS[station_id]["region_id"]
-    other_regions = [r for r in REGION_NAMES if r != current_region]
-    best = None
-    for region_id in other_regions:
+    origin_system = HUB_SYSTEM_IDS[station_id]
+    regions_to_check = [r for r in _BPO_SEARCH_REGIONS if r != current_region]
+
+    def _search_region(region_id):
         orders = arb_core.fetch_type_orders(region_id, blueprint_id, SESSION)
-        loc = ind_core.cheapest_sell_location(orders)
-        if loc and (best is None or loc["price"] < best["price"]):
-            loc_name = resolve_names(
-                [loc["location_id"]], SESSION, CACHE_DIR
-            ).get(loc["location_id"], f"location {loc['location_id']}")
-            best = {"price": loc["price"], "station": loc_name,
-                    "orders": loc["orders"],
-                    "region": REGION_NAMES.get(region_id, f"region {region_id}")}
-    return {"bp_market": best}
+        return region_id, ind_core.cheapest_sell_location(orders)
+
+    best = None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for region_id, loc in pool.map(_search_region, regions_to_check):
+            if loc and (best is None or loc["price"] < best["price"]):
+                best = {"price": loc["price"], "location_id": loc["location_id"],
+                        "system_id": loc.get("system_id"),
+                        "orders": loc["orders"], "region_id": region_id}
+
+    if not best:
+        return {"bp_market": None}
+
+    loc_name = resolve_names(
+        [best["location_id"]], SESSION, CACHE_DIR
+    ).get(best["location_id"], f"location {best['location_id']}")
+    jumps = None
+    if best.get("system_id"):
+        jumps, _ = arb_core.route_info(
+            origin_system, best["system_id"], "shorter", _ARB_ROUTE_CACHE, SESSION)
+    region_name = REGION_NAMES.get(best["region_id"], f"region {best['region_id']}")
+    return {"bp_market": {"price": best["price"], "station": loc_name,
+                          "orders": best["orders"], "region": region_name,
+                          "jumps": jumps}}
 
 
 # ── HTTP handler ────────────────────────────────────────────────────────────
@@ -4413,7 +4450,7 @@ function renderIndDetail(d){
       ⚠ You only have a <b>Blueprint Copy</b> with <b>${bpcRuns} run${bpcRuns===1?"":"s"}</b> remaining — it will be consumed.
       ${d.bp_market
         ? `<span class="ind-bpc-buy">Buy permanent BPO: ${isk(d.bp_market.price)} at ${d.bp_market.station} (${fmtNum(d.bp_market.orders)} on sale in ${d.bp_market.region})</span>`
-        : `<span class="ind-bpc-buy">No BPO on the market in ${d.station_name.split(" ")[0]} region. <button class="ind-bpo-expand" data-bp="${d.blueprint_id}">Search other regions</button></span>`}
+        : `<span class="ind-bpc-buy">No BPO on the market in ${d.region_name}. <button class="ind-bpo-expand" data-bp="${d.blueprint_id}">Search other regions</button></span>`}
     </div>` : ""}
     <div class="ind-d-grid">
       <div class="ind-d-sub">Per unit (sell price)</div>
@@ -4542,9 +4579,10 @@ function renderIndDetail(d){
     fetch("/api/ind/bpo-search?"+p).then(r=>r.json()).then(res=>{
       if(res.bp_market){
         const m=res.bp_market;
-        bpoExpBtn.parentElement.innerHTML=`Buy permanent BPO: ${isk(m.price)} at ${m.station} (${fmtNum(m.orders)} on sale in ${m.region})`;
+        const jmp=m.jumps!=null?` · ${m.jumps} jump${m.jumps===1?"":"s"}`:"";
+        bpoExpBtn.parentElement.innerHTML=`Buy permanent BPO: ${isk(m.price)} at ${m.station} (${m.region}${jmp})`;
       } else {
-        bpoExpBtn.textContent="Not found in any region";
+        bpoExpBtn.textContent="Not sold anywhere — LP store / event only";
       }
     }).catch(()=>{ bpoExpBtn.disabled=false; bpoExpBtn.textContent="Search other regions"; });
   };

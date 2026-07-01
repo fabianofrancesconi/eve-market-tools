@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.56.1"
+__version__ = "1.57.0"
 
 import argparse
 import base64
@@ -1337,6 +1337,30 @@ def do_ind_detail(q):
     return detail
 
 
+def do_ind_bpo_search(q):
+    """Search all trade-hub regions for a BPO that isn't available in the
+    user's current region. Returns the cheapest sell across all regions."""
+    _require_login()
+    blueprint_id = int(q["blueprint_id"][0])
+    station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
+    if station_id not in TRADE_HUBS:
+        station_id = JITA_STATION_ID
+    current_region = TRADE_HUBS[station_id]["region_id"]
+    other_regions = [r for r in REGION_NAMES if r != current_region]
+    best = None
+    for region_id in other_regions:
+        orders = arb_core.fetch_type_orders(region_id, blueprint_id, SESSION)
+        loc = ind_core.cheapest_sell_location(orders)
+        if loc and (best is None or loc["price"] < best["price"]):
+            loc_name = resolve_names(
+                [loc["location_id"]], SESSION, CACHE_DIR
+            ).get(loc["location_id"], f"location {loc['location_id']}")
+            best = {"price": loc["price"], "station": loc_name,
+                    "orders": loc["orders"],
+                    "region": REGION_NAMES.get(region_id, f"region {region_id}")}
+    return {"bp_market": best}
+
+
 # ── HTTP handler ────────────────────────────────────────────────────────────
 
 # Clean URLs the SPA uses for each tab — all serve the app shell so a refresh
@@ -1481,6 +1505,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(do_ind_liquidity(q))
             elif parsed.path == "/api/ind/detail":
                 self._send_json(do_ind_detail(q))
+            elif parsed.path == "/api/ind/bpo-search":
+                self._send_json(do_ind_bpo_search(q))
             elif parsed.path == "/api/auth/config":
                 self._send_json(do_auth_config(q))
             elif parsed.path == "/api/auth/login":
@@ -2069,6 +2095,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-bpc-warn { background:#3a2800; border:1px solid #b8860b; border-radius:6px; padding:8px 12px; margin-bottom:10px; color:#ffd080; font-size:13px; line-height:1.5; }
   .ind-bpc-warn b { color:#ffe4a0; }
   .ind-bpc-warn .ind-bpc-buy { display:block; margin-top:6px; color:#fff; font-weight:700; font-size:14px; }
+  .ind-bpo-expand { background:#4a3000; border:1px solid #b8860b; border-radius:4px; color:#ffd080; cursor:pointer; padding:2px 10px; font-size:12px; margin-left:6px; }
+  .ind-bpo-expand:hover { background:#5a3a00; border-color:#daa520; }
   #ind-detail {
     background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
     padding:12px 14px; margin-bottom:12px;
@@ -4385,7 +4413,7 @@ function renderIndDetail(d){
       ⚠ You only have a <b>Blueprint Copy</b> with <b>${bpcRuns} run${bpcRuns===1?"":"s"}</b> remaining — it will be consumed.
       ${d.bp_market
         ? `<span class="ind-bpc-buy">Buy permanent BPO: ${isk(d.bp_market.price)} at ${d.bp_market.station} (${fmtNum(d.bp_market.orders)} on sale in ${d.bp_market.region})</span>`
-        : `<span class="ind-bpc-buy">No BPO on the market in The Forge — check contracts or other regions.</span>`}
+        : `<span class="ind-bpc-buy">No BPO on the market in ${d.station_name.split(" ")[0]} region. <button class="ind-bpo-expand" data-bp="${d.blueprint_id}">Search other regions</button></span>`}
     </div>` : ""}
     <div class="ind-d-grid">
       <div class="ind-d-sub">Per unit (sell price)</div>
@@ -4506,6 +4534,19 @@ function renderIndDetail(d){
       if(fresh.error){ pullBtn.textContent="⚠ "+fresh.error; return; }
       renderIndDetail(fresh);
     }).catch(()=>{ pullBtn.disabled=false; pullBtn.textContent="⟳ Pull live prices"; });
+  };
+  const bpoExpBtn=box.querySelector(".ind-bpo-expand");
+  if(bpoExpBtn) bpoExpBtn.onclick=()=>{
+    bpoExpBtn.disabled=true; bpoExpBtn.textContent="Searching…";
+    const p=new URLSearchParams({blueprint_id:bpoExpBtn.dataset.bp, station:$("#ind-station").value});
+    fetch("/api/ind/bpo-search?"+p).then(r=>r.json()).then(res=>{
+      if(res.bp_market){
+        const m=res.bp_market;
+        bpoExpBtn.parentElement.innerHTML=`Buy permanent BPO: ${isk(m.price)} at ${m.station} (${fmtNum(m.orders)} on sale in ${m.region})`;
+      } else {
+        bpoExpBtn.textContent="Not found in any region";
+      }
+    }).catch(()=>{ bpoExpBtn.disabled=false; bpoExpBtn.textContent="Search other regions"; });
   };
   const runsInput=box.querySelector(".ind-d-runs");
   const setRuns=v=>{ IND.detailRuns=Math.max(1,v); renderIndDetail(d); };

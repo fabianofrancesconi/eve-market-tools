@@ -1207,3 +1207,9 @@ class TestCharDataOrdersIsolation:
         out = lp_web.do_char_data({})
         assert out["market_orders"] == []
         assert out["market_orders_error"] is None
+
+    def test_orders_table_has_total_value_column(self):
+        """Total value = remaining units x listed price, next to the Price column."""
+        html = lp_web.INDEX_HTML
+        assert ">Total value</th>" in html
+        assert "fmtISK((o.volume_remain??0)*o.price)" in html

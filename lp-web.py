@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.44.0"
+__version__ = "1.45.0"
 
 import argparse
 import base64
@@ -2403,6 +2403,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
             <table class="mini" id="char-orders-tbl"><thead><tr>
               <th>Item</th><th>Side</th><th style="text-align:right">Remaining</th>
               <th style="text-align:right">Price</th>
+              <th style="text-align:right" data-tip="Remaining units × your listed price — what's left to fill on this order at its current price.">Total value</th>
               <th style="text-align:right" data-tip="Current best sell price at Jita 4-4 — a quick reference, not necessarily the same station as your order.">Jita sell</th>
               <th style="text-align:right" data-tip="Your position in this item's order-matching queue at your order's own station — #1 means you're the best price, ties broken by who listed first. Blank if the station can't be resolved (e.g. a player structure).">Queue</th>
               <th style="text-align:right">Posted</th>
@@ -4634,6 +4635,7 @@ function renderCharData(){
          + `<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
          + `<td style="text-align:right">${(o.volume_remain??0).toLocaleString()} / ${(o.volume_total??0).toLocaleString()}</td>`
          + `<td style="text-align:right">${fmtISK(o.price)}</td>`
+         + `<td style="text-align:right">${fmtISK((o.volume_remain??0)*o.price)}</td>`
          + `<td style="text-align:right">${o.market_sell!=null?fmtISK(o.market_sell):"—"}</td>`
          + `<td style="text-align:right">${queue}</td>`
          + `<td style="text-align:right"${postedTip}>${posted}</td>`

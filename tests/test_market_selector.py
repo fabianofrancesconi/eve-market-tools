@@ -47,7 +47,8 @@ def tmp_server(tmp_path):
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), lp_web.Handler)
     port = srv.server_address[1]
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=lambda: srv.serve_forever(poll_interval=0.01),
+                     daemon=True).start()
 
     yield f"http://127.0.0.1:{port}", tmp_path
 

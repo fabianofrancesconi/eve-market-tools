@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.48.0"
+__version__ = "1.49.0"
 
 import argparse
 import base64
@@ -1092,8 +1092,6 @@ def do_ind_scan(q, emit=None):
     # of category — used to show favorites immediately on tab load, before the
     # user runs a real scan. Doesn't touch saved settings.
     favorites_only = q.get("favorites_only", ["0"])[0] in ("1", "true", "on")
-    use_char_skills = q.get("use_char_skills", ["0"])[0] in ("1", "true", "on")
-    use_owned_bp = q.get("use_owned_bp", ["0"])[0] in ("1", "true", "on")
     try:
         owned_ids = set(json.loads(q.get("owned", ["[]"])[0]))
     except (ValueError, TypeError):
@@ -1103,9 +1101,13 @@ def do_ind_scan(q, emit=None):
     except (ValueError, TypeError):
         fav_ids = set()
     params = _ind_params(q)
-    if use_char_skills and _CHAR_SKILL_PROFILE:
+    # Real per-character data always wins over the uniform assumption below,
+    # for whatever it actually covers — no opt-in needed. It falls back to the
+    # uniform ME/TE/skill assumption for blueprints you don't own / skills you
+    # haven't trained, or when logged out entirely.
+    if _CHAR_SKILL_PROFILE:
         params["skill_profile"] = _CHAR_SKILL_PROFILE
-    if use_owned_bp and _CHAR_BP_ME_TE:
+    if _CHAR_BP_ME_TE:
         params["owned_me_te"] = _CHAR_BP_ME_TE
 
     if not favorites_only:
@@ -1246,15 +1248,13 @@ def do_ind_detail(q):
     if station_id not in TRADE_HUBS:
         station_id = JITA_STATION_ID
     params = _ind_params(q)
-    if q.get("use_char_skills", ["0"])[0] in ("1", "true", "on") and _CHAR_SKILL_PROFILE:
+    # Real per-character data always wins over the uniform assumption, when
+    # it's available — see do_ind_scan.
+    if _CHAR_SKILL_PROFILE:
         params["skill_profile"] = _CHAR_SKILL_PROFILE
-    # "My blueprints": override the uniform ME/TE assumption with the real
-    # values of the copy you actually own, when you own one.
-    owned_me_te = None
-    if q.get("use_owned_bp", ["0"])[0] in ("1", "true", "on"):
-        owned_me_te = _CHAR_BP_ME_TE.get(blueprint_id)
-        if owned_me_te:
-            params["me"], params["te"] = owned_me_te
+    owned_me_te = _CHAR_BP_ME_TE.get(blueprint_id)
+    if owned_me_te:
+        params["me"], params["te"] = owned_me_te
 
     conn = ind_core.connect_sde(CACHE_DIR)
     try:
@@ -2298,24 +2298,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div class="ctrl-group">
     <span class="ctrl-cap">Blueprint</span>
     <div class="ctrl-fields">
-      <div class="field" data-tip="ME = Material Efficiency of the blueprint (0–10). Higher ME means fewer materials consumed per run (up to −10% at ME 10). Assume the blueprint is researched to this level.">
+      <div class="field" data-tip="ME = Material Efficiency of the blueprint (0–10). Higher ME means fewer materials consumed per run (up to −10% at ME 10). Used as the fallback assumption for any blueprint you don't own (or when logged out) — log in with EVE and this is overridden automatically with the real ME of any blueprint you own.">
         <label>ME</label><input id="ind-me" type="number" min="0" max="10" value="10" style="width:55px">
       </div>
-      <div class="field" data-tip="TE = Time Efficiency of the blueprint (0–20). Higher TE means faster builds (up to −20% build time at TE 20). Assume the blueprint is researched to this level.">
+      <div class="field" data-tip="TE = Time Efficiency of the blueprint (0–20). Higher TE means faster builds (up to −20% build time at TE 20). Used as the fallback assumption for any blueprint you don't own (or when logged out) — log in with EVE and this is overridden automatically with the real TE of any blueprint you own.">
         <label>TE</label><input id="ind-te" type="number" min="0" max="20" value="20" style="width:55px">
       </div>
-      <div class="field" data-tip="Assume every skill the blueprint requires is trained to this level (0–5). Gates the 'Build?' column and speeds up build time via the Industry skills.">
+      <div class="field" data-tip="Assume every skill the blueprint requires is trained to this level (0–5), for any skill your character hasn't actually trained (or when logged out). Log in with EVE and your real trained skill levels are used automatically wherever available.">
         <label>Skills @</label><input id="ind-skills" type="number" min="0" max="5" value="5" style="width:55px">
-      </div>
-      <div class="field" style="justify-content:flex-end">
-        <label class="check-field" id="ind-usechar-wrap" data-tip="Use your logged-in character's actual trained skill levels instead of the uniform 'Skills @' value. Log in with EVE to enable.">
-          <input type="checkbox" id="ind-usechar" disabled> My skills
-        </label>
-      </div>
-      <div class="field" style="justify-content:flex-end">
-        <label class="check-field" id="ind-usebp-wrap" data-tip="Use the real ME/TE of the blueprint copy you actually own instead of the uniform ME/TE above, for any blueprint you own. Falls back to the uniform values for blueprints you don't own. Requires the 'read blueprints' scope — log out and back in with EVE if you logged in before this was added.">
-          <input type="checkbox" id="ind-usebp" disabled> My blueprints
-        </label>
       </div>
     </div>
   </div>
@@ -2626,8 +2616,6 @@ function settingsBlob(){
       me:$("#ind-me").value,te:$("#ind-te").value,job_rate:$("#ind-jobrate").value,
       sales_tax:$("#ind-tax").value,broker:$("#ind-broker").value,runs:$("#ind-runs").value,
       skills_level:$("#ind-skills").value,
-      use_char_skills:$("#ind-usechar").checked?'1':'0',
-      use_owned_bp:$("#ind-usebp").checked?'1':'0',
       buildable_only:$("#ind-buildable").checked?'1':'0',
       include_unbuildable:$("#ind-unobtainable").checked?'1':'0',
       hide_t2:$("#ind-hidet2").checked?'1':'0',
@@ -4139,8 +4127,6 @@ function indParams(extra){
     broker:       $("#ind-broker").value||"0",
     runs:         $("#ind-runs").value||"1",
     skills_level: $("#ind-skills").value||"0",
-    use_char_skills: ($("#ind-usechar").checked && AUTH.loggedIn)?"1":"0",
-    use_owned_bp: ($("#ind-usebp").checked && AUTH.loggedIn)?"1":"0",
     buildable_only:$("#ind-buildable").checked?"1":"0",
     include_unbuildable:$("#ind-unobtainable").checked?"1":"0",
     hide_t2:      $("#ind-hidet2").checked?"1":"0",
@@ -4577,12 +4563,6 @@ function renderAuthChip(){
   $("#char-empty").classList.toggle("hidden", AUTH.loggedIn);
   $("#char-body").classList.toggle("hidden", !AUTH.loggedIn);
   if(AUTH.loggedIn) $("#chip-name").textContent=AUTH.name||"Capsuleer";
-  const cb=$("#ind-usechar");
-  cb.disabled=!AUTH.loggedIn;
-  if(!AUTH.loggedIn) cb.checked=false;
-  const bpCb=$("#ind-usebp");
-  bpCb.disabled=!AUTH.loggedIn;
-  if(!AUTH.loggedIn) bpCb.checked=false;
   if(ACTIVE_TAB==="char" && !AUTH.loggedIn) switchTab("ind");
 }
 
@@ -4774,8 +4754,6 @@ $("#cfg-save").onclick=async()=>{
   closeAuthCfg();
   setStatus('<span class="pill">EVE login settings saved</span>');
 };
-$("#ind-usechar").onchange=()=>{ saveLS(); saveIndPrefs(); if(IND.lastData) scanInd(false); };
-$("#ind-usebp").onchange=()=>{ saveLS(); saveIndPrefs(); if(IND.lastData) scanInd(false); };
 
 // Re-pull character data (wallet, jobs, skill queue, LP) on EVE's cache cadence
 // so the job timers stay current. The per-second ticker handles the countdown
@@ -5053,8 +5031,6 @@ async function loadSettings(){
       if(ind.broker) $("#ind-broker").value=ind.broker;
       if(ind.runs) $("#ind-runs").value=ind.runs;
       if(ind.skills_level!==undefined&&ind.skills_level!=="") $("#ind-skills").value=ind.skills_level;
-      if(ind.use_char_skills==="1") $("#ind-usechar").checked=true;
-      if(ind.use_owned_bp==="1") $("#ind-usebp").checked=true;
       if(ind.buildable_only==="1") $("#ind-buildable").checked=true;
       if(ind.include_unbuildable==="1") $("#ind-unobtainable").checked=true;
       if(ind.hide_t2==="1") $("#ind-hidet2").checked=true;

@@ -39,6 +39,7 @@ SCOPES = [
     "esi-characters.read_loyalty.v1",
     "esi-industry.read_character_jobs.v1",
     "esi-markets.read_character_orders.v1",
+    "esi-characters.read_blueprints.v1",
 ]
 
 AUTH_FILE = "eve_auth.json"
@@ -223,6 +224,28 @@ def fetch_industry_jobs(token, character_id, session, include_completed=False):
     return r.json()
 
 
+def fetch_character_blueprints(token, character_id, session):
+    """[{item_id, location_id, location_flag, type_id, quantity, runs,
+    material_efficiency, time_efficiency}, …] — every blueprint (BPO and BPC)
+    the character owns, across all its assets. quantity is -1 for a BPO, -2 for
+    a single BPC, or the stack size for multiple identical BPCs. Requires
+    esi-characters.read_blueprints.v1. Paginated (X-Pages)."""
+    out, page = [], 1
+    while page <= 50:
+        r = session.get(f"{ESI}/characters/{character_id}/blueprints/",
+                        params={"page": page},
+                        headers=_auth_headers(token), timeout=30)
+        r.raise_for_status()
+        batch = r.json()
+        if not batch:
+            break
+        out.extend(batch)
+        if page >= int(r.headers.get("X-Pages", 1)):
+            break
+        page += 1
+    return out
+
+
 # ── Mapping helpers ───────────────────────────────────────────────────────────
 
 def skill_profile_from_skills(skills_resp):
@@ -234,6 +257,23 @@ def skill_profile_from_skills(skills_resp):
         if sid is not None:
             out[int(sid)] = int(lvl or 0)
     return out
+
+
+def owned_blueprint_lookup(blueprints_resp):
+    """ESI blueprints response -> {type_id: (material_efficiency,
+    time_efficiency)} for the Industry planner's "my blueprints" override. When
+    a character owns several copies of the same blueprint type (e.g. one BPO at
+    ME 9 and another still at ME 0), keeps the best-researched copy — the one
+    you'd actually build with."""
+    best = {}
+    for b in blueprints_resp or []:
+        tid = b.get("type_id")
+        if tid is None:
+            continue
+        me, te = int(b.get("material_efficiency") or 0), int(b.get("time_efficiency") or 0)
+        if tid not in best or (me, te) > best[tid]:
+            best[tid] = (me, te)
+    return best
 
 
 def access_token_expired(expires_at, skew=60):

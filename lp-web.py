@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.47.0"
+__version__ = "1.48.0"
 
 import argparse
 import base64
@@ -386,6 +386,7 @@ def do_char_data(q):
     token = _access_token()
     cid = _AUTH["character_id"]
     _refresh_skill_profile()
+    _refresh_char_blueprints()
 
     wallet = sso_core.fetch_wallet(token, cid, SESSION)
     skills = sso_core.fetch_skills(token, cid, SESSION)
@@ -1092,6 +1093,7 @@ def do_ind_scan(q, emit=None):
     # user runs a real scan. Doesn't touch saved settings.
     favorites_only = q.get("favorites_only", ["0"])[0] in ("1", "true", "on")
     use_char_skills = q.get("use_char_skills", ["0"])[0] in ("1", "true", "on")
+    use_owned_bp = q.get("use_owned_bp", ["0"])[0] in ("1", "true", "on")
     try:
         owned_ids = set(json.loads(q.get("owned", ["[]"])[0]))
     except (ValueError, TypeError):
@@ -1103,6 +1105,8 @@ def do_ind_scan(q, emit=None):
     params = _ind_params(q)
     if use_char_skills and _CHAR_SKILL_PROFILE:
         params["skill_profile"] = _CHAR_SKILL_PROFILE
+    if use_owned_bp and _CHAR_BP_ME_TE:
+        params["owned_me_te"] = _CHAR_BP_ME_TE
 
     if not favorites_only:
         s = load_ind_settings()
@@ -1244,6 +1248,13 @@ def do_ind_detail(q):
     params = _ind_params(q)
     if q.get("use_char_skills", ["0"])[0] in ("1", "true", "on") and _CHAR_SKILL_PROFILE:
         params["skill_profile"] = _CHAR_SKILL_PROFILE
+    # "My blueprints": override the uniform ME/TE assumption with the real
+    # values of the copy you actually own, when you own one.
+    owned_me_te = None
+    if q.get("use_owned_bp", ["0"])[0] in ("1", "true", "on"):
+        owned_me_te = _CHAR_BP_ME_TE.get(blueprint_id)
+        if owned_me_te:
+            params["me"], params["te"] = owned_me_te
 
     conn = ind_core.connect_sde(CACHE_DIR)
     try:
@@ -1300,6 +1311,8 @@ def do_ind_detail(q):
     detail["station_name"] = TRADE_HUBS[station_id]["name"]
     detail["bp_market"] = bp_market
     detail["missing_skills"] = skills_missing
+    detail["owned_me_te"] = ({"me": owned_me_te[0], "te": owned_me_te[1]}
+                             if owned_me_te else None)
     # Tradeability for this product (daily units traded, ~30d median).
     dv = fetch_history_volumes([bp["product_id"]],
                                TRADE_HUBS[station_id]["region_id"],
@@ -1364,6 +1377,7 @@ class Handler(BaseHTTPRequestHandler):
                                          code, handshake["verifier"], SESSION)
             _apply_token(tok)
             _refresh_skill_profile()
+            _refresh_char_blueprints()
         except Exception as e:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             self._send_html(f"<h2>EVE login failed</h2><p>{type(e).__name__}: {e}</p>"
@@ -2298,6 +2312,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
           <input type="checkbox" id="ind-usechar" disabled> My skills
         </label>
       </div>
+      <div class="field" style="justify-content:flex-end">
+        <label class="check-field" id="ind-usebp-wrap" data-tip="Use the real ME/TE of the blueprint copy you actually own instead of the uniform ME/TE above, for any blueprint you own. Falls back to the uniform values for blueprints you don't own. Requires the 'read blueprints' scope — log out and back in with EVE if you logged in before this was added.">
+          <input type="checkbox" id="ind-usebp" disabled> My blueprints
+        </label>
+      </div>
     </div>
   </div>
   <!-- Costs & fees -->
@@ -2608,6 +2627,7 @@ function settingsBlob(){
       sales_tax:$("#ind-tax").value,broker:$("#ind-broker").value,runs:$("#ind-runs").value,
       skills_level:$("#ind-skills").value,
       use_char_skills:$("#ind-usechar").checked?'1':'0',
+      use_owned_bp:$("#ind-usebp").checked?'1':'0',
       buildable_only:$("#ind-buildable").checked?'1':'0',
       include_unbuildable:$("#ind-unobtainable").checked?'1':'0',
       hide_t2:$("#ind-hidet2").checked?'1':'0',
@@ -4120,6 +4140,7 @@ function indParams(extra){
     runs:         $("#ind-runs").value||"1",
     skills_level: $("#ind-skills").value||"0",
     use_char_skills: ($("#ind-usechar").checked && AUTH.loggedIn)?"1":"0",
+    use_owned_bp: ($("#ind-usebp").checked && AUTH.loggedIn)?"1":"0",
     buildable_only:$("#ind-buildable").checked?"1":"0",
     include_unbuildable:$("#ind-unobtainable").checked?"1":"0",
     hide_t2:      $("#ind-hidet2").checked?"1":"0",
@@ -4382,6 +4403,9 @@ function renderIndDetail(d){
 
       <div class="ind-d-sub">Blueprint &amp; market</div>
       <span>Blueprint</span><b class="bp-buy">${bpSrc}</b>
+      <span>ME / TE used</span><b>${d.owned_me_te
+          ? `${d.owned_me_te.me} / ${d.owned_me_te.te} (your blueprint)`
+          : `${$("#ind-me").value||0} / ${$("#ind-te").value||0} (assumed)`}</b>
       <span>Blueprint payback</span><b>${payback}</b>
       <span>Tradeability</span><b>${d.tradeability==null?"—":d.tradeability+" / 100"}${d.daily_units!=null?` (${fmtNum(d.daily_units)} units/day)`:""}</b>
     </div>
@@ -4556,6 +4580,9 @@ function renderAuthChip(){
   const cb=$("#ind-usechar");
   cb.disabled=!AUTH.loggedIn;
   if(!AUTH.loggedIn) cb.checked=false;
+  const bpCb=$("#ind-usebp");
+  bpCb.disabled=!AUTH.loggedIn;
+  if(!AUTH.loggedIn) bpCb.checked=false;
   if(ACTIVE_TAB==="char" && !AUTH.loggedIn) switchTab("ind");
 }
 
@@ -4748,6 +4775,7 @@ $("#cfg-save").onclick=async()=>{
   setStatus('<span class="pill">EVE login settings saved</span>');
 };
 $("#ind-usechar").onchange=()=>{ saveLS(); saveIndPrefs(); if(IND.lastData) scanInd(false); };
+$("#ind-usebp").onchange=()=>{ saveLS(); saveIndPrefs(); if(IND.lastData) scanInd(false); };
 
 // Re-pull character data (wallet, jobs, skill queue, LP) on EVE's cache cadence
 // so the job timers stay current. The per-second ticker handles the countdown
@@ -5026,6 +5054,7 @@ async function loadSettings(){
       if(ind.runs) $("#ind-runs").value=ind.runs;
       if(ind.skills_level!==undefined&&ind.skills_level!=="") $("#ind-skills").value=ind.skills_level;
       if(ind.use_char_skills==="1") $("#ind-usechar").checked=true;
+      if(ind.use_owned_bp==="1") $("#ind-usebp").checked=true;
       if(ind.buildable_only==="1") $("#ind-buildable").checked=true;
       if(ind.include_unbuildable==="1") $("#ind-unobtainable").checked=true;
       if(ind.hide_t2==="1") $("#ind-hidet2").checked=true;

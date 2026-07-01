@@ -198,3 +198,51 @@ def test_fetch_wallet_authorized():
     sess = _get_session(1234567.89)
     assert sso_core.fetch_wallet("TOKEN", 42, sess) == 1234567.89
     assert sess.get.call_args[0][0].endswith("/characters/42/wallet/")
+
+
+def test_fetch_character_blueprints_url_and_headers():
+    bps = [{"item_id": 1, "type_id": 2047, "location_id": 60003760,
+            "quantity": -1, "runs": -1, "material_efficiency": 9,
+            "time_efficiency": 18}]
+    sess = _get_session(bps)
+    sess.get.return_value.headers = {"X-Pages": "1"}
+    out = sso_core.fetch_character_blueprints("TOKEN", 42, sess)
+    assert out == bps
+    url = sess.get.call_args[0][0]
+    headers = sess.get.call_args[1]["headers"]
+    assert url.endswith("/characters/42/blueprints/")
+    assert headers["Authorization"] == "Bearer TOKEN"
+
+
+def test_fetch_character_blueprints_paginates():
+    page1 = MagicMock()
+    page1.json.return_value = [{"item_id": 1, "type_id": 2047,
+                                "material_efficiency": 0, "time_efficiency": 0}]
+    page1.headers = {"X-Pages": "2"}
+    page1.raise_for_status.return_value = None
+    page2 = MagicMock()
+    page2.json.return_value = [{"item_id": 2, "type_id": 2048,
+                                "material_efficiency": 10, "time_efficiency": 20}]
+    page2.headers = {"X-Pages": "2"}
+    page2.raise_for_status.return_value = None
+    sess = MagicMock()
+    sess.get.side_effect = [page1, page2]
+    out = sso_core.fetch_character_blueprints("TOKEN", 42, sess)
+    assert [b["item_id"] for b in out] == [1, 2]
+    assert sess.get.call_count == 2
+
+
+# ── mapping helpers: owned blueprints ────────────────────────────────────────
+
+def test_owned_blueprint_lookup_keeps_best_researched_copy():
+    bps = [
+        {"type_id": 2047, "material_efficiency": 0, "time_efficiency": 0},
+        {"type_id": 2047, "material_efficiency": 10, "time_efficiency": 18},
+        {"type_id": 2048, "material_efficiency": 4, "time_efficiency": 6},
+    ]
+    assert sso_core.owned_blueprint_lookup(bps) == {2047: (10, 18), 2048: (4, 6)}
+
+
+def test_owned_blueprint_lookup_of_empty():
+    assert sso_core.owned_blueprint_lookup([]) == {}
+    assert sso_core.owned_blueprint_lookup(None) == {}

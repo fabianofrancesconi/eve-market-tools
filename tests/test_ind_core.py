@@ -411,6 +411,26 @@ class TestEvaluateIndustry:
         assert rows[0]["product_id"] == 165          # profitable first
         assert rows[-1]["isk_per_hour_best"] is None  # unpriced output last
 
+    def test_owned_me_te_overrides_uniform_assumption_for_that_row_only(self):
+        owned = _bp()               # blueprint_id 681
+        not_owned = _bp(blueprint_id=2, product_id=999, product_name="Junk")
+        rows = ind_core.evaluate_industry(
+            [owned, not_owned], _prices({999: {"sell_min": 2000.0, "buy_max": 1800.0}}),
+            _ADJUSTED, _params(owned_me_te={681: (10, 20)}))
+        r_owned = next(r for r in rows if r["blueprint_id"] == 681)
+        r_other = next(r for r in rows if r["blueprint_id"] == 2)
+        # ME 10 -> 90/45 units instead of 100/50 -> material cost 900 not 1000.
+        assert r_owned["material_cost"] == pytest.approx(900.0)
+        assert r_owned["me_used"] == 10
+        assert r_owned["te_used"] == 20
+        assert r_owned["owned_bp_me_te"] is True
+        # TE 20 + skills 5/5 -> 326.4s, matches TestBuildTime's te20/skill5-5 case.
+        assert r_owned["build_time"] == pytest.approx(326.4)
+        # Untouched row keeps the uniform me=0/te=0 from _params().
+        assert r_other["material_cost"] == pytest.approx(1000.0)
+        assert r_other["me_used"] == 0
+        assert r_other["owned_bp_me_te"] is False
+
 
 # ---------------------------------------------------------------------------
 # build_industry_detail

@@ -878,7 +878,9 @@ def evaluate_industry(candidates, prices, adjusted, params):
     params keys: me, te, job_rate, sales_tax, broker_fee, runs (N), bpo_prices
     (blueprint_id -> region BPO sell price), skill_profile, skills_level,
     daily_vols (product_id -> median daily volume, for days-to-sell), volumes
-    (type_id -> packaged m3, for cargo).
+    (type_id -> packaged m3, for cargo), owned_me_te (blueprint_id -> (me, te)
+    of a blueprint you actually own, overriding the uniform me/te for that row
+    only).
 
     Rows are sorted by isk_per_hour_best (None last)."""
     me = params.get("me", 0)
@@ -891,6 +893,7 @@ def evaluate_industry(candidates, prices, adjusted, params):
     default_level = params.get("skills_level", 0)
     daily_vols = params.get("daily_vols") or {}
     volumes = params.get("volumes") or {}
+    owned_me_te = params.get("owned_me_te") or {}
     patient_factor = 1 - sales_tax - broker
     instant_factor = 1 - sales_tax
 
@@ -898,7 +901,8 @@ def evaluate_industry(candidates, prices, adjusted, params):
     for bp in candidates:
         pid = bp["product_id"]
         out_qty = bp.get("out_qty") or 1
-        cost = manufacturing_cost(bp, prices, adjusted, job_rate, me)
+        bp_me, bp_te = owned_me_te.get(bp["blueprint_id"], (me, te))
+        cost = manufacturing_cost(bp, prices, adjusted, job_rate, bp_me)
 
         # Blueprint economics differ by tech tier (assuming you own nothing):
         #   T2 — you can't buy the blueprint (BPCs are contract-only); you invent
@@ -929,7 +933,7 @@ def evaluate_industry(candidates, prices, adjusted, params):
         payback_runs = (math.ceil(bp_buyin / profit_best)
                         if (bp_buyin and profit_best and profit_best > 0) else None)
 
-        secs = build_time(bp.get("base_time"), te, skill_profile, default_level)
+        secs = build_time(bp.get("base_time"), bp_te, skill_profile, default_level)
         hours = (secs / 3600.0) if secs else None
         iph = lambda pr: (pr / hours) if (pr is not None and hours) else None
 
@@ -981,6 +985,9 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "days_to_sell": days_to_sell,
             "tradeability": None,   # patched for the top rows by the web layer
             "buildable": _buildable(bp, skill_profile, default_level),
+            "me_used": bp_me,
+            "te_used": bp_te,
+            "owned_bp_me_te": bp["blueprint_id"] in owned_me_te,
         })
 
     rows.sort(key=lambda r: (r["isk_per_hour_best"] if r["isk_per_hour_best"] is not None

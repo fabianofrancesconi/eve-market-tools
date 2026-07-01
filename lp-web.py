@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.46.0"
+__version__ = "1.47.0"
 
 import argparse
 import base64
@@ -63,8 +63,15 @@ SESSION = requests.Session()
 # server-side after a while, so the next reused pooled connection raises
 # ConnectionError("Remote end closed connection without response") — retry
 # transparently on a fresh connection instead of surfacing that to the UI.
+# urllib3 treats that as a "read" error and, by default, only retries it for
+# methods it considers safe to repeat — which excludes POST. Every POST this
+# app makes through SESSION (bulk /universe/names/ and /universe/ids/ lookups,
+# SSO token exchange/refresh) is either a pure read or already single-use-safe,
+# so add POST to the retryable set rather than let a stale connection surface
+# as a 500 on whichever endpoint happened to reuse it (e.g. /api/char/data).
 _RETRY = Retry(total=3, connect=3, read=3, backoff_factor=0.3,
-               status_forcelist=(502, 503, 504))
+               status_forcelist=(502, 503, 504),
+               allowed_methods=frozenset(Retry.DEFAULT_ALLOWED_METHODS | {"POST"}))
 SESSION.mount("https://", HTTPAdapter(max_retries=_RETRY))
 SESSION.mount("http://", HTTPAdapter(max_retries=_RETRY))
 CACHE_DIR = default_cache_dir()
@@ -85,6 +92,10 @@ _PKCE: dict = {}
 _AUTH: dict = {}
 # Logged-in character's {skill_id: trained_level}, used to auto-fill the planner.
 _CHAR_SKILL_PROFILE: dict = {}
+# Logged-in character's owned blueprints, as {type_id: (material_efficiency,
+# time_efficiency)} of the best-researched copy — used to override the
+# Industry planner's uniform ME/TE assumption per blueprint.
+_CHAR_BP_ME_TE: dict = {}
 # The host:port the server is actually bound to, for the suggested callback URL.
 _SERVER_PORT = 8765
 
@@ -264,6 +275,19 @@ def _refresh_skill_profile():
         _CHAR_SKILL_PROFILE = {}
 
 
+def _refresh_char_blueprints():
+    """Pull the character's owned blueprints and cache each type's best ME/TE,
+    so the Industry planner's "My blueprints" override can use them. Best-
+    effort — a 403 (scope granted before this feature existed) just leaves the
+    cache empty and the planner falls back to the uniform ME/TE assumption."""
+    global _CHAR_BP_ME_TE
+    try:
+        bps = sso_core.fetch_character_blueprints(_access_token(), _AUTH["character_id"], SESSION)
+        _CHAR_BP_ME_TE = sso_core.owned_blueprint_lookup(bps)
+    except (LPError, requests.RequestException):
+        _CHAR_BP_ME_TE = {}
+
+
 def do_auth_config(q):
     """GET returns the saved CLIENT_ID + callback; with params, saves them."""
     s = load_auth_settings()
@@ -310,8 +334,9 @@ def do_auth_logout(q):
     sso_core.clear_tokens(CACHE_DIR)
     _AUTH.clear()
     _PKCE.clear()
-    global _CHAR_SKILL_PROFILE
+    global _CHAR_SKILL_PROFILE, _CHAR_BP_ME_TE
     _CHAR_SKILL_PROFILE = {}
+    _CHAR_BP_ME_TE = {}
     return {"ok": True}
 
 
@@ -4560,16 +4585,26 @@ async function doLogout(){
   if(IND.openDetail) renderIndDetail(IND.openDetail);
 }
 
+let charRetryCount = 0;
+function _retryCharDataSoon(){
+  // Covers both a network-level failure (fetch/json throws) and a transient
+  // backend error surfaced as a normal {"error":...} 500/400 (e.g. a stale
+  // pooled ESI/Fuzzwork connection) — retry after a short delay instead of
+  // leaving the error on screen for a full CHAR_REFRESH_MS cycle. Capped so a
+  // *persistent* error (e.g. a revoked EVE session) doesn't hammer the
+  // backend/ESI every 10s forever — after a few tries fall back to the normal
+  // slow cadence.
+  charRetryCount++;
+  const delay = charRetryCount <= 3 ? 10000 : CHAR_REFRESH_MS;
+  setTimeout(()=>{ if(AUTH.loggedIn) refreshCharData(); }, delay);
+  charRefreshDeadline=Date.now()+delay; tickCharRefreshTimer();
+}
 async function refreshCharData(){
   let d;
   try{ d=await (await fetch("/api/char/data")).json(); }
-  catch(e){
-    // Network error — retry after a short delay instead of waiting another full cycle.
-    setTimeout(()=>{ if(AUTH.loggedIn) refreshCharData(); }, 10000);
-    charRefreshDeadline=Date.now()+10000; tickCharRefreshTimer();
-    return;
-  }
-  if(d.error){ setStatus(authEsc(d.error), true); return; }
+  catch(e){ _retryCharDataSoon(); return; }
+  if(d.error){ setStatus(authEsc(d.error), true); _retryCharDataSoon(); return; }
+  charRetryCount = 0;
   AUTH.data=d;
   charRefreshDeadline=Date.now()+CHAR_REFRESH_MS; tickCharRefreshTimer();
   const prevLp=$("#lp").value;

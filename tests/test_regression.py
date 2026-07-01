@@ -1219,3 +1219,62 @@ class TestCharDataOrdersIsolation:
         html = lp_web.INDEX_HTML
         assert ">Total value</th>" in html
         assert "fmtISK((o.volume_remain??0)*o.price)" in html
+
+
+# ---------------------------------------------------------------------------
+# SESSION retry policy — a stale pooled keep-alive connection to ESI/Fuzzwork
+# (server closed it after being idle) surfaces as a ConnectionError on the
+# next reused connection. urllib3's Retry only auto-retries that class of
+# error ("read error") for methods it considers safe by default, which
+# excludes POST — so bulk lookups like resolve_names()'s POST to
+# /universe/names/ (used by every /api/char/data poll) went unretried while
+# the equivalent GET calls were silently retried, causing a 500 on
+# /api/char/data whenever it happened to land on a POST.
+# ---------------------------------------------------------------------------
+
+class TestSessionRetryCoversPost:
+    def test_post_is_in_the_allowed_retry_methods(self):
+        assert "POST" in lp_web._RETRY.allowed_methods
+
+    def test_get_is_still_in_the_allowed_retry_methods(self):
+        assert "GET" in lp_web._RETRY.allowed_methods
+
+    def test_stale_connection_on_post_is_retried_transparently(self):
+        """A ConnectionError on the first attempt of a POST must not surface —
+        the mounted adapter should retry it on a fresh connection and return
+        the eventual successful response, exactly like it already does for
+        GET (see the SESSION.mount comment)."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        attempts = {"n": 0}
+
+        class FlakyHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                attempts["n"] += 1
+                length = int(self.headers.get("Content-Length", 0))
+                self.rfile.read(length)
+                if attempts["n"] == 1:
+                    # Simulate the server closing a stale keep-alive connection:
+                    # drop it without writing any response at all.
+                    self.close_connection = True
+                    return
+                body = b"[]"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a, **k):
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), FlakyHandler)
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            r = lp_web.SESSION.post(f"http://127.0.0.1:{port}/universe/names/", json=[1])
+            assert r.status_code == 200
+            assert attempts["n"] == 2
+        finally:
+            srv.shutdown()

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.64.2"
+__version__ = "1.64.3"
 
 import argparse
 import base64
@@ -5179,6 +5179,7 @@ function applyIndProfile(){
   if(i!==""&&IND.profiles[i]){
     $("#ind-jobrate").value=structEffectiveRate(IND.profiles[i]).toFixed(2);
     saveIndPrefs();
+    recalcIndProfits();
   }
 }
 
@@ -5264,20 +5265,47 @@ $("#indStructModal").addEventListener("click", e=>{ if(e.target.id==="indStructM
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#indStructModal").classList.contains("hidden")) closeStructWizard(); });
 // Typing a custom job-cost % detaches from the saved build location.
 $("#ind-jobrate").addEventListener("input", ()=>{ $("#ind-profile").value=""; });
-let _indRescanTimer=null;
-function scheduleIndRescan(delay){
-  clearTimeout(_indRescanTimer);
-  _indRescanTimer=setTimeout(()=>{ if(IND.rows.length) scanInd(false); }, delay);
+function recalcIndProfits(){
+  if(!IND.rows.length) return;
+  const jobRate=parseFloat($("#ind-jobrate").value||"0")/100;
+  const salesTax=parseFloat($("#ind-tax").value||"0")/100;
+  const broker=parseFloat($("#ind-broker").value||"0")/100;
+  const patientFactor=1-salesTax-broker;
+  const instantFactor=1-salesTax;
+  const n=Math.max(1,IND.detailRuns||1);
+  for(const r of IND.rows){
+    const jc=r.eiv*jobRate;
+    const opCost=r.material_cost+jc+r.invention_cost;
+    r.job_cost=jc; r.total_cost=opCost;
+    const revP=r.ask!=null?(r.out_qty*r.ask*patientFactor):null;
+    const revI=r.bid!=null?(r.out_qty*r.bid*instantFactor):null;
+    r.profit_patient=revP!=null?(revP-opCost):null;
+    r.profit_instant=revI!=null?(revI-opCost):null;
+    r.profit_best=r.profit_patient!=null&&r.profit_instant!=null?Math.max(r.profit_patient,r.profit_instant):(r.profit_patient??r.profit_instant);
+    const margin=pr=>(pr!=null&&opCost>0)?pr/opCost:null;
+    r.margin_patient=margin(r.profit_patient);
+    r.margin_instant=margin(r.profit_instant);
+    r.margin_best=margin(r.profit_best);
+    const hrs=r.build_time?r.build_time/3600:null;
+    const iph=pr=>(pr!=null&&hrs)?pr/hrs:null;
+    r.isk_per_hour_patient=iph(r.profit_patient);
+    r.isk_per_hour_instant=iph(r.profit_instant);
+    r.isk_per_hour_best=iph(r.profit_best);
+    r.total_profit_patient=r.profit_patient!=null?r.profit_patient*r.runs:null;
+    r.total_profit_instant=r.profit_instant!=null?r.profit_instant*r.runs:null;
+  }
+  renderIndTable();
+  if(IND.openDetail) renderIndDetail(IND.openDetail);
 }
 ["#ind-group","#ind-station"].forEach(sel=>{
   const el=$(sel); if(!el) return;
-  el.addEventListener("change", ()=>{ saveIndPrefs(); scheduleIndRescan(300); });
+  el.addEventListener("change", saveIndPrefs);
 });
 ["#ind-jobrate","#ind-tax","#ind-broker"].forEach(sel=>{
   const el=$(sel); if(!el) return;
-  el.addEventListener("change", ()=>{ saveIndPrefs(); scheduleIndRescan(800); });
+  el.addEventListener("change", ()=>{ saveIndPrefs(); recalcIndProfits(); });
 });
-["#ind-buildable","#ind-unobtainable","#ind-hidet2"].forEach(sel=>$(sel).addEventListener("change", ()=>{ saveIndPrefs(); scheduleIndRescan(300); }));
+["#ind-buildable","#ind-unobtainable","#ind-hidet2"].forEach(sel=>$(sel).addEventListener("change", saveIndPrefs));
 // Min-tradeability is a client-side filter — re-render immediately (no rescan).
 $("#ind-mintrade").addEventListener("input", ()=>{ saveIndPrefs(); renderIndTable(); });
 // Industry tradeability balance presets

@@ -402,13 +402,13 @@ def expand_market_groups(conn, root_ids):
 
 
 def market_group_names(conn, group_ids):
-    """Resolve market_group_id → ancestor name two levels up (grandparent),
-    e.g. 'Frigates' for an item in Ships>Frigates>Standard Frigates>Caldari.
-    Falls back to parent, then to the leaf itself when fewer ancestors exist.
-    {id: name}."""
+    """Resolve market_group_id → the second-level ancestor name (immediate child
+    of a top-level group). E.g. for Ships>Frigates>Standard Frigates>Caldari,
+    returns 'Frigates'. This is one level below what the category dropdown shows,
+    giving consistent subcategory labels. Falls back to the group's own name when
+    it IS at or near the top level. {id: name}."""
     if not group_ids:
         return {}
-    # Build a lookup of all groups: id → (name, parent_id)
     all_groups = {}
     for r in conn.execute("SELECT market_group_id, parent_group_id, name FROM market_groups"):
         all_groups[r["market_group_id"]] = (r["name"], r["parent_group_id"])
@@ -416,16 +416,20 @@ def market_group_names(conn, group_ids):
     for gid in group_ids:
         if gid not in all_groups:
             continue
-        name, parent_id = all_groups[gid]
-        # Walk up: leaf → parent → grandparent
-        if parent_id and parent_id in all_groups:
-            p_name, gp_id = all_groups[parent_id]
-            if gp_id and gp_id in all_groups:
-                out[gid] = all_groups[gp_id][0]  # grandparent name
-            else:
-                out[gid] = p_name                 # only one ancestor
+        # Walk up to find the second-level ancestor (whose parent is top-level,
+        # i.e. whose parent's parent is NULL).
+        cur = gid
+        prev = gid
+        while cur in all_groups:
+            name, parent_id = all_groups[cur]
+            if parent_id is None:
+                # cur is top-level; prev is the second-level (or top if depth=1)
+                out[gid] = all_groups[prev][0] if prev != cur else name
+                break
+            prev = cur
+            cur = parent_id
         else:
-            out[gid] = name                       # leaf is top-level
+            out[gid] = all_groups[gid][0]
     return out
 
 

@@ -43,7 +43,10 @@ wrong, compare digests (`docker manifest inspect ghcr.io/.../eve-market-tools:la
 vs the newest version tag) and fix by re-running just that tag's workflow
 (`gh run rerun <run-id>`) once no other docker.yml run is in flight.
 
-The Docker image is only built on `v*` tag pushes. Each published image gets `latest`, `v1.x.y`, and `1.x` tags.
+The Docker image is only built on `v*` tag pushes (e.g. `v1.63.0`), but the registry
+tags it produces drop the `v`: each published image gets `latest`, `sha-<commit>`, and
+`x.y.z` (e.g. `1.63.0` — not `v1.63.0`). Use the `v` form for git tags and GitHub
+releases, and the bare form when pulling from `ghcr.io` or comparing digests.
 
 ## Tests
 

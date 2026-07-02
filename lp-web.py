@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.62.0"
+__version__ = "1.62.1"
 
 import argparse
 import base64
@@ -557,12 +557,6 @@ def _all_type_ids(offers):
     return ids
 
 
-def _save_last_lp_scan(data):
-    save_json(LP_LAST_SCAN_PATH, data)
-
-
-def _save_last_ind_scan(data):
-    save_json(IND_LAST_SCAN_PATH, data)
 
 
 def do_scan(q):
@@ -690,7 +684,7 @@ def do_scan(q):
             "liq_loaded": False,
             "unsellable": True,
         })
-    result = {
+    return {
         "corp_id": corp_id,
         "corp_name": corp_name,
         "lp": lp,
@@ -705,8 +699,6 @@ def do_scan(q):
         "scanned_at": time.time(),
         "offers_fetched_at": offers_meta.get("fetched_at"),
     }
-    _save_last_lp_scan(result)
-    return result
 
 
 def do_liquidity(q):
@@ -1273,7 +1265,7 @@ def do_ind_scan(q, emit=None):
             r["liq_loaded"] = True   # the rest get scored by the background fill
 
     _emit({"type": "progress", "pct": 97, "msg": "Formatting results…", "sub": ""})
-    result = {
+    return {
         "station_id": station_id,
         "station_name": TRADE_HUBS[station_id]["name"],
         "market_group": market_group,
@@ -1284,9 +1276,6 @@ def do_ind_scan(q, emit=None):
         "owned_only": owned_only,
         "rows": rows,
     }
-    if not favorites_only and not owned_only:
-        _save_last_ind_scan(result)
-    return result
 
 
 def do_ind_liquidity(q):
@@ -1624,6 +1613,30 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass   # client is already gone — the error response has nowhere to go
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b""
+            if parsed.path == "/api/save-scan":
+                data = json.loads(body) if body else {}
+                tab = data.get("tab", "")
+                blob = data.get("blob")
+                if tab == "lp" and blob:
+                    save_json(LP_LAST_SCAN_PATH, blob)
+                elif tab == "ind" and blob:
+                    save_json(IND_LAST_SCAN_PATH, blob)
+                self._send_json({"ok": True})
+            else:
+                self._send_json({"error": "not found"}, 404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        except Exception as e:  # noqa: BLE001
+            try:
+                self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
 
 
 # ── Front-end ───────────────────────────────────────────────────────────────
@@ -2769,6 +2782,10 @@ function fmtAgo(sec){
 function setStatus(html,err){
   const s=$("#statusbar"); s.innerHTML=html; s.className=err?"err":"";
 }
+function persistScan(tab, blob){
+  fetch("/api/save-scan",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({tab, blob})}).catch(()=>{});
+}
 
 // ── localStorage + server-synced persistence ────────────────────────────────
 const LS_KEY='eve-scanner';
@@ -2798,7 +2815,8 @@ function settingsBlob(){
       favorites:JSON.stringify([...IND.favorites]),
       sort_key:IND.sort.key,sort_dir:IND.sort.dir,
       col_order:JSON.stringify(IND.colOrder),col_widths:JSON.stringify(IND.colw),
-      col_vis:JSON.stringify(IND.colVis)}
+      col_vis:JSON.stringify(IND.colVis),
+      sections:JSON.stringify(IND.sections)}
   };
 }
 // Debounced push of the full settings blob to the server so every device the
@@ -3119,6 +3137,7 @@ async function fillLiquidity(){
     }
     renderTable();
     if(STATE.detail&&STATE.selOffer) renderDetail();
+    persistScan("lp", STATE.lastScanData ? {...STATE.lastScanData, rows:STATE.rows} : null);
   }catch(e){ /* leave the "…" placeholders; non-fatal */ }
 }
 
@@ -4302,7 +4321,7 @@ function renderIndTable(){
     if(rest.length) ch+=chip("all","All Items",rest.length);
     chips.innerHTML=ch;
     chips.querySelectorAll(".ind-chip").forEach(el=>{
-      el.onclick=()=>{ const k=el.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); };
+      el.onclick=()=>{ const k=el.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); saveLS(); };
     });
   } else { chips.innerHTML=""; }
 
@@ -4334,7 +4353,7 @@ function renderIndTable(){
 
   // Section header click toggles collapse
   tbody.querySelectorAll("tr.ind-section").forEach(tr=>{
-    tr.onclick=()=>{ const k=tr.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); };
+    tr.onclick=()=>{ const k=tr.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); saveLS(); };
   });
   tbody.querySelectorAll("tr[data-ridx]").forEach(tr=>{
     const r=ordered[+tr.dataset.ridx];
@@ -4488,6 +4507,8 @@ async function fillIndTradeability(){
     renderIndStatus(); renderIndTable();
   }
   IND.fillTotal=0; renderIndStatus();
+  if(IND.lastData && !IND.lastData.favorites_only && !IND.lastData.owned_only)
+    persistScan("ind", {...IND.lastData, rows:IND.rows});
 }
 
 // Loads all ESI-owned blueprints + favourites silently and without touching
@@ -5373,6 +5394,10 @@ async function loadSettings(){
       if(ind.profile) $("#ind-profile").value=ind.profile;
       if(ind.favorites){ try{ IND.favorites=new Set(JSON.parse(ind.favorites)||[]); }catch(e){} }
       if(ind.hidden_bps){ try{ IND.hidden=new Set(JSON.parse(ind.hidden_bps)||[]); }catch(e){} }
+      if(ind.sections){ try{
+        const sec=typeof ind.sections==="string"?JSON.parse(ind.sections):ind.sections;
+        if(sec&&typeof sec==="object") Object.assign(IND.sections, sec);
+      }catch(e){} }
       // Restore the last-used tab saved server-side. A tab URL overrides this
       // just below; don't re-push history for either.
       if(s.active_tab==="arb") switchTab("arb", {url:false});

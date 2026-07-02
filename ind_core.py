@@ -401,6 +401,22 @@ def expand_market_groups(conn, root_ids):
     return out
 
 
+def market_group_names(conn, group_ids):
+    """Resolve market_group_id → name for a set of IDs. {id: name}."""
+    if not group_ids:
+        return {}
+    ids = list(set(group_ids))
+    out = {}
+    for i in range(0, len(ids), 900):
+        chunk = ids[i:i + 900]
+        marks = ",".join("?" for _ in chunk)
+        for r in conn.execute(
+                f"SELECT market_group_id, name FROM market_groups "
+                f"WHERE market_group_id IN ({marks})", chunk):
+            out[r["market_group_id"]] = r["name"]
+    return out
+
+
 def volumes_for(conn, type_ids):
     """SDE packaged-ish volume (m3) per type, from invTypes. Fast (already
     loaded) -- used for the scan's cargo columns. Note this is the SDE `volume`
@@ -960,6 +976,7 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "blueprint_id": bp["blueprint_id"],
             "product_id": pid,
             "product_name": bp.get("product_name"),
+            "market_group_id": bp.get("market_group_id"),
             "tech_level": bp.get("tech_level"),
             "out_qty": out_qty,
             "material_cost": cost["material_cost"],

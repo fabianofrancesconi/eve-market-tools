@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.63.0"
+__version__ = "1.64.0"
 
 import argparse
 import base64
@@ -1234,6 +1234,11 @@ def do_ind_scan(q, emit=None):
         _emit({"type": "progress", "pct": 78, "msg": "Computing profitability…", "sub": ""})
         params.update({"bpo_prices": bpo_prices, "volumes": volumes})
         rows = ind_core.evaluate_industry(bps, prices, adjusted, params)
+        # Resolve market group names for display in the table.
+        gids = {r["market_group_id"] for r in rows if r.get("market_group_id")}
+        gnames = ind_core.market_group_names(conn, gids) if gids else {}
+        for r in rows:
+            r["group_name"] = gnames.get(r.get("market_group_id"), "")
         # Flag favourites; favourites are exempt from every filter so
         # they're always visible regardless of the current settings.
         for r in rows:
@@ -1893,6 +1898,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-balance-btn:last-of-type { border-radius:0 4px 4px 0; }
   .ind-balance-btn:hover { color:var(--fg); }
   .ind-balance-btn.on { background:var(--accent); color:#fff; border-color:var(--accent2); }
+  .ind-group-sub { display:block; font-size:10px; color:var(--dim2); line-height:1.2; margin-top:1px; }
 
   /* ── Status bar ──────────────────────────────────────────────────── */
   #statusbar {
@@ -4259,7 +4265,10 @@ function indRowHtml(r, idx){
       return `<td class="timer-cell ind-live-timer" data-end="${end}" title="Crafting timer — click the row to view/edit">${fmtCountdownShort(rem)}</td>`;
     }
     let v=r[c.k], txt=c.f?c.f(v,r):(v===null||v===undefined?"—":v);
-    if(c.k==="product_name" && r.missing_price) txt+=" *";
+    if(c.k==="product_name"){
+      if(r.missing_price) txt+=" *";
+      if(r.group_name) txt+=`<span class="ind-group-sub">${r.group_name}</span>`;
+    }
     let cls=c.cls||"";
     if(c.pn) cls+=(v>0?" pos":(v<0?" neg":""));
     if(c.k==="buildable") cls+=v?" pos":" neg";
@@ -4799,8 +4808,11 @@ function renderIndDetail(d){
   const closeDetail=()=>{ box.classList.add("hidden"); IND.openDetail=null; };
   box.querySelector(".ind-d-close").onclick=closeDetail;
   // Clicking the header bar itself (not its buttons) collapses the detail view.
+  // Track mousedown origin so drag-selecting inside the runs input doesn't close.
   const head=box.querySelector(".ind-d-head");
-  head.onclick=ev=>{ if(!ev.target.closest("button,input,.ind-d-runs-wrap")) closeDetail(); };
+  let headDownInInteractive=false;
+  head.onmousedown=ev=>{ headDownInInteractive=!!ev.target.closest("button,input,.ind-d-runs-wrap"); };
+  head.onclick=ev=>{ if(!ev.target.closest("button,input,.ind-d-runs-wrap") && !headDownInInteractive) closeDetail(); };
   box.querySelector(".ind-fav-btn").onclick=()=>toggleFavorite(d.blueprint_id);
   const copyBtn=box.querySelector(".ind-copy");
   copyBtn.onclick=()=>{

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.66.6"
+__version__ = "1.66.7"
 
 import argparse
 import base64
@@ -1579,6 +1579,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             result = scan_fn(q, emit=emit)
             emit({"type": "result", **result})
+            if tag == "lp":
+                save_json(LP_LAST_SCAN_PATH, result)
+            elif tag == "ind" and not result.get("favorites_only") and not result.get("owned_only"):
+                save_json(IND_LAST_SCAN_PATH, result)
         except LPError as e:
             print(f"[{tag}] LPError: {e}", file=sys.stderr)
             emit({"type": "error", "error": str(e)})
@@ -1629,7 +1633,9 @@ class Handler(BaseHTTPRequestHandler):
                     _patch_group_names(ind_data["rows"])
                 self._send_json({"lp": lp_data, "ind": ind_data})
             elif parsed.path == "/api/scan":
-                self._send_json(do_scan(q))
+                result = do_scan(q)
+                save_json(LP_LAST_SCAN_PATH, result)
+                self._send_json(result)
             elif parsed.path == "/api/liquidity":
                 self._send_json(do_liquidity(q))
             elif parsed.path == "/api/detail":

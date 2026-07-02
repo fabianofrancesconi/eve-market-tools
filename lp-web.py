@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.60.1"
+__version__ = "1.60.2"
 
 import argparse
 import base64
@@ -2183,7 +2183,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-d-runs-wrap input { font-size:12px; border:1px solid var(--line2); background:var(--panel); color:var(--fg); border-radius:4px; padding:3px 6px; }
   .ind-d-runs-wrap button { font-size:11px; padding:3px 8px; cursor:pointer; border:1px solid var(--line2); background:var(--panel2); color:var(--dim); border-radius:4px; transition:background .12s, color .12s; }
   .ind-d-runs-wrap button:hover { background:var(--cyan2); color:var(--fg); border-color:var(--cyan2); }
-  .ind-bpc-warn { background:#3a2800; border:1px solid #b8860b; border-radius:6px; padding:8px 12px; margin-bottom:10px; color:#ffd080; font-size:13px; line-height:1.5; }
+  .ind-bpc-warn { background:#3a2800; border:1px solid #b8860b; border-radius:6px; padding:8px 12px; margin-bottom:10px; color:#ffd080; font-size:13px; line-height:1.5; width:100%; }
   .ind-bpc-warn b { color:#ffe4a0; }
   .ind-bpc-warn .ind-bpc-buy { display:block; margin-top:6px; color:#fff; font-weight:700; font-size:14px; }
   .ind-bpo-expand { background:#4a3000; border:1px solid #b8860b; border-radius:4px; color:#ffd080; cursor:pointer; padding:2px 10px; font-size:12px; margin-left:6px; }

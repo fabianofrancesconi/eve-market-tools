@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.58.0"
+__version__ = "1.58.1"
 
 import argparse
 import base64
@@ -2172,9 +2172,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .arb-chart-head h3 { font-size:16px; font-weight:700; color:var(--cyan); margin:0; }
 
   /* ── Industry ────────────────────────────────────────────────────── */
-  .ind-d-runs-wrap { display:inline-flex; align-items:center; gap:3px; font-size:12px; }
-  .ind-d-runs-wrap input { font-size:12px; border:1px solid #555; background:#1e1e2a; color:#eee; border-radius:4px; padding:2px 4px; }
-  .ind-d-runs-wrap button { font-size:11px; padding:2px 6px; cursor:pointer; }
+  .ind-d-runs-wrap { display:inline-flex; align-items:center; gap:4px; font-size:12px; }
+  .ind-d-runs-wrap input { font-size:12px; border:1px solid var(--line2); background:var(--panel); color:var(--fg); border-radius:4px; padding:3px 6px; }
+  .ind-d-runs-wrap button { font-size:11px; padding:3px 8px; cursor:pointer; border:1px solid var(--line2); background:var(--panel2); color:var(--dim); border-radius:4px; transition:background .12s, color .12s; }
+  .ind-d-runs-wrap button:hover { background:var(--cyan2); color:var(--fg); border-color:var(--cyan2); }
   .ind-bpc-warn { background:#3a2800; border:1px solid #b8860b; border-radius:6px; padding:8px 12px; margin-bottom:10px; color:#ffd080; font-size:13px; line-height:1.5; }
   .ind-bpc-warn b { color:#ffe4a0; }
   .ind-bpc-warn .ind-bpc-buy { display:block; margin-top:6px; color:#fff; font-weight:700; font-size:14px; }
@@ -4628,7 +4629,7 @@ function renderIndDetail(d){
   box.querySelector(".ind-d-close").onclick=closeDetail;
   // Clicking the header bar itself (not its buttons) collapses the detail view.
   const head=box.querySelector(".ind-d-head");
-  head.onclick=ev=>{ if(!ev.target.closest("button")) closeDetail(); };
+  head.onclick=ev=>{ if(!ev.target.closest("button,input,.ind-d-runs-wrap")) closeDetail(); };
   box.querySelector(".ind-fav-btn").onclick=()=>toggleFavorite(d.blueprint_id);
   const copyBtn=box.querySelector(".ind-copy");
   copyBtn.onclick=()=>{

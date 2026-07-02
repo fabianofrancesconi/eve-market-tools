@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.64.5"
+__version__ = "1.65.0"
 
 import argparse
 import base64
@@ -4366,17 +4366,49 @@ function renderIndTable(){
     html+=sect("hidden","Hidden", hiddenBps.length);
     if(IND.sections.hidden) hiddenBps.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   }
+  const IND_LAZY_BATCH=60;
+  let lazyRest=null, lazyIdx=0;
   if(rest.length){
     if(hasSections) html+=sect("all","All Items", rest.length);
-    if(!hasSections || IND.sections.all) rest.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+    if(!hasSections || IND.sections.all){
+      const initial=rest.slice(0,IND_LAZY_BATCH);
+      initial.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+      if(rest.length>IND_LAZY_BATCH){ lazyRest=rest; lazyIdx=IND_LAZY_BATCH; }
+    }
   }
   tbody.innerHTML=html;
 
+  // Lazy-load remaining "All Items" rows on scroll
+  if(lazyRest){
+    const sentinel=document.createElement("tr");
+    sentinel.className="ind-sentinel";
+    sentinel.innerHTML=`<td colspan="${ncol}"></td>`;
+    tbody.appendChild(sentinel);
+    const wrap=$("#ind-tablewrap");
+    const obs=new IntersectionObserver(entries=>{
+      if(!entries[0].isIntersecting) return;
+      const batch=lazyRest.slice(lazyIdx, lazyIdx+IND_LAZY_BATCH);
+      if(!batch.length){ obs.disconnect(); sentinel.remove(); return; }
+      let bhtml="";
+      batch.forEach(r=>{ bhtml+=indRowHtml(r, ordered.length); ordered.push(r); });
+      sentinel.insertAdjacentHTML("beforebegin", bhtml);
+      wireIndRows(tbody, ordered);
+      lazyIdx+=IND_LAZY_BATCH;
+      if(lazyIdx>=lazyRest.length){ obs.disconnect(); sentinel.remove(); }
+    }, {root:wrap, rootMargin:"200px"});
+    obs.observe(sentinel);
+  }
+
+  wireIndRows(tbody, ordered);
+}
+function wireIndRows(tbody, ordered){
   // Section header click toggles collapse
   tbody.querySelectorAll("tr.ind-section").forEach(tr=>{
+    if(tr._wired) return; tr._wired=true;
     tr.onclick=()=>{ const k=tr.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); saveLS(); };
   });
   tbody.querySelectorAll("tr[data-ridx]").forEach(tr=>{
+    if(tr._wired) return; tr._wired=true;
     const r=ordered[+tr.dataset.ridx];
     tr.onclick=ev=>{
       if(ev.target.classList.contains("fav-star")) return;
@@ -4388,9 +4420,11 @@ function renderIndTable(){
     };
   });
   tbody.querySelectorAll(".fav-star").forEach(star=>{
+    if(star._wired) return; star._wired=true;
     star.onclick=ev=>{ ev.stopPropagation(); toggleFavorite(+star.dataset.bp); };
   });
   tbody.querySelectorAll(".ind-hide-btn").forEach(btn=>{
+    if(btn._wired) return; btn._wired=true;
     btn.onclick=ev=>{ ev.stopPropagation(); toggleHidden(+btn.dataset.bp); };
   });
 }

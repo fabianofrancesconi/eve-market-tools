@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.61.2"
+__version__ = "1.62.0"
 
 import argparse
 import base64
@@ -83,6 +83,8 @@ IND_SETTINGS_PATH = CACHE_DIR / "ind_settings.json"
 AUTH_SETTINGS_PATH = CACHE_DIR / "auth_settings.json"  # client_id + callback_url
 JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-run counter
 USER_SETTINGS_DB_PATH = CACHE_DIR / "user_settings.sqlite"  # per-character synced settings
+LP_LAST_SCAN_PATH = CACHE_DIR / "lp_last_scan.json"
+IND_LAST_SCAN_PATH = CACHE_DIR / "ind_last_scan.json"
 REFRESHED_CORPS = set()
 
 # ── EVE SSO state (single process, single user) ───────────────────────────────
@@ -555,6 +557,14 @@ def _all_type_ids(offers):
     return ids
 
 
+def _save_last_lp_scan(data):
+    save_json(LP_LAST_SCAN_PATH, data)
+
+
+def _save_last_ind_scan(data):
+    save_json(IND_LAST_SCAN_PATH, data)
+
+
 def do_scan(q):
     corp_arg = (q.get("corp", [""])[0] or "").strip()
     corp_id_arg = q.get("corp_id", [""])[0].strip()
@@ -680,7 +690,7 @@ def do_scan(q):
             "liq_loaded": False,
             "unsellable": True,
         })
-    return {
+    result = {
         "corp_id": corp_id,
         "corp_name": corp_name,
         "lp": lp,
@@ -695,6 +705,8 @@ def do_scan(q):
         "scanned_at": time.time(),
         "offers_fetched_at": offers_meta.get("fetched_at"),
     }
+    _save_last_lp_scan(result)
+    return result
 
 
 def do_liquidity(q):
@@ -1261,7 +1273,7 @@ def do_ind_scan(q, emit=None):
             r["liq_loaded"] = True   # the rest get scored by the background fill
 
     _emit({"type": "progress", "pct": 97, "msg": "Formatting results…", "sub": ""})
-    return {
+    result = {
         "station_id": station_id,
         "station_name": TRADE_HUBS[station_id]["name"],
         "market_group": market_group,
@@ -1272,6 +1284,9 @@ def do_ind_scan(q, emit=None):
         "owned_only": owned_only,
         "rows": rows,
     }
+    if not favorites_only and not owned_only:
+        _save_last_ind_scan(result)
+    return result
 
 
 def do_ind_liquidity(q):
@@ -1558,6 +1573,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(do_settings_sync(q))
             elif parsed.path == "/api/prefs":
                 self._send_json(do_prefs(q))
+            elif parsed.path == "/api/last-scan":
+                lp_data = load_json(LP_LAST_SCAN_PATH, None)
+                ind_data = load_json(IND_LAST_SCAN_PATH, None)
+                self._send_json({"lp": lp_data, "ind": ind_data})
             elif parsed.path == "/api/scan":
                 self._send_json(do_scan(q))
             elif parsed.path == "/api/liquidity":
@@ -4361,7 +4380,7 @@ function renderIndStatus(){
   setStatus(
     `<span class="pill"><b>${d.count.toLocaleString()}</b> items · source <b>${d.station_name}</b></span>`
     +fillPill
-    +`<span class="ts">scan ${fmtTs(d.scanned_at)}</span>`);
+    +`<span class="ts">prices ${fmtTs(d.scanned_at)}</span>`);
 }
 
 function showIndProgress(msg, sub, pct){
@@ -5236,6 +5255,30 @@ $("#ind-search-clear").addEventListener("click", ()=>{
 // ══════════════════════════════════════════════════════════════════════════
 // Init
 // ══════════════════════════════════════════════════════════════════════════
+async function restoreLastScans(){
+  const restored={lp:false, ind:false};
+  try{
+    const resp=await fetch("/api/last-scan");
+    const cached=await resp.json();
+    if(cached.lp && cached.lp.rows && cached.lp.rows.length){
+      const _il=$("#init-loading"); if(_il) _il.remove();
+      STATE.rows=cached.lp.rows;
+      STATE.ctx={corp_id:cached.lp.corp_id, lp:cached.lp.lp,
+        tax:cached.lp.tax, broker:cached.lp.broker, station:String(cached.lp.station_id)};
+      STATE.lastScanData=cached.lp;
+      if(ACTIVE_TAB==="lp"){ renderLPStatus(); renderTable(); }
+      restored.lp=true;
+    }
+    if(cached.ind && cached.ind.rows && cached.ind.rows.length){
+      IND.rows=cached.ind.rows; IND.lastData=cached.ind;
+      computeIndTradeability();
+      if(ACTIVE_TAB==="ind"){ renderIndStatus(); renderIndTable(); }
+      restored.ind=true;
+    }
+  }catch(e){}
+  return restored;
+}
+
 updateArbJumpsVisibility();  // reflect default cross-station selection before settings load
 async function loadSettings(){
   let server=null;
@@ -5340,9 +5383,12 @@ async function loadSettings(){
   const urlTab = location.pathname==="/" ? null : PATH_TAB[location.pathname];
   if(urlTab && urlTab!==ACTIVE_TAB && (urlTab!=="char" || AUTH.loggedIn))
     switchTab(urlTab, {url:false});
-  // Auto-run LP scanner if corp is set
-  if(ACTIVE_TAB==="lp" && $("#corp").value.trim()) scan(false);
-  loadOwnedPreview();
+  // Restore last scan results from server cache, then auto-scan if the LP tab
+  // is active and a corp is set.
+  restoreLastScans().then(restored=>{
+    if(ACTIVE_TAB==="lp" && $("#corp").value.trim() && !restored.lp) scan(false);
+    if(!restored.ind) loadOwnedPreview();
+  });
 }
 // ── Custom tooltip engine ──────────────────────────────────────────
 // Reads data-tip on any element and shows a themed, cursor-following

@@ -16,29 +16,32 @@ early just litters the repo with tags for commits that were never actually relea
 Only push when the user explicitly asks (e.g. "push", "ship it"); several versioned
 commits can pile up locally first and go out together.
 
-**Tags are created at push time, not before.** When asked to push, for each local
-`vX.Y.Z: ...` commit that's about to go out, create its tag on that commit right
-then, and push **one tag at a time** — each in its own `git push` command:
+**Tags are created at push time, not before, and pushed ONE AT A TIME.** When asked
+to push, work through the local `vX.Y.Z: ...` commits oldest-first: tag the commit
+(`git tag vX.Y.Z <sha>`), push that single tag with the branch, wait for its Docker
+workflow run to finish, then move on to the next one:
 
 ```
 git tag v1.2.3 <sha>
 git push origin master v1.2.3
-
-git tag v1.2.4 <sha>
-git push origin v1.2.4
-
-git tag v1.2.5 <sha>
-git push origin v1.2.5
+gh run list --workflow=docker.yml --limit 1   # confirm it completed before tagging the next
 ```
 
-⚠️ **Always push exactly ONE tag per `git push` command.** GitHub's CI is unreliable
-when multiple tags arrive in a single push — workflows get skipped silently. The first
-push includes `master` (to advance the branch); subsequent pushes only need the tag.
-
-Never use `--tags` and never batch multiple tags in one push command.
-
-To re-trigger a tag whose workflow was skipped, delete it on the remote and re-push:
-`git push origin :refs/tags/vX.Y.Z && git push origin vX.Y.Z`.
+⚠️ **Never push more than one new `vX.Y.Z` tag in a single `git push` command**, and
+never use `git push origin master --tags`. The Docker workflow tags every build
+`latest` in addition to its version tag; pushing several tags at once makes GitHub
+kick off multiple workflow runs concurrently with no guaranteed ordering between them,
+and whichever run's `docker push` finishes last wins the mutable `latest` tag — so
+`latest` can end up pointing at an *older* release even though every run reports
+success. (Confirmed: pushing v1.49.0 and v1.50.0 together left `latest` == v1.49.0's
+image until v1.50.0's run was manually re-triggered alone.) Separately, pushing more
+than three new tags in one push makes GitHub trigger **no** tag workflows at all for
+that push — another reason to go one at a time. To re-trigger a tag whose workflow
+didn't run, delete it on the remote and re-push it:
+`git push origin :refs/tags/vX.Y.Z && git push origin vX.Y.Z`. If `latest` ever looks
+wrong, compare digests (`docker manifest inspect ghcr.io/.../eve-market-tools:latest`
+vs the newest version tag) and fix by re-running just that tag's workflow
+(`gh run rerun <run-id>`) once no other docker.yml run is in flight.
 
 The Docker image is only built on `v*` tag pushes. Each published image gets `latest`, `v1.x.y`, and `1.x` tags.
 

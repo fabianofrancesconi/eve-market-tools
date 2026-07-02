@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.65.1"
+__version__ = "1.65.2"
 
 import argparse
 import base64
@@ -4372,9 +4372,11 @@ function renderIndTable(){
   if(rest.length){
     if(hasSections) html+=sect("all","All Items", rest.length);
     if(!hasSections || IND.sections.all){
-      const initial=rest.slice(0,IND_LAZY_BATCH);
+      const show=Math.max(IND_LAZY_BATCH, IND._lazyRendered||0);
+      const initial=rest.slice(0, Math.min(show, rest.length));
       initial.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
-      if(rest.length>IND_LAZY_BATCH){ lazyRest=rest; lazyIdx=IND_LAZY_BATCH; }
+      IND._lazyRendered=initial.length;
+      if(rest.length>initial.length){ lazyRest=rest; lazyIdx=initial.length; }
     }
   }
   tbody.innerHTML=html;
@@ -4395,7 +4397,8 @@ function renderIndTable(){
       sentinel.insertAdjacentHTML("beforebegin", bhtml);
       wireIndRows(tbody, ordered);
       lazyIdx+=IND_LAZY_BATCH;
-      if(lazyIdx>=lazyRest.length){ obs.disconnect(); sentinel.remove(); }
+      IND._lazyRendered=lazyIdx;
+      if(lazyIdx>=lazyRest.length){ obs.disconnect(); sentinel.remove(); IND._lazyRendered=lazyRest.length; }
     }, {root:wrap, rootMargin:"200px"});
     obs.observe(sentinel);
   }
@@ -4490,7 +4493,7 @@ function indParams(extra){
 
 function scanInd(refreshSde){
   if(IND.es){ IND.es.close(); IND.es=null; }
-  IND_FILL_TOKEN++; IND.fillTotal=0;   // abandon any background fill from a prior scan
+  IND_FILL_TOKEN++; IND.fillTotal=0; IND._lazyRendered=0;
   const btn=$("#ind-go"); btn.disabled=true; btn.textContent="Scanning…";
   const p=indParams(refreshSde?{refresh_sde:"1"}:null);
   showIndProgress("Loading blueprint database…","",1);

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.64.3"
+__version__ = "1.64.4"
 
 import argparse
 import base64
@@ -2341,13 +2341,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #ind-tbl tr.ind-section td:hover { color:var(--fg); }
   #ind-tbl tr.ind-section .sect-arrow { display:inline-block; transition:transform .15s; margin-right:4px; }
   #ind-tbl tr.ind-section.collapsed .sect-arrow { transform:rotate(-90deg); }
-  .ind-chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; align-items:center; }
-  .ind-chip { font-size:12px; padding:4px 10px; border-radius:14px; cursor:pointer;
+  .ind-chips { display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 10px; align-items:center; }
+  .ind-chip { font-size:12px; padding:5px 12px; border-radius:16px; cursor:pointer;
     border:1px solid var(--line2); background:var(--panel2); color:var(--dim);
-    transition:all .12s; user-select:none; display:inline-flex; align-items:center; gap:4px; }
+    transition:all .12s; user-select:none; display:inline-flex; align-items:center; gap:5px;
+    letter-spacing:.2px; }
   .ind-chip:hover { border-color:var(--cyan2); color:var(--fg); }
   .ind-chip.active { background:var(--cyan2); border-color:var(--cyan); color:var(--fg); font-weight:600; }
-  .ind-chip .chip-count { opacity:.7; font-weight:400; }
+  .ind-chip .chip-count { opacity:.65; font-weight:400; }
   .ind-hide-btn { cursor:pointer; color:var(--dim); font-size:11px; padding:0 3px; opacity:.5; transition:opacity .12s; }
   .ind-hide-btn:hover { opacity:1; color:var(--orange,#e8a040); }
 </style>

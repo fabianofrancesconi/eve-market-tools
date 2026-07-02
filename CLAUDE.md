@@ -18,25 +18,27 @@ commits can pile up locally first and go out together.
 
 **Tags are created at push time, not before.** When asked to push, for each local
 `vX.Y.Z: ...` commit that's about to go out, create its tag on that commit right
-then (`git tag vX.Y.Z <sha>`), and push the branch together with those tags in one
-command — naming them explicitly:
+then, and push **one tag at a time** — each in its own `git push` command:
 
 ```
-git tag v1.2.3 <sha>                       # create the tag(s) for what's about to ship
-git push origin master v1.2.3              # one release
-git push origin master v1.2.3 v1.2.4       # up to three new tags at once
+git tag v1.2.3 <sha>
+git push origin master v1.2.3
+
+git tag v1.2.4 <sha>
+git push origin v1.2.4
+
+git tag v1.2.5 <sha>
+git push origin v1.2.5
 ```
 
-⚠️ **Do not use `git push origin master --tags` when more than three new tags are
-pending.** GitHub silently triggers **no** tag workflows when a single push contains
-more than three new tags — so all the Docker builds get skipped. (This — not "pushing
-a tag alone" — is the real cause of silently-skipped CI.) Since the workflow above lets
-several versioned commits pile up before a push, `--tags` is exactly the case that bites.
+⚠️ **Always push exactly ONE tag per `git push` command.** GitHub's CI is unreliable
+when multiple tags arrive in a single push — workflows get skipped silently. The first
+push includes `master` (to advance the branch); subsequent pushes only need the tag.
 
-If several releases have piled up, tag and push them in **batches of ≤3** (`git tag`
-the next 3, `git push origin master vA vB vC`, then tag/push the rest). A single-tag
-push **does** trigger CI; to re-trigger a tag that was skipped, delete it on the
-remote and re-push it: `git push origin :refs/tags/vX.Y.Z && git push origin vX.Y.Z`.
+Never use `--tags` and never batch multiple tags in one push command.
+
+To re-trigger a tag whose workflow was skipped, delete it on the remote and re-push:
+`git push origin :refs/tags/vX.Y.Z && git push origin vX.Y.Z`.
 
 The Docker image is only built on `v*` tag pushes. Each published image gets `latest`, `v1.x.y`, and `1.x` tags.
 
@@ -52,11 +54,11 @@ All changes need corresponding tests in `tests/`.
 
 The `origin` remote uses **SSH** (`git@github.com:fabianofrancesconi/eve-market-tools.git`),
 which authenticates as the personal `fabianofrancesconi` account via the local SSH key.
-Push directly, naming the release tag(s) (see the ⚠️ note above about `--tags` skipping
-CI when more than three new tags are pushed at once):
+Push directly, one tag per push (see the ⚠️ note above):
 
 ```
-git push origin master vX.Y.Z
+git push origin master v1.2.3    # first push: branch + one tag
+git push origin v1.2.4           # second tag alone
 ```
 
 Do **not** use an HTTPS remote — it falls back to a stale `fabiano_adobe` keychain

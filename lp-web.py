@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.66.5"
+__version__ = "1.66.6"
 
 import argparse
 import base64
@@ -1151,20 +1151,38 @@ def _ind_params(q):
 
 
 def _patch_group_names(rows):
-    """Backfill group_name for cached rows that predate the feature."""
-    need = {r["market_group_id"] for r in rows
-            if r.get("market_group_id") and not r.get("group_name")}
-    if not need:
+    """Backfill group_name (and market_group_id) for cached rows that predate
+    the feature. Older caches lack market_group_id entirely, so we resolve it
+    from the product_id via the SDE types table first."""
+    missing = [r for r in rows if not r.get("group_name")]
+    if not missing:
         return
     try:
         conn = ind_core.connect_sde(CACHE_DIR)
-        gnames = ind_core.market_group_names(conn, need)
-        conn.close()
     except Exception:
         return
-    for r in rows:
-        if not r.get("group_name"):
-            r["group_name"] = gnames.get(r.get("market_group_id"), "")
+    try:
+        # Backfill market_group_id from SDE for rows that lack it
+        need_mgid = [r for r in missing if not r.get("market_group_id")]
+        if need_mgid:
+            pids = list({r["product_id"] for r in need_mgid if r.get("product_id")})
+            if pids:
+                marks = ",".join("?" for _ in pids)
+                mgid_map = {row[0]: row[1] for row in conn.execute(
+                    f"SELECT type_id, market_group_id FROM types WHERE type_id IN ({marks})",
+                    pids)}
+                for r in need_mgid:
+                    mgid = mgid_map.get(r.get("product_id"))
+                    if mgid:
+                        r["market_group_id"] = mgid
+        # Now resolve group names
+        gids = {r["market_group_id"] for r in missing if r.get("market_group_id")}
+        if gids:
+            gnames = ind_core.market_group_names(conn, gids)
+            for r in missing:
+                r["group_name"] = gnames.get(r.get("market_group_id"), "")
+    finally:
+        conn.close()
 
 
 def do_ind_scan(q, emit=None):

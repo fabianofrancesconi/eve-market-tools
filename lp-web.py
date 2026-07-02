@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.66.1"
+__version__ = "1.66.2"
 
 import argparse
 import base64
@@ -2417,11 +2417,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <!-- Global cost settings (shared by LP + Industry) -->
 <div id="global-costs" class="ctrlbar global-costs">
-  <div class="field" data-tip="Sales tax on sell orders. Based on your Accounting skill when logged in (editable).">
-    <label>Sales tax %</label><input id="g-tax" type="number" step="0.1" value="4.5" style="width:65px">
+  <div class="field" data-tip="Sales tax on sell orders. Calculated from your Accounting skill: 7.5% × (1 − 0.11 × level).">
+    <label>Sales tax %</label><input id="g-tax" type="number" step="0.1" value="4.5" style="width:55px" readonly>
   </div>
-  <div class="field" data-tip="Broker fee for placing sell orders. Depends on Broker Relations skill + standings (~1.5% typical at Jita). Edit manually.">
-    <label>Broker fee %</label><input id="g-broker" type="number" step="0.1" value="1.5" style="width:65px">
+  <div class="field" data-tip="Broker fee for placing sell orders. Calculated from your Broker Relations skill: 3% − 0.3% × level (standings not included).">
+    <label>Broker fee %</label><input id="g-broker" type="number" step="0.1" value="1.5" style="width:55px" readonly>
   </div>
 </div>
 
@@ -3604,12 +3604,6 @@ function scheduleScan(delay=800){ clearTimeout(lpScanTimer); lpScanTimer=setTime
   const el=$(sel); if(!el) return;
   el.addEventListener("change",()=>{ saveLS(); scheduleScan(800); });
   if(sel!=="#market") el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); });
-});
-// Global tax/broker affects LP (rescan) + Industry (recalc) + Arb
-["#g-tax","#g-broker"].forEach(sel=>{
-  const el=$(sel); if(!el) return;
-  el.addEventListener("change",()=>{ saveLS(); scheduleScan(800); recalcIndProfits(); });
-  el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); recalcIndProfits(); });
 });
 $("#toggleIlliquid").onchange=()=>{
   STATE.hideIlliquid=$("#toggleIlliquid").checked;
@@ -5049,6 +5043,7 @@ async function refreshCharData(){
     const fee=3.0-0.3*d.broker_relations_level;
     $("#g-broker").value=fee.toFixed(2);
   }
+  saveLS(); recalcIndProfits();
   charRefreshDeadline=Date.now()+CHAR_REFRESH_MS; tickCharRefreshTimer();
   const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge();

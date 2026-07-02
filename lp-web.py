@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.66.0"
+__version__ = "1.66.1"
 
 import argparse
 import base64
@@ -5039,9 +5039,9 @@ async function refreshCharData(){
   if(d.error){ setStatus(authEsc(d.error), true); _retryCharDataSoon(); return; }
   charRetryCount = 0;
   AUTH.data=d;
-  // Auto-fill sales tax from Accounting skill: base 4.5% × (1 − 0.11 × level)
+  // Auto-fill sales tax from Accounting skill: base 7.5% × (1 − 0.11 × level)
   if(d.accounting_level!=null){
-    const tax=4.5*(1-0.11*d.accounting_level);
+    const tax=7.5*(1-0.11*d.accounting_level);
     $("#g-tax").value=tax.toFixed(2);
   }
   // Auto-fill broker fee from Broker Relations: base 3% − 0.3% × level (no standings)

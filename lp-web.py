@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.65.0"
+__version__ = "1.65.1"
 
 import argparse
 import base64
@@ -2834,7 +2834,8 @@ function settingsBlob(){
       sort_key:IND.sort.key,sort_dir:IND.sort.dir,
       col_order:JSON.stringify(IND.colOrder),col_widths:JSON.stringify(IND.colw),
       col_vis:JSON.stringify(IND.colVis),
-      sections:JSON.stringify(IND.sections)}
+      sections:JSON.stringify(IND.sections),
+      ind_trade_weight:String(IND.tradeWeight)}
   };
 }
 // Debounced push of the full settings blob to the server so every device the

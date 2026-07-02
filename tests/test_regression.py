@@ -1077,6 +1077,15 @@ class TestIndustryRoutes:
         assert "function updateIndSearchClear(){" in html
         assert '$("#ind-search-clear").addEventListener("click"' in html
 
+    def test_owned_only_includes_char_blueprints(self, monkeypatch):
+        """owned_only=1 loads blueprints the character owns via ESI."""
+        monkeypatch.setattr(lp_web, "_AUTH", {"character_id": 123, "name": "T"})
+        monkeypatch.setattr(lp_web, "_CHAR_BP_ME_TE", {681: (10, 20)})
+        monkeypatch.setattr(lp_web, "_CHAR_SKILL_PROFILE", {})
+        html = lp_web.INDEX_HTML
+        assert "loadOwnedPreview" in html
+        assert 'owned_only:"1"' in html or "owned_only" in html
+
     def test_unknown_ind_subpath_404(self, tmp_server):
         base, _ = tmp_server
         body, status = http_get(f"{base}/api/ind/bogus")

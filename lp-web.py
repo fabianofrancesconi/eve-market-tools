@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.58.2"
+__version__ = "1.59.0"
 
 import argparse
 import base64
@@ -1147,6 +1147,9 @@ def do_ind_scan(q, emit=None):
     # of category — used to show favorites immediately on tab load, before the
     # user runs a real scan. Doesn't touch saved settings.
     favorites_only = q.get("favorites_only", ["0"])[0] in ("1", "true", "on")
+    # Like favorites_only but also includes all ESI-owned blueprints — used to
+    # show "My Blueprints" + watchlist immediately on tab open.
+    owned_only = q.get("owned_only", ["0"])[0] in ("1", "true", "on")
     try:
         fav_ids = set(int(b) for b in json.loads(q.get("favorites", ["[]"])[0]))
     except (ValueError, TypeError):
@@ -1161,7 +1164,7 @@ def do_ind_scan(q, emit=None):
     if _CHAR_BP_ME_TE:
         params["owned_me_te"] = _CHAR_BP_ME_TE
 
-    if not favorites_only:
+    if not favorites_only and not owned_only:
         s = load_ind_settings()
         for k in _IND_PREF_KEYS:
             if k in q:
@@ -1176,6 +1179,9 @@ def do_ind_scan(q, emit=None):
     try:
         if favorites_only:
             candidates = ind_core.candidates_for_blueprints(conn, fav_ids)
+        elif owned_only:
+            bp_ids = set(_CHAR_BP_ME_TE.keys()) | fav_ids
+            candidates = ind_core.candidates_for_blueprints(conn, bp_ids)
         else:
             if market_group and market_group != "all":
                 group_ids = ind_core.expand_market_groups(conn, [int(market_group)])
@@ -1263,6 +1269,7 @@ def do_ind_scan(q, emit=None):
         "count": len(rows),
         "scanned_at": time.time(),
         "favorites_only": favorites_only,
+        "owned_only": owned_only,
         "rows": rows,
     }
 
@@ -4239,9 +4246,9 @@ function toggleFavorite(bp){
 
 function renderIndStatus(){
   const d=IND.lastData; if(!d||ACTIVE_TAB!=="ind") return;
-  if(d.favorites_only){
-    setStatus(`<span class="pill">★ <b>${d.count.toLocaleString()}</b> watchlist item${d.count===1?"":"s"} loaded</span>`
-      +`<span class="ts">press Scan for full results</span>`);
+  if(d.favorites_only || d.owned_only){
+    setStatus(`<span class="pill"><b>${d.count.toLocaleString()}</b> blueprint${d.count===1?"":"s"} loaded</span>`
+      +`<span class="ts">press Scan for full catalogue</span>`);
     return;
   }
   const fillPill = IND.fillTotal>0
@@ -4359,13 +4366,13 @@ async function fillIndTradeability(){
   IND.fillTotal=0; renderIndStatus();
 }
 
-// Loads ONLY the favourited blueprints, silently and without touching saved
-// settings, so favourites are visible the moment the page (or the Industry tab)
-// opens — before the user ever presses Scan. A later real Scan replaces these
-// rows with the full category results (favourites still included/pinned).
-function loadFavoritesPreview(){
-  if(IND.favorites.size===0 || IND.rows.length>0 || IND.es) return;
-  const p=indParams({favorites_only:"1"});
+// Loads all ESI-owned blueprints + favourites silently and without touching
+// saved settings, so "My Blueprints" and the watchlist are visible the moment
+// the Industry tab opens — before the user ever presses Scan. A later real
+// Scan replaces these rows with the full category results.
+function loadOwnedPreview(){
+  if(IND.rows.length>0 || IND.es) return;
+  const p=indParams({owned_only:"1"});
   const es=new EventSource("/api/ind/scan?"+p);
   IND.es=es;   // shares the slot scanInd() checks/clears, so a real Scan cancels this
   es.onmessage=e=>{
@@ -4374,6 +4381,7 @@ function loadFavoritesPreview(){
       es.close(); IND.es=null;
       IND.rows=data.rows; IND.lastData=data;
       if(ACTIVE_TAB==="ind"){ renderIndStatus(); renderIndTable(); }
+      fillIndTradeability();
     } else if(data.type==="error"){
       es.close(); IND.es=null;
     }
@@ -5202,7 +5210,7 @@ async function loadSettings(){
     switchTab(urlTab, {url:false});
   // Auto-run LP scanner if corp is set
   if(ACTIVE_TAB==="lp" && $("#corp").value.trim()) scan(false);
-  loadFavoritesPreview();
+  loadOwnedPreview();
 }
 // ── Custom tooltip engine ──────────────────────────────────────────
 // Reads data-tip on any element and shows a themed, cursor-following

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.60.0"
+__version__ = "1.60.1"
 
 import argparse
 import base64
@@ -4640,6 +4640,11 @@ function renderIndDetail(d){
             <div class="ind-d-card-label">Build cost</div>
             <div class="ind-d-card-val">${isk(batchCost)}</div>
             <div class="ind-d-card-sub">mats ${isk(matTotCost)} + job ${isk(jobCostBatch)}${d.invention?` + invent ${isk(inventionCostBatch)}`:""}</div>
+          </div>
+          <div class="ind-d-card" data-tip="Job installation fee charged by the station/structure when you start the manufacturing job. Calculated as EIV × job cost % (system index × bonuses + facility tax + SCC surcharge).">
+            <div class="ind-d-card-label">Job install fee</div>
+            <div class="ind-d-card-val">${isk(jobCostBatch)}</div>
+            <div class="ind-d-card-sub">EIV ${isk(d.eiv)} × ${(d.job_rate*100).toFixed(2)}% × ${n.toLocaleString()} run(s)</div>
           </div>
           <div class="ind-d-card">
             <div class="ind-d-card-label">Cargo in</div>

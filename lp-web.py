@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.66.4"
+__version__ = "1.66.5"
 
 import argparse
 import base64
@@ -299,11 +299,25 @@ def _refresh_char_blueprints():
     """Pull the character's owned blueprints and cache each type's best ME/TE,
     so the Industry planner's "My blueprints" override can use them. Best-
     effort — a 403 (scope granted before this feature existed) just leaves the
-    cache empty and the planner falls back to the uniform ME/TE assumption."""
+    cache empty and the planner falls back to the uniform ME/TE assumption.
+    Also supplements from active industry jobs (a running manufacturing job
+    proves ownership even if the blueprints endpoint hasn't caught up)."""
     global _CHAR_BP_ME_TE
     try:
-        bps = sso_core.fetch_character_blueprints(_access_token(), _AUTH["character_id"], SESSION)
+        token = _access_token()
+        cid = _AUTH["character_id"]
+        bps = sso_core.fetch_character_blueprints(token, cid, SESSION)
         _CHAR_BP_ME_TE = sso_core.owned_blueprint_lookup(bps)
+        try:
+            jobs = sso_core.fetch_industry_jobs(token, cid, SESSION)
+            for j in jobs:
+                if j.get("activity_id") != 1 or j.get("status") != "active":
+                    continue
+                bp_tid = j.get("blueprint_type_id")
+                if bp_tid and bp_tid not in _CHAR_BP_ME_TE:
+                    _CHAR_BP_ME_TE[bp_tid] = (0, 0, True, -1)
+        except (LPError, requests.RequestException):
+            pass
     except (LPError, requests.RequestException):
         _CHAR_BP_ME_TE = {}
 
@@ -1924,7 +1938,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-balance-btn:hover { color:var(--fg); }
   .ind-balance-btn.on { background:var(--accent); color:#fff; border-color:var(--accent2); }
   .ind-group-sub { display:block; font-size:10px; color:var(--dim2); line-height:1.2; margin-top:1px; }
-  .ind-owned-tag { display:inline-block; font-size:9px; color:#6ecf6e; border:1px solid #3a7a3a; border-radius:3px; padding:0 4px; margin-left:6px; vertical-align:middle; line-height:1.5; }
+  .ind-yours { color:#6ecf6e; font-weight:600; margin-left:8px; }
+  .ind-not-yours { color:var(--dim2); margin-left:8px; }
 
   .global-costs {
     height:auto; min-height:0; padding:5px 18px; gap:14px;
@@ -4307,7 +4322,6 @@ function indRowHtml(r, idx){
     }
     let v=r[c.k], txt=c.f?c.f(v,r):(v===null||v===undefined?"—":v);
     if(c.k==="product_name"){
-      if(r.owned_bp_me_te) txt+=`<span class="ind-owned-tag">OWNED</span>`;
       if(r.missing_price) txt+=" *";
       if(r.group_name) txt+=`<span class="ind-group-sub">${r.group_name}</span>`;
     }
@@ -4350,7 +4364,7 @@ function renderIndTable(){
   // Hidden (owned, explicitly hidden), All items (the rest).
   const search=($("#ind-search").value||"").trim().toLowerCase();
   const isFav=r=>IND.favorites.has(r.blueprint_id);
-  const isOwned=r=>!!r.owned_bp_me_te;
+  const isOwned=r=>!!r.owned_bp_me_te||!!IND.timers[r.blueprint_id];
   const isHidden=r=>IND.hidden.has(r.blueprint_id);
   let favs=IND.rows.filter(r=>isFav(r) && !isHidden(r));
   let myBps=IND.rows.filter(r=>isOwned(r) && !isHidden(r) && !isFav(r));
@@ -4805,9 +4819,10 @@ function renderIndDetail(d){
 
       <div class="ind-d-sub">Blueprint &amp; market</div>
       <span>Blueprint</span><b class="bp-buy">${bpSrc}</b>
-      <span>ME / TE used</span><b>${d.owned_me_te
-          ? `${d.me_used} / ${d.te_used} (your blueprint)`
-          : `${d.me_used} / ${d.te_used} (unresearched — not in your blueprints)`}</b>
+      <span>ME / TE used</span><b>${d.me_used} / ${d.te_used}</b>
+      <span>Ownership</span><b>${d.owned_me_te
+          ? `<span class="ind-yours">✓ You own this blueprint${isBpo?" (Original — infinite runs)":" (Copy)"}</span>`
+          : `<span class="ind-not-yours">✗ Not in your blueprints</span>`}</b>
       <span>Blueprint payback</span><b>${payback}</b>
       <span>Tradeability</span><b>${d.tradeability==null?"—":d.tradeability+" / 100"}${d.daily_units!=null?` (${fmtNum(d.daily_units)} units/day)`:""}</b>
     </div>

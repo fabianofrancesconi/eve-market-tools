@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.61.1"
+__version__ = "1.61.2"
 
 import argparse
 import base64
@@ -1979,6 +1979,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     margin-bottom:4px; }
   #detail h2 { font-size:20px; color:var(--cyan); font-weight:700; line-height:1.2;
     text-shadow:0 0 20px rgba(79,195,247,.2); }
+  .lp-copy { margin-left:8px; padding:1px 8px; font-size:11px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--cyan);
+    vertical-align:middle; }
+  .lp-copy:hover { border-color:var(--cyan2); }
   #detail .sub { color:var(--dim); font-size:12px; margin-bottom:14px; }
   .close { cursor:pointer; color:var(--dim); font-size:20px; line-height:1;
     padding:2px 4px; border-radius:3px; flex-shrink:0; }
@@ -3164,7 +3168,7 @@ function renderDetail(){
   const inner=$("#detail .inner");
   inner.innerHTML=`
     <div class="dheader">
-      <div><h2>${d.output.name}</h2>
+      <div><h2>${d.output.name} <button class="lp-copy" title="Copy item name to clipboard">⧉ Copy</button></h2>
         <div class="sub">${d.output.quantity}× per redemption · offer #${d.offer_id} ·
           list vs instant sell</div>
       </div>
@@ -3181,6 +3185,14 @@ function renderDetail(){
     </div>
     <div id="dbody"></div>`;
   $("#closeBtn").onclick=closeDetail;
+  const lpCopyBtn=inner.querySelector(".lp-copy");
+  lpCopyBtn.onclick=e=>{
+    e.stopPropagation();
+    const done=()=>{ lpCopyBtn.textContent="✓ Copied"; setTimeout(()=>{lpCopyBtn.textContent="⧉ Copy";},1200); };
+    if(navigator.clipboard&&navigator.clipboard.writeText)
+      navigator.clipboard.writeText(d.output.name).then(done).catch(()=>fallbackCopy(d.output.name,done));
+    else fallbackCopy(d.output.name, done);
+  };
   $("#reds").oninput=renderBody;
   const ml=$("#maxLink");
   if(ml) ml.onclick=e=>{ e.preventDefault(); $("#reds").value=Math.max(d.max_units,1); renderBody(); };

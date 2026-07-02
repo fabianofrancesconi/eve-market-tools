@@ -12,12 +12,13 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.57.4"
+__version__ = "1.58.0"
 
 import argparse
 import base64
 import concurrent.futures
 import json
+import math
 import secrets
 import sqlite3
 import sys
@@ -606,7 +607,9 @@ def do_scan(q):
                     if r["spread_pct"] is not None and r["spread_pct"] <= max_spread]
 
     names = resolve_names(_all_type_ids(offers), SESSION, CACHE_DIR)
-    volumes = resolve_volumes({r["name_id"] for r in sellable}, SESSION, CACHE_DIR)
+    volumes = resolve_volumes(
+        {r["name_id"] for r in sellable} | {r["name_id"] for r in unsellable},
+        SESSION, CACHE_DIR)
     rows = []
     for r in sellable:
         sp = r["spread_pct"]
@@ -632,22 +635,50 @@ def do_scan(q):
             "req_missing": r["req_missing"],
             "ak_cost": r["ak_cost"],
             "illiquid": sp is None or sp >= HIGH_SPREAD_PCT,
-            # Market-saturation signals are filled in lazily by /api/liquidity
-            # (one history call per type) so the initial scan stays fast.
-            # liq_loaded flips true once the fill lands; tradeability is the
-            # client-computed blend of daily_vol + days_to_clear.
             "type_id": r["name_id"],
             "sell_volume": r.get("sell_volume"),
             "daily_vol": None,
             "days_to_clear": None,
             "tradeability": None,
-            # Suggested per-unit sell-order price; filled by /api/liquidity
-            # alongside the saturation signals (needs market history).
             "list_price": None,
-            # Age of the current cheapest sell order at the hub (seconds);
-            # also filled by /api/liquidity (one live order-book call).
             "floor_age": None,
             "liq_loaded": False,
+            "unsellable": False,
+        })
+    for r in unsellable:
+        lp_cost = r["lp_cost"]
+        max_units = math.floor(lp / lp_cost) if lp else 0
+        _vol = volumes.get(r["name_id"])
+        rows.append({
+            "offer_id": r["offer_id"],
+            "name": names.get(r["name_id"], str(r["name_id"])),
+            "qty": r["qty"],
+            "lp_cost": lp_cost,
+            "cost_ea": None,
+            "ask": None,
+            "bid": None,
+            "spread_pct": None,
+            "isk_per_lp_patient": None,
+            "isk_per_lp_instant": None,
+            "isk_per_lp_best": None,
+            "max_units": max_units,
+            "total_profit_patient": None,
+            "total_profit_instant": None,
+            "total_profit_best": None,
+            "buy_volume": None,
+            "output_volume": None if _vol is None else _vol * r["qty"],
+            "req_missing": False,
+            "ak_cost": 0,
+            "illiquid": True,
+            "type_id": r["name_id"],
+            "sell_volume": None,
+            "daily_vol": None,
+            "days_to_clear": None,
+            "tradeability": None,
+            "list_price": None,
+            "floor_age": None,
+            "liq_loaded": False,
+            "unsellable": True,
         })
     return {
         "corp_id": corp_id,
@@ -659,7 +690,7 @@ def do_scan(q):
         "station_name": TRADE_HUBS[station_id]["name"],
         "high_spread_pct": HIGH_SPREAD_PCT,
         "count": len(rows),
-        "unsellable": len(unsellable),
+        "unsellable": sum(1 for r in rows if r["unsellable"]),
         "rows": rows,
         "scanned_at": time.time(),
         "offers_fetched_at": offers_meta.get("fetched_at"),
@@ -1751,16 +1782,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
     position:absolute; left:8px; top:50%; transform:translateY(-50%);
     color:var(--dim); font-size:13px; pointer-events:none; user-select:none;
   }
-  .ind-search-wrap { position:relative; }
-  .ind-search-wrap input { padding-right:22px; }
-  .ind-search-clear {
+  .search-wrap { position:relative; }
+  .search-wrap input { padding-right:22px; }
+  .search-clear {
     position:absolute; right:3px; top:50%; transform:translateY(-50%);
     width:16px; height:16px; padding:0; line-height:1;
     background:none; border:none; color:var(--dim); font-size:12px;
     cursor:pointer; border-radius:3px;
   }
-  .ind-search-clear:hover { color:var(--fg); background:var(--panel3); }
-  .ind-search-clear.hidden { display:none; }
+  .search-clear:hover { color:var(--fg); background:var(--panel3); }
+  .search-clear.hidden { display:none; }
   .corp-drop {
     position:fixed; z-index:200;
     background:var(--panel2); border:1px solid var(--cyan2);
@@ -1879,6 +1910,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #tbl tbody tr.sel td:first-child { padding-left:13px; }
   #tbl tbody tr.illiquid { opacity:.75; }
   #tbl tbody tr.illiquid td.spread { color:var(--red); }
+  #tbl tbody tr.unsellable { opacity:.55; font-style:italic; }
   #tbl tbody tr.unaffordable td { color:var(--dim2); }
 
   /* ARB table */
@@ -2314,6 +2346,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <option value="60005686">Hek 8-12</option>
     </select>
   </div>
+  <div class="field"><label>Search</label>
+    <div class="search-wrap">
+      <input id="lp-search" type="text" placeholder="item name…" style="width:140px">
+      <button id="lp-search-clear" class="search-clear hidden" title="Clear search" type="button">✕</button>
+    </div>
+  </div>
   <div class="btn-group">
     <button id="go" class="primary">Scan</button>
     <button id="refresh" class="secondary" data-tip="Re-fetch offers and prices from ESI">⟳ Refresh</button>
@@ -2424,9 +2462,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
       </div>
       <div class="field" data-tip="Search by item name. Overrides every other display filter (min trade, etc.) while typing — matches against all scanned items.">
         <label>Search</label>
-        <div class="ind-search-wrap">
+        <div class="search-wrap">
           <input id="ind-search" type="text" placeholder="item name…" style="width:140px">
-          <button id="ind-search-clear" class="ind-search-clear hidden" title="Clear search" type="button">✕</button>
+          <button id="ind-search-clear" class="search-clear hidden" title="Clear search" type="button">✕</button>
         </div>
       </div>
     </div>
@@ -2949,8 +2987,10 @@ function renderTable(){
     th.querySelector(".resizer").addEventListener("mousedown",e=>startLPResize(e,vc[i].k));
     wireLPColDrag(th);
   });
+  const _lpSearch=($("#lp-search").value||"").trim().toLowerCase();
   const rows=[...STATE.rows]
-    .filter(r=>!STATE.hideIlliquid||!r.illiquid)
+    .filter(r=>!_lpSearch||r.name.toLowerCase().includes(_lpSearch))
+    .filter(r=>!STATE.hideIlliquid||!r.illiquid||r.unsellable)
     .filter(r=>!STATE.hideUnaffordable||r.max_units>0)
     .sort((a,b)=>{
       const k=STATE.sort.key, d=STATE.sort.dir;
@@ -2976,7 +3016,7 @@ function renderTable(){
          && r.total_profit_best!==null && v!==null && v===r.total_profit_best && r.max_units>0) cls+=" win";
       return `<td class="${cls}">${txt}</td>`;
     }).join("");
-    return `<tr class="${r.illiquid?'illiquid':''} ${r.offer_id===STATE.selOffer?'sel':''}" data-id="${r.offer_id}">${tds}</tr>`;
+    return `<tr class="${r.illiquid?'illiquid':''} ${r.unsellable?'unsellable':''} ${r.offer_id===STATE.selOffer?'sel':''}" data-id="${r.offer_id}">${tds}</tr>`;
   }).join("");
   tbody.querySelectorAll("tr").forEach(tr=>tr.onclick=()=>openDetail(+tr.dataset.id));
 }
@@ -3454,6 +3494,16 @@ $("#toggleAffordable").onchange=()=>{
   fetch(`/api/prefs?hide_unaffordable=${STATE.hideUnaffordable?1:0}`).catch(()=>{}); saveLS();
   renderTable();
 };
+$("#lp-search").addEventListener("input", ()=>{
+  $("#lp-search-clear").classList.toggle("hidden", !$("#lp-search").value);
+  renderTable();
+});
+$("#lp-search-clear").addEventListener("click", ()=>{
+  $("#lp-search").value="";
+  $("#lp-search-clear").classList.add("hidden");
+  renderTable();
+  $("#lp-search").focus();
+});
 // Tradeability balance presets — set the liquidity↔competition weight, re-rank.
 function syncBalanceButtons(){
   document.querySelectorAll(".balance-btn").forEach(b=>

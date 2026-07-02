@@ -1073,7 +1073,7 @@ class TestIndustryRoutes:
 
     def test_ind_search_has_clear_button(self):
         html = lp_web.INDEX_HTML
-        assert 'id="ind-search-clear" class="ind-search-clear hidden"' in html
+        assert 'id="ind-search-clear" class="search-clear hidden"' in html
         assert "function updateIndSearchClear(){" in html
         assert '$("#ind-search-clear").addEventListener("click"' in html
 

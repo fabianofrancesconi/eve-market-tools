@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.65.2"
+__version__ = "1.65.3"
 
 import argparse
 import base64
@@ -4508,6 +4508,7 @@ function scanInd(refreshSde){
       es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
       IND.rows=data.rows; IND.lastData=data;
       computeIndTradeability();
+      persistScan("ind", {...IND.lastData, rows:IND.rows});
       hideIndProgress(); renderIndStatus(); renderIndTable();
       fillIndTradeability();   // score the long tail in the background
     } else if(data.type==="error"){

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.66.2"
+__version__ = "1.66.3"
 
 import argparse
 import base64
@@ -2418,10 +2418,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <!-- Global cost settings (shared by LP + Industry) -->
 <div id="global-costs" class="ctrlbar global-costs">
   <div class="field" data-tip="Sales tax on sell orders. Calculated from your Accounting skill: 7.5% × (1 − 0.11 × level).">
-    <label>Sales tax %</label><input id="g-tax" type="number" step="0.1" value="4.5" style="width:55px" readonly>
+    <label>Sales tax %</label><input id="g-tax" type="number" step="0.1" value="7.5" style="width:55px" readonly>
   </div>
   <div class="field" data-tip="Broker fee for placing sell orders. Calculated from your Broker Relations skill: 3% − 0.3% × level (standings not included).">
-    <label>Broker fee %</label><input id="g-broker" type="number" step="0.1" value="1.5" style="width:55px" readonly>
+    <label>Broker fee %</label><input id="g-broker" type="number" step="0.1" value="3.0" style="width:55px" readonly>
   </div>
 </div>
 
@@ -3970,7 +3970,7 @@ function scanArb(){
   const btn=$("#arb-go");
   btn.disabled=true; btn.textContent="Scanning…";
 
-  const arbTax=pctToFrac($("#g-tax").value)+pctToFrac($("#g-broker").value);
+  const arbTax=parseFloat(pctToFrac($("#g-tax").value)||0)+parseFloat(pctToFrac($("#g-broker").value)||0);
   const p=new URLSearchParams({
     region:       $("#arb-region").value,
     cross_station: $("#arb-cross").value,
@@ -4137,7 +4137,7 @@ const IND_COLS = [
   {k:"margin_instant",     t:"Margin instant", w: 75, tip:"Profit as % of cost when selling instantly at the highest bid.", f:fmtPct1, pn:true},
   {k:"build_time",         t:"Build time",     w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
   {k:"total_cost",         t:"Cost/run",       w: 98, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
-  {k:"bp_price",           t:"BP price",       w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'BPO' = you own the original. 'BPC (N)' = you have a limited-run copy.", f:(v,r)=> r.owned_bp_me_te?(r.owned_is_bpo?"BPO":`BPC (${r.owned_max_runs})`):(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
+  {k:"bp_price",           t:"BP price",       w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'BPO' = you own the original. 'BPC (N)' = you have a limited-run copy.", f:(v,r)=> r.owned_bp_me_te?((r.owned_is_bpo||r.owned_max_runs===-1)?"BPO":`BPC (${r.owned_max_runs})`):(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
   {k:"payback_runs",       t:"Payback",        w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r.owned_bp_me_te?"—":(v==null?"—":fmtNum(v)+" runs")},
   {k:"ask",                t:"Sell price",     w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
   {k:"in_vol_run",         t:"Cargo in",       w: 85, tip:"m³ of materials to haul in per run.", f:v=>v?fmtVol(v):"—"},
@@ -4678,7 +4678,7 @@ function renderIndDetail(d){
     ? d.total_cost/(qty*(1-d.sales_tax)) : null;
   const tier=d.product.tech_level?("T"+d.product.tech_level):"";
   const esiOwned = !!d.owned_me_te;
-  const isBpo = esiOwned && d.owned_me_te.is_bpo;
+  const isBpo = esiOwned && (d.owned_me_te.is_bpo || d.owned_me_te.max_runs===-1);
   const bpcRuns = esiOwned && !isBpo ? d.owned_me_te.max_runs : null;
   const ownedLabel = isBpo
     ? `BPO (ME ${d.owned_me_te.me} / TE ${d.owned_me_te.te})`

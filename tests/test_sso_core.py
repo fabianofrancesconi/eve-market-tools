@@ -268,6 +268,26 @@ def test_owned_blueprint_lookup_bpc_tracks_max_runs():
     assert result[200] == (0, 0, False, 10)
 
 
+def test_owned_blueprint_lookup_bpo_always_stores_minus_one_runs():
+    """BPOs must always have runs=-1 regardless of ESI 'runs' field."""
+    bps = [
+        {"type_id": 300, "material_efficiency": 0, "time_efficiency": 0,
+         "quantity": -1, "runs": -1},
+    ]
+    result = sso_core.owned_blueprint_lookup(bps)
+    assert result[300] == (0, 0, True, -1)
+
+
+def test_owned_blueprint_lookup_bpc_with_zero_runs():
+    """A consumed BPC (runs=0) should store 0, not be confused with a BPO."""
+    bps = [
+        {"type_id": 400, "material_efficiency": 5, "time_efficiency": 10,
+         "quantity": -2, "runs": 0},
+    ]
+    result = sso_core.owned_blueprint_lookup(bps)
+    assert result[400] == (5, 10, False, 0)
+
+
 def test_owned_blueprint_lookup_of_empty():
     assert sso_core.owned_blueprint_lookup([]) == {}
     assert sso_core.owned_blueprint_lookup(None) == {}

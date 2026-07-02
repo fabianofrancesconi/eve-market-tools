@@ -47,10 +47,10 @@ def html(tmp_path):
 
 class TestPercentInputs:
     def test_global_sales_tax_default_is_percent(self, html):
-        assert b'id="g-tax" type="number" step="0.1" value="4.5"' in html
+        assert b'id="g-tax" type="number" step="0.1" value="7.5"' in html
 
     def test_global_broker_fee_default_is_percent(self, html):
-        assert b'id="g-broker" type="number" step="0.1" value="1.5"' in html
+        assert b'id="g-broker" type="number" step="0.1" value="3.0"' in html
 
     def test_labels_carry_percent_sign(self, html):
         assert b"Sales tax %" in html
@@ -81,3 +81,6 @@ class TestConversionWiring:
     def test_restore_converts_to_percent(self, html):
         assert b'$("#g-tax").value=fracToPct(s.tax)' in html
         assert b'$("#g-broker").value=fracToPct(s.broker)' in html
+
+    def test_arb_tax_uses_numeric_addition(self, html):
+        assert b'parseFloat(pctToFrac($("#g-tax").value)||0)+parseFloat(pctToFrac($("#g-broker").value)||0)' in html

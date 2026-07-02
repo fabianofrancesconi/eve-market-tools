@@ -272,8 +272,8 @@ def owned_blueprint_lookup(blueprints_resp):
         me = int(b.get("material_efficiency") or 0)
         te = int(b.get("time_efficiency") or 0)
         qty = b.get("quantity", -1)
-        runs = int(b.get("runs") or -1)
         is_bpo = (qty == -1)
+        runs = -1 if is_bpo else int(b.get("runs") or 0)
         prev = best.get(tid)
         if prev is None:
             best[tid] = (me, te, is_bpo, runs)

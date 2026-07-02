@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.64.1"
+__version__ = "1.64.2"
 
 import argparse
 import base64
@@ -5264,12 +5264,20 @@ $("#indStructModal").addEventListener("click", e=>{ if(e.target.id==="indStructM
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#indStructModal").classList.contains("hidden")) closeStructWizard(); });
 // Typing a custom job-cost % detaches from the saved build location.
 $("#ind-jobrate").addEventListener("input", ()=>{ $("#ind-profile").value=""; });
-["#ind-group","#ind-station","#ind-jobrate","#ind-tax",
- "#ind-broker"].forEach(sel=>{
+let _indRescanTimer=null;
+function scheduleIndRescan(delay){
+  clearTimeout(_indRescanTimer);
+  _indRescanTimer=setTimeout(()=>{ if(IND.rows.length) scanInd(false); }, delay);
+}
+["#ind-group","#ind-station"].forEach(sel=>{
   const el=$(sel); if(!el) return;
-  el.addEventListener("change", saveIndPrefs);
+  el.addEventListener("change", ()=>{ saveIndPrefs(); scheduleIndRescan(300); });
 });
-["#ind-buildable","#ind-unobtainable","#ind-hidet2"].forEach(sel=>$(sel).addEventListener("change", saveIndPrefs));
+["#ind-jobrate","#ind-tax","#ind-broker"].forEach(sel=>{
+  const el=$(sel); if(!el) return;
+  el.addEventListener("change", ()=>{ saveIndPrefs(); scheduleIndRescan(800); });
+});
+["#ind-buildable","#ind-unobtainable","#ind-hidet2"].forEach(sel=>$(sel).addEventListener("change", ()=>{ saveIndPrefs(); scheduleIndRescan(300); }));
 // Min-tradeability is a client-side filter — re-render immediately (no rescan).
 $("#ind-mintrade").addEventListener("input", ()=>{ saveIndPrefs(); renderIndTable(); });
 // Industry tradeability balance presets

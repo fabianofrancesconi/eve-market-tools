@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.65.3"
+__version__ = "1.66.0"
 
 import argparse
 import base64
@@ -533,6 +533,10 @@ def do_char_data(q):
             "queue_total": rank["total"] if rank else None,
         })
 
+    # Trade skills for auto-calculating tax/broker
+    accounting_lvl = _CHAR_SKILL_PROFILE.get(16622, 0)
+    broker_rel_lvl = _CHAR_SKILL_PROFILE.get(3446, 0)
+
     return {
         "name": _AUTH.get("name"),
         "character_id": cid,
@@ -545,6 +549,8 @@ def do_char_data(q):
         "runs_tracked": runs_tracked,
         "market_orders": orders_out,
         "market_orders_error": orders_error,
+        "accounting_level": accounting_lvl,
+        "broker_relations_level": broker_rel_lvl,
     }
 
 
@@ -1900,6 +1906,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-balance-btn.on { background:var(--accent); color:#fff; border-color:var(--accent2); }
   .ind-group-sub { display:block; font-size:10px; color:var(--dim2); line-height:1.2; margin-top:1px; }
 
+  .global-costs {
+    height:auto; min-height:0; padding:5px 18px; gap:14px;
+    align-items:center; flex-wrap:nowrap; border-bottom:1px solid var(--line);
+    background:var(--bg);
+  }
+  .global-costs .field { flex-direction:row; align-items:center; gap:6px; }
+  .global-costs .field label { font-size:10px; margin:0; }
+  .global-costs input { width:55px; font-size:12px; padding:3px 6px;
+    background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--fg); }
+  .global-costs input[readonly] { color:var(--dim); background:var(--bg); cursor:default; }
+  #ind-jobrate[readonly] { color:var(--dim); background:var(--bg); cursor:default; border-style:dashed; }
+
   /* ── Status bar ──────────────────────────────────────────────────── */
   #statusbar {
     padding:4px 18px; font-size:13px; min-height:27px; flex-shrink:0;
@@ -1916,7 +1934,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #statusbar .pill b { color:var(--fg); font-weight:600; }
 
   /* ── Layout ──────────────────────────────────────────────────────── */
-  main { display:flex; height:calc(100vh - 131px); overflow:hidden; }
+  main { display:flex; height:calc(100vh - 163px); overflow:hidden; }
   .tablewrap { flex:1; overflow:auto; min-width:0; }
 
   /* ── Tables ──────────────────────────────────────────────────────── */
@@ -2397,6 +2415,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Global cost settings (shared by LP + Industry) -->
+<div id="global-costs" class="ctrlbar global-costs">
+  <div class="field" data-tip="Sales tax on sell orders. Based on your Accounting skill when logged in (editable).">
+    <label>Sales tax %</label><input id="g-tax" type="number" step="0.1" value="4.5" style="width:65px">
+  </div>
+  <div class="field" data-tip="Broker fee for placing sell orders. Depends on Broker Relations skill + standings (~1.5% typical at Jita). Edit manually.">
+    <label>Broker fee %</label><input id="g-broker" type="number" step="0.1" value="1.5" style="width:65px">
+  </div>
+</div>
+
 <!-- LP controls -->
 <div id="lp-controls" class="ctrlbar">
   <div class="field"><label>Corporation <span id="lp-mylp" class="lp-mylp hidden"></span></label>
@@ -2407,8 +2435,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="field"><label>LP budget</label><input id="lp" type="number" value="500000"></div>
   <div class="field"><label>Max spread %</label><input id="maxspread" type="number" placeholder="off" value="20"></div>
-  <div class="field"><label>Sales tax %</label><input id="tax" type="number" step="0.1" value="4.5"></div>
-  <div class="field"><label>Broker fee %</label><input id="broker" type="number" step="0.1" value="1.5"></div>
   <div class="field"><label>Market</label>
     <select id="market">
       <option value="60003760">Jita 4-4</option>
@@ -2456,9 +2482,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <option value="1" selected>Cross-station (haul)</option>
       <option value="0">Same-station (instant flip)</option>
     </select>
-  </div>
-  <div class="field"><label>Sales tax %</label>
-    <input id="arb-tax" type="number" step="0.1" value="7.5" style="width:80px">
   </div>
   <div class="field"><label>Min ISK opp</label>
     <input id="arb-minisk" type="number" placeholder="0">
@@ -2513,15 +2536,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
           <button id="ind-struct-edit" class="secondary" style="padding:4px 8px" title="Edit selected build location">✎</button>
         </div>
       </div>
-      <div class="field" data-tip="Effective job installation cost as a % of EIV. Set by the chosen build location [ system index × (1 − bonus) + facility tax + SCC surcharge ], or type a custom value.">
+      <div class="field" data-tip="Effective job installation cost as a % of EIV. Set by the chosen build location [ system index × (1 − bonus) + facility tax + SCC surcharge ].">
         <label>Job cost %</label>
-        <input id="ind-jobrate" type="number" step="0.01" value="6" style="width:70px">
-      </div>
-      <div class="field" data-tip="Sales tax paid when you sell the finished item (the Accounting skill lowers it; base is 4.5%).">
-        <label>Sales tax %</label><input id="ind-tax" type="number" step="0.1" value="4.5" style="width:65px">
-      </div>
-      <div class="field" data-tip="Broker fee paid to place a sell order (standings + Broker Relations skill lower it; ~1.5% is typical at Jita).">
-        <label>Broker %</label><input id="ind-broker" type="number" step="0.1" value="1.5" style="width:65px">
+        <input id="ind-jobrate" type="number" step="0.01" value="0" style="width:70px" readonly>
       </div>
     </div>
   </div>
@@ -2810,7 +2827,7 @@ const LS_KEY='eve-scanner';
 function settingsBlob(){
   return {
     corp:$("#corp").value,lp:$("#lp").value,
-    maxspread:$("#maxspread").value,tax:pctToFrac($("#tax").value),broker:pctToFrac($("#broker").value),
+    maxspread:$("#maxspread").value,tax:pctToFrac($("#g-tax").value),broker:pctToFrac($("#g-broker").value),
     market:$("#market").value,
     sort_key:STATE.sort.key,sort_dir:STATE.sort.dir,
     col_widths:STATE.colw,col_order:STATE.colOrder,col_layout_v:COL_LAYOUT_VERSION,col_vis:STATE.colVis,
@@ -2819,12 +2836,12 @@ function settingsBlob(){
     trade_weight:STATE.tradeWeight,
     active_tab:ACTIVE_TAB,
     arb:{region:$("#arb-region").value,cross_station:$("#arb-cross").value,
-      sales_tax:pctToFrac($("#arb-tax").value),min_isk:$("#arb-minisk").value,
+      sales_tax:pctToFrac($("#g-tax").value),min_isk:$("#arb-minisk").value,
       max_jumps:$("#arb-maxjumps").value,route_flag:$("#arb-route").value,
       avoid_lowsec:ARB.avoidLowsec?'1':'0'},
     ind:{market_group:$("#ind-group").value,station:$("#ind-station").value,
       job_rate:$("#ind-jobrate").value,
-      sales_tax:$("#ind-tax").value,broker:$("#ind-broker").value,
+      sales_tax:$("#g-tax").value,broker:$("#g-broker").value,
       buildable_only:$("#ind-buildable").checked?'1':'0',
       include_unbuildable:$("#ind-unobtainable").checked?'1':'0',
       hide_t2:$("#ind-hidet2").checked?'1':'0',
@@ -3123,7 +3140,7 @@ async function scan(forceRefresh=false){
   const btn=$("#refresh");
   if(forceRefresh){ btn.disabled=true; btn.textContent="⟳ Fetching…"; }
   setStatus("Scanning "+corp+(forceRefresh?" (refreshing from ESI)":"")+" …");
-  STATE.ctx={lp:$("#lp").value, tax:pctToFrac($("#tax").value), broker:pctToFrac($("#broker").value), station:$("#market").value};
+  STATE.ctx={lp:$("#lp").value, tax:pctToFrac($("#g-tax").value), broker:pctToFrac($("#g-broker").value), station:$("#market").value};
   const p=new URLSearchParams({corp, ...STATE.ctx});
   const ms=$("#maxspread").value.trim(); if(ms) p.set("max_spread",ms);
   if(forceRefresh) p.set("refresh","1");
@@ -3583,10 +3600,16 @@ _corpInput.addEventListener("keydown",e=>{
 document.addEventListener("click",e=>{ if(!_corpInput.contains(e.target)&&!_corpDrop.contains(e.target)) _corpClose(); });
 let lpScanTimer;
 function scheduleScan(delay=800){ clearTimeout(lpScanTimer); lpScanTimer=setTimeout(()=>scan(false),delay); }
-["#lp","#maxspread","#tax","#broker","#market"].forEach(sel=>{
+["#lp","#maxspread","#market"].forEach(sel=>{
   const el=$(sel); if(!el) return;
   el.addEventListener("change",()=>{ saveLS(); scheduleScan(800); });
   if(sel!=="#market") el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); });
+});
+// Global tax/broker affects LP (rescan) + Industry (recalc) + Arb
+["#g-tax","#g-broker"].forEach(sel=>{
+  const el=$(sel); if(!el) return;
+  el.addEventListener("change",()=>{ saveLS(); scheduleScan(800); recalcIndProfits(); });
+  el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); recalcIndProfits(); });
 });
 $("#toggleIlliquid").onchange=()=>{
   STATE.hideIlliquid=$("#toggleIlliquid").checked;
@@ -3953,10 +3976,11 @@ function scanArb(){
   const btn=$("#arb-go");
   btn.disabled=true; btn.textContent="Scanning…";
 
+  const arbTax=pctToFrac($("#g-tax").value)+pctToFrac($("#g-broker").value);
   const p=new URLSearchParams({
     region:       $("#arb-region").value,
     cross_station: $("#arb-cross").value,
-    sales_tax:    pctToFrac($("#arb-tax").value),
+    sales_tax:    String(arbTax),
     min_isk:      $("#arb-minisk").value||"0",
     max_jumps:    $("#arb-maxjumps").value||"6",
     route_flag:   $("#arb-route").value,
@@ -4004,7 +4028,7 @@ function saveArbPrefs(){
   const p=new URLSearchParams({
     region:       $("#arb-region").value,
     cross_station: $("#arb-cross").value,
-    sales_tax:    pctToFrac($("#arb-tax").value),
+    sales_tax:    pctToFrac($("#g-tax").value),
     min_isk:      $("#arb-minisk").value||"",
     max_jumps:    $("#arb-maxjumps").value||"6",
     route_flag:   $("#arb-route").value,
@@ -4017,7 +4041,7 @@ function updateArbJumpsVisibility(){
   $("#arb-maxjumps-field").style.display=cross?"":"none";
 }
 $("#arb-cross").addEventListener("change",()=>{ updateArbJumpsVisibility(); saveArbPrefs(); });
-["#arb-region","#arb-tax","#arb-minisk","#arb-maxjumps","#arb-route"].forEach(sel=>{
+["#arb-region","#arb-minisk","#arb-maxjumps","#arb-route"].forEach(sel=>{
   const el=$(sel); if(!el) return;
   el.addEventListener("change", saveArbPrefs);
   el.addEventListener("input", saveArbPrefs);
@@ -4479,8 +4503,8 @@ function indParams(extra){
     market_group: $("#ind-group").value,
     station:      $("#ind-station").value,
     job_rate:     $("#ind-jobrate").value||"0",
-    sales_tax:    $("#ind-tax").value||"0",
-    broker:       $("#ind-broker").value||"0",
+    sales_tax:    $("#g-tax").value||"0",
+    broker:       $("#g-broker").value||"0",
     runs:         "1",
     buildable_only:$("#ind-buildable").checked?"1":"0",
     include_unbuildable:$("#ind-unobtainable").checked?"1":"0",
@@ -5015,6 +5039,16 @@ async function refreshCharData(){
   if(d.error){ setStatus(authEsc(d.error), true); _retryCharDataSoon(); return; }
   charRetryCount = 0;
   AUTH.data=d;
+  // Auto-fill sales tax from Accounting skill: base 4.5% × (1 − 0.11 × level)
+  if(d.accounting_level!=null){
+    const tax=4.5*(1-0.11*d.accounting_level);
+    $("#g-tax").value=tax.toFixed(2);
+  }
+  // Auto-fill broker fee from Broker Relations: base 3% − 0.3% × level (no standings)
+  if(d.broker_relations_level!=null){
+    const fee=3.0-0.3*d.broker_relations_level;
+    $("#g-broker").value=fee.toFixed(2);
+  }
   charRefreshDeadline=Date.now()+CHAR_REFRESH_MS; tickCharRefreshTimer();
   const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge();
@@ -5304,13 +5338,11 @@ $("#sw-cancel").onclick=closeStructWizard;
 $("#sw-delete").onclick=deleteStruct;
 $("#indStructModal").addEventListener("click", e=>{ if(e.target.id==="indStructModal") closeStructWizard(); });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#indStructModal").classList.contains("hidden")) closeStructWizard(); });
-// Typing a custom job-cost % detaches from the saved build location.
-$("#ind-jobrate").addEventListener("input", ()=>{ $("#ind-profile").value=""; });
 function recalcIndProfits(){
   if(!IND.rows.length) return;
   const jobRate=parseFloat($("#ind-jobrate").value||"0")/100;
-  const salesTax=parseFloat($("#ind-tax").value||"0")/100;
-  const broker=parseFloat($("#ind-broker").value||"0")/100;
+  const salesTax=parseFloat($("#g-tax").value||"0")/100;
+  const broker=parseFloat($("#g-broker").value||"0")/100;
   const patientFactor=1-salesTax-broker;
   const instantFactor=1-salesTax;
   const n=Math.max(1,IND.detailRuns||1);
@@ -5342,7 +5374,7 @@ function recalcIndProfits(){
   const el=$(sel); if(!el) return;
   el.addEventListener("change", saveIndPrefs);
 });
-["#ind-jobrate","#ind-tax","#ind-broker"].forEach(sel=>{
+["#ind-jobrate"].forEach(sel=>{
   const el=$(sel); if(!el) return;
   el.addEventListener("change", ()=>{ saveIndPrefs(); recalcIndProfits(); });
 });
@@ -5424,8 +5456,8 @@ async function loadSettings(){
       if(s.lp)   $("#lp").value=s.lp;
       if(s.market) $("#market").value=s.market;
       const _ms=s.maxspread??s.max_spread; if(_ms!=null) $("#maxspread").value=_ms;
-      if(s.tax)   $("#tax").value=fracToPct(s.tax);
-      if(s.broker) $("#broker").value=fracToPct(s.broker);
+      if(s.tax)   $("#g-tax").value=fracToPct(s.tax);
+      if(s.broker) $("#g-broker").value=fracToPct(s.broker);
       if(s.sort_key && COLS.some(c=>c.k===s.sort_key))
         STATE.sort={key:s.sort_key, dir:Number(s.sort_dir)===1?1:-1};
       if(s.col_widths && s.col_layout_v==COL_LAYOUT_VERSION){
@@ -5454,7 +5486,6 @@ async function loadSettings(){
       const a=s.arb||{};
       if(a.region) $("#arb-region").value=a.region;
       if(a.cross_station==="0"||a.cross_station==="1") $("#arb-cross").value=a.cross_station;
-      if(a.sales_tax) $("#arb-tax").value=fracToPct(a.sales_tax);
       if(a.min_isk)   $("#arb-minisk").value=a.min_isk;
       if(a.max_jumps) $("#arb-maxjumps").value=a.max_jumps;
       if(a.route_flag) $("#arb-route").value=a.route_flag;
@@ -5484,8 +5515,6 @@ async function loadSettings(){
       }catch(e){} }
       if(ind.station) $("#ind-station").value=ind.station;
       if(ind.job_rate) $("#ind-jobrate").value=ind.job_rate;
-      if(ind.sales_tax) $("#ind-tax").value=ind.sales_tax;
-      if(ind.broker) $("#ind-broker").value=ind.broker;
       if(ind.buildable_only==="1") $("#ind-buildable").checked=true;
       if(ind.include_unbuildable==="1") $("#ind-unobtainable").checked=true;
       if(ind.hide_t2==="1") $("#ind-hidet2").checked=true;

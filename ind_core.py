@@ -940,6 +940,10 @@ def evaluate_industry(candidates, prices, adjusted, params):
         # Runs of profit needed to recoup the BPO purchase (T1 only).
         payback_runs = (math.ceil(bp_buyin / profit_best)
                         if (bp_buyin and profit_best and profit_best > 0) else None)
+        payback_runs_patient = (math.ceil(bp_buyin / profit_patient)
+                                if (bp_buyin and profit_patient and profit_patient > 0) else None)
+        payback_runs_instant = (math.ceil(bp_buyin / profit_instant)
+                                if (bp_buyin and profit_instant and profit_instant > 0) else None)
 
         secs = build_time(bp.get("base_time"), bp_te, skill_profile, default_level)
         hours = (secs / 3600.0) if secs else None
@@ -966,6 +970,8 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "bp_source": "invention" if inv else ("market" if bpo_price else "none"),
             "bp_available": bp_available,
             "payback_runs": payback_runs,
+            "payback_runs_patient": payback_runs_patient,
+            "payback_runs_instant": payback_runs_instant,
             "requires_invention": bool(inv),
             "total_cost": operating_cost,
             "missing_price": cost["missing_price"],
@@ -1060,6 +1066,10 @@ def build_industry_detail(bp, prices, names, volumes, params):
     profit_best = _best(profit_patient, profit_instant)
     payback_runs = (math.ceil(bp_buyin / profit_best)
                     if (bp_buyin and profit_best and profit_best > 0) else None)
+    payback_runs_patient = (math.ceil(bp_buyin / profit_patient)
+                            if (bp_buyin and profit_patient and profit_patient > 0) else None)
+    payback_runs_instant = (math.ceil(bp_buyin / profit_instant)
+                            if (bp_buyin and profit_instant and profit_instant > 0) else None)
     out_vol_each = volumes.get(pid)
     out_vol = (out_qty * out_vol_each) if out_vol_each is not None else None
 
@@ -1081,6 +1091,8 @@ def build_industry_detail(bp, prices, names, volumes, params):
         "bp_source": bp_source,
         "bp_available": bool(inv or bpo_price),
         "payback_runs": payback_runs,
+        "payback_runs_patient": payback_runs_patient,
+        "payback_runs_instant": payback_runs_instant,
         "total_cost": operating_cost,
         "missing_price": cost["missing_price"],
         "ask": ask,

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.61.0"
+__version__ = "1.61.1"
 
 import argparse
 import base64
@@ -4572,9 +4572,11 @@ function renderIndDetail(d){
   // Payback shown regardless of ownership: how many runs of profit recoup the
   // BPO's market price (informational even if you already own it).
   let payback;
-  if(d.payback_runs!=null) payback=`${fmtNum(d.payback_runs)} runs`
-      +(d.bp_market?` (BPO ${isk(d.bp_market.price)})`:"");
-  else if(d.bp_source==="invention") payback="n/a — invented per run";
+  if(d.payback_runs_patient!=null || d.payback_runs_instant!=null){
+    const pl=d.payback_runs_patient!=null ? `${fmtNum(d.payback_runs_patient)} list` : "never (list)";
+    const pi=d.payback_runs_instant!=null ? `${fmtNum(d.payback_runs_instant)} instant` : "never (instant)";
+    payback=`${pl} / ${pi}`+(d.bp_market?` (BPO ${isk(d.bp_market.price)})`:"");
+  } else if(d.bp_source==="invention") payback="n/a — invented per run";
   else if(d.bp_market) payback="never at current profit";
   else payback="—";
   // Industry job timer — read-only, driven by the character's running jobs (ESI).

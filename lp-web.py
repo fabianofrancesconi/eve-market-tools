@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.62.2"
+__version__ = "1.63.0"
 
 import argparse
 import base64
@@ -2601,6 +2601,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <div class="char-kpi"><div class="l">Wallet</div><div class="v gold" id="cv-wallet">—</div></div>
         <div class="char-kpi"><div class="l">Total SP</div><div class="v" id="cv-sp">—</div></div>
         <div class="char-kpi"><div class="l">Running jobs</div><div class="v" id="cv-jobs">—</div></div>
+        <div class="char-kpi"><div class="l">Open orders</div><div class="v" id="cv-orders">—</div></div>
         <div class="char-kpi" id="cv-runs-kpi" data-tip="Cumulative runs delivered since this app started tracking — it can't see deliveries from before that.">
           <div class="l">Runs delivered</div><div class="v" id="cv-runs">—</div>
         </div>
@@ -2634,7 +2635,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
           <div id="char-lp-empty" class="char-none hidden">No loyalty points.</div>
         </section>
         <section class="char-card char-card-wide">
-          <h3>Active market orders</h3>
+          <h3>Active market orders <span id="char-orders-total" class="char-card-sub"></span></h3>
           <div class="char-card-scroll">
             <table class="mini" id="char-orders-tbl"><thead><tr>
               <th>Item</th><th>Side</th><th style="text-align:right">Remaining</th>
@@ -5021,6 +5022,9 @@ function renderCharData(){
    + `<td style="text-align:right">${(l.loyalty_points||0).toLocaleString()}</td></tr>`).join("");
 
   const orders=d.market_orders||[];
+  $("#cv-orders").textContent=orders.length;
+  const ordersTotal=orders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0), 0);
+  $("#char-orders-total").textContent=orders.length?`(${orders.length} · ${fmtISK(ordersTotal)} ISK)`:"";
   $("#char-orders-empty").classList.toggle("hidden", orders.length>0);
   $("#char-orders-empty").classList.toggle("char-none-warn", !!d.market_orders_error);
   $("#char-orders-empty").textContent=d.market_orders_error||"No open orders.";

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.66.3"
+__version__ = "1.66.4"
 
 import argparse
 import base64
@@ -1136,6 +1136,23 @@ def _ind_params(q):
     }
 
 
+def _patch_group_names(rows):
+    """Backfill group_name for cached rows that predate the feature."""
+    need = {r["market_group_id"] for r in rows
+            if r.get("market_group_id") and not r.get("group_name")}
+    if not need:
+        return
+    try:
+        conn = ind_core.connect_sde(CACHE_DIR)
+        gnames = ind_core.market_group_names(conn, need)
+        conn.close()
+    except Exception:
+        return
+    for r in rows:
+        if not r.get("group_name"):
+            r["group_name"] = gnames.get(r.get("market_group_id"), "")
+
+
 def do_ind_scan(q, emit=None):
     """Rank manufacturable items by profitability. Streams SSE progress."""
     _require_login()
@@ -1576,6 +1593,8 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/last-scan":
                 lp_data = load_json(LP_LAST_SCAN_PATH, None)
                 ind_data = load_json(IND_LAST_SCAN_PATH, None)
+                if ind_data and ind_data.get("rows"):
+                    _patch_group_names(ind_data["rows"])
                 self._send_json({"lp": lp_data, "ind": ind_data})
             elif parsed.path == "/api/scan":
                 self._send_json(do_scan(q))
@@ -1905,6 +1924,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-balance-btn:hover { color:var(--fg); }
   .ind-balance-btn.on { background:var(--accent); color:#fff; border-color:var(--accent2); }
   .ind-group-sub { display:block; font-size:10px; color:var(--dim2); line-height:1.2; margin-top:1px; }
+  .ind-owned-tag { display:inline-block; font-size:9px; color:#6ecf6e; border:1px solid #3a7a3a; border-radius:3px; padding:0 4px; margin-left:6px; vertical-align:middle; line-height:1.5; }
 
   .global-costs {
     height:auto; min-height:0; padding:5px 18px; gap:14px;
@@ -4287,6 +4307,7 @@ function indRowHtml(r, idx){
     }
     let v=r[c.k], txt=c.f?c.f(v,r):(v===null||v===undefined?"—":v);
     if(c.k==="product_name"){
+      if(r.owned_bp_me_te) txt+=`<span class="ind-owned-tag">OWNED</span>`;
       if(r.missing_price) txt+=" *";
       if(r.group_name) txt+=`<span class="ind-group-sub">${r.group_name}</span>`;
     }

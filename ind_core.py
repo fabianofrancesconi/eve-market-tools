@@ -402,18 +402,30 @@ def expand_market_groups(conn, root_ids):
 
 
 def market_group_names(conn, group_ids):
-    """Resolve market_group_id → name for a set of IDs. {id: name}."""
+    """Resolve market_group_id → ancestor name two levels up (grandparent),
+    e.g. 'Frigates' for an item in Ships>Frigates>Standard Frigates>Caldari.
+    Falls back to parent, then to the leaf itself when fewer ancestors exist.
+    {id: name}."""
     if not group_ids:
         return {}
-    ids = list(set(group_ids))
+    # Build a lookup of all groups: id → (name, parent_id)
+    all_groups = {}
+    for r in conn.execute("SELECT market_group_id, parent_group_id, name FROM market_groups"):
+        all_groups[r["market_group_id"]] = (r["name"], r["parent_group_id"])
     out = {}
-    for i in range(0, len(ids), 900):
-        chunk = ids[i:i + 900]
-        marks = ",".join("?" for _ in chunk)
-        for r in conn.execute(
-                f"SELECT market_group_id, name FROM market_groups "
-                f"WHERE market_group_id IN ({marks})", chunk):
-            out[r["market_group_id"]] = r["name"]
+    for gid in group_ids:
+        if gid not in all_groups:
+            continue
+        name, parent_id = all_groups[gid]
+        # Walk up: leaf → parent → grandparent
+        if parent_id and parent_id in all_groups:
+            p_name, gp_id = all_groups[parent_id]
+            if gp_id and gp_id in all_groups:
+                out[gid] = all_groups[gp_id][0]  # grandparent name
+            else:
+                out[gid] = p_name                 # only one ancestor
+        else:
+            out[gid] = name                       # leaf is top-level
     return out
 
 

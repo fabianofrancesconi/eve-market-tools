@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.59.0"
+__version__ = "1.60.0"
 
 import argparse
 import base64
@@ -1083,8 +1083,8 @@ IND_HISTORY_TOP_N = 80
 _IND_PREF_KEYS = ("profiles", "profile", "market_group", "job_rate",
                   "sales_tax", "broker", "station",
                   "buildable_only", "include_unbuildable", "hide_t2",
-                  "sort_key", "sort_dir", "min_tradeability", "favorites", "col_order",
-                  "col_widths", "col_vis")
+                  "sort_key", "sort_dir", "min_tradeability", "favorites",
+                  "hidden_bps", "col_order", "col_widths", "col_vis")
 
 
 def do_ind_prefs(q):
@@ -2286,8 +2286,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #ind-tbl tr.ind-section td {
     background:var(--panel2); color:var(--dim);
     font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
-    padding:6px 8px; border-top:1px solid var(--line2); cursor:default;
+    padding:6px 8px; border-top:1px solid var(--line2); cursor:pointer; user-select:none;
   }
+  #ind-tbl tr.ind-section td:hover { color:var(--fg); }
+  #ind-tbl tr.ind-section .sect-arrow { display:inline-block; transition:transform .15s; margin-right:4px; }
+  #ind-tbl tr.ind-section.collapsed .sect-arrow { transform:rotate(-90deg); }
+  .ind-chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; align-items:center; }
+  .ind-chip { font-size:12px; padding:4px 10px; border-radius:14px; cursor:pointer;
+    border:1px solid var(--line2); background:var(--panel2); color:var(--dim);
+    transition:all .12s; user-select:none; display:inline-flex; align-items:center; gap:4px; }
+  .ind-chip:hover { border-color:var(--cyan2); color:var(--fg); }
+  .ind-chip.active { background:var(--cyan2); border-color:var(--cyan); color:var(--fg); font-weight:600; }
+  .ind-chip .chip-count { opacity:.7; font-weight:400; }
+  .ind-hide-btn { cursor:pointer; color:var(--dim); font-size:11px; padding:0 3px; opacity:.5; transition:opacity .12s; }
+  .ind-hide-btn:hover { opacity:1; color:var(--orange,#e8a040); }
 </style>
 </head>
 <body>
@@ -2523,6 +2535,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="prog-track"><div class="prog-fill" id="ind-prog-fill"></div></div>
       <div class="prog-sub" id="ind-prog-sub"></div>
     </div>
+    <div id="ind-chips" class="ind-chips"></div>
     <div id="ind-detail" class="hidden"></div>
     <table id="ind-tbl"><colgroup id="ind-cg"></colgroup><thead></thead><tbody></tbody></table>
   </div>
@@ -3972,10 +3985,11 @@ function openArbChart(row){
 // INDUSTRY TAB
 // ══════════════════════════════════════════════════════════════════════════
 let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es:null,
-           groupsLoaded:false, profiles:[], favorites:new Set(),
+           groupsLoaded:false, profiles:[], favorites:new Set(), hidden:new Set(),
            timers:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{}, detailRuns:1,
-           fillTotal:0, fillDone:0};
+           fillTotal:0, fillDone:0,
+           sections:{fav:true, owned:true, hidden:false, all:true}};
 // Bumped whenever a scan starts or a new fill begins, so an in-flight background
 // tradeability fill from a previous scan knows to abandon itself.
 let IND_FILL_TOKEN = 0;
@@ -4136,9 +4150,12 @@ function indSortRows(rows){
 
 function indRowHtml(r, idx){
   const fav=IND.favorites.has(r.blueprint_id);
+  const hid=IND.hidden.has(r.blueprint_id);
+  const canHide=r.owned_bp_me_te||fav;
   const tds=indVisCols().map(c=>{
     if(c.k==="_fav"){
-      return `<td class="fav-cell"><span class="fav-star${fav?" on":""}" data-bp="${r.blueprint_id}" title="${fav?"Remove from Watchlist":"Add to Watchlist"}">${fav?"★":"☆"}</span></td>`;
+      const hideBtn=canHide?`<span class="ind-hide-btn" data-bp="${r.blueprint_id}" title="${hid?"Unhide":"Hide"}">${hid?"👁":"⊘"}</span>`:"";
+      return `<td class="fav-cell"><span class="fav-star${fav?" on":""}" data-bp="${r.blueprint_id}" title="${fav?"Remove from Watchlist":"Add to Watchlist"}">${fav?"★":"☆"}</span>${hideBtn}</td>`;
     }
     if(c.k==="_timer"){
       const end=IND.timers[r.blueprint_id];
@@ -4184,48 +4201,81 @@ function renderIndTable(){
     };
   });
 
-  // Split into three sections: My Blueprints (ESI-owned, not hidden),
-  // Watchlist (favorites for BPs you don't own), All items (the rest).
+  // Split into four sections: Favorites, My Blueprints (owned, visible),
+  // Hidden (owned, explicitly hidden), All items (the rest).
   const search=($("#ind-search").value||"").trim().toLowerCase();
-  const inMyBps=r=>r.owned_bp_me_te;
-  const inWatch=r=>IND.favorites.has(r.blueprint_id) && !inMyBps(r);
-  let myBps=IND.rows.filter(inMyBps);
-  let watchlist=IND.rows.filter(inWatch);
-  let rest=IND.rows.filter(r=>!inMyBps(r) && !inWatch(r));
+  const isFav=r=>IND.favorites.has(r.blueprint_id);
+  const isOwned=r=>!!r.owned_bp_me_te;
+  const isHidden=r=>IND.hidden.has(r.blueprint_id);
+  let favs=IND.rows.filter(r=>isFav(r) && !isHidden(r));
+  let myBps=IND.rows.filter(r=>isOwned(r) && !isHidden(r) && !isFav(r));
+  let hiddenBps=IND.rows.filter(r=>isHidden(r));
+  let rest=IND.rows.filter(r=>!isFav(r) && !isOwned(r) && !isHidden(r));
   if(search){
     const matches=r=>(r.product_name||"").toLowerCase().includes(search);
-    myBps=myBps.filter(matches);
-    watchlist=watchlist.filter(matches);
-    rest=rest.filter(matches);
+    favs=favs.filter(matches); myBps=myBps.filter(matches);
+    hiddenBps=hiddenBps.filter(matches); rest=rest.filter(matches);
   } else {
     const minTrade=parseInt($("#ind-mintrade").value)||0;
     if(minTrade>0) rest=rest.filter(r=> !r.liq_loaded || (r.tradeability!=null && r.tradeability>=minTrade));
   }
-  myBps=indSortRows(myBps);
-  watchlist=indSortRows(watchlist);
-  rest=indSortRows(rest);
-  const ncol=vc.length;
-  const sect=(label,n)=>`<tr class="ind-section"><td colspan="${ncol}">${label} — ${n}</td></tr>`;
+  favs=indSortRows(favs); myBps=indSortRows(myBps);
+  hiddenBps=indSortRows(hiddenBps); rest=indSortRows(rest);
 
-  const ordered=[];   // flat list parallel to rendered data rows, for click handling
+  // Render filter chips
+  const chips=$("#ind-chips");
+  const hasSections=favs.length||myBps.length||hiddenBps.length;
+  if(hasSections && IND.rows.length){
+    const chip=(key,label,n)=>{
+      const on=IND.sections[key];
+      return `<span class="ind-chip${on?" active":""}" data-sect="${key}">${label} <span class="chip-count">(${n})</span></span>`;
+    };
+    let ch="";
+    if(favs.length||IND.favorites.size) ch+=chip("fav","★ Favorites",favs.length);
+    if(myBps.length||IND.rows.some(isOwned)) ch+=chip("owned","My Blueprints",myBps.length);
+    if(hiddenBps.length||IND.hidden.size) ch+=chip("hidden","Hidden",hiddenBps.length);
+    if(rest.length) ch+=chip("all","All Items",rest.length);
+    chips.innerHTML=ch;
+    chips.querySelectorAll(".ind-chip").forEach(el=>{
+      el.onclick=()=>{ const k=el.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); };
+    });
+  } else { chips.innerHTML=""; }
+
+  const ncol=vc.length;
+  const sect=(key,label,n)=>{
+    const col=IND.sections[key]?"":" collapsed";
+    return `<tr class="ind-section${col}" data-sect="${key}"><td colspan="${ncol}"><span class="sect-arrow">▾</span>${label} — ${n}</td></tr>`;
+  };
+
+  const ordered=[];
   let html="";
+  if(favs.length){
+    html+=sect("fav","★ Favorites", favs.length);
+    if(IND.sections.fav) favs.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+  }
   if(myBps.length){
-    html+=sect("My Blueprints", myBps.length);
-    myBps.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+    html+=sect("owned","My Blueprints", myBps.length);
+    if(IND.sections.owned) myBps.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   }
-  if(watchlist.length){
-    html+=sect("★ Watchlist", watchlist.length);
-    watchlist.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+  if(hiddenBps.length){
+    html+=sect("hidden","Hidden", hiddenBps.length);
+    if(IND.sections.hidden) hiddenBps.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   }
-  if(myBps.length || watchlist.length) html+=sect("All items", rest.length);
-  rest.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+  if(rest.length){
+    if(hasSections) html+=sect("all","All Items", rest.length);
+    if(!hasSections || IND.sections.all) rest.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+  }
   tbody.innerHTML=html;
 
+  // Section header click toggles collapse
+  tbody.querySelectorAll("tr.ind-section").forEach(tr=>{
+    tr.onclick=()=>{ const k=tr.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); };
+  });
   tbody.querySelectorAll("tr[data-ridx]").forEach(tr=>{
     const r=ordered[+tr.dataset.ridx];
     tr.onclick=ev=>{
       if(ev.target.classList.contains("fav-star")) return;
-      // Clicking the open row's header again toggles the detail panel shut.
+      if(ev.target.classList.contains("ind-hide-btn")) return;
       const box=$("#ind-detail");
       if(IND.openDetail && IND.openDetail.blueprint_id===r.blueprint_id && !box.classList.contains("hidden")){
         box.classList.add("hidden"); IND.openDetail=null;
@@ -4235,6 +4285,9 @@ function renderIndTable(){
   tbody.querySelectorAll(".fav-star").forEach(star=>{
     star.onclick=ev=>{ ev.stopPropagation(); toggleFavorite(+star.dataset.bp); };
   });
+  tbody.querySelectorAll(".ind-hide-btn").forEach(btn=>{
+    btn.onclick=ev=>{ ev.stopPropagation(); toggleHidden(+btn.dataset.bp); };
+  });
 }
 
 function toggleFavorite(bp){
@@ -4242,6 +4295,11 @@ function toggleFavorite(bp){
   saveIndPrefs();
   renderIndTable();
   if(IND.openDetail && IND.openDetail.blueprint_id===bp) renderIndDetail(IND.openDetail);
+}
+function toggleHidden(bp){
+  if(IND.hidden.has(bp)) IND.hidden.delete(bp); else IND.hidden.add(bp);
+  saveIndPrefs();
+  renderIndTable();
 }
 
 function renderIndStatus(){
@@ -5058,6 +5116,7 @@ function saveIndPrefs(){
     profile:  $("#ind-profile").value,
     sort_key: IND.sort.key,
     sort_dir: String(IND.sort.dir),
+    hidden_bps: JSON.stringify([...IND.hidden]),
     col_order: JSON.stringify(IND.colOrder),
     col_widths: JSON.stringify(IND.colw),
     col_vis: JSON.stringify(IND.colVis),
@@ -5198,6 +5257,7 @@ async function loadSettings(){
       renderIndProfiles();
       if(ind.profile) $("#ind-profile").value=ind.profile;
       if(ind.favorites){ try{ IND.favorites=new Set(JSON.parse(ind.favorites)||[]); }catch(e){} }
+      if(ind.hidden_bps){ try{ IND.hidden=new Set(JSON.parse(ind.hidden_bps)||[]); }catch(e){} }
       // Restore the last-used tab saved server-side. A tab URL overrides this
       // just below; don't re-push history for either.
       if(s.active_tab==="arb") switchTab("arb", {url:false});

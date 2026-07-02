@@ -1086,6 +1086,24 @@ class TestIndustryRoutes:
         assert "loadOwnedPreview" in html
         assert 'owned_only:"1"' in html or "owned_only" in html
 
+    def test_hidden_bps_pref_persisted(self, tmp_server, tmp_path, monkeypatch):
+        """hidden_bps is stored via /api/ind/prefs."""
+        base, _ = tmp_server
+        monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
+        body, status = http_get(
+            f"{base}/api/ind/prefs?hidden_bps=%5B681%2C682%5D")
+        assert status == 200
+        saved = json.loads((tmp_path / "ind.json").read_text())
+        assert saved["hidden_bps"] == "[681,682]"
+
+    def test_ind_section_chips_in_html(self):
+        """The industry tab has collapsible section chips."""
+        html = lp_web.INDEX_HTML
+        assert 'id="ind-chips"' in html
+        assert "ind-chip" in html
+        assert "IND.sections" in html
+        assert "toggleHidden" in html
+
     def test_unknown_ind_subpath_404(self, tmp_server):
         base, _ = tmp_server
         body, status = http_get(f"{base}/api/ind/bogus")

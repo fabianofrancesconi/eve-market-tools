@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.60.2"
+__version__ = "1.61.0"
 
 import argparse
 import base64
@@ -1853,6 +1853,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .balance-btn:last-of-type { border-radius:0 4px 4px 0; }
   .balance-btn:hover { color:var(--fg); }
   .balance-btn.on { background:var(--accent); color:#fff; border-color:var(--accent2); }
+  .ind-balance-btn {
+    background:var(--panel2); border:1px solid var(--line2); border-left-width:0;
+    color:var(--dim); font-weight:500; font-size:13px; padding:5px 11px; border-radius:0; cursor:pointer;
+  }
+  .ind-balance-btn:first-of-type { border-left-width:1px; border-radius:4px 0 0 4px; }
+  .ind-balance-btn:last-of-type { border-radius:0 4px 4px 0; }
+  .ind-balance-btn:hover { color:var(--fg); }
+  .ind-balance-btn.on { background:var(--accent); color:#fff; border-color:var(--accent2); }
 
   /* ── Status bar ──────────────────────────────────────────────────── */
   #statusbar {
@@ -2480,6 +2488,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="field" data-tip="Hide items whose tradeability is below this (0–100). 0 = no filter. Tradeability is scored for the top-ranked items; items further down the list (not yet scored) are kept, so this trims the illiquid top picks without wiping out a big scan.">
         <label>Min trade</label><input id="ind-mintrade" type="number" min="0" max="100" value="0" style="width:60px">
       </div>
+      <span class="balance-group ind-balance" data-tip="How the Tradeability score weights liquidity (daily volume) vs competition (days to sell). Ranked within this scan.">
+        <span class="balance-label">Balance:</span>
+        <button class="ind-balance-btn" data-w="0.5">Balanced</button>
+        <button class="ind-balance-btn" data-w="0.75">Favor liquidity</button>
+        <button class="ind-balance-btn" data-w="0.25">Favor quiet</button>
+      </span>
       <div class="field" data-tip="Search by item name. Overrides every other display filter (min trade, etc.) while typing — matches against all scanned items.">
         <label>Search</label>
         <div class="search-wrap">
@@ -3988,7 +4002,7 @@ let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es
            groupsLoaded:false, profiles:[], favorites:new Set(), hidden:new Set(),
            timers:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{}, detailRuns:1,
-           fillTotal:0, fillDone:0,
+           fillTotal:0, fillDone:0, tradeWeight:0.5,
            sections:{fav:true, owned:true, hidden:false, all:true}};
 // Bumped whenever a scan starts or a new fill begins, so an in-flight background
 // tradeability fill from a previous scan knows to abandon itself.
@@ -4002,6 +4016,26 @@ const fmtDur = s => {
 };
 const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
 const fmtDaysSell = v => (v===null||v===undefined) ? "—" : (v<1 ? "<1 d" : v.toFixed(1)+" d");
+
+function computeIndTradeability(){
+  const loaded=IND.rows.filter(r=>r.liq_loaded && r.daily_vol!==null);
+  if(!loaded.length){ IND.rows.forEach(r=>r.tradeability=null); return; }
+  const vols=loaded.map(r=>r.daily_vol);
+  const days=loaded.map(r=> r.days_to_sell===null ? Infinity : r.days_to_sell);
+  const w=IND.tradeWeight;
+  const pctRank=(arr,v,higherBetter)=>{
+    const n=arr.length; if(n<=1) return 100;
+    let beats=0;
+    for(const x of arr){ if(x===v) continue; if(higherBetter? v>x : v<x) beats++; }
+    return beats/(n-1)*100;
+  };
+  for(const r of IND.rows){
+    if(!r.liq_loaded || r.daily_vol===null){ r.tradeability=null; continue; }
+    const liq=pctRank(vols, r.daily_vol, true);
+    const comp=pctRank(days, r.days_to_sell===null?Infinity:r.days_to_sell, false);
+    r.tradeability=Math.round(w*liq + (1-w)*comp);
+  }
+}
 
 const IND_COLS = [
   {k:"_fav",               t:"★",              w: 30, tip:"Add to Watchlist — track blueprints you don't own. Your owned blueprints appear in 'My Blueprints' automatically.", raw:true},
@@ -4022,7 +4056,7 @@ const IND_COLS = [
   {k:"in_vol_run",         t:"Cargo in",       w: 85, tip:"m³ of materials to haul in per run.", f:v=>v?fmtVol(v):"—"},
   {k:"out_vol_run",        t:"Cargo out",      w: 85, tip:"m³ of finished items to haul out per run.", f:v=>v?fmtVol(v):"—"},
   {k:"days_to_sell",       t:"Days to sell",   w: 88, tip:"How many days to sell one run's output (output qty ÷ daily volume). Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : fmtDaysSell(v)},
-  {k:"tradeability",       t:"Tradeability",   w: 98, tip:"How sellable the product is (0–100), from the daily UNITS traded on the market over ~30 days. Low = the market absorbs little quantity, so it's hard to offload no matter how profitable on paper. Every scanned item is scored — rows spin while their market history loads, then show '—' if the item has never traded.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
+  {k:"tradeability",       t:"Tradeability",   w: 98, tip:"0–100: how realistically you can sell at your price. Blends liquidity (daily volume) and low competition (days to sell), weighted by the Balance buttons. Higher is better; ranked within this scan.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
   {k:"buildable",          t:"Buildable?",     w: 58, tip:"Can every required skill (at the Skills level) make it?", f:v=>v?"✓":"✗"},
 ];
 
@@ -4364,6 +4398,7 @@ function scanInd(refreshSde){
     } else if(data.type==="result"){
       es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
       IND.rows=data.rows; IND.lastData=data;
+      computeIndTradeability();
       hideIndProgress(); renderIndStatus(); renderIndTable();
       fillIndTradeability();   // score the long tail in the background
     } else if(data.type==="error"){
@@ -4412,13 +4447,13 @@ async function fillIndTradeability(){
       for(const r of (byProduct.get(pid)||[])){
         if(e){
           r.daily_vol=e.daily_vol;
-          r.tradeability=e.tradeability;
           r.days_to_sell=(e.daily_vol>0)?((r.out_qty*r.runs)/e.daily_vol):null;
         }
         r.liq_loaded=true;   // clear the spinner even on a failed/empty fetch
       }
     }
     IND.fillDone=Math.min(i+chunk.length, ids.length);
+    computeIndTradeability();
     renderIndStatus(); renderIndTable();
   }
   IND.fillTotal=0; renderIndStatus();
@@ -4438,6 +4473,7 @@ function loadOwnedPreview(){
     if(data.type==="result"){
       es.close(); IND.es=null;
       IND.rows=data.rows; IND.lastData=data;
+      computeIndTradeability();
       if(ACTIVE_TAB==="ind"){ renderIndStatus(); renderIndTable(); }
       fillIndTradeability();
     } else if(data.type==="error"){
@@ -5125,6 +5161,7 @@ function saveIndPrefs(){
     col_order: JSON.stringify(IND.colOrder),
     col_widths: JSON.stringify(IND.colw),
     col_vis: JSON.stringify(IND.colVis),
+    ind_trade_weight: String(IND.tradeWeight),
   });
   fetch("/api/ind/prefs?"+p).catch(()=>{}); saveLS();
 }
@@ -5156,6 +5193,21 @@ $("#ind-jobrate").addEventListener("input", ()=>{ $("#ind-profile").value=""; })
 ["#ind-buildable","#ind-unobtainable","#ind-hidet2"].forEach(sel=>$(sel).addEventListener("change", saveIndPrefs));
 // Min-tradeability is a client-side filter — re-render immediately (no rescan).
 $("#ind-mintrade").addEventListener("input", ()=>{ saveIndPrefs(); renderIndTable(); });
+// Industry tradeability balance presets
+function syncIndBalanceButtons(){
+  document.querySelectorAll(".ind-balance-btn").forEach(b=>
+    b.classList.toggle("on", parseFloat(b.dataset.w)===IND.tradeWeight));
+}
+document.querySelectorAll(".ind-balance-btn").forEach(b=>{
+  b.onclick=()=>{
+    IND.tradeWeight=parseFloat(b.dataset.w);
+    syncIndBalanceButtons();
+    computeIndTradeability();
+    renderIndTable();
+    saveIndPrefs();
+  };
+});
+syncIndBalanceButtons();
 function updateIndSearchClear(){
   $("#ind-search-clear").classList.toggle("hidden", !$("#ind-search").value);
 }
@@ -5258,6 +5310,7 @@ async function loadSettings(){
       if(ind.include_unbuildable==="1") $("#ind-unobtainable").checked=true;
       if(ind.hide_t2==="1") $("#ind-hidet2").checked=true;
       if(ind.min_tradeability!==undefined&&ind.min_tradeability!=="") $("#ind-mintrade").value=ind.min_tradeability;
+      if(ind.ind_trade_weight!==undefined){ IND.tradeWeight=parseFloat(ind.ind_trade_weight)||0.5; syncIndBalanceButtons(); }
       if(ind.profiles){ try{ IND.profiles=JSON.parse(ind.profiles)||[]; }catch(e){} }
       renderIndProfiles();
       if(ind.profile) $("#ind-profile").value=ind.profile;

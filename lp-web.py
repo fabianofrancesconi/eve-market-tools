@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.58.1"
+__version__ = "1.58.2"
 
 import argparse
 import base64
@@ -4517,7 +4517,7 @@ function renderIndDetail(d){
       <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
       <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy</button>
       <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
-      ${tier} · <span class="ind-d-runs-wrap">Runs <input class="ind-d-runs" type="number" min="1" value="${n}" style="width:55px"><button class="ind-d-runs-pre" data-n="1">1</button><button class="ind-d-runs-pre" data-n="10">10</button><button class="ind-d-runs-pre" data-n="100">100</button><button class="ind-d-runs-pre" data-n="10000">10k</button><button class="ind-d-runs-mul" data-m="10">×10</button></span> · source ${d.station_name}
+      ${tier} · <span class="ind-d-runs-wrap">Runs <input class="ind-d-runs" type="number" min="1" value="${n}" style="width:68px"><button class="ind-d-runs-pre" data-n="1">1</button><button class="ind-d-runs-pre" data-n="10">10</button><button class="ind-d-runs-pre" data-n="100">100</button><button class="ind-d-runs-pre" data-n="10000">10k</button><button class="ind-d-runs-mul" data-m="10">×10</button></span> · source ${d.station_name}
       <span class="ind-d-close" title="Close">✕</span>
     </div>
     <div class="ind-d-body">

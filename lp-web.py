@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.62.1"
+__version__ = "1.62.2"
 
 import argparse
 import base64
@@ -2783,9 +2783,18 @@ function setStatus(html,err){
   const s=$("#statusbar"); s.innerHTML=html; s.className=err?"err":"";
 }
 function persistScan(tab, blob){
-  fetch("/api/save-scan",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({tab, blob})}).catch(()=>{});
+  if(!blob) return;
+  navigator.sendBeacon("/api/save-scan", new Blob(
+    [JSON.stringify({tab, blob})], {type:"application/json"}));
 }
+function persistAllScans(){
+  if(STATE.lastScanData && STATE.rows.length)
+    persistScan("lp", {...STATE.lastScanData, rows:STATE.rows});
+  if(IND.lastData && IND.rows.length && !IND.lastData.favorites_only && !IND.lastData.owned_only)
+    persistScan("ind", {...IND.lastData, rows:IND.rows});
+}
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden") persistAllScans(); });
+window.addEventListener("beforeunload", persistAllScans);
 
 // ── localStorage + server-synced persistence ────────────────────────────────
 const LS_KEY='eve-scanner';

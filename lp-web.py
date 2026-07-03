@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.69.0"
+__version__ = "1.70.0"
 
 import argparse
 import base64
@@ -97,10 +97,10 @@ _PKCE: dict = {}
 # Each entry: {character_id, name, scopes, refresh_token, access_token, expires_at}
 _CHARACTERS: dict = {}
 _CHARACTERS_LOCK = threading.RLock()
-# The "active" character for LP-tab purposes.
+# The "active" character. Selected from the header dropdown, it drives every
+# per-character view: LP-tab budget, Industry skills/BP calculations, and the
+# wallet shown in the header chip.
 _ACTIVE_CHAR_ID: int | None = None
-# The character whose skills/BPs drive Industry planner calculations.
-_IND_CHAR_ID: int | None = None
 # Per-character skill profiles: {cid: {skill_id: trained_level}}
 _CHAR_SKILL_PROFILES: dict = {}
 # Per-character owned blueprints: {cid: {type_id: (me, te, is_bpo, runs)}}
@@ -234,11 +234,10 @@ def _callback_url():
 
 
 def _persist_auth():
-    """Write all linked characters + active/ind selections to disk."""
+    """Write all linked characters + the active selection to disk."""
     data = {
         "version": 2,
         "active_char_id": _ACTIVE_CHAR_ID,
-        "ind_char_id": _IND_CHAR_ID,
         "characters": [
             {"character_id": c["character_id"], "name": c["name"],
              "scopes": c["scopes"], "refresh_token": c["refresh_token"]}
@@ -251,7 +250,7 @@ def _persist_auth():
 def _restore_auth():
     """Load persisted characters on startup. Migrates v1 (single char) to v2
     automatically so existing users don't need to re-login."""
-    global _ACTIVE_CHAR_ID, _IND_CHAR_ID
+    global _ACTIVE_CHAR_ID
     saved = sso_core.load_tokens(CACHE_DIR)
     if saved.get("version") == 2:
         for c in saved.get("characters", []):
@@ -265,11 +264,8 @@ def _restore_auth():
                 "expires_at": 0,
             }
         _ACTIVE_CHAR_ID = saved.get("active_char_id")
-        _IND_CHAR_ID = saved.get("ind_char_id")
         if _ACTIVE_CHAR_ID not in _CHARACTERS:
             _ACTIVE_CHAR_ID = next(iter(_CHARACTERS), None)
-        if _IND_CHAR_ID not in _CHARACTERS:
-            _IND_CHAR_ID = _ACTIVE_CHAR_ID
     elif saved.get("refresh_token") and saved.get("character_id"):
         cid = saved["character_id"]
         _CHARACTERS[cid] = {
@@ -281,7 +277,6 @@ def _restore_auth():
             "expires_at": 0,
         }
         _ACTIVE_CHAR_ID = cid
-        _IND_CHAR_ID = cid
         _persist_auth()
 
 
@@ -391,7 +386,6 @@ def do_auth_status(q):
         "logged_in": bool(_CHARACTERS),
         "characters": chars,
         "active_char_id": _ACTIVE_CHAR_ID,
-        "ind_char_id": _IND_CHAR_ID,
         "character_id": _ACTIVE_CHAR_ID,
         "name": active["name"] if active else None,
         "scopes": active["scopes"] if active else [],
@@ -399,17 +393,15 @@ def do_auth_status(q):
 
 
 def do_auth_switch(q):
-    """Switch the active (LP) and/or industry character."""
-    global _ACTIVE_CHAR_ID, _IND_CHAR_ID
+    """Switch the active character. It drives the LP budget, the Industry
+    skills/BP calculations and the header wallet, so refresh that character's
+    skill profile and blueprints while we're here."""
+    global _ACTIVE_CHAR_ID
     with _CHARACTERS_LOCK:
         if "active_char_id" in q:
             cid = int(q["active_char_id"][0])
             if cid in _CHARACTERS:
                 _ACTIVE_CHAR_ID = cid
-        if "ind_char_id" in q:
-            cid = int(q["ind_char_id"][0])
-            if cid in _CHARACTERS:
-                _IND_CHAR_ID = cid
                 _refresh_skill_profile(cid)
                 _refresh_char_blueprints(cid)
         _persist_auth()
@@ -418,7 +410,7 @@ def do_auth_switch(q):
 
 def do_auth_logout(q):
     char_id = q.get("char_id", [None])[0]
-    global _ACTIVE_CHAR_ID, _IND_CHAR_ID
+    global _ACTIVE_CHAR_ID
     with _CHARACTERS_LOCK:
         if char_id:
             cid = int(char_id)
@@ -427,14 +419,11 @@ def do_auth_logout(q):
             _CHAR_BP_ME_TES.pop(cid, None)
             if _ACTIVE_CHAR_ID == cid:
                 _ACTIVE_CHAR_ID = next(iter(_CHARACTERS), None)
-            if _IND_CHAR_ID == cid:
-                _IND_CHAR_ID = _ACTIVE_CHAR_ID
         else:
             _CHARACTERS.clear()
             _CHAR_SKILL_PROFILES.clear()
             _CHAR_BP_ME_TES.clear()
             _ACTIVE_CHAR_ID = None
-            _IND_CHAR_ID = None
             _PKCE.clear()
         _persist_auth()
     return {"ok": True}
@@ -1334,7 +1323,7 @@ def do_ind_scan(q, emit=None):
     except (ValueError, TypeError):
         fav_ids = set()
     params = _ind_params(q)
-    ind_cid = _IND_CHAR_ID
+    ind_cid = _ACTIVE_CHAR_ID
     ind_skill_profile = _CHAR_SKILL_PROFILES.get(ind_cid, {}) if ind_cid else {}
     ind_bp_me_te = _CHAR_BP_ME_TES.get(ind_cid, {}) if ind_cid else {}
     if ind_skill_profile:
@@ -1511,7 +1500,7 @@ def do_ind_detail(q):
     if station_id not in TRADE_HUBS:
         station_id = JITA_STATION_ID
     params = _ind_params(q)
-    ind_cid = _IND_CHAR_ID
+    ind_cid = _ACTIVE_CHAR_ID
     ind_skill_profile = _CHAR_SKILL_PROFILES.get(ind_cid, {}) if ind_cid else {}
     ind_bp_me_te = _CHAR_BP_ME_TES.get(ind_cid, {}) if ind_cid else {}
     if ind_skill_profile:
@@ -1712,7 +1701,7 @@ class Handler(BaseHTTPRequestHandler):
                                          code, handshake["verifier"], SESSION)
             claims = sso_core.decode_jwt_payload(tok["access_token"])
             cid = claims["character_id"]
-            global _ACTIVE_CHAR_ID, _IND_CHAR_ID
+            global _ACTIVE_CHAR_ID
             with _CHARACTERS_LOCK:
                 _CHARACTERS[cid] = {
                     "character_id": cid,
@@ -1724,8 +1713,6 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 if _ACTIVE_CHAR_ID is None:
                     _ACTIVE_CHAR_ID = cid
-                if _IND_CHAR_ID is None:
-                    _IND_CHAR_ID = cid
                 _persist_auth()
             _refresh_skill_profile(cid)
             _refresh_char_blueprints(cid)

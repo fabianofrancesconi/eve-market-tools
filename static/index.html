@@ -746,12 +746,12 @@
     <button class="tab active" data-tab="lp">LP Store</button>
     <button class="tab" data-tab="arb">Arbitrage</button>
     <button class="tab" data-tab="ind">Industry</button>
-    <button class="tab hidden" id="char-tab-btn" data-tab="char">Character</button>
+    <button class="tab hidden" id="char-tab-btn" data-tab="char">Overview</button>
   </nav>
   <div id="auth-region">
     <button id="login-eve" class="auth-btn" data-tip="Log in with your EVE Online account to load your skills, wallet, loyalty points and running industry jobs.">Log in with EVE</button>
     <button id="login-cfg" class="auth-cog" title="EVE login settings" aria-label="EVE login settings">&#9881;</button>
-    <div id="char-chip" class="hidden" data-tip="Click to open the Character tab. Click ▾ to manage characters.">
+    <div id="char-chip" class="hidden" data-tip="Click to open the Overview tab. Click ▾ to manage characters.">
       <span id="chip-name">&bull;&bull;&bull;</span>
       <span id="chip-wallet" class="chip-wallet"></span>
       <button id="chip-dd-toggle" class="auth-cog" title="Manage characters" aria-label="Manage characters">&#9662;</button>
@@ -875,10 +875,6 @@
   <div class="ctrl-group">
     <span class="ctrl-cap">Scope</span>
     <div class="ctrl-fields">
-      <div class="field" data-tip="Character whose skills and blueprints drive the profitability calculations.">
-        <label>Character</label>
-        <select id="ind-char-select"></select>
-      </div>
       <div class="field" data-tip="Limit the scan to one market group (e.g. Ammunition & Charges). 'All' ranks every blueprint — much slower.">
         <label>Category</label>
         <select id="ind-group"><option value="all">All (slow)</option></select>
@@ -1290,7 +1286,7 @@ function switchTab(tab, opts){
   setStatus("");
   document.title = tab==="lp" ? "EVE LP Store Scanner"
                 : tab==="arb" ? "EVE Arbitrage Scanner"
-                : tab==="char" ? "EVE Character" : "EVE Industry Planner";
+                : tab==="char" ? "EVE Character Overview" : "EVE Industry Planner";
   postPrefs('/api/prefs',{active_tab:tab}); saveLS();
   if(tab==="ind" && AUTH.loggedIn){
     if(!IND.groupsLoaded) loadIndGroups();
@@ -3307,7 +3303,7 @@ setInterval(()=>{
 // EVE SSO / CHARACTER
 // ══════════════════════════════════════════════════════════════════════════
 const AUTH = { loggedIn:false, name:null, charId:null, data:null,
-               characters:[], activeCharId:null, indCharId:null,
+               characters:[], activeCharId:null,
                cfg:{client_id:"",callback_url:"",suggested_callback:"",scopes:[]} };
 const CHAR_REFRESH_MS = 300000;  // ESI caches character industry jobs for 5 min
 let charRefreshDeadline = 0;
@@ -3372,18 +3368,9 @@ function renderCharDropdown(){
 async function switchActiveChar(cid){
   await fetch(`/api/auth/switch?active_char_id=${cid}`);
   await checkAuth();
-  refreshCharData();
-}
-function renderIndCharSelect(){
-  const sel=$("#ind-char-select"); if(!sel) return;
-  sel.innerHTML=AUTH.characters.map(c=>
-    `<option value="${c.character_id}"${c.character_id===AUTH.indCharId?" selected":""}>${authEsc(c.name)}</option>`
-  ).join("");
-  sel.classList.toggle("hidden", AUTH.characters.length<2);
-}
-async function switchIndChar(cid){
-  await fetch(`/api/auth/switch?ind_char_id=${cid}`);
-  AUTH.indCharId=cid;
+  // The active character also drives the Industry planner (skills / blueprints).
+  // Re-run the scan so a table already on screen reflects the new character.
+  if(ACTIVE_TAB==="ind" && IND.rows && IND.rows.length) scanInd(false);
 }
 
 async function checkAuth(){
@@ -3391,8 +3378,7 @@ async function checkAuth(){
   AUTH.loggedIn=!!st.logged_in; AUTH.name=st.name; AUTH.charId=st.character_id;
   AUTH.characters=st.characters||[];
   AUTH.activeCharId=st.active_char_id||null;
-  AUTH.indCharId=st.ind_char_id||null;
-  renderAuthChip(); renderIndCharSelect();
+  renderAuthChip();
   if(AUTH.loggedIn){
     refreshCharData();
     if(location.pathname==="/character" || location.pathname==="/char") switchTab("char", {url:false});
@@ -3468,9 +3454,11 @@ function renderCharData(){
   $("#cv-name").textContent=multiChar
     ?AUTH.characters.map(c=>c.name).join(" + ")
     :(d.name||"—");
+  // Overview tab keeps the combined wallet across all linked characters…
   $("#cv-wallet").textContent=combined_wallet!=null?fmtISK(combined_wallet):"—";
   $("#cv-sp").textContent=d.total_sp!=null?Math.round(d.total_sp).toLocaleString():"—";
-  $("#chip-wallet").textContent=combined_wallet!=null?fmtISK(combined_wallet)+" ISK":"";
+  // …while the header chip tracks just the active character's wallet.
+  $("#chip-wallet").textContent=d.wallet!=null?fmtISK(d.wallet)+" ISK":"";
 
   const rt=d.combined_runs_tracked||d.runs_tracked;
   if(rt){
@@ -3597,7 +3585,6 @@ $("#char-chip").onclick=e=>{
   if(e.target.closest("#chip-dd-toggle")||e.target.closest("#char-dropdown")) return;
   switchTab("char");
 };
-$("#ind-char-select").onchange=e=>switchIndChar(parseInt(e.target.value));
 $("#cfg-close").onclick=closeAuthCfg;
 $("#cfg-copy").onclick=()=>{
   const t=$("#cfg-callback").value;

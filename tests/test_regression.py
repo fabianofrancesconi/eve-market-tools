@@ -1098,7 +1098,6 @@ class TestIndustryRoutes:
     def test_owned_only_includes_char_blueprints(self, monkeypatch):
         """owned_only=1 loads blueprints the character owns via ESI."""
         monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 123)
-        monkeypatch.setattr(lp_web, "_IND_CHAR_ID", 123)
         monkeypatch.setattr(lp_web, "_CHARACTERS", {123: {"character_id": 123, "name": "T", "scopes": [], "refresh_token": "x"}})
         monkeypatch.setattr(lp_web, "_CHAR_BP_ME_TES", {123: {681: (10, 20)}})
         monkeypatch.setattr(lp_web, "_CHAR_SKILL_PROFILES", {123: {}})
@@ -1251,7 +1250,6 @@ class TestCharDataOrdersIsolation:
     def _login(self, monkeypatch):
         import time as _time
         monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 42)
-        monkeypatch.setattr(lp_web, "_IND_CHAR_ID", 42)
         monkeypatch.setattr(lp_web, "_CHARACTERS", {42: {
             "character_id": 42, "name": "Test Char", "scopes": [],
             "refresh_token": "RT", "access_token": "TOK",

@@ -868,10 +868,10 @@ def missing_skills(bp, skill_profile, conn, default_level=0):
 
 def bulk_training_time(bps, skill_profile, conn, default_level=0):
     """Return {blueprint_id: total_hours} for every blueprint whose skill
-    requirements the profile does NOT meet. Only direct skills (no prereq
-    tree walk) — fast enough for thousands of rows in the scan loop."""
+    requirements the profile does NOT meet. Includes prerequisite skills
+    so the time reflects the full training queue, not just direct skills."""
     sp = skill_profile or {}
-    all_skill_ids = set()
+    all_direct_ids = set()
     needs = []
     for bp in bps:
         skills = bp.get("skills", [])
@@ -879,25 +879,46 @@ def bulk_training_time(bps, skill_profile, conn, default_level=0):
                    if sp.get(sid, default_level) < lvl]
         if missing:
             needs.append((bp["blueprint_id"], missing))
-            all_skill_ids.update(sid for sid, _ in missing)
-    if not all_skill_ids:
+            all_direct_ids.update(sid for sid, _ in missing)
+    if not all_direct_ids:
         return {}
+    # Load prereq tree (BFS) for all missing skills across all blueprints
+    prereqs = {}
+    all_skill_ids = set(all_direct_ids)
+    to_check = set(all_direct_ids)
+    for _ in range(10):
+        if not to_check:
+            break
+        loaded = _load_prereqs(conn, to_check)
+        prereqs.update(loaded)
+        to_check = set()
+        for reqs in loaded.values():
+            for psid, _ in reqs:
+                if psid not in all_skill_ids:
+                    all_skill_ids.add(psid)
+                    to_check.add(psid)
+    # Load ranks for all skills (direct + prereqs)
     ranks = {}
-    marks = ", ".join("?" for _ in all_skill_ids)
-    try:
-        for r in conn.execute(
-                f"SELECT type_id, rank FROM skill_ranks WHERE type_id IN ({marks})",
-                list(all_skill_ids)):
-            ranks[r["type_id"]] = r["rank"]
-    except Exception:
-        pass
+    if all_skill_ids:
+        marks = ", ".join("?" for _ in all_skill_ids)
+        try:
+            for r in conn.execute(
+                    f"SELECT type_id, rank FROM skill_ranks WHERE type_id IN ({marks})",
+                    list(all_skill_ids)):
+                ranks[r["type_id"]] = r["rank"]
+        except Exception:
+            pass
     result = {}
-    for bp_id, missing in needs:
+    for bp_id, missing_direct in needs:
+        visited = {}
+        skill_list = []
+        for sid, required_lvl in missing_direct:
+            _walk_skill_tree(sid, required_lvl, sp, default_level, prereqs,
+                             visited, skill_list)
         total = 0.0
-        for sid, required_lvl in missing:
-            current = sp.get(sid, default_level)
-            rank = ranks.get(sid)
-            total += training_time_hours(current, required_lvl, rank)
+        for entry in skill_list:
+            total += training_time_hours(
+                entry["current"], entry["required"], ranks.get(entry["skill_id"]))
         result[bp_id] = total
     return result
 

@@ -827,3 +827,16 @@ class TestBulkTrainingTime:
             assert result == {}
         finally:
             conn.close()
+
+    def test_includes_prerequisite_training(self, tmp_path):
+        """Training time includes prereqs (e.g. 11442 requires 3380 L3)."""
+        conn = self._conn(tmp_path)
+        try:
+            # 11442 requires 3380 at L3 as prereq; character has neither
+            bp = _bp(skills=[(11442, 1)])
+            result = ind_core.bulk_training_time([bp], {}, conn, default_level=0)
+            # Should include time for BOTH 3380 (0→3) and 11442 (0→1)
+            direct_only = ind_core.training_time_hours(0, 1, None)
+            assert result[bp["blueprint_id"]] > direct_only
+        finally:
+            conn.close()

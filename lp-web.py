@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.67.1"
+__version__ = "1.67.2"
 
 import argparse
 import base64
@@ -2642,6 +2642,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <label class="check-field" data-tip="Only show items every required skill your character has actually trained to the needed level can build."><input type="checkbox" id="ind-buildable"> Buildable only</label>
       <label class="check-field" data-tip="Also show items whose blueprint you don't own and isn't on sale (a T1 BPO with no market order). Off = only craftable things."><input type="checkbox" id="ind-unobtainable"> Include unobtainable</label>
       <label class="check-field" data-tip="Hide T2 / invention items — show only directly-built T1 items."><input type="checkbox" id="ind-hidet2"> Hide T2</label>
+      <label class="check-field" data-tip="Hide blueprints you only own as a limited-run copy (BPC). Show only items where you own the original (BPO) or don't own at all."><input type="checkbox" id="ind-hidebpc"> Hide my BPCs</label>
       <button id="ind-refresh" class="secondary" data-tip="Re-download the blueprint database (SDE) from Fuzzwork. Only needed after a game patch.">⟳ Refresh SDE</button>
       <button id="indColPickerBtn" class="secondary" data-tip="Choose visible columns">Columns ▾</button>
     </div>
@@ -2915,6 +2916,7 @@ function settingsBlob(){
       buildable_only:$("#ind-buildable").checked?'1':'0',
       include_unbuildable:$("#ind-unobtainable").checked?'1':'0',
       hide_t2:$("#ind-hidet2").checked?'1':'0',
+      hide_bpc:$("#ind-hidebpc").checked?'1':'0',
       min_tradeability:$("#ind-mintrade").value,
       profiles:JSON.stringify(IND.profiles),profile:$("#ind-profile").value,
       favorites:JSON.stringify([...IND.favorites]),
@@ -4414,6 +4416,11 @@ function renderIndTable(){
     const minTrade=parseInt($("#ind-mintrade").value)||0;
     if(minTrade>0) rest=rest.filter(r=> !r.liq_loaded || (r.tradeability!=null && r.tradeability>=minTrade));
   }
+  if($("#ind-hidebpc").checked){
+    const isBpc=r=>r.owned_bp_me_te && !r.owned_is_bpo && r.owned_max_runs!==-1;
+    favs=favs.filter(r=>!isBpc(r)); myBps=myBps.filter(r=>!isBpc(r));
+    hiddenBps=hiddenBps.filter(r=>!isBpc(r)); rest=rest.filter(r=>!isBpc(r));
+  }
   favs=indSortRows(favs); myBps=indSortRows(myBps);
   hiddenBps=indSortRows(hiddenBps); rest=indSortRows(rest);
 
@@ -5469,7 +5476,8 @@ function recalcIndProfits(){
   const el=$(sel); if(!el) return;
   el.addEventListener("change", ()=>{ saveIndPrefs(); recalcIndProfits(); });
 });
-["#ind-buildable","#ind-unobtainable","#ind-hidet2"].forEach(sel=>$(sel).addEventListener("change", saveIndPrefs));
+["#ind-buildable","#ind-unobtainable","#ind-hidet2","#ind-hidebpc"].forEach(sel=>$(sel).addEventListener("change", saveIndPrefs));
+$("#ind-hidebpc").addEventListener("change", renderIndTable);
 // Min-tradeability is a client-side filter — re-render immediately (no rescan).
 $("#ind-mintrade").addEventListener("input", ()=>{ saveIndPrefs(); renderIndTable(); });
 // Industry tradeability balance presets
@@ -5610,6 +5618,7 @@ async function loadSettings(){
       if(ind.buildable_only==="1") $("#ind-buildable").checked=true;
       if(ind.include_unbuildable==="1") $("#ind-unobtainable").checked=true;
       if(ind.hide_t2==="1") $("#ind-hidet2").checked=true;
+      if(ind.hide_bpc==="1") $("#ind-hidebpc").checked=true;
       if(ind.min_tradeability!==undefined&&ind.min_tradeability!=="") $("#ind-mintrade").value=ind.min_tradeability;
       if(ind.ind_trade_weight!==undefined){ IND.tradeWeight=parseFloat(ind.ind_trade_weight)||0.5; syncIndBalanceButtons(); }
       if(ind.profiles){ try{ IND.profiles=JSON.parse(ind.profiles)||[]; }catch(e){} }

@@ -432,29 +432,54 @@
   }
 
   /* ── Character tab ───────────────────────────────────────────────── */
-  #char-tablewrap { padding:18px; }
+  #char-tablewrap { padding:24px 28px; overflow-y:auto; }
   .char-empty { max-width:480px; margin:60px auto; text-align:center; color:var(--dim);
     line-height:1.6; display:flex; flex-direction:column; gap:16px; align-items:center; }
-  .char-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
-    gap:12px; margin-bottom:18px; }
-  .char-kpi { background:var(--panel2); border:1px solid var(--line); border-radius:6px;
-    padding:10px 14px; position:relative; overflow:hidden; }
-  .char-kpi::before { content:""; position:absolute; top:0; left:0; right:0; height:2px;
-    background:linear-gradient(90deg,var(--cyan2),transparent); }
-  .char-kpi .l { font-size:9px; text-transform:uppercase; letter-spacing:.5px;
+
+  /* Hero section — large headline numbers */
+  .char-hero { display:flex; gap:24px; align-items:stretch; margin-bottom:24px; flex-wrap:wrap; }
+  .char-hero-main {
+    flex:1; min-width:260px;
+    background:linear-gradient(135deg, var(--panel2) 0%, var(--panel3) 100%);
+    border:1px solid var(--line2); border-radius:10px;
+    padding:20px 24px; position:relative; overflow:hidden;
+  }
+  .char-hero-main::before { content:""; position:absolute; top:0; left:0; right:0; height:3px;
+    background:linear-gradient(90deg, var(--cyan2), var(--accent2), transparent); }
+  .char-hero-name { font-size:13px; color:var(--dim); font-weight:600;
+    text-transform:uppercase; letter-spacing:.8px; margin-bottom:6px; }
+  .char-hero-wallet { font-size:32px; font-weight:800; color:var(--gold);
+    font-variant-numeric:tabular-nums; line-height:1.2; text-shadow:0 0 20px rgba(200,160,64,.2); }
+  .char-hero-wallet-label { font-size:11px; color:var(--dim); margin-top:2px; }
+
+  .char-hero-stats {
+    display:grid; grid-template-columns:1fr 1fr; gap:12px;
+    min-width:240px;
+  }
+  .char-stat {
+    background:var(--panel2); border:1px solid var(--line); border-radius:8px;
+    padding:12px 16px; position:relative; overflow:hidden;
+  }
+  .char-stat::before { content:""; position:absolute; top:0; left:0; width:3px; height:100%;
+    background:var(--line2); border-radius:0 2px 2px 0; }
+  .char-stat.accent::before { background:var(--cyan2); }
+  .char-stat.warn::before { background:var(--yellow); }
+  .char-stat.good::before { background:var(--green); }
+  .char-stat .l { font-size:9px; text-transform:uppercase; letter-spacing:.5px;
     color:var(--dim); font-weight:700; }
-  .char-kpi .v { font-size:20px; font-weight:700; margin-top:3px; }
-  .char-kpi .v.gold { color:var(--gold); font-variant-numeric:tabular-nums; }
-  .char-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:18px; }
-  .char-card { background:var(--panel2); border:1px solid var(--line); border-radius:6px;
-    padding:4px 16px 14px; }
-  .char-card h3 { margin-top:14px; }
+  .char-stat .v { font-size:22px; font-weight:700; margin-top:2px;
+    font-variant-numeric:tabular-nums; }
+
+  .char-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:18px; }
+  .char-card { background:var(--panel2); border:1px solid var(--line); border-radius:8px;
+    padding:0; overflow:hidden; }
+  .char-card-header { display:flex; align-items:center; justify-content:space-between;
+    padding:12px 16px 10px; border-bottom:1px solid var(--line); }
+  .char-card-header h3 { margin:0; border:none; padding:0; font-size:11px; }
+  .char-card-body { padding:0 16px 14px; }
   .char-card-wide { grid-column:1/-1; }
   .char-card-sub { color:var(--dim); font-size:11px; font-weight:400; margin-left:6px; }
-  /* Caps each card's table at a fixed height so one long list (e.g. a deep
-     skill queue) can't stretch the whole grid row and bury the cards next to
-     it — scroll inside the card instead. */
-  .char-card-scroll { max-height:260px; overflow-y:auto; }
+  .char-card-scroll { max-height:280px; overflow-y:auto; }
   .char-card-scroll table.mini thead th { position:sticky; top:0; background:var(--panel2); z-index:1; }
   .char-none { color:var(--dim); font-size:13px; padding:10px 4px; }
   .char-none.char-none-warn { color:var(--gold); }
@@ -462,11 +487,6 @@
   #char-orders-tbl td.tx-sell { color:var(--green2); font-weight:600; }
   #char-jobs-tbl td.tl, #char-jobs-tbl th:last-child { text-align:right;
     font-variant-numeric:tabular-nums; }
-  /* Give the product name a real minimum so auto layout can't crush it down
-     to one character per line — word-break:break-word otherwise lets the
-     browser treat its minimum width as a single glyph while "Manufacturing"
-     and the timer take all the space. The numeric/status columns hug their
-     content; the product column keeps the rest. */
   #char-jobs-tbl th:first-child, #char-jobs-tbl td:first-child { min-width:8em; }
   #char-jobs-tbl th:nth-child(2), #char-jobs-tbl td:nth-child(2),
   #char-jobs-tbl th:nth-child(3), #char-jobs-tbl td:nth-child(3),
@@ -989,58 +1009,71 @@
       <button id="char-login-btn" class="auth-btn primary-btn">Log in with EVE</button>
     </div>
     <div id="char-body" class="hidden">
-      <div class="char-kpis">
-        <div class="char-kpi"><div class="l">Character</div><div class="v" id="cv-name">—</div></div>
-        <div class="char-kpi"><div class="l">Wallet</div><div class="v gold" id="cv-wallet">—</div></div>
-        <div class="char-kpi"><div class="l">Total SP</div><div class="v" id="cv-sp">—</div></div>
-        <div class="char-kpi"><div class="l">Running jobs</div><div class="v" id="cv-jobs">—</div></div>
-        <div class="char-kpi"><div class="l">Open orders</div><div class="v" id="cv-orders">—</div></div>
-        <div class="char-kpi" id="cv-runs-kpi" data-tip="Cumulative runs delivered since this app started tracking — it can't see deliveries from before that.">
-          <div class="l">Runs delivered</div><div class="v" id="cv-runs">—</div>
+      <div class="char-hero">
+        <div class="char-hero-main">
+          <div class="char-hero-name" id="cv-name">—</div>
+          <div class="char-hero-wallet" id="cv-wallet">—</div>
+          <div class="char-hero-wallet-label">Wallet balance</div>
+        </div>
+        <div class="char-hero-stats">
+          <div class="char-stat accent"><div class="l">Total SP</div><div class="v" id="cv-sp">—</div></div>
+          <div class="char-stat warn"><div class="l">Running jobs</div><div class="v" id="cv-jobs">—</div></div>
+          <div class="char-stat"><div class="l">Open orders</div><div class="v" id="cv-orders">—</div></div>
+          <div class="char-stat good" id="cv-runs-kpi" data-tip="Cumulative runs delivered since this app started tracking — it can't see deliveries from before that.">
+            <div class="l">Runs delivered</div><div class="v" id="cv-runs">—</div>
+          </div>
         </div>
       </div>
       <div class="char-grid">
         <section class="char-card char-card-wide">
-          <h3>Running industry jobs</h3>
-          <div class="char-card-scroll">
-            <table class="mini" id="char-jobs-tbl"><thead><tr>
-              <th>Product</th><th>Character</th><th>Activity</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>
-            </tr></thead><tbody></tbody></table>
+          <div class="char-card-header"><h3>Running industry jobs</h3></div>
+          <div class="char-card-body">
+            <div class="char-card-scroll">
+              <table class="mini" id="char-jobs-tbl"><thead><tr>
+                <th>Product</th><th>Character</th><th>Activity</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>
+              </tr></thead><tbody></tbody></table>
+            </div>
+            <div id="char-jobs-empty" class="char-none hidden">No active jobs.</div>
           </div>
-          <div id="char-jobs-empty" class="char-none hidden">No active jobs.</div>
         </section>
         <section class="char-card">
-          <h3>Skill queue</h3>
-          <div class="char-card-scroll">
-            <table class="mini" id="char-queue-tbl"><thead><tr>
-              <th>Skill</th><th>Lvl</th><th style="text-align:right">Finishes</th>
-            </tr></thead><tbody></tbody></table>
+          <div class="char-card-header"><h3>Skill queue</h3></div>
+          <div class="char-card-body">
+            <div class="char-card-scroll">
+              <table class="mini" id="char-queue-tbl"><thead><tr>
+                <th>Skill</th><th>Lvl</th><th style="text-align:right">Finishes</th>
+              </tr></thead><tbody></tbody></table>
+            </div>
+            <div id="char-queue-empty" class="char-none hidden">Skill queue is empty.</div>
           </div>
-          <div id="char-queue-empty" class="char-none hidden">Skill queue is empty.</div>
         </section>
         <section class="char-card">
-          <h3>Loyalty points</h3>
-          <div class="char-card-scroll">
-            <table class="mini" id="char-lp-tbl"><thead><tr>
-              <th>Corporation</th><th style="text-align:right">LP</th>
-            </tr></thead><tbody></tbody></table>
+          <div class="char-card-header"><h3>Loyalty points</h3></div>
+          <div class="char-card-body">
+            <div class="char-card-scroll">
+              <table class="mini" id="char-lp-tbl"><thead><tr>
+                <th>Corporation</th><th style="text-align:right">LP</th>
+              </tr></thead><tbody></tbody></table>
+            </div>
+            <div id="char-lp-empty" class="char-none hidden">No loyalty points.</div>
           </div>
-          <div id="char-lp-empty" class="char-none hidden">No loyalty points.</div>
         </section>
         <section class="char-card char-card-wide">
-          <h3>Active market orders <span id="char-orders-total" class="char-card-sub"></span></h3>
-          <div class="char-card-scroll">
-            <table class="mini" id="char-orders-tbl"><thead><tr>
-              <th>Item</th><th>Side</th><th style="text-align:right">Remaining</th>
-              <th style="text-align:right">Price</th>
-              <th style="text-align:right" data-tip="Remaining units × your listed price — what's left to fill on this order at its current price.">Total value</th>
-              <th style="text-align:right" data-tip="Current best sell price at Jita 4-4 — a quick reference, not necessarily the same station as your order.">Jita sell</th>
-              <th style="text-align:right" data-tip="Your position in this item's order-matching queue at your order's own station — #1 means you're the best price, ties broken by who listed first. Blank if the station can't be resolved (e.g. a player structure).">Queue</th>
-              <th style="text-align:right">Posted</th>
-              <th style="text-align:right">Expires</th>
-            </tr></thead><tbody></tbody></table>
+          <div class="char-card-header"><h3>Active market orders <span id="char-orders-total" class="char-card-sub"></span></h3></div>
+          <div class="char-card-body">
+            <div class="char-card-scroll">
+              <table class="mini" id="char-orders-tbl"><thead><tr>
+                <th>Item</th><th>Side</th><th style="text-align:right">Remaining</th>
+                <th style="text-align:right">Price</th>
+                <th style="text-align:right" data-tip="Remaining units × your listed price — what's left to fill on this order at its current price.">Total value</th>
+                <th style="text-align:right" data-tip="Current best sell price at Jita 4-4 — a quick reference, not necessarily the same station as your order.">Jita sell</th>
+                <th style="text-align:right" data-tip="Your position in this item's order-matching queue at your order's own station — #1 means you're the best price, ties broken by who listed first. Blank if the station can't be resolved (e.g. a player structure).">Queue</th>
+                <th style="text-align:right">Posted</th>
+                <th style="text-align:right">Expires</th>
+              </tr></thead><tbody></tbody></table>
+            </div>
+            <div id="char-orders-empty" class="char-none hidden">No open orders.</div>
           </div>
-          <div id="char-orders-empty" class="char-none hidden">No open orders.</div>
         </section>
       </div>
     </div>
@@ -3454,10 +3487,8 @@ function renderCharData(){
   $("#cv-name").textContent=multiChar
     ?AUTH.characters.map(c=>c.name).join(" + ")
     :(d.name||"—");
-  // Overview tab keeps the combined wallet across all linked characters…
   $("#cv-wallet").textContent=combined_wallet!=null?fmtISK(combined_wallet):"—";
   $("#cv-sp").textContent=d.total_sp!=null?Math.round(d.total_sp).toLocaleString():"—";
-  // …while the header chip tracks just the active character's wallet.
   $("#chip-wallet").textContent=d.wallet!=null?fmtISK(d.wallet)+" ISK":"";
 
   const rt=d.combined_runs_tracked||d.runs_tracked;
@@ -3547,18 +3578,18 @@ function syncJobTimers(){
 }
 
 // When logged in, drive the LP budget from the character's loyalty points for
-// the selected corp and lock the field. Falls back to a normal editable input
-// when not logged in or the corp isn't one the character holds LP with.
+// the selected corp and lock the field read-only. Shows 0 if the character
+// has no LP with that corp. Falls back to editable only when not logged in.
 function updateMyLpBadge(){
   const badge=$("#lp-mylp"), inp=$("#lp");
   const corp=($("#corp").value||"").trim().toLowerCase();
   const lp=(AUTH.data&&AUTH.data.loyalty)||[];
   const m=(AUTH.loggedIn&&corp)?lp.find(l=>(l.corp_name||"").toLowerCase()===corp):null;
-  if(m){
-    inp.value=m.loyalty_points||0;
+  if(AUTH.loggedIn){
+    inp.value=m?m.loyalty_points||0:0;
     inp.readOnly=true; inp.classList.add("locked");
-    inp.title="Locked to your character's loyalty points for this corporation.";
-    badge.textContent="🔒 from character";
+    inp.title="Read from your character's loyalty points.";
+    badge.textContent=m?"🔒 from character":"🔒 0 LP with this corp";
     badge.classList.remove("hidden");
   } else {
     inp.readOnly=false; inp.classList.remove("locked");

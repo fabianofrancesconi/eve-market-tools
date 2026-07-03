@@ -1,7 +1,7 @@
 """
 Tests for the market-saturation layer added in v1.4.0:
 
-- _median_daily_volume   -- robust daily-volume summary from ESI history
+- _mean_daily_volume   -- robust daily-volume summary from ESI history
 - fetch_history_volumes  -- per-type history fetch + shared mhist cache
 - enrich_liquidity       -- days-to-clear and crowding-capped profit math
 """
@@ -13,7 +13,7 @@ import lp_core
 
 
 # ---------------------------------------------------------------------------
-# _median_daily_volume
+# _mean_daily_volume
 # ---------------------------------------------------------------------------
 
 def _hist_consecutive(volumes, end_date="2024-06-30"):
@@ -29,10 +29,10 @@ class TestMedianDailyVolume:
     def test_average_of_consecutive_volumes(self):
         # 30 consecutive days, each traded -> mean of the volumes
         hist = _hist_consecutive([100, 300, 200] * 10)
-        assert lp_core._median_daily_volume(hist) == 200
+        assert lp_core._mean_daily_volume(hist) == 200
 
     def test_empty_history_is_none(self):
-        assert lp_core._median_daily_volume([]) is None
+        assert lp_core._mean_daily_volume([]) is None
 
     def test_sparse_trading_fills_zeros(self):
         # Only 3 days out of 30 trade -> average is total / 30
@@ -43,12 +43,12 @@ class TestMedianDailyVolume:
             {"date": (end - timedelta(days=10)).strftime("%Y-%m-%d"), "volume": 300},
             {"date": end.strftime("%Y-%m-%d"), "volume": 300},
         ]
-        result = lp_core._median_daily_volume(hist, days=30)
+        result = lp_core._mean_daily_volume(hist, days=30)
         assert abs(result - 900 / 30) < 0.01
 
     def test_zero_total_returns_zero(self):
         hist = _hist_consecutive([0, 0, 0])
-        assert lp_core._median_daily_volume(hist, days=3) == 0
+        assert lp_core._mean_daily_volume(hist, days=3) == 0
 
     def test_uses_only_last_n_calendar_days(self):
         # Old entries outside the window are ignored
@@ -58,7 +58,7 @@ class TestMedianDailyVolume:
                      "volume": 1_000_000}
         recent = {"date": end.strftime("%Y-%m-%d"), "volume": 300}
         hist = [old_entry, recent]
-        result = lp_core._median_daily_volume(hist, days=30)
+        result = lp_core._mean_daily_volume(hist, days=30)
         assert abs(result - 300 / 30) < 0.01
 
 

@@ -47,6 +47,18 @@ def http_get(url):
         return json.loads(e.read()), e.code
 
 
+def http_post_json(url, data):
+    """POST JSON body → (parsed_body, status_code). Handles 4xx/5xx without raising."""
+    body = json.dumps(data).encode()
+    req = urllib.request.Request(url, data=body, method="POST",
+                                headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req) as r:
+            return json.loads(r.read()), r.status
+    except urllib.error.HTTPError as e:
+        return json.loads(e.read()), e.code
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -864,8 +876,8 @@ class TestColumnFormatterRowContext:
 
     def test_col_order_persisted_and_restored(self):
         html = lp_web.INDEX_HTML
-        # Saved with the widths under the same layout version...
-        assert "col_order=${encodeURIComponent(JSON.stringify(STATE.colOrder))}" in html
+        # Saved with the widths via POST...
+        assert "col_order:JSON.stringify(STATE.colOrder)" in html
         # ...and restored on load, guarded by the layout version.
         assert "if(s.col_order && s.col_layout_v==COL_LAYOUT_VERSION){" in html
 
@@ -1003,8 +1015,8 @@ class TestIndustryRoutes:
     def test_ind_prefs_roundtrip(self, tmp_server, tmp_path, monkeypatch):
         base, _ = tmp_server
         monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
-        body, status = http_get(
-            f"{base}/api/ind/prefs?job_rate=6&profile=2&hide_t2=1")
+        body, status = http_post_json(
+            f"{base}/api/ind/prefs", {"job_rate": "6", "profile": "2", "hide_t2": "1"})
         assert status == 200 and body["ok"] is True
         saved = json.loads((tmp_path / "ind.json").read_text())
         assert saved["job_rate"] == "6"
@@ -1016,7 +1028,8 @@ class TestIndustryRoutes:
         # with the logged-in character's own data. Nothing to persist.
         base, _ = tmp_server
         monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
-        body, status = http_get(f"{base}/api/ind/prefs?me=10&te=20&skills_level=5")
+        body, status = http_post_json(
+            f"{base}/api/ind/prefs", {"me": "10", "te": "20", "skills_level": "5"})
         assert status == 200 and body["ok"] is True
         saved = json.loads((tmp_path / "ind.json").read_text())
         assert "me" not in saved and "te" not in saved and "skills_level" not in saved
@@ -1026,8 +1039,8 @@ class TestIndustryRoutes:
         base, _ = tmp_server
         monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
         order = '["_fav","product_name","_timer","tech_level"]'
-        body, status = http_get(
-            f"{base}/api/ind/prefs?col_order={urllib.parse.quote(order)}")
+        body, status = http_post_json(
+            f"{base}/api/ind/prefs", {"col_order": order})
         assert status == 200 and body["ok"] is True
         saved = json.loads((tmp_path / "ind.json").read_text())
         assert saved["col_order"] == order
@@ -1037,9 +1050,8 @@ class TestIndustryRoutes:
         monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
         widths = '{"product_name":260}'
         vis = '{"ask":false}'
-        body, status = http_get(
-            f"{base}/api/ind/prefs?col_widths={urllib.parse.quote(widths)}"
-            f"&col_vis={urllib.parse.quote(vis)}")
+        body, status = http_post_json(
+            f"{base}/api/ind/prefs", {"col_widths": widths, "col_vis": vis})
         assert status == 200 and body["ok"] is True
         saved = json.loads((tmp_path / "ind.json").read_text())
         assert saved["col_widths"] == widths
@@ -1090,8 +1102,8 @@ class TestIndustryRoutes:
         """hidden_bps is stored via /api/ind/prefs."""
         base, _ = tmp_server
         monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
-        body, status = http_get(
-            f"{base}/api/ind/prefs?hidden_bps=%5B681%2C682%5D")
+        body, status = http_post_json(
+            f"{base}/api/ind/prefs", {"hidden_bps": "[681,682]"})
         assert status == 200
         saved = json.loads((tmp_path / "ind.json").read_text())
         assert saved["hidden_bps"] == "[681,682]"
@@ -1339,3 +1351,18 @@ class TestSessionRetryCoversPost:
             assert attempts["n"] == 2
         finally:
             srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# XSS: SSO callback error must be HTML-escaped
+# ---------------------------------------------------------------------------
+
+class TestSSOCallbackXSS:
+    """v1.67.3: error param from EVE SSO must be HTML-escaped to prevent XSS."""
+
+    def test_error_param_is_escaped(self, tmp_server):
+        base, _ = tmp_server
+        xss_payload = "<script>alert(1)</script>"
+        r = requests.get(f"{base}/callback?error={xss_payload}")
+        assert "&lt;script&gt;" in r.text
+        assert "<script>alert(1)</script>" not in r.text

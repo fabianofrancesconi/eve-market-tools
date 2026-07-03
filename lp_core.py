@@ -10,6 +10,7 @@ Pipeline: corp name -> corp_id -> LP offers (ESI) -> Jita IV-4 prices
 """
 import json
 import math
+import os
 import statistics
 import time
 from datetime import datetime, timedelta, timezone
@@ -29,7 +30,7 @@ TRADE_HUBS = {
     60005686: {"name": "Hek 8-12",     "region_id": 10000042},
 }
 COMPAT_DATE = "2025-08-26"
-USER_AGENT = "lp-store-scanner/1.0 (fabiano.francesconi@gmail.com)"
+USER_AGENT = "eve-market-tools/1.0 (fabiano.francesconi@gmail.com)"
 HEADERS = {
     "X-Compatibility-Date": COMPAT_DATE,
     "User-Agent": USER_AGENT,
@@ -61,13 +62,37 @@ def load_json(path, default):
 
 def save_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
+    tmp = Path(str(path) + ".tmp")
+    with open(tmp, "w") as f:
         json.dump(data, f)
+    os.replace(tmp, path)
 
 
 # --- ESI / market access ---------------------------------------------------
 class LPError(Exception):
     """User-facing error (bad corp name, no LP store, etc.)."""
+
+
+class ESIRateLimited(LPError):
+    """Raised when ESI returns 420 (error-limited)."""
+
+
+def check_esi_rate_limit(resp):
+    """Check ESI rate-limit headers; sleep if near the limit, raise on 420."""
+    if resp.status_code == 420:
+        try:
+            reset = int(resp.headers.get("X-ESI-Error-Limit-Reset", 30))
+        except (TypeError, ValueError):
+            reset = 30
+        time.sleep(reset)
+        raise ESIRateLimited(f"ESI error-limited; waited {reset}s.")
+    remain = resp.headers.get("X-ESI-Error-Limit-Remain")
+    if isinstance(remain, str) and remain.isdigit() and int(remain) < 20:
+        try:
+            reset = int(resp.headers.get("X-ESI-Error-Limit-Reset", 5))
+        except (TypeError, ValueError):
+            reset = 5
+        time.sleep(min(reset, 5))
 
 
 def resolve_corp_id(name, session):
@@ -145,6 +170,7 @@ def _esi_orders_for_type(type_id, session, station_id, region_id):
         r = session.get(f"{ESI}/markets/{region_id}/orders/",
                         params={"type_id": type_id, "order_type": "all", "page": page},
                         headers=HEADERS, timeout=30)
+        check_esi_rate_limit(r)
         if r.status_code != 200:
             break
         batch = r.json()
@@ -390,7 +416,7 @@ def resolve_volumes(type_ids, session, cache_dir):
     return cache
 
 
-def _median_daily_volume(history, days=HISTORY_DAYS):
+def _mean_daily_volume(history, days=HISTORY_DAYS):
     """Average daily volume over the last `days` CALENDAR days. ESI history
     omits days with zero trades, so we fill gaps with 0 to get the true daily
     rate.  Mean (not median) because median-with-zeros collapses to 0 for
@@ -444,6 +470,7 @@ def _fetch_history_summary(type_ids, region_id, session, cache_dir, summarize,
             try:
                 r = session.get(f"{ESI}/markets/{region_id}/history/",
                                 params={"type_id": tid}, headers=HEADERS, timeout=20)
+                check_esi_rate_limit(r)
                 if r.status_code != 200:
                     out[tid] = None
                     continue
@@ -461,7 +488,7 @@ def fetch_history_volumes(type_ids, region_id, session, cache_dir, refresh=False
     via ESI market history. None for a type with no recorded history or on
     fetch failure. See _fetch_history_summary for caching."""
     return _fetch_history_summary(type_ids, region_id, session, cache_dir,
-                                  _median_daily_volume, refresh)
+                                  _mean_daily_volume, refresh)
 
 
 def fetch_history_prices(type_ids, region_id, session, cache_dir, refresh=False):

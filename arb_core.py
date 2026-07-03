@@ -11,35 +11,18 @@ from pathlib import Path
 
 import requests
 
+from lp_core import HEADERS, USER_AGENT, check_esi_rate_limit, load_json, save_json
+
 ESI = "https://esi.evetech.net"
 FUZZWORK_AGG = "https://market.fuzzwork.co.uk/aggregates/"
 JITA_STATION_ID = 60003760
 JITA_SYSTEM_ID = 30000142
-COMPAT_DATE = "2025-08-26"
-USER_AGENT = "negative-spread-scanner/1.0 (fabiano.francesconi@gmail.com)"
-HEADERS = {
-    "X-Compatibility-Date": COMPAT_DATE,
-    "User-Agent": USER_AGENT,
-    "Accept": "application/json",
-}
 _FUZZWORK_HEADERS = {"User-Agent": USER_AGENT}
 _FUZZWORK_BATCH = 200
 _TYPES_CACHE_TTL = 600  # 10 min — type lists change slowly
 _RISK_LABEL = {"high": "SAFE", "low": "LOWSEC", "null": "NULLSEC", "unknown": "?"}
 
 
-def load_json(path, default):
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return default
-
-
-def save_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f)
 
 
 def load_lookup_cache(cache_dir):
@@ -118,6 +101,7 @@ def fetch_region_types(region_id, session, cache_dir, refresh=False, progress_cb
     while True:
         r = session.get(f"{ESI}/markets/{region_id}/types/",
                         params={"page": page}, headers=HEADERS, timeout=30)
+        check_esi_rate_limit(r)
         r.raise_for_status()
         batch = r.json()
         if not batch:
@@ -175,6 +159,7 @@ def fetch_type_orders(region_id, type_id, session):
         r = session.get(f"{ESI}/markets/{region_id}/orders/",
                         params={"type_id": type_id, "order_type": "all", "page": page},
                         headers=HEADERS, timeout=30)
+        check_esi_rate_limit(r)
         if r.status_code != 200:
             break
         batch = r.json()

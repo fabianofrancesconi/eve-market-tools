@@ -29,11 +29,10 @@ from pathlib import Path
 import requests
 
 import lp_core
-from lp_core import ESI, HEADERS, load_json, save_json
+from lp_core import ESI, HEADERS, USER_AGENT, _best, load_json, save_json
 
 # --- constants -------------------------------------------------------------
 SDE_BASE_URL = "https://www.fuzzwork.co.uk/dump/latest/csv"
-USER_AGENT = "eve-industry-tools/1.0 (fabiano.francesconi@gmail.com)"
 _SDE_HEADERS = {"User-Agent": USER_AGENT}
 SDE_DB_NAME = "sde_industry.sqlite"
 # The SDE only changes on game patches; a week between rebuilds is plenty.
@@ -632,10 +631,6 @@ def assemble_invention(conn, bps):
 
 
 # --- evaluation (pure: dicts in, dicts out -- no I/O) ----------------------
-def _best(*vals):
-    """Highest of the supplied values, ignoring None. None if all are None."""
-    present = [v for v in vals if v is not None]
-    return max(present) if present else None
 
 
 def tradeability(daily_volume):

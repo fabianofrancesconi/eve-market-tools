@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.66.8"
+__version__ = "1.66.9"
 
 import argparse
 import base64
@@ -2315,10 +2315,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ind-bpc-warn .ind-bpc-buy { display:block; margin-top:6px; color:#fff; font-weight:700; font-size:14px; }
   .ind-bpo-expand { background:#4a3000; border:1px solid #b8860b; border-radius:4px; color:#ffd080; cursor:pointer; padding:2px 10px; font-size:12px; margin-left:6px; }
   .ind-bpo-expand:hover { background:#5a3a00; border-color:#daa520; }
-  #ind-detail {
+  #ind-detail { display:none; }
+  tr.ind-detail-row>td {
     background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
-    padding:12px 14px; margin-bottom:12px;
+    padding:12px 14px;
   }
+  tr.ind-detail-row { cursor:default !important; }
+  tr.ind-active>td { background:var(--panel2) !important; }
   .ind-d-head { font-size:14px; color:var(--fg); margin-bottom:10px; position:relative;
     cursor:pointer; }
   .ind-d-head:hover { color:var(--cyan); }
@@ -4481,6 +4484,23 @@ function renderIndTable(){
   }
 
   wireIndRows(tbody, ordered);
+  // Re-expand inline detail if one was open before the re-render
+  if(IND.openDetail){
+    const bpId=IND.openDetail.blueprint_id;
+    const matchTr=[...tbody.querySelectorAll("tr[data-ridx]")].find(tr=>{
+      const r=ordered[+tr.dataset.ridx];
+      return r && r.blueprint_id===bpId;
+    });
+    if(matchTr){
+      matchTr.classList.add("ind-active");
+      const ncol=indVisCols().length;
+      const dtr=document.createElement("tr");
+      dtr.className="ind-detail-row";
+      dtr.innerHTML=`<td colspan="${ncol}"></td>`;
+      matchTr.after(dtr);
+      renderIndDetail(IND.openDetail, dtr.querySelector("td"));
+    }
+  }
 }
 function wireIndRows(tbody, ordered){
   // Section header click toggles collapse
@@ -4494,10 +4514,9 @@ function wireIndRows(tbody, ordered){
     tr.onclick=ev=>{
       if(ev.target.classList.contains("fav-star")) return;
       if(ev.target.classList.contains("ind-hide-btn")) return;
-      const box=$("#ind-detail");
-      if(IND.openDetail && IND.openDetail.blueprint_id===r.blueprint_id && !box.classList.contains("hidden")){
-        box.classList.add("hidden"); IND.openDetail=null;
-      } else openIndDetail(r);
+      if(IND.openDetail && IND.openDetail.blueprint_id===r.blueprint_id){
+        closeIndDetail();
+      } else openIndDetail(r, tr);
     };
   });
   tbody.querySelectorAll(".fav-star").forEach(star=>{
@@ -4514,7 +4533,6 @@ function toggleFavorite(bp){
   if(IND.favorites.has(bp)) IND.favorites.delete(bp); else IND.favorites.add(bp);
   saveIndPrefs();
   renderIndTable();
-  if(IND.openDetail && IND.openDetail.blueprint_id===bp) renderIndDetail(IND.openDetail);
 }
 function toggleHidden(bp){
   if(IND.hidden.has(bp)) IND.hidden.delete(bp); else IND.hidden.add(bp);
@@ -4540,7 +4558,7 @@ function renderIndStatus(){
 
 function showIndProgress(msg, sub, pct){
   $("#ind-tbl").classList.add("hidden");
-  $("#ind-detail").classList.add("hidden");
+  closeIndDetail();
   $("#ind-progress").classList.remove("hidden");
   $("#ind-prog-label").textContent=msg;
   $("#ind-prog-sub").textContent=sub||"";
@@ -4672,20 +4690,32 @@ function loadOwnedPreview(){
   es.onerror=()=>{ es.close(); IND.es=null; };
 }
 
-function openIndDetail(row){
-  const box=$("#ind-detail");
-  box.classList.remove("hidden");
-  box.innerHTML=`<div class="ind-d-head">Loading ${row.product_name}…</div>`;
-  box.scrollIntoView({block:"nearest"});
+function closeIndDetail(){
+  const old=document.querySelector("tr.ind-detail-row");
+  if(old) old.remove();
+  IND.openDetail=null;
+  document.querySelectorAll("#ind-tbl tr.ind-active").forEach(r=>r.classList.remove("ind-active"));
+}
+function openIndDetail(row, clickedTr){
+  closeIndDetail();
+  if(!clickedTr) return;
+  clickedTr.classList.add("ind-active");
+  const ncol=indVisCols().length;
+  const tr=document.createElement("tr");
+  tr.className="ind-detail-row";
+  tr.innerHTML=`<td colspan="${ncol}"><div class="ind-d-head">Loading ${row.product_name}…</div></td>`;
+  clickedTr.after(tr);
+  tr.querySelector("td").scrollIntoView({block:"nearest", behavior:"smooth"});
   const p=indParams({blueprint_id:row.blueprint_id});
   fetch("/api/ind/detail?"+p).then(r=>r.json()).then(d=>{
-    if(d.error){ box.innerHTML=`<div class="ind-d-head">${d.error}</div>`; return; }
-    renderIndDetail(d);
-  }).catch(()=>{ box.innerHTML=`<div class="ind-d-head">Failed to load detail.</div>`; });
+    if(d.error){ tr.querySelector("td").innerHTML=`<div class="ind-d-head">${d.error}</div>`; return; }
+    renderIndDetail(d, tr.querySelector("td"));
+  }).catch(()=>{ tr.querySelector("td").innerHTML=`<div class="ind-d-head">Failed to load detail.</div>`; });
 }
 
-function renderIndDetail(d){
+function renderIndDetail(d, container){
   IND.openDetail=d;   // remembered so a batch-size change can re-render this panel
+  const box=container||document.querySelector("tr.ind-detail-row>td");
   const isk=v=>v===null||v===undefined?"—":fmtISK(v);
   const n=Math.max(1, IND.detailRuns||1);
   // Batch figures are derived from per-run values × current run count, so they
@@ -4804,7 +4834,7 @@ function renderIndDetail(d){
       <table class="ind-d-mats"><thead><tr><th>Datacore</th><th class="num">Qty</th>
         <th class="num">Unit</th><th class="num">Line</th></tr></thead><tbody>${dcs}</tbody></table>`;
   }
-  $("#ind-detail").innerHTML=`
+  box.innerHTML=`
     <div class="ind-d-head">
       <b>${d.product.name}</b>
       <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
@@ -4923,15 +4953,12 @@ function renderIndDetail(d){
       <th class="num">Cargo m³</th></tr></thead><tbody>${mats}${matTotal}</tbody></table>
     ${invHtml}`;
   // Wire copy + close + ownership via listeners (inline onclick can't see $).
-  const box=$("#ind-detail");
-  const closeDetail=()=>{ box.classList.add("hidden"); IND.openDetail=null; };
-  box.querySelector(".ind-d-close").onclick=closeDetail;
+  box.querySelector(".ind-d-close").onclick=closeIndDetail;
   // Clicking the header bar itself (not its buttons) collapses the detail view.
-  // Track mousedown origin so drag-selecting inside the runs input doesn't close.
   const head=box.querySelector(".ind-d-head");
   let headDownInInteractive=false;
   head.onmousedown=ev=>{ headDownInInteractive=!!ev.target.closest("button,input,.ind-d-runs-wrap"); };
-  head.onclick=ev=>{ if(!ev.target.closest("button,input,.ind-d-runs-wrap") && !headDownInInteractive) closeDetail(); };
+  head.onclick=ev=>{ if(!ev.target.closest("button,input,.ind-d-runs-wrap") && !headDownInInteractive) closeIndDetail(); };
   box.querySelector(".ind-fav-btn").onclick=()=>toggleFavorite(d.blueprint_id);
   const copyBtn=box.querySelector(".ind-copy");
   copyBtn.onclick=()=>{

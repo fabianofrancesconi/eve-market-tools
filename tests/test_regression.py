@@ -501,7 +501,8 @@ class TestApiSettingsEndpoint:
 
     def test_not_logged_in_reports_unsynced(self, tmp_server, monkeypatch):
         base, _ = tmp_server
-        monkeypatch.setattr(lp_web, "_AUTH", {})
+        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", None)
+        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
         data, _ = http_get(f"{base}/api/settings")
         assert data["_server_synced"] is False
         assert data["_logged_in"] is False
@@ -509,7 +510,8 @@ class TestApiSettingsEndpoint:
     def test_logged_in_without_prior_sync_falls_back_to_files(self, tmp_server, monkeypatch, tmp_path):
         base, _ = tmp_server
         monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web, "_AUTH", {"character_id": 42})
+        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 42)
+        monkeypatch.setattr(lp_web, "_CHARACTERS", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
         data, _ = http_get(f"{base}/api/settings")
         assert data["_server_synced"] is False
         assert data["_logged_in"] is True
@@ -517,7 +519,8 @@ class TestApiSettingsEndpoint:
     def test_logged_in_with_prior_sync_returns_synced_blob(self, tmp_server, monkeypatch, tmp_path):
         base, _ = tmp_server
         monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web, "_AUTH", {"character_id": 42})
+        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 42)
+        monkeypatch.setattr(lp_web, "_CHARACTERS", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
         lp_web.save_user_settings(42, {"active_tab": "ind"})
         data, _ = http_get(f"{base}/api/settings")
         assert data["_server_synced"] is True
@@ -553,21 +556,24 @@ class TestUserSettingsSync:
 
     def test_sync_without_login_is_a_noop(self, monkeypatch, tmp_path):
         monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web, "_AUTH", {})
+        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", None)
+        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
         result = lp_web.do_settings_sync({"blob": ['{"active_tab":"lp"}']})
         assert result == {"ok": True, "synced": False}
         assert not (tmp_path / "user_settings.sqlite").exists()
 
     def test_sync_while_logged_in_persists_blob(self, monkeypatch, tmp_path):
         monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web, "_AUTH", {"character_id": 42})
+        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 42)
+        monkeypatch.setattr(lp_web, "_CHARACTERS", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
         result = lp_web.do_settings_sync({"blob": ['{"active_tab":"ind","col_widths":{"name":120}}']})
         assert result == {"ok": True, "synced": True}
         assert lp_web.load_user_settings(42) == {"active_tab": "ind", "col_widths": {"name": 120}}
 
     def test_sync_rejects_invalid_json(self, monkeypatch, tmp_path):
         monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web, "_AUTH", {"character_id": 42})
+        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 42)
+        monkeypatch.setattr(lp_web, "_CHARACTERS", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
         with pytest.raises(LPError):
             lp_web.do_settings_sync({"blob": ["not json"]})
 
@@ -995,12 +1001,12 @@ class TestIndustryLoginRequired:
     login is mandatory rather than an optional fallback."""
 
     def test_scan_without_login_raises(self, monkeypatch):
-        monkeypatch.setattr(lp_web, "_AUTH", {})
+        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
         with pytest.raises(LPError):
             lp_web.do_ind_scan({})
 
     def test_detail_without_login_raises(self, monkeypatch):
-        monkeypatch.setattr(lp_web, "_AUTH", {})
+        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
         with pytest.raises(LPError):
             lp_web.do_ind_detail({"blueprint_id": ["681"]})
 
@@ -1091,9 +1097,11 @@ class TestIndustryRoutes:
 
     def test_owned_only_includes_char_blueprints(self, monkeypatch):
         """owned_only=1 loads blueprints the character owns via ESI."""
-        monkeypatch.setattr(lp_web, "_AUTH", {"character_id": 123, "name": "T"})
-        monkeypatch.setattr(lp_web, "_CHAR_BP_ME_TE", {681: (10, 20)})
-        monkeypatch.setattr(lp_web, "_CHAR_SKILL_PROFILE", {})
+        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 123)
+        monkeypatch.setattr(lp_web, "_IND_CHAR_ID", 123)
+        monkeypatch.setattr(lp_web, "_CHARACTERS", {123: {"character_id": 123, "name": "T", "scopes": [], "refresh_token": "x"}})
+        monkeypatch.setattr(lp_web, "_CHAR_BP_ME_TES", {123: {681: (10, 20)}})
+        monkeypatch.setattr(lp_web, "_CHAR_SKILL_PROFILES", {123: {}})
         html = lp_web.INDEX_HTML
         assert "loadOwnedPreview" in html
         assert 'owned_only:"1"' in html or "owned_only" in html
@@ -1242,10 +1250,15 @@ class TestDeliveredRunsTracker:
 class TestCharDataOrdersIsolation:
     def _login(self, monkeypatch):
         import time as _time
-        monkeypatch.setattr(lp_web, "_AUTH", {
-            "access_token": "TOK", "refresh_token": "RT", "character_id": 42,
-            "name": "Test Char", "scopes": [], "expires_at": _time.time() + 3600,
-        })
+        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 42)
+        monkeypatch.setattr(lp_web, "_IND_CHAR_ID", 42)
+        monkeypatch.setattr(lp_web, "_CHARACTERS", {42: {
+            "character_id": 42, "name": "Test Char", "scopes": [],
+            "refresh_token": "RT", "access_token": "TOK",
+            "expires_at": _time.time() + 3600,
+        }})
+        monkeypatch.setattr(lp_web, "_CHAR_SKILL_PROFILES", {42: {}})
+        monkeypatch.setattr(lp_web, "_CHAR_BP_ME_TES", {42: {}})
 
     def _http_error(self, status):
         resp = MagicMock(status_code=status)

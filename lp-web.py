@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.68.0"
+__version__ = "1.69.0"
 
 import argparse
 import base64
@@ -89,20 +89,22 @@ LP_LAST_SCAN_PATH = CACHE_DIR / "lp_last_scan.json"
 IND_LAST_SCAN_PATH = CACHE_DIR / "ind_last_scan.json"
 REFRESHED_CORPS = set()
 
-# ── EVE SSO state (single process, single user) ───────────────────────────────
+# ── EVE SSO state (single process, multi-character) ──────────────────────────
 # Pending PKCE handshakes keyed by `state` (verifier + redirect_uri), set in
 # /api/auth/login and consumed once in /callback.
 _PKCE: dict = {}
-# Live session: access_token + expiry + character identity. Refresh token is
-# persisted via sso_core; the access token is held only in memory.
-_AUTH: dict = {}
-_AUTH_LOCK = threading.RLock()
-# Logged-in character's {skill_id: trained_level}, used to auto-fill the planner.
-_CHAR_SKILL_PROFILE: dict = {}
-# Logged-in character's owned blueprints, as {type_id: (material_efficiency,
-# time_efficiency)} of the best-researched copy — used to override the
-# Industry planner's uniform ME/TE assumption per blueprint.
-_CHAR_BP_ME_TE: dict = {}
+# All linked characters, keyed by character_id (int).
+# Each entry: {character_id, name, scopes, refresh_token, access_token, expires_at}
+_CHARACTERS: dict = {}
+_CHARACTERS_LOCK = threading.RLock()
+# The "active" character for LP-tab purposes.
+_ACTIVE_CHAR_ID: int | None = None
+# The character whose skills/BPs drive Industry planner calculations.
+_IND_CHAR_ID: int | None = None
+# Per-character skill profiles: {cid: {skill_id: trained_level}}
+_CHAR_SKILL_PROFILES: dict = {}
+# Per-character owned blueprints: {cid: {type_id: (me, te, is_bpo, runs)}}
+_CHAR_BP_ME_TES: dict = {}
 # The host:port the server is actually bound to, for the suggested callback URL.
 _SERVER_PORT = 8765
 
@@ -231,102 +233,121 @@ def _callback_url():
     return (load_auth_settings().get("callback_url") or "").strip() or _suggested_callback()
 
 
+def _persist_auth():
+    """Write all linked characters + active/ind selections to disk."""
+    data = {
+        "version": 2,
+        "active_char_id": _ACTIVE_CHAR_ID,
+        "ind_char_id": _IND_CHAR_ID,
+        "characters": [
+            {"character_id": c["character_id"], "name": c["name"],
+             "scopes": c["scopes"], "refresh_token": c["refresh_token"]}
+            for c in _CHARACTERS.values()
+        ],
+    }
+    sso_core.save_tokens(CACHE_DIR, data)
+
+
 def _restore_auth():
-    """Load a persisted session on startup so a previous login survives a restart.
-    The access token is refreshed lazily on first use."""
+    """Load persisted characters on startup. Migrates v1 (single char) to v2
+    automatically so existing users don't need to re-login."""
+    global _ACTIVE_CHAR_ID, _IND_CHAR_ID
     saved = sso_core.load_tokens(CACHE_DIR)
-    if saved.get("refresh_token") and saved.get("character_id"):
-        _AUTH.update({
-            "refresh_token": saved["refresh_token"],
-            "character_id": saved["character_id"],
+    if saved.get("version") == 2:
+        for c in saved.get("characters", []):
+            cid = c["character_id"]
+            _CHARACTERS[cid] = {
+                "character_id": cid,
+                "name": c["name"],
+                "scopes": c.get("scopes", []),
+                "refresh_token": c["refresh_token"],
+                "access_token": None,
+                "expires_at": 0,
+            }
+        _ACTIVE_CHAR_ID = saved.get("active_char_id")
+        _IND_CHAR_ID = saved.get("ind_char_id")
+        if _ACTIVE_CHAR_ID not in _CHARACTERS:
+            _ACTIVE_CHAR_ID = next(iter(_CHARACTERS), None)
+        if _IND_CHAR_ID not in _CHARACTERS:
+            _IND_CHAR_ID = _ACTIVE_CHAR_ID
+    elif saved.get("refresh_token") and saved.get("character_id"):
+        cid = saved["character_id"]
+        _CHARACTERS[cid] = {
+            "character_id": cid,
             "name": saved.get("name"),
             "scopes": saved.get("scopes", []),
+            "refresh_token": saved["refresh_token"],
             "access_token": None,
             "expires_at": 0,
-        })
+        }
+        _ACTIVE_CHAR_ID = cid
+        _IND_CHAR_ID = cid
+        _persist_auth()
 
 
 def _require_login():
-    """Raise LPError unless a character is logged in. The Industry planner has
-    no manual ME/TE/skill inputs — it needs a real character's owned blueprints
-    and trained skills to mean anything, so login isn't optional for it."""
-    if not _AUTH.get("refresh_token"):
+    """Raise LPError unless at least one character is logged in."""
+    if not _CHARACTERS:
         raise LPError("Log in with EVE to use the Industry planner.")
 
 
-def _access_token():
-    """A valid bearer token, refreshing transparently when expired. Raises LPError
-    if nobody is logged in or no CLIENT_ID is configured."""
-    with _AUTH_LOCK:
-        if not _AUTH.get("refresh_token"):
+def _access_token(cid=None):
+    """A valid bearer token for the given character (defaults to active).
+    Refreshes transparently when expired."""
+    with _CHARACTERS_LOCK:
+        if cid is None:
+            cid = _ACTIVE_CHAR_ID
+        char = _CHARACTERS.get(cid)
+        if not char or not char.get("refresh_token"):
             raise LPError("Not logged in to EVE.")
-        if _AUTH.get("access_token") and not sso_core.access_token_expired(_AUTH.get("expires_at")):
-            return _AUTH["access_token"]
+        if char.get("access_token") and not sso_core.access_token_expired(char.get("expires_at")):
+            return char["access_token"]
         client_id = (load_auth_settings().get("client_id") or "").strip()
         if not client_id:
             raise LPError("No EVE application CLIENT_ID configured.")
-        tok = sso_core.refresh_access_token(client_id, _AUTH["refresh_token"], SESSION)
-        _apply_token(tok)
-        return _AUTH["access_token"]
-
-
-def _apply_token(tok):
-    """Store a token response into _AUTH and persist the (possibly rotated)
-    refresh token + identity."""
-    claims = sso_core.decode_jwt_payload(tok["access_token"])
-    with _AUTH_LOCK:
-        _AUTH.update({
+        tok = sso_core.refresh_access_token(client_id, char["refresh_token"], SESSION)
+        claims = sso_core.decode_jwt_payload(tok["access_token"])
+        char.update({
             "access_token": tok["access_token"],
-            "refresh_token": tok.get("refresh_token", _AUTH.get("refresh_token")),
+            "refresh_token": tok.get("refresh_token", char["refresh_token"]),
             "expires_at": time.time() + int(tok.get("expires_in", 1200)),
-            "character_id": claims["character_id"],
-            "name": claims.get("name"),
-            "scopes": claims.get("scopes", []),
+            "name": claims.get("name") or char["name"],
+            "scopes": claims.get("scopes") or char["scopes"],
         })
-        sso_core.save_tokens(CACHE_DIR, {
-            "refresh_token": _AUTH["refresh_token"],
-            "character_id": _AUTH["character_id"],
-            "name": _AUTH["name"],
-            "scopes": _AUTH["scopes"],
-        })
+        _persist_auth()
+        return char["access_token"]
 
 
-def _refresh_skill_profile():
-    """Pull the character's skills and cache the {skill_id: level} profile so the
-    Industry planner can use real per-skill levels. Best-effort."""
-    global _CHAR_SKILL_PROFILE
+def _refresh_skill_profile(cid):
+    """Pull the character's skills and cache {skill_id: level} for Industry."""
     try:
-        skills = sso_core.fetch_skills(_access_token(), _AUTH["character_id"], SESSION)
-        _CHAR_SKILL_PROFILE = sso_core.skill_profile_from_skills(skills)
+        skills = sso_core.fetch_skills(_access_token(cid), cid, SESSION)
+        _CHAR_SKILL_PROFILES[cid] = sso_core.skill_profile_from_skills(skills)
     except (LPError, requests.RequestException):
-        _CHAR_SKILL_PROFILE = {}
+        _CHAR_SKILL_PROFILES.setdefault(cid, {})
 
 
-def _refresh_char_blueprints():
-    """Pull the character's owned blueprints and cache each type's best ME/TE,
-    so the Industry planner's "My blueprints" override can use them. Best-
-    effort — a 403 (scope granted before this feature existed) just leaves the
-    cache empty and the planner falls back to the uniform ME/TE assumption.
-    Also supplements from active industry jobs (a running manufacturing job
-    proves ownership even if the blueprints endpoint hasn't caught up)."""
-    global _CHAR_BP_ME_TE
+def _refresh_char_blueprints(cid):
+    """Pull the character's owned blueprints and cache each type's best ME/TE.
+    Supplements from active industry jobs (a running manufacturing job proves
+    ownership even if the blueprints endpoint hasn't caught up)."""
     try:
-        token = _access_token()
-        cid = _AUTH["character_id"]
+        token = _access_token(cid)
         bps = sso_core.fetch_character_blueprints(token, cid, SESSION)
-        _CHAR_BP_ME_TE = sso_core.owned_blueprint_lookup(bps)
+        bp_map = sso_core.owned_blueprint_lookup(bps)
         try:
             jobs = sso_core.fetch_industry_jobs(token, cid, SESSION)
             for j in jobs:
                 if j.get("activity_id") != 1 or j.get("status") != "active":
                     continue
                 bp_tid = j.get("blueprint_type_id")
-                if bp_tid and bp_tid not in _CHAR_BP_ME_TE:
-                    _CHAR_BP_ME_TE[bp_tid] = (0, 0, True, -1)
+                if bp_tid and bp_tid not in bp_map:
+                    bp_map[bp_tid] = (0, 0, True, -1)
         except (LPError, requests.RequestException):
             pass
+        _CHAR_BP_ME_TES[cid] = bp_map
     except (LPError, requests.RequestException):
-        _CHAR_BP_ME_TE = {}
+        _CHAR_BP_ME_TES.setdefault(cid, {})
 
 
 def do_auth_config(q):
@@ -363,23 +384,63 @@ def do_auth_login(q):
 
 
 def do_auth_status(q):
+    chars = [{"character_id": c["character_id"], "name": c["name"]}
+             for c in _CHARACTERS.values()]
+    active = _CHARACTERS.get(_ACTIVE_CHAR_ID)
     return {
-        "logged_in": bool(_AUTH.get("refresh_token")),
-        "character_id": _AUTH.get("character_id"),
-        "name": _AUTH.get("name"),
-        "scopes": _AUTH.get("scopes", []),
+        "logged_in": bool(_CHARACTERS),
+        "characters": chars,
+        "active_char_id": _ACTIVE_CHAR_ID,
+        "ind_char_id": _IND_CHAR_ID,
+        "character_id": _ACTIVE_CHAR_ID,
+        "name": active["name"] if active else None,
+        "scopes": active["scopes"] if active else [],
     }
 
 
+def do_auth_switch(q):
+    """Switch the active (LP) and/or industry character."""
+    global _ACTIVE_CHAR_ID, _IND_CHAR_ID
+    with _CHARACTERS_LOCK:
+        if "active_char_id" in q:
+            cid = int(q["active_char_id"][0])
+            if cid in _CHARACTERS:
+                _ACTIVE_CHAR_ID = cid
+        if "ind_char_id" in q:
+            cid = int(q["ind_char_id"][0])
+            if cid in _CHARACTERS:
+                _IND_CHAR_ID = cid
+                _refresh_skill_profile(cid)
+                _refresh_char_blueprints(cid)
+        _persist_auth()
+    return do_auth_status({})
+
+
 def do_auth_logout(q):
-    sso_core.clear_tokens(CACHE_DIR)
-    with _AUTH_LOCK:
-        _AUTH.clear()
-        _PKCE.clear()
-        global _CHAR_SKILL_PROFILE, _CHAR_BP_ME_TE
-        _CHAR_SKILL_PROFILE = {}
-        _CHAR_BP_ME_TE = {}
+    char_id = q.get("char_id", [None])[0]
+    global _ACTIVE_CHAR_ID, _IND_CHAR_ID
+    with _CHARACTERS_LOCK:
+        if char_id:
+            cid = int(char_id)
+            _CHARACTERS.pop(cid, None)
+            _CHAR_SKILL_PROFILES.pop(cid, None)
+            _CHAR_BP_ME_TES.pop(cid, None)
+            if _ACTIVE_CHAR_ID == cid:
+                _ACTIVE_CHAR_ID = next(iter(_CHARACTERS), None)
+            if _IND_CHAR_ID == cid:
+                _IND_CHAR_ID = _ACTIVE_CHAR_ID
+        else:
+            _CHARACTERS.clear()
+            _CHAR_SKILL_PROFILES.clear()
+            _CHAR_BP_ME_TES.clear()
+            _ACTIVE_CHAR_ID = None
+            _IND_CHAR_ID = None
+            _PKCE.clear()
+        _persist_auth()
     return {"ok": True}
+
+
+_JOBS_TRACK_LOCK = threading.Lock()
 
 
 def _track_delivered_jobs(cid, jobs, names):
@@ -388,60 +449,53 @@ def _track_delivered_jobs(cid, jobs, names):
     a character is observed, its already-delivered jobs (ESI's 90-day completed
     window) are recorded as a baseline but not counted, so the counter only grows
     from the moment this feature started watching, as advertised to the user."""
-    store = load_json(JOBS_TRACK_PATH, {})
-    key = str(cid)
-    entry = store.get(key)
-    first_seen = entry is None
-    if entry is None:
-        entry = {"seen_job_ids": [], "total_runs": 0, "total_jobs": 0,
-                  "since": time.time(), "by_product": {}}
-    seen = set(entry["seen_job_ids"])
-    changed = first_seen
-    for j in jobs:
-        if j.get("status") != "delivered":
-            continue
-        jid = j.get("job_id")
-        if jid is None or jid in seen:
-            continue
-        seen.add(jid)
-        changed = True
-        if first_seen:
-            continue   # baseline — don't count history from before tracking started
-        runs = j.get("runs") or 0
-        entry["total_runs"] += runs
-        entry["total_jobs"] += 1
-        pid = str(j.get("product_type_id"))
-        prod = entry["by_product"].setdefault(pid, {"name": names.get(j.get("product_type_id"), "?"), "runs": 0, "jobs": 0})
-        prod["runs"] += runs
-        prod["jobs"] += 1
-    entry["seen_job_ids"] = list(seen)
-    if changed:
-        store[key] = entry
-        save_json(JOBS_TRACK_PATH, store)
-    return {"total_runs": entry["total_runs"], "total_jobs": entry["total_jobs"],
-            "since": entry["since"], "by_product": entry["by_product"]}
+    with _JOBS_TRACK_LOCK:
+        store = load_json(JOBS_TRACK_PATH, {})
+        key = str(cid)
+        entry = store.get(key)
+        first_seen = entry is None
+        if entry is None:
+            entry = {"seen_job_ids": [], "total_runs": 0, "total_jobs": 0,
+                      "since": time.time(), "by_product": {}}
+        seen = set(entry["seen_job_ids"])
+        changed = first_seen
+        for j in jobs:
+            if j.get("status") != "delivered":
+                continue
+            jid = j.get("job_id")
+            if jid is None or jid in seen:
+                continue
+            seen.add(jid)
+            changed = True
+            if first_seen:
+                continue
+            runs = j.get("runs") or 0
+            entry["total_runs"] += runs
+            entry["total_jobs"] += 1
+            pid = str(j.get("product_type_id"))
+            prod = entry["by_product"].setdefault(pid, {"name": names.get(j.get("product_type_id"), "?"), "runs": 0, "jobs": 0})
+            prod["runs"] += runs
+            prod["jobs"] += 1
+        entry["seen_job_ids"] = list(seen)
+        if changed:
+            store[key] = entry
+            save_json(JOBS_TRACK_PATH, store)
+        return {"total_runs": entry["total_runs"], "total_jobs": entry["total_jobs"],
+                "since": entry["since"], "by_product": entry["by_product"]}
 
 
-def do_char_data(q):
-    """Bundle of the logged-in character's wallet, SP, skill queue, loyalty points
-    and running industry jobs (with resolved names + timers)."""
-    token = _access_token()
-    cid = _AUTH["character_id"]
-    _refresh_skill_profile()
-    _refresh_char_blueprints()
+def _fetch_one_char_data(cid):
+    """Fetch all ESI data for a single character. Returns a dict bundle."""
+    token = _access_token(cid)
+    char_name = _CHARACTERS[cid]["name"]
+    _refresh_skill_profile(cid)
+    _refresh_char_blueprints(cid)
 
     wallet = sso_core.fetch_wallet(token, cid, SESSION)
     skills = sso_core.fetch_skills(token, cid, SESSION)
     queue = sso_core.fetch_skillqueue(token, cid, SESSION)
     loyalty = sso_core.fetch_loyalty_points(token, cid, SESSION)
-    # include_completed so delivered jobs (last 90 days) surface for the runs-
-    # delivered counter; the active-jobs table below filters them back out.
     jobs = sso_core.fetch_industry_jobs(token, cid, SESSION, include_completed=True)
-    # Orders needs a scope (esi-markets.read_character_orders.v1) added after
-    # earlier logins, and that scope also has to be enabled for the user's own
-    # registered EVE app on developers.eveonline.com — if either is missing
-    # ESI 403s. Isolate that failure so the rest of the character tab (wallet,
-    # skills, jobs, LP) still loads instead of the whole bundle 500ing.
     orders, orders_error = [], None
     try:
         orders = sso_core.fetch_market_orders(token, cid, SESSION)
@@ -453,8 +507,6 @@ def do_char_data(q):
                         "EVE application at developers.eveonline.com, then log out and "
                         "back in.")
 
-    # Resolve every type/skill name referenced by jobs, the skill queue and
-    # open orders in one call.
     name_ids = set()
     for j in jobs:
         name_ids.add(j.get("blueprint_type_id"))
@@ -479,7 +531,7 @@ def do_char_data(q):
     out_jobs = []
     for j in jobs:
         if j.get("status") not in ("active", "paused", "ready"):
-            continue   # delivered/cancelled/reverted — not a running job any more
+            continue
         act = j.get("activity_id")
         out_jobs.append({
             "job_id": j.get("job_id"),
@@ -493,6 +545,8 @@ def do_char_data(q):
             "status": j.get("status"),
             "start": j.get("start_date"),
             "end": j.get("end_date"),
+            "character_name": char_name,
+            "character_id": cid,
         })
     out_jobs.sort(key=lambda x: x.get("end") or "")
 
@@ -507,27 +561,21 @@ def do_char_data(q):
     loyalty_out.sort(key=lambda x: -(x.get("loyalty_points") or 0))
 
     queue_out = []
-    now = time.time()
     for qd in queue:
-        fin = qd.get("finish_date")
         queue_out.append({
             "skill_id": qd.get("skill_id"),
             "skill_name": names.get(qd.get("skill_id"), "?"),
             "finished_level": qd.get("finished_level"),
-            "finish_date": fin,
+            "finish_date": qd.get("finish_date"),
+            "character_name": char_name,
+            "character_id": cid,
         })
 
-    # Jita best-sell, just as a comparison reference for your own listings —
-    # not necessarily the station/region the order is actually sitting in.
     order_prices = (fetch_prices({o["type_id"] for o in orders if o.get("type_id")}, SESSION)
                     if orders else {})
 
     orders_out = []
     for o in orders:
-        # Your exact place in the order-matching queue: needs the live order
-        # book at this order's own station, not just the Jita aggregate above.
-        # Best-effort -- a player structure or a transient ESI hiccup just
-        # leaves this unknown rather than failing the whole bundle.
         rank = None
         loc = o.get("location_id")
         region_id = (TRADE_HUBS.get(loc, {}).get("region_id")
@@ -553,14 +601,16 @@ def do_char_data(q):
             "is_best": rank["is_best"] if rank else None,
             "queue_rank": rank["rank"] if rank else None,
             "queue_total": rank["total"] if rank else None,
+            "character_name": char_name,
+            "character_id": cid,
         })
 
-    # Trade skills for auto-calculating tax/broker
-    accounting_lvl = _CHAR_SKILL_PROFILE.get(16622, 0)
-    broker_rel_lvl = _CHAR_SKILL_PROFILE.get(3446, 0)
+    skill_profile = _CHAR_SKILL_PROFILES.get(cid, {})
+    accounting_lvl = skill_profile.get(16622, 0)
+    broker_rel_lvl = skill_profile.get(3446, 0)
 
     return {
-        "name": _AUTH.get("name"),
+        "name": char_name,
         "character_id": cid,
         "wallet": wallet,
         "total_sp": skills.get("total_sp"),
@@ -573,6 +623,68 @@ def do_char_data(q):
         "market_orders_error": orders_error,
         "accounting_level": accounting_lvl,
         "broker_relations_level": broker_rel_lvl,
+    }
+
+
+def do_char_data(q):
+    """Fetch data for all linked characters and return a combined bundle."""
+    if not _CHARACTERS:
+        raise LPError("Not logged in to EVE.")
+
+    char_ids = list(_CHARACTERS.keys())
+    results = {}
+
+    if len(char_ids) == 1:
+        cid = char_ids[0]
+        results[cid] = _fetch_one_char_data(cid)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(char_ids)) as pool:
+            futures = {pool.submit(_fetch_one_char_data, cid): cid for cid in char_ids}
+            for f in concurrent.futures.as_completed(futures):
+                cid = futures[f]
+                try:
+                    results[cid] = f.result()
+                except Exception:
+                    pass
+
+    combined_wallet = sum(r.get("wallet") or 0 for r in results.values())
+    combined_jobs = []
+    combined_orders = []
+    combined_queue = []
+    combined_runs = {"total_runs": 0, "total_jobs": 0, "by_product": {}}
+    for r in results.values():
+        combined_jobs.extend(r.get("jobs", []))
+        combined_orders.extend(r.get("market_orders", []))
+        combined_queue.extend(r.get("skillqueue", []))
+        rt = r.get("runs_tracked") or {}
+        combined_runs["total_runs"] += rt.get("total_runs", 0)
+        combined_runs["total_jobs"] += rt.get("total_jobs", 0)
+    combined_jobs.sort(key=lambda x: x.get("end") or "")
+    combined_orders.sort(key=lambda o: o.get("issued") or "", reverse=True)
+
+    active_data = results.get(_ACTIVE_CHAR_ID) or next(iter(results.values()), {})
+
+    return {
+        "characters": [results[cid] for cid in char_ids if cid in results],
+        "combined_wallet": combined_wallet,
+        "combined_jobs": combined_jobs,
+        "combined_orders": combined_orders,
+        "combined_queue": combined_queue,
+        "combined_runs_tracked": combined_runs,
+        "active_char_id": _ACTIVE_CHAR_ID,
+        "name": active_data.get("name"),
+        "character_id": active_data.get("character_id"),
+        "wallet": active_data.get("wallet"),
+        "total_sp": active_data.get("total_sp"),
+        "unallocated_sp": active_data.get("unallocated_sp"),
+        "skillqueue": active_data.get("skillqueue", []),
+        "loyalty": active_data.get("loyalty", []),
+        "jobs": combined_jobs,
+        "runs_tracked": combined_runs,
+        "market_orders": combined_orders,
+        "market_orders_error": active_data.get("market_orders_error"),
+        "accounting_level": active_data.get("accounting_level", 0),
+        "broker_relations_level": active_data.get("broker_relations_level", 0),
     }
 
 
@@ -836,7 +948,7 @@ def do_settings_sync(q):
     the server, so other devices see the same columns/filters/etc. No-op when
     no character is logged in (unauthenticated use keeps the per-field
     /api/prefs, /api/arb/prefs, /api/ind/prefs endpoints as its only store)."""
-    character_id = _AUTH.get("character_id")
+    character_id = _ACTIVE_CHAR_ID
     if not character_id:
         return {"ok": True, "synced": False}
     blob = q.get("blob", ["{}"])[0]
@@ -1222,14 +1334,13 @@ def do_ind_scan(q, emit=None):
     except (ValueError, TypeError):
         fav_ids = set()
     params = _ind_params(q)
-    # Real per-character data always wins over the uniform assumption below,
-    # for whatever it actually covers — no opt-in needed. It falls back to the
-    # uniform ME/TE/skill assumption for blueprints you don't own / skills you
-    # haven't trained, or when logged out entirely.
-    if _CHAR_SKILL_PROFILE:
-        params["skill_profile"] = _CHAR_SKILL_PROFILE
-    if _CHAR_BP_ME_TE:
-        params["owned_me_te"] = _CHAR_BP_ME_TE
+    ind_cid = _IND_CHAR_ID
+    ind_skill_profile = _CHAR_SKILL_PROFILES.get(ind_cid, {}) if ind_cid else {}
+    ind_bp_me_te = _CHAR_BP_ME_TES.get(ind_cid, {}) if ind_cid else {}
+    if ind_skill_profile:
+        params["skill_profile"] = ind_skill_profile
+    if ind_bp_me_te:
+        params["owned_me_te"] = ind_bp_me_te
 
     if not favorites_only and not owned_only:
         s = load_ind_settings()
@@ -1247,7 +1358,7 @@ def do_ind_scan(q, emit=None):
         if favorites_only:
             candidates = ind_core.candidates_for_blueprints(conn, fav_ids)
         elif owned_only:
-            bp_ids = set(_CHAR_BP_ME_TE.keys()) | fav_ids
+            bp_ids = set(ind_bp_me_te.keys()) | fav_ids
             candidates = ind_core.candidates_for_blueprints(conn, bp_ids)
         else:
             if market_group and market_group != "all":
@@ -1339,6 +1450,21 @@ def do_ind_scan(q, emit=None):
             r["liq_loaded"] = True   # the rest get scored by the background fill
 
     _emit({"type": "progress", "pct": 97, "msg": "Formatting results…", "sub": ""})
+    # Cross-character blueprint ownership annotations
+    other_owners_map = {}
+    for other_cid, bp_map in _CHAR_BP_ME_TES.items():
+        if other_cid == ind_cid:
+            continue
+        other_name = _CHARACTERS.get(other_cid, {}).get("name", "?")
+        for tid, entry in bp_map.items():
+            other_owners_map.setdefault(tid, []).append({
+                "character_id": other_cid,
+                "name": other_name,
+                "me": entry[0], "te": entry[1],
+                "is_bpo": entry[2],
+            })
+    for r in rows:
+        r["other_owners"] = other_owners_map.get(r["blueprint_id"], [])
     return {
         "station_id": station_id,
         "station_name": TRADE_HUBS[station_id]["name"],
@@ -1385,11 +1511,12 @@ def do_ind_detail(q):
     if station_id not in TRADE_HUBS:
         station_id = JITA_STATION_ID
     params = _ind_params(q)
-    # Real per-character data always wins over the uniform assumption, when
-    # it's available — see do_ind_scan.
-    if _CHAR_SKILL_PROFILE:
-        params["skill_profile"] = _CHAR_SKILL_PROFILE
-    owned_me_te = _CHAR_BP_ME_TE.get(blueprint_id)
+    ind_cid = _IND_CHAR_ID
+    ind_skill_profile = _CHAR_SKILL_PROFILES.get(ind_cid, {}) if ind_cid else {}
+    ind_bp_me_te = _CHAR_BP_ME_TES.get(ind_cid, {}) if ind_cid else {}
+    if ind_skill_profile:
+        params["skill_profile"] = ind_skill_profile
+    owned_me_te = ind_bp_me_te.get(blueprint_id)
     if owned_me_te:
         params["me"], params["te"] = owned_me_te[0], owned_me_te[1]
 
@@ -1534,6 +1661,7 @@ _GET_ROUTES = {
     "/api/auth/login": do_auth_login,
     "/api/auth/status": do_auth_status,
     "/api/auth/logout": do_auth_logout,
+    "/api/auth/switch": do_auth_switch,
     "/api/char/data": do_char_data,
 }
 
@@ -1566,7 +1694,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_callback(self, q):
         """EVE SSO redirect target: validate state, exchange the code for tokens,
-        load the skill profile, then bounce back to the app."""
+        add the character to _CHARACTERS, then bounce back to the app."""
         if "error" in q:
             self._send_html(f"<h2>EVE login failed</h2><p>{html.escape(q['error'][0])}</p>"
                             "<p><a href='/'>Back to app</a></p>")
@@ -1582,9 +1710,25 @@ class Handler(BaseHTTPRequestHandler):
             client_id = (load_auth_settings().get("client_id") or "").strip()
             tok = sso_core.exchange_code(client_id, handshake["redirect_uri"],
                                          code, handshake["verifier"], SESSION)
-            _apply_token(tok)
-            _refresh_skill_profile()
-            _refresh_char_blueprints()
+            claims = sso_core.decode_jwt_payload(tok["access_token"])
+            cid = claims["character_id"]
+            global _ACTIVE_CHAR_ID, _IND_CHAR_ID
+            with _CHARACTERS_LOCK:
+                _CHARACTERS[cid] = {
+                    "character_id": cid,
+                    "name": claims["name"],
+                    "scopes": claims.get("scopes", []),
+                    "refresh_token": tok["refresh_token"],
+                    "access_token": tok["access_token"],
+                    "expires_at": time.time() + int(tok.get("expires_in", 1200)),
+                }
+                if _ACTIVE_CHAR_ID is None:
+                    _ACTIVE_CHAR_ID = cid
+                if _IND_CHAR_ID is None:
+                    _IND_CHAR_ID = cid
+                _persist_auth()
+            _refresh_skill_profile(cid)
+            _refresh_char_blueprints(cid)
         except Exception as e:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             self._send_html(f"<h2>EVE login failed</h2><p>{html.escape(f'{type(e).__name__}: {e}')}</p>"
@@ -1636,7 +1780,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(_FAVICON_SVG)
             elif parsed.path == "/api/settings":
-                character_id = _AUTH.get("character_id")
+                character_id = _ACTIVE_CHAR_ID
                 synced = load_user_settings(character_id) if character_id else None
                 if synced is not None:
                     synced["_server_synced"] = True

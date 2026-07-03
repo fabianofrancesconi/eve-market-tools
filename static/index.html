@@ -106,12 +106,25 @@
     cursor:pointer; flex-shrink:0;
   }
   .auth-cog:hover { color:var(--cyan); border-color:var(--cyan2); }
-  #char-chip { display:flex; align-items:center; gap:8px;
+  #char-chip { display:flex; align-items:center; gap:8px; position:relative;
     background:var(--panel3); border:1px solid var(--line2); border-radius:4px;
     padding:3px 4px 3px 11px; cursor:pointer; }
   #char-chip:hover { border-color:var(--cyan2); }
   #chip-name { color:var(--cyan); font-weight:700; font-size:13px; white-space:nowrap; }
   .chip-wallet { color:var(--gold); font-size:12px; font-variant-numeric:tabular-nums; }
+  .char-dropdown { position:absolute; top:100%; right:0; margin-top:4px; z-index:70;
+    background:var(--panel3); border:1px solid var(--line2); border-radius:4px;
+    padding:4px 0; min-width:180px; box-shadow:0 4px 12px rgba(0,0,0,.5); }
+  .char-dd-row { display:flex; align-items:center; justify-content:space-between;
+    padding:5px 12px; gap:8px; cursor:pointer; }
+  .char-dd-row:hover { background:var(--panel2); }
+  .char-dd-name { color:var(--fg); font-size:13px; }
+  .char-dd-rm { background:none; border:none; color:var(--dim2); cursor:pointer; font-size:13px; padding:2px 4px; }
+  .char-dd-rm:hover { color:var(--red); }
+  .char-dd-add { justify-content:center; border-top:1px solid var(--line2); margin-top:4px; padding-top:8px; }
+  .auth-btn-sm { background:var(--cyan2); color:var(--bg); border:none; border-radius:3px;
+    padding:4px 10px; font-size:12px; cursor:pointer; font-weight:600; }
+  .auth-btn-sm:hover { background:var(--cyan); }
   #char-refresh-timer { position:absolute; top:100%; right:0; margin-top:4px;
     font-size:11px; color:var(--dim2); font-variant-numeric:tabular-nums; white-space:nowrap; }
   #auth-cfg-pop {
@@ -738,10 +751,11 @@
   <div id="auth-region">
     <button id="login-eve" class="auth-btn" data-tip="Log in with your EVE Online account to load your skills, wallet, loyalty points and running industry jobs.">Log in with EVE</button>
     <button id="login-cfg" class="auth-cog" title="EVE login settings" aria-label="EVE login settings">&#9881;</button>
-    <div id="char-chip" class="hidden" data-tip="Click to open the Character tab. Use the gear to log out.">
+    <div id="char-chip" class="hidden" data-tip="Click to open the Character tab. Click ▾ to manage characters.">
       <span id="chip-name">&bull;&bull;&bull;</span>
       <span id="chip-wallet" class="chip-wallet"></span>
-      <button id="logout-eve" class="auth-cog" title="Log out of EVE" aria-label="Log out">&#10005;</button>
+      <button id="chip-dd-toggle" class="auth-cog" title="Manage characters" aria-label="Manage characters">&#9662;</button>
+      <div id="char-dropdown" class="char-dropdown hidden"></div>
     </div>
     <div id="char-refresh-timer" class="hidden">Next sync in <span id="char-refresh-secs">5:00</span></div>
   </div>
@@ -861,6 +875,10 @@
   <div class="ctrl-group">
     <span class="ctrl-cap">Scope</span>
     <div class="ctrl-fields">
+      <div class="field" data-tip="Character whose skills and blueprints drive the profitability calculations.">
+        <label>Character</label>
+        <select id="ind-char-select"></select>
+      </div>
       <div class="field" data-tip="Limit the scan to one market group (e.g. Ammunition & Charges). 'All' ranks every blueprint — much slower.">
         <label>Category</label>
         <select id="ind-group"><option value="all">All (slow)</option></select>
@@ -990,7 +1008,7 @@
           <h3>Running industry jobs</h3>
           <div class="char-card-scroll">
             <table class="mini" id="char-jobs-tbl"><thead><tr>
-              <th>Product</th><th>Activity</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>
+              <th>Product</th><th>Character</th><th>Activity</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>
             </tr></thead><tbody></tbody></table>
           </div>
           <div id="char-jobs-empty" class="char-none hidden">No active jobs.</div>
@@ -2461,7 +2479,7 @@ const IND_COLS = [
   {k:"margin_instant",     t:"Margin instant", w: 75, tip:"Profit as % of cost when selling instantly at the highest bid.", f:fmtPct1, pn:true},
   {k:"build_time",         t:"Build time",     w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
   {k:"total_cost",         t:"Cost/run",       w: 98, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
-  {k:"bp_price",           t:"BP price",       w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'BPO' = you own the original. 'BPC (N)' = you have a limited-run copy.", f:(v,r)=> r.owned_bp_me_te?((r.owned_is_bpo||r.owned_max_runs===-1)?"BPO":`BPC (${r.owned_max_runs})`):(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—")), cls:"bp-buy"},
+  {k:"bp_price",           t:"BP price",       w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'BPO' = you own the original. 'BPC (N)' = you have a limited-run copy.", f:(v,r)=> r.owned_bp_me_te?((r.owned_is_bpo||r.owned_max_runs===-1)?"BPO":`BPC (${r.owned_max_runs})`):((r.other_owners&&r.other_owners.length)?r.other_owners.map(o=>`${o.name}${o.is_bpo?" BPO":" BPC"}`).join(", "):(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—"))), cls:"bp-buy"},
   {k:"payback_runs",       t:"Payback",        w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r.owned_bp_me_te?"—":(v==null?"—":fmtNum(v)+" runs")},
   {k:"ask",                t:"Sell price",     w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
   {k:"in_vol_run",         t:"Cargo in",       w: 85, tip:"m³ of materials to haul in per run.", f:v=>v?fmtVol(v):"—"},
@@ -2636,7 +2654,7 @@ function renderIndTable(){
   // Hidden (owned, explicitly hidden), All items (the rest).
   const search=($("#ind-search").value||"").trim().toLowerCase();
   const isFav=r=>IND.favorites.has(r.blueprint_id);
-  const isOwned=r=>!!r.owned_bp_me_te||!!IND.timers[r.blueprint_id];
+  const isOwned=r=>!!r.owned_bp_me_te||!!IND.timers[r.blueprint_id]||(r.other_owners&&r.other_owners.length>0);
   const isHidden=r=>IND.hidden.has(r.blueprint_id);
   let favs=IND.rows.filter(r=>isFav(r) && !isHidden(r));
   let myBps=IND.rows.filter(r=>isOwned(r) && !isHidden(r) && !isFav(r));
@@ -3289,6 +3307,7 @@ setInterval(()=>{
 // EVE SSO / CHARACTER
 // ══════════════════════════════════════════════════════════════════════════
 const AUTH = { loggedIn:false, name:null, charId:null, data:null,
+               characters:[], activeCharId:null, indCharId:null,
                cfg:{client_id:"",callback_url:"",suggested_callback:"",scopes:[]} };
 const CHAR_REFRESH_MS = 300000;  // ESI caches character industry jobs for 5 min
 let charRefreshDeadline = 0;
@@ -3318,19 +3337,64 @@ function renderAuthChip(){
   $("#char-tab-btn").classList.toggle("hidden", !AUTH.loggedIn);
   $("#char-empty").classList.toggle("hidden", AUTH.loggedIn);
   $("#char-body").classList.toggle("hidden", !AUTH.loggedIn);
-  if(AUTH.loggedIn) $("#chip-name").textContent=AUTH.name||"Capsuleer";
+  if(AUTH.loggedIn){
+    const active=AUTH.characters.find(c=>c.character_id===AUTH.activeCharId);
+    $("#chip-name").textContent=(active?active.name:AUTH.name)||"Capsuleer";
+    renderCharDropdown();
+  }
   if(ACTIVE_TAB==="char" && !AUTH.loggedIn) switchTab("ind");
   else updateIndGate();
+}
+function renderCharDropdown(){
+  const dd=$("#char-dropdown");
+  if(!dd) return;
+  dd.innerHTML=AUTH.characters.map(c=>{
+    const active=c.character_id===AUTH.activeCharId?" ★":"";
+    return `<div class="char-dd-row" data-cid="${c.character_id}">`
+      +`<span class="char-dd-name">${authEsc(c.name)}${active}</span>`
+      +`<button class="char-dd-rm" data-cid="${c.character_id}" title="Remove ${authEsc(c.name)}">✕</button>`
+      +`</div>`;
+  }).join("")
+    +`<div class="char-dd-row char-dd-add"><button id="add-char-btn" class="auth-btn-sm">+ Add character</button></div>`;
+  dd.querySelectorAll(".char-dd-name").forEach(el=>{
+    el.onclick=e=>{
+      e.stopPropagation();
+      const cid=el.parentElement.dataset.cid;
+      switchActiveChar(parseInt(cid));
+    };
+  });
+  dd.querySelectorAll(".char-dd-rm").forEach(btn=>{
+    btn.onclick=e=>{ e.stopPropagation(); doLogout(parseInt(btn.dataset.cid)); };
+  });
+  const addBtn=dd.querySelector("#add-char-btn");
+  if(addBtn) addBtn.onclick=e=>{ e.stopPropagation(); doLogin(); };
+}
+async function switchActiveChar(cid){
+  await fetch(`/api/auth/switch?active_char_id=${cid}`);
+  await checkAuth();
+  refreshCharData();
+}
+function renderIndCharSelect(){
+  const sel=$("#ind-char-select"); if(!sel) return;
+  sel.innerHTML=AUTH.characters.map(c=>
+    `<option value="${c.character_id}"${c.character_id===AUTH.indCharId?" selected":""}>${authEsc(c.name)}</option>`
+  ).join("");
+  sel.classList.toggle("hidden", AUTH.characters.length<2);
+}
+async function switchIndChar(cid){
+  await fetch(`/api/auth/switch?ind_char_id=${cid}`);
+  AUTH.indCharId=cid;
 }
 
 async function checkAuth(){
   let st; try{ st=await (await fetch("/api/auth/status")).json(); }catch(e){ return; }
   AUTH.loggedIn=!!st.logged_in; AUTH.name=st.name; AUTH.charId=st.character_id;
-  renderAuthChip();
+  AUTH.characters=st.characters||[];
+  AUTH.activeCharId=st.active_char_id||null;
+  AUTH.indCharId=st.ind_char_id||null;
+  renderAuthChip(); renderIndCharSelect();
   if(AUTH.loggedIn){
     refreshCharData();
-    // A /character deep link couldn't open before auth resolved (it runs
-    // concurrently with loadSettings) — open it now that we know we're in.
     if(location.pathname==="/character" || location.pathname==="/char") switchTab("char", {url:false});
   }
 }
@@ -3340,13 +3404,18 @@ async function doLogin(){
   if(r.url){ window.location.href=r.url; }
   else { openAuthCfg(); if(r.error) setStatus(authEsc(r.error), true); }
 }
-async function doLogout(){
-  await fetch("/api/auth/logout").catch(()=>{});
-  AUTH.loggedIn=false; AUTH.name=null; AUTH.charId=null; AUTH.data=null;
-  IND.timers={};   // timers come from the API only — nothing to keep
-  charRefreshDeadline=0; tickCharRefreshTimer();
-  renderAuthChip(); updateMyLpBadge(); renderIndTable();
-  if(IND.openDetail) renderIndDetail(IND.openDetail);
+async function doLogout(charId){
+  const url=charId?`/api/auth/logout?char_id=${charId}`:"/api/auth/logout";
+  await fetch(url).catch(()=>{});
+  await checkAuth();
+  if(!AUTH.loggedIn){
+    AUTH.data=null; IND.timers={};
+    charRefreshDeadline=0; tickCharRefreshTimer();
+    renderAuthChip(); updateMyLpBadge(); renderIndTable();
+    if(IND.openDetail) renderIndDetail(IND.openDetail);
+  } else {
+    refreshCharData();
+  }
 }
 
 let charRetryCount = 0;
@@ -3394,21 +3463,25 @@ async function refreshCharData(){
 
 function renderCharData(){
   const d=AUTH.data; if(!d) return;
-  $("#cv-name").textContent=d.name||"—";
-  $("#cv-wallet").textContent=d.wallet!=null?fmtISK(d.wallet):"—";
+  const multiChar=AUTH.characters.length>1;
+  const combined_wallet=d.combined_wallet!=null?d.combined_wallet:d.wallet;
+  $("#cv-name").textContent=multiChar
+    ?AUTH.characters.map(c=>c.name).join(" + ")
+    :(d.name||"—");
+  $("#cv-wallet").textContent=combined_wallet!=null?fmtISK(combined_wallet):"—";
   $("#cv-sp").textContent=d.total_sp!=null?Math.round(d.total_sp).toLocaleString():"—";
-  $("#chip-wallet").textContent=d.wallet!=null?fmtISK(d.wallet)+" ISK":"";
+  $("#chip-wallet").textContent=combined_wallet!=null?fmtISK(combined_wallet)+" ISK":"";
 
-  const rt=d.runs_tracked;
+  const rt=d.combined_runs_tracked||d.runs_tracked;
   if(rt){
     $("#cv-runs").textContent=rt.total_runs.toLocaleString()+" runs / "+rt.total_jobs.toLocaleString()+" jobs";
-    const since=new Date(rt.since*1000).toLocaleString([],
-      {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    const since=rt.since?new Date(rt.since*1000).toLocaleString([],
+      {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):"—";
     $("#cv-runs-kpi").setAttribute("data-tip",
       "Cumulative runs delivered since this app started tracking ("+since+") — it can't see deliveries from before that.");
   }
 
-  const jobs=d.jobs||[];
+  const jobs=d.combined_jobs||d.jobs||[];
   $("#cv-jobs").textContent=jobs.length;
   $("#char-jobs-empty").classList.toggle("hidden", jobs.length>0);
   $("#char-jobs-tbl").classList.toggle("hidden", jobs.length===0);
@@ -3418,7 +3491,8 @@ function renderCharData(){
     if(isFinite(end)) tcell = rem>0
       ? `<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
       : `<span class="timer-cell done">✓ Ready</span>`;
-    return `<tr><td>${authEsc(j.product_name)}</td><td>${authEsc(j.activity)}</td>`
+    const charCol=multiChar?`<td>${authEsc(j.character_name||"")}</td>`:"<td></td>";
+    return `<tr><td>${authEsc(j.product_name)}</td>${charCol}<td>${authEsc(j.activity)}</td>`
          + `<td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td>`
          + `<td class="tl">${tcell}</td></tr>`;
   }).join("");
@@ -3509,8 +3583,21 @@ $("#login-eve").onclick=doLogin;
 $("#char-login-btn").onclick=doLogin;
 $("#ind-login-btn").onclick=doLogin;
 $("#login-cfg").onclick=()=>{ const p=$("#auth-cfg-pop"); p.classList.contains("hidden")?openAuthCfg():closeAuthCfg(); };
-$("#logout-eve").onclick=e=>{ e.stopPropagation(); doLogout(); };
-$("#char-chip").onclick=()=>switchTab("char");
+$("#chip-dd-toggle").onclick=e=>{
+  e.stopPropagation();
+  const dd=$("#char-dropdown");
+  dd.classList.toggle("hidden");
+};
+document.addEventListener("click",e=>{
+  const dd=$("#char-dropdown");
+  if(dd && !dd.classList.contains("hidden") && !dd.contains(e.target) && e.target.id!=="chip-dd-toggle")
+    dd.classList.add("hidden");
+});
+$("#char-chip").onclick=e=>{
+  if(e.target.closest("#chip-dd-toggle")||e.target.closest("#char-dropdown")) return;
+  switchTab("char");
+};
+$("#ind-char-select").onchange=e=>switchIndChar(parseInt(e.target.value));
 $("#cfg-close").onclick=closeAuthCfg;
 $("#cfg-copy").onclick=()=>{
   const t=$("#cfg-callback").value;

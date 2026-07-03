@@ -793,3 +793,37 @@ class TestMissingSkills:
             assert entry["required"] == 3
         finally:
             conn.close()
+
+
+class TestBulkTrainingTime:
+    def _conn(self, tmp_path):
+        ind_core.build_sde_db(tmp_path, session=_fake_session())
+        return ind_core.connect_sde(tmp_path)
+
+    def test_returns_hours_for_unbuildable(self, tmp_path):
+        conn = self._conn(tmp_path)
+        try:
+            bp = _bp(skills=[(3380, 3)])
+            result = ind_core.bulk_training_time([bp], {3380: 1}, conn)
+            assert bp["blueprint_id"] in result
+            assert result[bp["blueprint_id"]] > 0
+        finally:
+            conn.close()
+
+    def test_empty_for_fully_trained(self, tmp_path):
+        conn = self._conn(tmp_path)
+        try:
+            bp = _bp(skills=[(3380, 3)])
+            result = ind_core.bulk_training_time([bp], {3380: 5}, conn)
+            assert result == {}
+        finally:
+            conn.close()
+
+    def test_respects_default_level(self, tmp_path):
+        conn = self._conn(tmp_path)
+        try:
+            bp = _bp(skills=[(3380, 3)])
+            result = ind_core.bulk_training_time([bp], {}, conn, default_level=5)
+            assert result == {}
+        finally:
+            conn.close()

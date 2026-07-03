@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.66.9"
+__version__ = "1.67.0"
 
 import argparse
 import base64
@@ -1289,6 +1289,12 @@ def do_ind_scan(q, emit=None):
         _emit({"type": "progress", "pct": 78, "msg": "Computing profitability…", "sub": ""})
         params.update({"bpo_prices": bpo_prices, "volumes": volumes})
         rows = ind_core.evaluate_industry(bps, prices, adjusted, params)
+        # Training time for unbuildable items (direct skills only, fast).
+        train_map = ind_core.bulk_training_time(
+            bps, params.get("skill_profile"), conn,
+            params.get("skills_level", 0))
+        for r in rows:
+            r["train_hours"] = train_map.get(r["blueprint_id"])
         # Resolve market group names for display in the table.
         gids = {r["market_group_id"] for r in rows if r.get("market_group_id")}
         gnames = ind_core.market_group_names(conn, gids) if gids else {}
@@ -2061,6 +2067,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   td.pos { color:var(--green2); font-weight:500; }
   td.neg { color:var(--red); }
+  .train-time { font-size:10px; color:var(--dim); font-weight:400; margin-top:1px; white-space:nowrap; }
+  td:has(.train-time) { overflow:visible; text-overflow:clip; white-space:normal; line-height:1.3; }
   /* The better of the two sell-mode columns (list vs instant sell). */
   td.win { background:rgba(79,195,247,.10); box-shadow:inset 2px 0 0 var(--cyan2); font-weight:700; }
   td.spread.tight { color:var(--green); }
@@ -4165,6 +4173,7 @@ const fmtDur = s => {
 };
 const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
 const fmtDaysSell = v => (v===null||v===undefined) ? "—" : (v<1 ? "<1 d" : v.toFixed(1)+" d");
+const fmtTrainTime = h => { if(h<1) return Math.round(h*60)+"m"; if(h<24) return h.toFixed(1)+"h"; return (h/24).toFixed(1)+"d"; };
 
 function computeIndTradeability(){
   const loaded=IND.rows.filter(r=>r.liq_loaded && r.daily_vol!==null);
@@ -4206,7 +4215,7 @@ const IND_COLS = [
   {k:"out_vol_run",        t:"Cargo out",      w: 85, tip:"m³ of finished items to haul out per run.", f:v=>v?fmtVol(v):"—"},
   {k:"days_to_sell",       t:"Days to sell",   w: 88, tip:"How many days to sell one run's output (output qty ÷ daily volume). Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : fmtDaysSell(v)},
   {k:"tradeability",       t:"Tradeability",   w: 98, tip:"0–100: how realistically you can sell at your price. Blends liquidity (daily volume) and low competition (days to sell), weighted by the Balance buttons. Higher is better; ranked within this scan.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
-  {k:"buildable",          t:"Buildable?",     w: 58, tip:"Can every required skill (at the Skills level) make it?", f:v=>v?"✓":"✗"},
+  {k:"buildable",          t:"Buildable?",     w: 72, tip:"Can every required skill (at the Skills level) make it? Shows training time if not.", f:(v,r)=>v?"✓":("✗"+(r.train_hours?`<div class="train-time">${fmtTrainTime(r.train_hours)}</div>`:""))},
 ];
 
 const IND_COL_BY_KEY=Object.fromEntries(IND_COLS.map(c=>[c.k,c]));

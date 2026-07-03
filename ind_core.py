@@ -866,6 +866,42 @@ def missing_skills(bp, skill_profile, conn, default_level=0):
     return result
 
 
+def bulk_training_time(bps, skill_profile, conn, default_level=0):
+    """Return {blueprint_id: total_hours} for every blueprint whose skill
+    requirements the profile does NOT meet. Only direct skills (no prereq
+    tree walk) — fast enough for thousands of rows in the scan loop."""
+    sp = skill_profile or {}
+    all_skill_ids = set()
+    needs = []
+    for bp in bps:
+        skills = bp.get("skills", [])
+        missing = [(sid, lvl) for sid, lvl in skills
+                   if sp.get(sid, default_level) < lvl]
+        if missing:
+            needs.append((bp["blueprint_id"], missing))
+            all_skill_ids.update(sid for sid, _ in missing)
+    if not all_skill_ids:
+        return {}
+    ranks = {}
+    marks = ", ".join("?" for _ in all_skill_ids)
+    try:
+        for r in conn.execute(
+                f"SELECT type_id, rank FROM skill_ranks WHERE type_id IN ({marks})",
+                list(all_skill_ids)):
+            ranks[r["type_id"]] = r["rank"]
+    except Exception:
+        pass
+    result = {}
+    for bp_id, missing in needs:
+        total = 0.0
+        for sid, required_lvl in missing:
+            current = sp.get(sid, default_level)
+            rank = ranks.get(sid)
+            total += training_time_hours(current, required_lvl, rank)
+        result[bp_id] = total
+    return result
+
+
 def invention_cost_per_run(inv, prices, params):
     """Effective blueprint cost for one T2 manufacturing run, sourced from
     invention rather than a bought BPO.

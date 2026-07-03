@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.66.7"
+__version__ = "1.66.8"
 
 import argparse
 import base64
@@ -5484,6 +5484,7 @@ async function restoreLastScans(){
       computeIndTradeability();
       if(ACTIVE_TAB==="ind"){ renderIndStatus(); renderIndTable(); }
       restored.ind=true;
+      if(IND.rows.some(r=>!r.liq_loaded)) fillIndTradeability();
     }
   }catch(e){}
   return restored;

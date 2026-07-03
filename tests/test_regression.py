@@ -1163,6 +1163,12 @@ class TestIndustryTradeabilityFill:
         # Pending rows spin in both market-depth columns until their score lands.
         assert "!r.liq_loaded ? _SPIN" in html
 
+    def test_restore_resumes_fill_for_unscored_rows(self):
+        """v1.66.8: restoring a cached scan with liq_loaded=false rows must
+        trigger fillIndTradeability() so spinners don't persist forever."""
+        html = lp_web.INDEX_HTML
+        assert "if(IND.rows.some(r=>!r.liq_loaded)) fillIndTradeability()" in html
+
 
 # ---------------------------------------------------------------------------
 # Delivered-runs counter (character tab) — cumulative, persisted, baseline on

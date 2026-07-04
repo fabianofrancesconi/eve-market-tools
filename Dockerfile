@@ -20,9 +20,8 @@ COPY backend/app/ ./app/
 # Copy built frontend into static/ for FastAPI to serve
 COPY --from=frontend-build /app/frontend/dist ./static/
 
-# Cache volume mount point
+# Cache directory (mounted as Railway volume in production)
 RUN mkdir -p /app/.eve_scanner_cache
-VOLUME ["/app/.eve_scanner_cache"]
 
 ENV CACHE_DIR=/app/.eve_scanner_cache
 

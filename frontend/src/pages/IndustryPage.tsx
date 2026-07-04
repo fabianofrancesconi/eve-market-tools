@@ -136,8 +136,11 @@ export function IndustryPage() {
   const setHideT2 = useUiStore(s => s.setIndHideT2)
   const includeUnobtainable = useUiStore(s => s.indIncludeUnobtainable)
   const setIncludeUnobtainable = useUiStore(s => s.setIndIncludeUnobtainable)
-  const [groupId, setGroupId] = useState('all')
+  // Category selection persists (was dead local state + unused indGroupIds field).
+  const groupId = useUiStore(s => s.indGroupIds[0] ?? 'all')
+  const setGroupId = (v: string) => useUiStore.getState().setIndGroupIds(v === 'all' ? [] : [v])
   const [search, setSearch] = useState('')
+  const [refreshingSde, setRefreshingSde] = useState(false)
 
   /* --- state: scan --- */
   const [url, setUrl] = useState<string | null>(null)
@@ -168,10 +171,22 @@ export function IndustryPage() {
   const [sortDir, setSortDir] = useState<SortDir>(null)
 
   /* --- fetch groups --- */
-  const { data: groups } = useQuery<MarketGroup[]>({
+  const { data: groups, refetch: refetchGroups } = useQuery<MarketGroup[]>({
     queryKey: ['ind-groups'],
     queryFn: () => apiGet('/api/industry/groups'),
   })
+
+  /* --- rebuild the local SDE from the Fuzzwork dump (after a game patch) --- */
+  const handleRefreshSde = async () => {
+    setRefreshingSde(true)
+    try {
+      await apiGet('/api/industry/refresh-sde')
+      await refetchGroups()
+    } catch {
+      // ignore — the button just re-enables
+    }
+    setRefreshingSde(false)
+  }
 
   /* --- scan handler --- */
   const handleScan = () => {
@@ -536,6 +551,14 @@ export function IndustryPage() {
             className="px-4 py-1 rounded bg-accent-cyan text-primary-foreground font-medium text-sm hover:bg-accent-cyan/80 disabled:opacity-50 transition-colors"
           >
             {isStreaming ? 'Scanning...' : 'Scan'}
+          </button>
+          <button
+            onClick={handleRefreshSde}
+            disabled={refreshingSde || isStreaming}
+            title="Rebuild the local blueprint SDE from the Fuzzwork dump (after a game patch)."
+            className="px-3 py-1 rounded border border-border text-foreground-muted text-sm hover:text-foreground hover:border-foreground-muted disabled:opacity-50 transition-colors whitespace-nowrap"
+          >
+            {refreshingSde ? 'Rebuilding SDE…' : '↻ Refresh SDE'}
           </button>
           <label className="flex items-center gap-1 text-foreground-muted cursor-pointer whitespace-nowrap">
             <input type="checkbox" checked={buildableOnly} onChange={e => setBuildableOnly(e.target.checked)} className="rounded border-border" />

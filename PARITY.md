@@ -96,7 +96,10 @@ Refresh sends `refresh=true`; Min ISK 5,000,000 persists; invalid region emits a
 - [ ] **Build-location profiles + wizard** (system cost index / structure bonus /
   facility tax / SCC surcharge). Currently just a flat "Job Rate %".
 - [ ] **Favorites/watchlist ★** + filter chips (Favorites / My BPs / Hidden / All).
-- [ ] **⟳ Refresh SDE** button (endpoint `/api/industry/refresh-sde` exists, no UI).
+- [x] **⟳ Refresh SDE** button — added to the Actions bar (wires the existing
+  `/api/industry/refresh-sde`, refetches categories after).
+- [x] **Category selection persists** across reloads (was dead local state; now
+  wired to the `indGroupIds` store field).
 - [ ] **BPO cross-region search** (needs new `/api/industry/bpo-search` endpoint).
 - [ ] **"Pull live prices" (ESI)** in the detail row.
 - [x] Pass `bpo_prices` to `/api/industry/detail` (was blank) — done with the detail fix above.

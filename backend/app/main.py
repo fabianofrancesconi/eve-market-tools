@@ -50,4 +50,14 @@ async def health():
 
 static_dir = Path(__file__).parent.parent / "static"
 if static_dir.exists():
-    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
+    from fastapi.responses import FileResponse
+
+    app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """Serve static files or fall back to index.html for SPA routing."""
+        file_path = static_dir / full_path
+        if full_path and file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(static_dir / "index.html")

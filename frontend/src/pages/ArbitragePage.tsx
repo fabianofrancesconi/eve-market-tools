@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useSse } from '../hooks/use-sse'
 import { sseUrl } from '../lib/api-client'
-import { fmtIsk, fmtPct, fmtNum } from '../lib/format'
+import { fmtIsk, fmtPct, fmtNum, fmtAge } from '../lib/format'
 import { DataTable } from '../components/shared/DataTable'
 import { ProgressBar } from '../components/shared/ProgressBar'
 import { PriceChart } from '../components/shared/PriceChart'
@@ -37,6 +37,20 @@ interface ArbRow {
   risk: string
 }
 
+interface Snapshot {
+  etag: string | null
+  expires: number | null
+  last_modified: string | null
+  fetched_at: number | null
+}
+
+interface ArbScanResult {
+  rows: ArbRow[]
+  snapshot: Snapshot | null
+  total_spreads: number
+  total_orders: number
+}
+
 function secColor(sec: number | null): string {
   if (sec == null) return 'text-foreground-muted'
   if (sec >= 0.5) return 'text-positive'
@@ -64,11 +78,12 @@ export function ArbitragePage() {
   const setAvoidLowsec = useUiStore(s => s.setArbAvoidLowsec)
   const routeFlag = useUiStore(s => s.arbRouteFlag)
   const setRouteFlag = useUiStore(s => s.setArbRouteFlag)
-  const [minIsk, setMinIsk] = useState<string>('')
+  const minIsk = useUiStore(s => s.arbMinIsk)
+  const setMinIsk = useUiStore(s => s.setArbMinIsk)
 
   const [url, setUrl] = useState<string | null>(null)
   const [trigger, setTrigger] = useState(0)
-  const { progress, message, subMessage, result, isStreaming } = useSse<ArbRow[]>(url, trigger)
+  const { progress, message, subMessage, result, error, isStreaming } = useSse<ArbScanResult>(url, trigger)
   const [chartRow, setChartRow] = useState<ArbRow | null>(null)
 
   useEffect(() => {
@@ -81,16 +96,16 @@ export function ArbitragePage() {
 
   const isCross = mode === 'cross'
 
-  const handleScan = () => {
+  const handleScan = (refresh = false) => {
     const params: Record<string, string | number | boolean> = {
       region_id: regionId,
       sales_tax: salesTax / 100,
       mode: isCross ? 'region' : 'station',
       top: 100,
-      refresh: false,
+      refresh,
+      min_isk: minIsk,
       avoid_lowsec: avoidLowsec,
     }
-    if (minIsk) params.min_isk = Number(minIsk)
     if (isCross) {
       params.max_jumps = maxJumps
       params.route_flag = routeFlag
@@ -286,8 +301,9 @@ export function ArbitragePage() {
           <label className="block text-xs text-foreground-muted mb-1 uppercase">Min ISK</label>
           <input
             type="number"
-            value={minIsk}
-            onChange={e => setMinIsk(e.target.value)}
+            min="0"
+            value={minIsk === 0 ? '' : minIsk}
+            onChange={e => setMinIsk(Number(e.target.value) || 0)}
             placeholder="any"
             className="w-full px-2 py-1.5 rounded bg-background-elevated border border-border text-foreground text-sm focus:outline-none focus:border-accent-cyan placeholder:text-foreground-muted/50"
           />
@@ -322,11 +338,19 @@ export function ArbitragePage() {
         )}
 
         <button
-          onClick={handleScan}
+          onClick={() => handleScan(false)}
           disabled={isStreaming}
           className="px-4 py-1.5 rounded bg-accent-cyan text-primary-foreground font-medium text-sm hover:bg-accent-cyan/80 disabled:opacity-50 transition-colors"
         >
           {isStreaming ? 'Scanning...' : 'Scan'}
+        </button>
+        <button
+          onClick={() => handleScan(true)}
+          disabled={isStreaming}
+          title="Force a fresh region order-book download from ESI (bypasses the cached snapshot)"
+          className="px-3 py-1.5 rounded border border-border text-foreground-muted text-sm hover:text-foreground hover:border-foreground-muted disabled:opacity-50 transition-colors"
+        >
+          &#x21bb; Refresh
         </button>
       </div>
 
@@ -355,14 +379,28 @@ export function ArbitragePage() {
         </div>
       )}
 
+      {/* Error */}
+      {!isStreaming && error && (
+        <p className="text-negative text-sm">{error}</p>
+      )}
+
       {/* Status bar + results */}
       {!isStreaming && result && (
         <>
           <p className="text-sm text-foreground-muted">
-            {regionName} — {result.length} deal{result.length !== 1 ? 's' : ''} · {modeLabel}
+            {regionName} — {result.rows.length} deal{result.rows.length !== 1 ? 's' : ''} &middot; {modeLabel}
+            {' '}&middot; {result.total_spreads} spreads / {fmtNum(result.total_orders)} orders
+            {result.snapshot?.fetched_at != null && (
+              <> &middot; book {fmtAge(Date.now() / 1000 - result.snapshot.fetched_at)} old</>
+            )}
           </p>
+          {result.snapshot?.expires != null && result.snapshot.expires * 1000 < Date.now() && (
+            <p className="text-yellow-400 text-xs">
+              &#9888; Cached order book has expired &mdash; click &#x21bb; Refresh for the latest snapshot.
+            </p>
+          )}
           <DataTable
-            data={result}
+            data={result.rows}
             columns={columns}
             keyFn={r => `${r.type_id}-${r.sell_station_id}-${r.buy_station_id}`}
             onRowClick={r => setChartRow(r)}

@@ -45,10 +45,19 @@ export function useSse<T>(url: string | null, trigger?: number): SseState<T> & {
       es.close()
     })
 
-    es.onerror = () => {
-      setState(s => ({ ...s, error: 'Connection lost', isStreaming: false }))
+    es.addEventListener('error', (e) => {
+      const data = (e as MessageEvent).data
+      if (data) {
+        // Server-sent `event: error` frame carrying a message.
+        let msg = 'Scan failed'
+        try { msg = JSON.parse(data).message || msg } catch { /* keep default */ }
+        setState(s => ({ ...s, error: msg, isStreaming: false }))
+      } else {
+        // Native connection error — ignore once a result has arrived.
+        setState(s => (s.result ? { ...s, isStreaming: false } : { ...s, error: 'Connection lost', isStreaming: false }))
+      }
       es.close()
-    }
+    })
 
     return () => { es.close() }
   }, [url, trigger])

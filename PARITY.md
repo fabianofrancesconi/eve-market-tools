@@ -61,13 +61,23 @@ apply and persist; no setState-in-render errors. `tsc` clean; 425 backend tests 
 
 ---
 
-## Arbitrage
-- [ ] **↻ Refresh button + stale-book status notice** (backend `refresh` param
-  exists; no UI surfaces it).
-- [ ] Persist **Min ISK** (page uses local state; `arbMinIsk` store field is dead).
-- [ ] Default **Max jumps** 6 to match master/README (backend default is 5).
-- [ ] SSE **error frame** + frontend error state (a mid-scan exception currently
-  ends the stream silently → progress bar hangs).
+## Arbitrage  ✅ COMPLETE
+- [x] **↻ Refresh button** — forces a fresh region order-book pull (wires the
+  existing `refresh` param); **stale-book notice** shown when the cached snapshot
+  has expired (result frame now carries `snapshot` freshness + totals).
+- [x] Persist **Min ISK** — wired to `arbMinIsk` (was dead local state); default 0
+  ("any", matching master) instead of the old 1,000,000.
+- [x] Default **Max jumps** 6 (store default + backend default aligned to 6).
+- [x] SSE **error frame** + frontend error state — the generator now wraps its body
+  and emits `event: error`; `use-sse` distinguishes server errors from connection
+  drops; the page renders the message instead of a silently-stuck progress bar.
+- [x] Richer status line: deals · mode · spreads / orders · book age.
+
+### Verified in browser / curl
+Rich status "0 deals · Cross-station · 84 spreads / 421,608 orders · book 0h old";
+Refresh sends `refresh=true`; Min ISK 5,000,000 persists; invalid region emits an
+`event: error` ("Scan failed: 404…") instead of hanging; no console errors.
+`tsc` clean; 425 backend tests pass. (Also removed the dead `scanner` import.)
 
 ## Industry (biggest gap — largely anonymous-only vs master's character-aware tab)
 - [ ] **Auth on the industry router** + feed real `skill_profile` and owned

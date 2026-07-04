@@ -86,7 +86,7 @@ export const useUiStore = create<UiState>()(
       lpColOrder: [],
       lpColWidths: {},
       arbRegion: 10000002,
-      arbMinIsk: 1000000,
+      arbMinIsk: 0,
       arbSalesTax: 7.5,
       arbMode: 'cross',
       arbMaxJumps: 6,

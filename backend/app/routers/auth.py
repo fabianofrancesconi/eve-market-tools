@@ -29,7 +29,16 @@ async def callback(
     db: AsyncSession = Depends(get_db),
 ):
     """EVE SSO callback — exchange code for tokens, create session."""
-    session_id, character_name = await complete_login(code, state, db, _http_session)
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        session_id, character_name = await complete_login(code, state, db, _http_session)
+    except ValueError as e:
+        logger.warning("Auth callback failed: %s", e)
+        return RedirectResponse(url="/?auth_error=expired")
+    except Exception as e:
+        logger.exception("Auth callback error")
+        return RedirectResponse(url="/?auth_error=failed")
     response = RedirectResponse(url="/character")
     response.set_cookie(
         key="session_id",

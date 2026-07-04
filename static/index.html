@@ -3508,6 +3508,87 @@ function _renderCharPanel(c){
   return h;
 }
 
+function _renderAllPanel(chars){
+  const allJobs=[], allLp=[], allOrders=[];
+  for(const c of chars){
+    const name=c.name||'?';
+    for(const j of (c.jobs||[])) allJobs.push({...j, _char:name});
+    for(const l of (c.loyalty||[])) allLp.push({...l, _char:name});
+    for(const o of (c.market_orders||[])) allOrders.push({...o, _char:name});
+  }
+  const ordersVal=allOrders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0),0);
+  let h=`<div class="char-grid">`;
+
+  // Industry jobs — unified with character name
+  h+=`<section class="char-card${allJobs.length>3?' char-card-wide':''}">`;
+  h+=`<div class="char-card-header"><h3>Industry jobs (${allJobs.length})</h3></div><div class="char-card-body">`;
+  if(allJobs.length){
+    h+=`<div class="char-card-scroll"><table class="mini char-jobs-tbl"><thead><tr>`;
+    h+=`<th>Character</th><th>Product</th><th>Activity</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>`;
+    h+=`</tr></thead><tbody>`;
+    for(const j of allJobs){
+      const end=Date.parse(j.end), rem=end-Date.now();
+      let tcell="—";
+      if(isFinite(end)) tcell=rem>0
+        ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
+        :`<span class="timer-cell done">✓ Ready</span>`;
+      h+=`<tr><td>${authEsc(j._char)}</td><td>${authEsc(j.product_name)}</td><td>${authEsc(j.activity)}</td>`
+        +`<td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
+    }
+    h+=`</tbody></table></div>`;
+  } else h+=`<div class="char-none">No active jobs.</div>`;
+  h+=`</div></section>`;
+
+  // Loyalty points — with character name
+  h+=`<section class="char-card"><div class="char-card-header"><h3>Loyalty points</h3></div><div class="char-card-body">`;
+  if(allLp.length){
+    h+=`<div class="char-card-scroll"><table class="mini"><thead><tr><th>Character</th><th>Corporation</th><th style="text-align:right">LP</th></tr></thead><tbody>`;
+    for(const l of allLp) h+=`<tr><td>${authEsc(l._char)}</td><td>${authEsc(l.corp_name)}</td><td style="text-align:right">${(l.loyalty_points||0).toLocaleString()}</td></tr>`;
+    h+=`</tbody></table></div>`;
+  } else h+=`<div class="char-none">No loyalty points.</div>`;
+  h+=`</div></section>`;
+
+  // Market orders — unified with totals
+  h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Market orders`;
+  if(allOrders.length) h+=` <span class="char-card-sub">(${allOrders.length} · ${fmtISK(ordersVal)} ISK)</span>`;
+  h+=`</h3></div><div class="char-card-body">`;
+  if(allOrders.length){
+    const sellOrders=allOrders.filter(o=>!o.is_buy_order);
+    const buyOrders=allOrders.filter(o=>o.is_buy_order);
+    const sellVal=sellOrders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0),0);
+    const buyVal=buyOrders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0),0);
+    h+=`<div class="char-card-scroll"><table class="mini char-orders-tbl"><thead><tr>`;
+    h+=`<th>Character</th><th>Item</th><th>Side</th><th style="text-align:right">Remaining</th><th style="text-align:right">Price</th>`;
+    h+=`<th style="text-align:right">Total value</th><th style="text-align:right">Jita sell</th>`;
+    h+=`<th style="text-align:right">Queue</th><th style="text-align:right">Posted</th></tr></thead><tbody>`;
+    for(const o of allOrders){
+      const issuedMs=o.issued?Date.parse(o.issued):NaN;
+      const posted=isFinite(issuedMs)?fmtDur((Date.now()-issuedMs)/1000)+" ago":"—";
+      const postedTip=isFinite(issuedMs)?` title="${new Date(issuedMs).toLocaleString()}"`:"";
+      const queueCell=o.is_best==null?`<span style="color:var(--dim)">—</span>`
+        :o.is_best?`<span class="tx-sell">Best ✓</span>`:`<span class="tx-buy">#${o.queue_rank} / ${o.queue_total}</span>`;
+      const saleTip=o.last_sale_ts?` title="Last sale: ${o.last_sale_qty} unit${o.last_sale_qty>1?'s':''} sold ${_fmtAgo(o.last_sale_ts)}" style="text-align:right;color:var(--green2)"`
+        :` style="text-align:right"`;
+      h+=`<tr><td>${authEsc(o._char)}</td><td>${authEsc(o.type_name)}</td>`
+        +`<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
+        +`<td${saleTip}>${(o.volume_remain??0).toLocaleString()} / ${(o.volume_total??0).toLocaleString()}</td>`
+        +`<td style="text-align:right">${fmtISK(o.price)}</td>`
+        +`<td style="text-align:right">${fmtISK((o.volume_remain??0)*o.price)}</td>`
+        +`<td style="text-align:right">${o.market_sell!=null?fmtISK(o.market_sell):"—"}</td>`
+        +`<td style="text-align:right">${queueCell}</td>`
+        +`<td style="text-align:right"${postedTip}>${posted}</td></tr>`;
+    }
+    h+=`<tr class="total"><td colspan="5">Totals</td>`
+      +`<td style="text-align:right">${fmtISK(ordersVal)}</td>`
+      +`<td colspan="3" style="text-align:right"><span class="tx-sell">${sellOrders.length} sell (${fmtISK(sellVal)})</span> · <span class="tx-buy">${buyOrders.length} buy (${fmtISK(buyVal)})</span></td></tr>`;
+    h+=`</tbody></table></div>`;
+  } else h+=`<div class="char-none">No open orders.</div>`;
+  h+=`</div></section>`;
+
+  h+=`</div>`;
+  return h;
+}
+
 function renderCharData(){
   const d=AUTH.data; if(!d) return;
   const chars=d.characters||[d];
@@ -3559,8 +3640,8 @@ function renderCharData(){
 
   // Render selected tab content
   if(!multiChar || _charTabIdx===0){
-    // All characters combined or single char
-    for(const c of chars) html+=_renderCharPanel(c);
+    // Combined "All" view
+    html+=_renderAllPanel(chars);
   } else {
     const c=chars[_charTabIdx-1];
     if(c) html+=_renderCharPanel(c);

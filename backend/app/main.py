@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="EVE Market Tools",
-    version="2.0.0",
+    version="1.76.0",
     lifespan=lifespan,
 )
 

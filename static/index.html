@@ -144,8 +144,8 @@
   .lp-mylp { text-transform:none; letter-spacing:0; font-weight:600; color:var(--gold);
     font-size:10px; margin-left:6px; }
   #lp.locked { color:var(--gold); border-color:var(--line2); opacity:.85; cursor:not-allowed; }
-  #char-jobs-tbl .timer-cell { color:var(--cyan); font-weight:600; font-variant-numeric:tabular-nums; }
-  #char-jobs-tbl .timer-cell.done { color:var(--green2); }
+  .char-jobs-tbl .timer-cell { color:var(--cyan); font-weight:600; font-variant-numeric:tabular-nums; }
+  .char-jobs-tbl .timer-cell.done { color:var(--green2); }
 
   /* ── Control bar ─────────────────────────────────────────────────── */
   .ctrlbar {
@@ -437,40 +437,36 @@
     line-height:1.6; display:flex; flex-direction:column; gap:16px; align-items:center; }
 
   /* Hero section — large headline numbers */
-  .char-hero { display:flex; gap:24px; align-items:stretch; margin-bottom:24px; flex-wrap:wrap; }
-  .char-hero-main {
-    flex:1; min-width:260px;
-    background:linear-gradient(135deg, var(--panel2) 0%, var(--panel3) 100%);
-    border:1px solid var(--line2); border-radius:10px;
-    padding:20px 24px; position:relative; overflow:hidden;
-  }
-  .char-hero-main::before { content:""; position:absolute; top:0; left:0; right:0; height:3px;
-    background:linear-gradient(90deg, var(--cyan2), var(--accent2), transparent); }
-  .char-hero-name { font-size:13px; color:var(--dim); font-weight:600;
-    text-transform:uppercase; letter-spacing:.8px; margin-bottom:6px; }
-  .char-hero-wallet { font-size:32px; font-weight:800; color:var(--gold);
-    font-variant-numeric:tabular-nums; line-height:1.2; text-shadow:0 0 20px rgba(200,160,64,.2); }
-  .char-hero-wallet-label { font-size:11px; color:var(--dim); margin-top:2px; }
-
-  .char-hero-stats {
-    display:grid; grid-template-columns:1fr 1fr; gap:12px;
-    min-width:240px;
-  }
-  .char-stat {
+  .char-summary { display:flex; gap:16px; align-items:stretch; margin-bottom:28px; flex-wrap:wrap; }
+  .char-summary-stat {
+    flex:1; min-width:160px;
     background:var(--panel2); border:1px solid var(--line); border-radius:8px;
-    padding:12px 16px; position:relative; overflow:hidden;
+    padding:14px 18px; position:relative; overflow:hidden;
   }
-  .char-stat::before { content:""; position:absolute; top:0; left:0; width:3px; height:100%;
-    background:var(--line2); border-radius:0 2px 2px 0; }
-  .char-stat.accent::before { background:var(--cyan2); }
-  .char-stat.warn::before { background:var(--yellow); }
-  .char-stat.good::before { background:var(--green); }
-  .char-stat .l { font-size:9px; text-transform:uppercase; letter-spacing:.5px;
+  .char-summary-stat::before { content:""; position:absolute; top:0; left:0; right:0; height:3px;
+    background:var(--line2); }
+  .char-summary-stat.gold::before { background:var(--gold); }
+  .char-summary-stat.accent::before { background:var(--cyan2); }
+  .char-summary-stat.warn::before { background:var(--yellow); }
+  .char-summary-stat.good::before { background:var(--green); }
+  .char-summary-stat .l { font-size:9px; text-transform:uppercase; letter-spacing:.5px;
     color:var(--dim); font-weight:700; }
-  .char-stat .v { font-size:22px; font-weight:700; margin-top:2px;
+  .char-summary-stat .v { font-size:24px; font-weight:800; margin-top:4px;
     font-variant-numeric:tabular-nums; }
+  .char-summary-stat.gold .v { color:var(--gold); }
 
-  .char-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:18px; }
+  .char-section { margin-bottom:32px; }
+  .char-section-hdr {
+    display:flex; align-items:center; gap:12px;
+    margin-bottom:16px; padding-bottom:10px;
+    border-bottom:1px solid var(--line2);
+  }
+  .char-section-name { font-size:15px; font-weight:700; color:var(--fg); }
+  .char-section-wallet { font-size:13px; color:var(--gold); font-weight:600; }
+  .char-section-sp { font-size:12px; color:var(--dim); }
+
+  .char-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media(max-width:900px){ .char-grid { grid-template-columns:1fr; } }
   .char-card { background:var(--panel2); border:1px solid var(--line); border-radius:8px;
     padding:0; overflow:hidden; }
   .char-card-header { display:flex; align-items:center; justify-content:space-between;
@@ -483,14 +479,13 @@
   .char-card-scroll table.mini thead th { position:sticky; top:0; background:var(--panel2); z-index:1; }
   .char-none { color:var(--dim); font-size:13px; padding:10px 4px; }
   .char-none.char-none-warn { color:var(--gold); }
-  #char-orders-tbl td.tx-buy { color:var(--red); font-weight:600; }
-  #char-orders-tbl td.tx-sell { color:var(--green2); font-weight:600; }
-  #char-jobs-tbl td.tl, #char-jobs-tbl th:last-child { text-align:right;
+  .char-orders-tbl td.tx-buy { color:var(--red); font-weight:600; }
+  .char-orders-tbl td.tx-sell { color:var(--green2); font-weight:600; }
+  .char-jobs-tbl td.tl, .char-jobs-tbl th:last-child { text-align:right;
     font-variant-numeric:tabular-nums; }
-  #char-jobs-tbl th:first-child, #char-jobs-tbl td:first-child { min-width:8em; }
-  #char-jobs-tbl th:nth-child(2), #char-jobs-tbl td:nth-child(2),
-  #char-jobs-tbl th:nth-child(3), #char-jobs-tbl td:nth-child(3),
-  #char-jobs-tbl th:nth-child(4), #char-jobs-tbl td:nth-child(4) { white-space:nowrap; }
+  .char-jobs-tbl th:first-child, .char-jobs-tbl td:first-child { min-width:8em; }
+  .char-jobs-tbl th:nth-child(2), .char-jobs-tbl td:nth-child(2),
+  .char-jobs-tbl th:nth-child(3), .char-jobs-tbl td:nth-child(3) { white-space:nowrap; }
   table.mini { font-size:13px; width:100%; border-collapse:collapse; }
   table.mini th { position:static; background:none; color:var(--dim);
     font-size:10px; letter-spacing:.5px; border-bottom:1px solid var(--line); padding:4px 8px; }
@@ -1008,75 +1003,7 @@
       points, running industry jobs and active market orders here.</p>
       <button id="char-login-btn" class="auth-btn primary-btn">Log in with EVE</button>
     </div>
-    <div id="char-body" class="hidden">
-      <div class="char-hero">
-        <div class="char-hero-main">
-          <div class="char-hero-name" id="cv-name">—</div>
-          <div class="char-hero-wallet" id="cv-wallet">—</div>
-          <div class="char-hero-wallet-label">Wallet balance</div>
-        </div>
-        <div class="char-hero-stats">
-          <div class="char-stat accent"><div class="l">Total SP</div><div class="v" id="cv-sp">—</div></div>
-          <div class="char-stat warn"><div class="l">Running jobs</div><div class="v" id="cv-jobs">—</div></div>
-          <div class="char-stat"><div class="l">Open orders</div><div class="v" id="cv-orders">—</div></div>
-          <div class="char-stat good" id="cv-runs-kpi" data-tip="Cumulative runs delivered since this app started tracking — it can't see deliveries from before that.">
-            <div class="l">Runs delivered</div><div class="v" id="cv-runs">—</div>
-          </div>
-        </div>
-      </div>
-      <div class="char-grid">
-        <section class="char-card char-card-wide">
-          <div class="char-card-header"><h3>Running industry jobs</h3></div>
-          <div class="char-card-body">
-            <div class="char-card-scroll">
-              <table class="mini" id="char-jobs-tbl"><thead><tr>
-                <th>Product</th><th>Character</th><th>Activity</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>
-              </tr></thead><tbody></tbody></table>
-            </div>
-            <div id="char-jobs-empty" class="char-none hidden">No active jobs.</div>
-          </div>
-        </section>
-        <section class="char-card">
-          <div class="char-card-header"><h3>Skill queue</h3></div>
-          <div class="char-card-body">
-            <div class="char-card-scroll">
-              <table class="mini" id="char-queue-tbl"><thead><tr>
-                <th>Skill</th><th>Lvl</th><th style="text-align:right">Finishes</th>
-              </tr></thead><tbody></tbody></table>
-            </div>
-            <div id="char-queue-empty" class="char-none hidden">Skill queue is empty.</div>
-          </div>
-        </section>
-        <section class="char-card">
-          <div class="char-card-header"><h3>Loyalty points</h3></div>
-          <div class="char-card-body">
-            <div class="char-card-scroll">
-              <table class="mini" id="char-lp-tbl"><thead><tr>
-                <th>Corporation</th><th style="text-align:right">LP</th>
-              </tr></thead><tbody></tbody></table>
-            </div>
-            <div id="char-lp-empty" class="char-none hidden">No loyalty points.</div>
-          </div>
-        </section>
-        <section class="char-card char-card-wide">
-          <div class="char-card-header"><h3>Active market orders <span id="char-orders-total" class="char-card-sub"></span></h3></div>
-          <div class="char-card-body">
-            <div class="char-card-scroll">
-              <table class="mini" id="char-orders-tbl"><thead><tr>
-                <th>Item</th><th>Side</th><th style="text-align:right">Remaining</th>
-                <th style="text-align:right">Price</th>
-                <th style="text-align:right" data-tip="Remaining units × your listed price — what's left to fill on this order at its current price.">Total value</th>
-                <th style="text-align:right" data-tip="Current best sell price at Jita 4-4 — a quick reference, not necessarily the same station as your order.">Jita sell</th>
-                <th style="text-align:right" data-tip="Your position in this item's order-matching queue at your order's own station — #1 means you're the best price, ties broken by who listed first. Blank if the station can't be resolved (e.g. a player structure).">Queue</th>
-                <th style="text-align:right">Posted</th>
-                <th style="text-align:right">Expires</th>
-              </tr></thead><tbody></tbody></table>
-            </div>
-            <div id="char-orders-empty" class="char-none hidden">No open orders.</div>
-          </div>
-        </section>
-      </div>
-    </div>
+    <div id="char-body" class="hidden"></div>
   </div>
   <!-- LP detail panel -->
   <div id="detail"><div class="inner"></div></div>
@@ -3488,85 +3415,151 @@ async function refreshCharData(){
 
 function renderCharData(){
   const d=AUTH.data; if(!d) return;
-  const multiChar=AUTH.characters.length>1;
+  const chars=d.characters||[d];
+  const multiChar=chars.length>1;
   const combined_wallet=d.combined_wallet!=null?d.combined_wallet:d.wallet;
-  $("#cv-name").textContent=multiChar
-    ?AUTH.characters.map(c=>c.name).join(" + ")
-    :(d.name||"—");
-  $("#cv-wallet").textContent=combined_wallet!=null?fmtISK(combined_wallet):"—";
-  $("#cv-sp").textContent=d.total_sp!=null?Math.round(d.total_sp).toLocaleString():"—";
+  const allJobs=d.combined_jobs||d.jobs||[];
+  const allOrders=d.combined_orders||d.market_orders||[];
+  const rt=d.combined_runs_tracked||d.runs_tracked;
+
   $("#chip-wallet").textContent=d.wallet!=null?fmtISK(d.wallet)+" ISK":"";
 
-  const rt=d.combined_runs_tracked||d.runs_tracked;
-  if(rt){
-    $("#cv-runs").textContent=rt.total_runs.toLocaleString()+" runs / "+rt.total_jobs.toLocaleString()+" jobs";
-    const since=rt.since?new Date(rt.since*1000).toLocaleString([],
-      {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):"—";
-    $("#cv-runs-kpi").setAttribute("data-tip",
-      "Cumulative runs delivered since this app started tracking ("+since+") — it can't see deliveries from before that.");
+  let html='<div class="char-summary">';
+  html+=`<div class="char-summary-stat gold"><div class="l">${multiChar?'Combined wallet':'Wallet'}</div><div class="v">${combined_wallet!=null?fmtISK(combined_wallet):"—"}</div></div>`;
+  html+=`<div class="char-summary-stat warn"><div class="l">Running jobs</div><div class="v">${allJobs.length}</div></div>`;
+  html+=`<div class="char-summary-stat accent"><div class="l">Open orders</div><div class="v">${allOrders.length}</div></div>`;
+  if(rt) html+=`<div class="char-summary-stat good"><div class="l">Runs delivered</div><div class="v">${rt.total_runs.toLocaleString()} / ${rt.total_jobs.toLocaleString()} jobs</div></div>`;
+  html+='</div>';
+
+  for(const c of chars){
+    const cName=c.name||"Unknown";
+    const cWallet=c.wallet;
+    const cSp=c.total_sp;
+    const cJobs=c.jobs||[];
+    const cQueue=c.skillqueue||[];
+    const cLp=c.loyalty||[];
+    const cOrders=c.market_orders||[];
+    const cOrdersError=c.market_orders_error;
+    const ordersVal=cOrders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0),0);
+
+    html+=`<div class="char-section">`;
+    if(multiChar){
+      html+=`<div class="char-section-hdr">`;
+      html+=`<span class="char-section-name">${authEsc(cName)}</span>`;
+      if(cWallet!=null) html+=`<span class="char-section-wallet">${fmtISK(cWallet)} ISK</span>`;
+      if(cSp!=null) html+=`<span class="char-section-sp">${Math.round(cSp).toLocaleString()} SP</span>`;
+      html+=`</div>`;
+    }
+    html+=`<div class="char-grid">`;
+
+    // Industry jobs
+    html+=`<section class="char-card${cJobs.length>3?' char-card-wide':''}">`;
+    html+=`<div class="char-card-header"><h3>Industry jobs (${cJobs.length})</h3></div>`;
+    html+=`<div class="char-card-body">`;
+    if(cJobs.length){
+      html+=`<div class="char-card-scroll"><table class="mini char-jobs-tbl"><thead><tr>`;
+      html+=`<th>Product</th><th>Activity</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>`;
+      html+=`</tr></thead><tbody>`;
+      for(const j of cJobs){
+        const end=Date.parse(j.end), rem=end-Date.now();
+        let tcell="—";
+        if(isFinite(end)) tcell=rem>0
+          ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
+          :`<span class="timer-cell done">✓ Ready</span>`;
+        html+=`<tr><td>${authEsc(j.product_name)}</td><td>${authEsc(j.activity)}</td>`
+             +`<td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td>`
+             +`<td class="tl">${tcell}</td></tr>`;
+      }
+      html+=`</tbody></table></div>`;
+    } else {
+      html+=`<div class="char-none">No active jobs.</div>`;
+    }
+    html+=`</div></section>`;
+
+    // Skill queue
+    html+=`<section class="char-card">`;
+    html+=`<div class="char-card-header"><h3>Skill queue (${cQueue.length})</h3></div>`;
+    html+=`<div class="char-card-body">`;
+    if(cQueue.length){
+      html+=`<div class="char-card-scroll"><table class="mini"><thead><tr>`;
+      html+=`<th>Skill</th><th>Lvl</th><th style="text-align:right">Finishes</th>`;
+      html+=`</tr></thead><tbody>`;
+      for(const s of cQueue){
+        const fin=s.finish_date?new Date(s.finish_date).toLocaleString([],
+          {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
+        html+=`<tr><td>${authEsc(s.skill_name)}</td><td>${romanLvl(s.finished_level)}</td>`
+             +`<td style="text-align:right">${fin}</td></tr>`;
+      }
+      html+=`</tbody></table></div>`;
+    } else {
+      html+=`<div class="char-none">Skill queue is empty.</div>`;
+    }
+    html+=`</div></section>`;
+
+    // Loyalty points
+    html+=`<section class="char-card">`;
+    html+=`<div class="char-card-header"><h3>Loyalty points</h3></div>`;
+    html+=`<div class="char-card-body">`;
+    if(cLp.length){
+      html+=`<div class="char-card-scroll"><table class="mini"><thead><tr>`;
+      html+=`<th>Corporation</th><th style="text-align:right">LP</th>`;
+      html+=`</tr></thead><tbody>`;
+      for(const l of cLp){
+        html+=`<tr><td>${authEsc(l.corp_name)}</td>`
+             +`<td style="text-align:right">${(l.loyalty_points||0).toLocaleString()}</td></tr>`;
+      }
+      html+=`</tbody></table></div>`;
+    } else {
+      html+=`<div class="char-none">No loyalty points.</div>`;
+    }
+    html+=`</div></section>`;
+
+    // Market orders
+    html+=`<section class="char-card char-card-wide">`;
+    html+=`<div class="char-card-header"><h3>Market orders`;
+    if(cOrders.length) html+=` <span class="char-card-sub">(${cOrders.length} · ${fmtISK(ordersVal)} ISK)</span>`;
+    html+=`</h3></div>`;
+    html+=`<div class="char-card-body">`;
+    if(cOrders.length){
+      html+=`<div class="char-card-scroll"><table class="mini char-orders-tbl"><thead><tr>`;
+      html+=`<th>Item</th><th>Side</th><th style="text-align:right">Remaining</th>`;
+      html+=`<th style="text-align:right">Price</th>`;
+      html+=`<th style="text-align:right">Total value</th>`;
+      html+=`<th style="text-align:right">Jita sell</th>`;
+      html+=`<th style="text-align:right">Queue</th>`;
+      html+=`<th style="text-align:right">Posted</th>`;
+      html+=`<th style="text-align:right">Expires</th>`;
+      html+=`</tr></thead><tbody>`;
+      for(const o of cOrders){
+        const issuedMs=o.issued?Date.parse(o.issued):NaN;
+        const posted=isFinite(issuedMs)?fmtDur((Date.now()-issuedMs)/1000)+" ago":"—";
+        const postedTip=isFinite(issuedMs)?` title="${new Date(issuedMs).toLocaleString()}"`:"";
+        const expiresMs=isFinite(issuedMs)&&o.duration!=null?issuedMs+o.duration*86400000:NaN;
+        const expires=isFinite(expiresMs)?new Date(expiresMs).toLocaleString([],
+          {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
+        const queueCell=o.is_best==null?`<span style="color:var(--dim)">—</span>`
+          :o.is_best?`<span class="tx-sell">Best ✓</span>`
+          :`<span class="tx-buy">#${o.queue_rank} / ${o.queue_total}</span>`;
+        html+=`<tr><td>${authEsc(o.type_name)}</td>`
+             +`<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
+             +`<td style="text-align:right">${(o.volume_remain??0).toLocaleString()} / ${(o.volume_total??0).toLocaleString()}</td>`
+             +`<td style="text-align:right">${fmtISK(o.price)}</td>`
+             +`<td style="text-align:right">${fmtISK((o.volume_remain??0)*o.price)}</td>`
+             +`<td style="text-align:right">${o.market_sell!=null?fmtISK(o.market_sell):"—"}</td>`
+             +`<td style="text-align:right">${queueCell}</td>`
+             +`<td style="text-align:right"${postedTip}>${posted}</td>`
+             +`<td style="text-align:right">${expires}</td></tr>`;
+      }
+      html+=`</tbody></table></div>`;
+    } else {
+      html+=`<div class="char-none${cOrdersError?' char-none-warn':''}">${cOrdersError||'No open orders.'}</div>`;
+    }
+    html+=`</div></section>`;
+
+    html+=`</div></div>`;
   }
 
-  const jobs=d.combined_jobs||d.jobs||[];
-  $("#cv-jobs").textContent=jobs.length;
-  $("#char-jobs-empty").classList.toggle("hidden", jobs.length>0);
-  $("#char-jobs-tbl").classList.toggle("hidden", jobs.length===0);
-  $("#char-jobs-tbl tbody").innerHTML=jobs.map(j=>{
-    const end=Date.parse(j.end), rem=end-Date.now();
-    let tcell="—";
-    if(isFinite(end)) tcell = rem>0
-      ? `<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
-      : `<span class="timer-cell done">✓ Ready</span>`;
-    const charCol=multiChar?`<td>${authEsc(j.character_name||"")}</td>`:"<td></td>";
-    return `<tr><td>${authEsc(j.product_name)}</td>${charCol}<td>${authEsc(j.activity)}</td>`
-         + `<td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td>`
-         + `<td class="tl">${tcell}</td></tr>`;
-  }).join("");
-
-  const q=d.skillqueue||[];
-  $("#char-queue-empty").classList.toggle("hidden", q.length>0);
-  $("#char-queue-tbl").classList.toggle("hidden", q.length===0);
-  $("#char-queue-tbl tbody").innerHTML=q.map(s=>{
-    const fin=s.finish_date?new Date(s.finish_date).toLocaleString([],
-      {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
-    return `<tr><td>${authEsc(s.skill_name)}</td><td>${romanLvl(s.finished_level)}</td>`
-         + `<td style="text-align:right">${fin}</td></tr>`;
-  }).join("");
-
-  const lp=d.loyalty||[];
-  $("#char-lp-empty").classList.toggle("hidden", lp.length>0);
-  $("#char-lp-tbl").classList.toggle("hidden", lp.length===0);
-  $("#char-lp-tbl tbody").innerHTML=lp.map(l=>
-    `<tr><td>${authEsc(l.corp_name)}</td>`
-   + `<td style="text-align:right">${(l.loyalty_points||0).toLocaleString()}</td></tr>`).join("");
-
-  const orders=d.market_orders||[];
-  $("#cv-orders").textContent=orders.length;
-  const ordersTotal=orders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0), 0);
-  $("#char-orders-total").textContent=orders.length?`(${orders.length} · ${fmtISK(ordersTotal)} ISK)`:"";
-  $("#char-orders-empty").classList.toggle("hidden", orders.length>0);
-  $("#char-orders-empty").classList.toggle("char-none-warn", !!d.market_orders_error);
-  $("#char-orders-empty").textContent=d.market_orders_error||"No open orders.";
-  $("#char-orders-tbl").classList.toggle("hidden", orders.length===0);
-  $("#char-orders-tbl tbody").innerHTML=orders.map(o=>{
-    const issuedMs=o.issued?Date.parse(o.issued):NaN;
-    const posted=isFinite(issuedMs)?fmtDur((Date.now()-issuedMs)/1000)+" ago":"—";
-    const postedTip=isFinite(issuedMs)?` title="${new Date(issuedMs).toLocaleString()}"`:"";
-    const expiresMs=isFinite(issuedMs)&&o.duration!=null?issuedMs+o.duration*86400000:NaN;
-    const expires=isFinite(expiresMs)?new Date(expiresMs).toLocaleString([],
-      {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
-    const queue=o.is_best==null?`<span style="color:var(--dim)">—</span>`
-      :o.is_best?`<span class="tx-sell">Best ✓</span>`
-      :`<span class="tx-buy">#${o.queue_rank} / ${o.queue_total}</span>`;
-    return `<tr><td>${authEsc(o.type_name)}</td>`
-         + `<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
-         + `<td style="text-align:right">${(o.volume_remain??0).toLocaleString()} / ${(o.volume_total??0).toLocaleString()}</td>`
-         + `<td style="text-align:right">${fmtISK(o.price)}</td>`
-         + `<td style="text-align:right">${fmtISK((o.volume_remain??0)*o.price)}</td>`
-         + `<td style="text-align:right">${o.market_sell!=null?fmtISK(o.market_sell):"—"}</td>`
-         + `<td style="text-align:right">${queue}</td>`
-         + `<td style="text-align:right"${postedTip}>${posted}</td>`
-         + `<td style="text-align:right">${expires}</td></tr>`;
-  }).join("");
+  $("#char-body").innerHTML=html;
 }
 
 // Rebuild the Industry-table timers from the character's real manufacturing jobs,

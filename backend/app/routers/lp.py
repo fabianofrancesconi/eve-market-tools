@@ -66,37 +66,44 @@ async def scan(
         corp_id, corp_name = await asyncio.to_thread(resolve_corp_id, corp, _session)
     except LPError as e:
         return {"error": str(e)}
+    except Exception as e:
+        logger.exception("Failed to resolve corp")
+        return {"error": f"Failed to resolve corporation: {e}"}
 
-    offers = await asyncio.to_thread(get_offers, corp_id, _session, cache_dir)
-    type_ids = set()
-    for o in offers:
-        type_ids.add(o["type_id"])
-        for req in o.get("required_items", []):
-            type_ids.add(req["type_id"])
+    try:
+        offers = await asyncio.to_thread(get_offers, corp_id, _session, cache_dir)
+        type_ids = set()
+        for o in offers:
+            type_ids.add(o["type_id"])
+            for req in o.get("required_items", []):
+                type_ids.add(req["type_id"])
 
-    if use_esi_prices:
-        hub = TRADE_HUBS.get(station_id, {})
-        region_id = hub.get("region_id", JITA_REGION_ID)
-        prices = await asyncio.to_thread(
-            fetch_prices_esi, list(type_ids), _session, station_id, region_id, cache_dir
+        if use_esi_prices:
+            hub = TRADE_HUBS.get(station_id, {})
+            region_id = hub.get("region_id", JITA_REGION_ID)
+            prices = await asyncio.to_thread(
+                fetch_prices_esi, list(type_ids), _session, station_id, region_id, cache_dir
+            )
+        else:
+            prices = await asyncio.to_thread(fetch_prices, list(type_ids), _session, station_id)
+
+        sellable, unsellable = evaluate(offers, prices, lp_budget, sales_tax, broker_fee)
+        names = await asyncio.to_thread(
+            resolve_names, [r["name_id"] for r in sellable + unsellable], _session, cache_dir
         )
-    else:
-        prices = await asyncio.to_thread(fetch_prices, list(type_ids), _session, station_id)
 
-    sellable, unsellable = evaluate(offers, prices, lp_budget, sales_tax, broker_fee)
-    names = await asyncio.to_thread(
-        resolve_names, [r["name_id"] for r in sellable + unsellable], _session, cache_dir
-    )
+        for r in sellable + unsellable:
+            r["name"] = names.get(r["name_id"], str(r["name_id"]))
 
-    for r in sellable + unsellable:
-        r["name"] = names.get(r["name_id"], str(r["name_id"]))
-
-    return {
-        "corp_id": corp_id,
-        "corp_name": corp_name,
-        "sellable": sellable,
-        "unsellable": unsellable,
-    }
+        return {
+            "corp_id": corp_id,
+            "corp_name": corp_name,
+            "sellable": sellable,
+            "unsellable": unsellable,
+        }
+    except Exception as e:
+        logger.exception("LP scan failed")
+        return {"error": f"Scan failed: {e}"}
 
 
 @router.get("/liquidity")

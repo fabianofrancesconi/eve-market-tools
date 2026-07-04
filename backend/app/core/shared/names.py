@@ -9,13 +9,16 @@ def resolve_names(type_ids, session, cache_dir):
     """type_id -> name via /universe/names/ (<=1000/call), persistently cached."""
     path = Path(cache_dir) / "lp_names.json"
     cache = {int(k): v for k, v in load_json(path, {}).items()}
-    missing = [t for t in type_ids if t not in cache]
+    missing = [t for t in type_ids if t and t > 0 and t not in cache]
     for i in range(0, len(missing), 1000):
         chunk = missing[i:i + 1000]
-        r = session.post(f"{ESI}/universe/names/", json=chunk, headers=HEADERS, timeout=30)
-        r.raise_for_status()
-        for entry in r.json():
-            cache[entry["id"]] = entry["name"]
+        try:
+            r = session.post(f"{ESI}/universe/names/", json=chunk, headers=HEADERS, timeout=30)
+            r.raise_for_status()
+            for entry in r.json():
+                cache[entry["id"]] = entry["name"]
+        except Exception:
+            pass
     if missing:
         save_json(path, {str(k): v for k, v in cache.items()})
     return cache

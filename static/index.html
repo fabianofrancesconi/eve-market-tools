@@ -1507,8 +1507,10 @@ function renderTable(){
     wireLPColDrag(th);
   });
   const _lpSearch=($("#lp-search").value||"").trim().toLowerCase();
+  const _maxSpread=parseFloat($("#maxspread").value);
   const rows=[...STATE.rows]
     .filter(r=>!_lpSearch||r.name.toLowerCase().includes(_lpSearch))
+    .filter(r=>_lpSearch||isNaN(_maxSpread)||r.unsellable||r.spread_pct===null||r.spread_pct<=_maxSpread)
     .filter(r=>!STATE.hideIlliquid||!r.illiquid||r.unsellable)
     .filter(r=>!STATE.hideUnaffordable||r.max_units>0)
     .sort((a,b)=>{
@@ -2005,11 +2007,15 @@ _corpInput.addEventListener("keydown",e=>{
 document.addEventListener("click",e=>{ if(!_corpInput.contains(e.target)&&!_corpDrop.contains(e.target)) _corpClose(); });
 let lpScanTimer;
 function scheduleScan(delay=800){ clearTimeout(lpScanTimer); lpScanTimer=setTimeout(()=>scan(false),delay); }
-["#lp","#maxspread","#market"].forEach(sel=>{
+["#lp","#market"].forEach(sel=>{
   const el=$(sel); if(!el) return;
   el.addEventListener("change",()=>{ saveLS(); scheduleScan(800); });
   if(sel!=="#market") el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); });
 });
+{const el=$("#maxspread"); if(el){
+  el.addEventListener("change",()=>{ saveLS(); if(STATE.rows.length) renderTable(); else scheduleScan(800); });
+  el.addEventListener("input",()=>{ saveLS(); if(STATE.rows.length) renderTable(); else scheduleScan(800); });
+}}
 $("#toggleIlliquid").onchange=()=>{
   STATE.hideIlliquid=$("#toggleIlliquid").checked;
   postPrefs('/api/prefs',{hide_illiquid:STATE.hideIlliquid?'1':'0'}); saveLS();

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.71.0"
+__version__ = "1.72.0"
 
 import argparse
 import base64
@@ -696,8 +696,6 @@ def do_scan(q):
     broker = float(q.get("broker", ["0.015"])[0] or 0.015)
     max_spread = q.get("max_spread", [""])[0].strip()
     max_spread = float(max_spread) if max_spread else None
-    min_profit = q.get("min_profit", [""])[0].strip()
-    min_profit = float(min_profit) if min_profit else None
 
     station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
     if station_id not in TRADE_HUBS:
@@ -732,12 +730,6 @@ def do_scan(q):
     offers_meta = load_json(CACHE_DIR / f"lpstore_{corp_id}.json", {})
     prices = fetch_prices(_all_type_ids(offers), SESSION, station_id=station_id)
     sellable, unsellable = evaluate(offers, prices, lp, tax, broker)
-    if min_profit is not None:
-        sellable = [r for r in sellable
-                    if r["profit_best"] is not None and r["profit_best"] >= min_profit]
-    if max_spread is not None:
-        sellable = [r for r in sellable
-                    if r["spread_pct"] is not None and r["spread_pct"] <= max_spread]
 
     names = resolve_names(_all_type_ids(offers), SESSION, CACHE_DIR)
     volumes = resolve_volumes(

@@ -29,7 +29,7 @@ export function IndustryPage() {
   const [groupId, setGroupId] = useState('')
   const [url, setUrl] = useState<string | null>(null)
   const [trigger, setTrigger] = useState(0)
-  const { progress, message, result, isStreaming, cancel } = useSse<IndRow[]>(url, trigger)
+  const { progress, message, result, isStreaming } = useSse<IndRow[]>(url, trigger)
 
   const { data: groups } = useQuery<MarketGroup[]>({
     queryKey: ['ind-groups'],

@@ -28,7 +28,7 @@ export function ArbitragePage() {
   const [trigger, setTrigger] = useState(0)
   const minIsk = useUiStore(s => s.arbMinIsk)
   const setMinIsk = useUiStore(s => s.setArbMinIsk)
-  const { progress, message, result, isStreaming, cancel } = useSse<ArbRow[]>(url, trigger)
+  const { progress, message, result, isStreaming } = useSse<ArbRow[]>(url, trigger)
 
   const handleScan = () => {
     setUrl(sseUrl('/api/arbitrage/scan', {

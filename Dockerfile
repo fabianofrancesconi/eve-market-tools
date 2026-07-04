@@ -10,10 +10,12 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl gcc python3-dev libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY backend/pyproject.toml ./
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . && apt-get purge -y gcc python3-dev && apt-get autoremove -y
 
 COPY backend/app/ ./app/
 

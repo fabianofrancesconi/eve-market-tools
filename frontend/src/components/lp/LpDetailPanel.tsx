@@ -141,11 +141,6 @@ export function LpDetailPanel({ offerId, corpId, lpBudget, stationId, salesTax, 
 
   // Calculate max affordable redemptions
   const maxByLp = data ? Math.floor(lpBudget / data.lp_cost) : 1
-  const iskPerRedemption = data ? data.isk_cost + (data.required_items?.reduce((s, i) => s + i.line_cost, 0) ?? 0) : 0
-  // Max ISK: we don't have a wallet balance prop, so we base it on acquisition cost vs profit
-  // Use a generous budget estimation - max redemptions where total cost is covered
-  const maxByIsk = iskPerRedemption > 0 ? Math.floor((lpBudget * 2000) / iskPerRedemption) : 999
-  // Actually, the meaningful "Max ISK" is how many we can afford from the buy book depth
   const maxByBuyBook = data?.output_buy_book
     ? (() => {
         const totalVol = data.output_buy_book.reduce((sum, [, vol]) => sum + vol, 0)

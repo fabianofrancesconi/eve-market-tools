@@ -1,10 +1,19 @@
 """Industry scanner API router with SSE streaming."""
+import asyncio
 import json
+import logging
+from typing import Optional
+
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 import requests as req_lib
 
 from ..config import settings
+from ..database import get_db
+from ..dependencies import get_optional_user
+from ..models import User
+from ..services.auth_service import get_active_token
 from ..core.shared.constants import JITA_STATION_ID, JITA_REGION_ID, TRADE_HUBS
 from ..core.market.prices import fetch_prices
 from ..core.market.history import fetch_history_volumes
@@ -19,9 +28,18 @@ from ..core.industry.costs import tradeability, bulk_training_time, missing_skil
 from ..core.industry.detail import build_industry_detail
 from ..core.arbitrage.scanner import fetch_fuzzwork_region
 from ..core.shared.names import resolve_names
+from ..core.esi.character import (
+    fetch_skills, fetch_character_blueprints, fetch_industry_jobs,
+    skill_profile_from_skills, owned_blueprint_lookup,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/industry", tags=["industry"])
 _session = req_lib.Session()
+
+# Manufacturing activity id in the EVE SDE / ESI industry jobs.
+_MANUFACTURING = 1
 
 
 def _parse_ids(raw: str) -> list[int]:
@@ -32,6 +50,47 @@ def _parse_ids(raw: str) -> list[int]:
         if t.isdigit():
             result.append(int(t))
     return result
+
+
+def _build_job_map(jobs) -> dict[int, dict]:
+    """ESI industry jobs -> {blueprint_type_id: {end_date, runs, status}} for the
+    soonest-ending active/paused manufacturing job of each blueprint."""
+    out: dict[int, dict] = {}
+    for j in jobs or []:
+        if j.get("activity_id") != _MANUFACTURING:
+            continue
+        if j.get("status") not in ("active", "paused", "ready"):
+            continue
+        bpid = j.get("blueprint_type_id")
+        if bpid is None:
+            continue
+        end = j.get("end_date")
+        prev = out.get(bpid)
+        if prev is None or (end and prev.get("end_date") and end < prev["end_date"]):
+            out[bpid] = {"end_date": end, "runs": j.get("runs"), "status": j.get("status")}
+    return out
+
+
+async def _load_character_industry(user: Optional[User], db: AsyncSession):
+    """Fetch the active character's skills, owned blueprints and running jobs.
+    Returns (skill_profile, owned_me_te, job_map). Empty on any failure or when
+    not logged in, so the caller falls back to the anonymous (assumed) path."""
+    if not user:
+        return {}, {}, {}
+    try:
+        tok = await get_active_token(user, db, _session)
+        if not tok:
+            return {}, {}, {}
+        access_token, cid = tok
+        skills = await asyncio.to_thread(fetch_skills, access_token, cid, _session)
+        skill_profile = skill_profile_from_skills(skills)
+        bps_resp = await asyncio.to_thread(fetch_character_blueprints, access_token, cid, _session)
+        owned_me_te = owned_blueprint_lookup(bps_resp)
+        jobs = await asyncio.to_thread(fetch_industry_jobs, access_token, cid, _session)
+        return skill_profile, owned_me_te, _build_job_map(jobs)
+    except Exception:
+        logger.exception("Failed to load character industry data")
+        return {}, {}, {}
 
 
 @router.get("/groups")
@@ -58,8 +117,17 @@ async def scan(
     runs: int = Query(1),
     skills_level: int = Query(0),
     favorites: str = Query(""),
+    use_my_skills: bool = Query(False),
+    user: Optional[User] = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """SSE-streaming industry scan."""
+    # When "My skills" is on and logged in, use the character's real trained
+    # skills + owned blueprints (ME/TE) and annotate running manufacturing jobs.
+    skill_profile, owned_me_te, job_map = {}, {}, {}
+    if use_my_skills:
+        skill_profile, owned_me_te, job_map = await _load_character_industry(user, db)
+
     def generate():
         cache_dir = settings.cache_dir
         hub = TRADE_HUBS.get(station_id, {})

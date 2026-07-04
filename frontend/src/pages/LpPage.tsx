@@ -109,7 +109,7 @@ export function LpPage() {
     queryKey: scanQueryKey,
     queryFn: () =>
       apiGet<ScanResult>(
-        `/api/lp/scan?corp=${encodeURIComponent(corp)}&lp_budget=${budget}&station_id=${stationId}&sales_tax=${salesTax / 100}&broker_fee=${brokerFee / 100}&use_esi_prices=true`
+        `/api/lp/scan?corp=${encodeURIComponent(corp)}&lp_budget=${budget}&station_id=${stationId}&sales_tax=${salesTax / 100}&broker_fee=${brokerFee / 100}`
       ),
     enabled: scanEnabled,
   })

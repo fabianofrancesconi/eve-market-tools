@@ -5,7 +5,7 @@ const navItems = [
   { to: '/lp', label: 'LP Store' },
   { to: '/arb', label: 'Arbitrage' },
   { to: '/ind', label: 'Industry' },
-  { to: '/character', label: 'Character' },
+  { to: '/character', label: 'Overview' },
 ]
 
 export function Header() {

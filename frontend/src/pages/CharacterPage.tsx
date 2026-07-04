@@ -3,23 +3,82 @@ import { apiGet } from '../lib/api-client'
 import { fmtIsk, fmtNum } from '../lib/format'
 import { useAuth } from '../hooks/use-auth'
 
+interface SkillQueueEntry {
+  skill_id: number
+  skill_name?: string
+  finished_level: number
+  finish_date?: string
+}
+
+interface LoyaltyEntry {
+  corporation_id: number
+  corporation_name?: string
+  loyalty_points: number
+}
+
+interface IndustryJob {
+  job_id: number
+  activity_id: number
+  blueprint_type_id: number
+  product_type_id: number
+  product_name?: string
+  status: string
+  runs: number
+  end_date: string
+}
+
+interface MarketOrder {
+  order_id: number
+  type_id: number
+  type_name?: string
+  price: number
+  volume_remain: number
+  volume_total: number
+  is_buy_order: boolean
+  issued: string
+  duration: number
+  location_id: number
+}
+
 interface CharData {
   character_id: number
   name: string
   is_active: boolean
-  wallet?: number
-  total_sp?: number
-  skillqueue?: Array<{ skill_id: number; finished_level: number; finish_date?: string }>
-  loyalty_points?: Array<{ corporation_id: number; loyalty_points: number }>
-  industry_jobs?: Array<{ job_id: number; activity_id: number; status: string; end_date: string }>
-  market_orders?: Array<{ order_id: number; type_id: number; price: number; volume_remain: number; is_buy_order: boolean }>
+  wallet?: number | null
+  total_sp?: number | null
+  unallocated_sp?: number | null
+  skillqueue?: SkillQueueEntry[]
+  loyalty_points?: LoyaltyEntry[]
+  industry_jobs?: IndustryJob[]
+  market_orders?: MarketOrder[]
   error?: string
+}
+
+const ACTIVITIES: Record<number, string> = {
+  1: 'Manufacturing',
+  3: 'TE Research',
+  4: 'ME Research',
+  5: 'Copying',
+  8: 'Invention',
+  9: 'Reactions',
+}
+
+function timeUntil(dateStr: string): string {
+  const diff = new Date(dateStr).getTime() - Date.now()
+  if (diff <= 0) return '✓ Ready'
+  const h = Math.floor(diff / 3600000)
+  const m = Math.floor((diff % 3600000) / 60000)
+  if (h >= 24) {
+    const d = Math.floor(h / 24)
+    return `${d}d ${h % 24}h`
+  }
+  return `${h}h ${m}m`
 }
 
 export function CharacterPage() {
   const { isLoggedIn, login } = useAuth()
 
-  const { data: characters } = useQuery<CharData[]>({
+  const { data: characters, isLoading } = useQuery<CharData[]>({
     queryKey: ['character-data'],
     queryFn: () => apiGet('/api/character/data'),
     enabled: isLoggedIn,
@@ -29,7 +88,10 @@ export function CharacterPage() {
   if (!isLoggedIn) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4">
-        <p className="text-foreground-muted">Log in with EVE Online to see your character data.</p>
+        <p className="text-foreground-muted text-center max-w-md">
+          Log in with EVE Online to see your wallet, skills, loyalty points,
+          running industry jobs and active market orders here.
+        </p>
         <button
           onClick={login}
           className="px-4 py-2 rounded bg-accent-cyan text-primary-foreground font-medium hover:bg-accent-cyan/80 transition-colors"
@@ -40,77 +102,177 @@ export function CharacterPage() {
     )
   }
 
-  if (!characters) {
+  if (isLoading || !characters) {
     return <p className="text-foreground-muted">Loading character data...</p>
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {characters.map(char => (
-        <div key={char.character_id} className="rounded-lg border border-border bg-background-panel p-4">
-          <div className="flex items-center gap-3 mb-4">
-            <img
-              src={`https://images.evetech.net/characters/${char.character_id}/portrait?size=64`}
-              alt={char.name}
-              className="w-12 h-12 rounded"
-            />
-            <div>
-              <h2 className="text-lg font-semibold">{char.name}</h2>
-              {char.is_active && <span className="text-xs text-accent-cyan">Active</span>}
-            </div>
-          </div>
-
-          {char.error ? (
-            <p className="text-negative text-sm">{char.error}</p>
-          ) : (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatCard label="Wallet" value={fmtIsk(char.wallet)} />
-              <StatCard label="Total SP" value={fmtNum(char.total_sp)} />
-              <StatCard label="Skill Queue" value={`${char.skillqueue?.length ?? 0} skills`} />
-              <StatCard label="Active Orders" value={`${char.market_orders?.length ?? 0}`} />
-            </div>
-          )}
-
-          {char.industry_jobs && char.industry_jobs.length > 0 && (
-            <div className="mt-4">
-              <h3 className="text-sm font-medium text-foreground-muted mb-2">Industry Jobs</h3>
-              <div className="space-y-1">
-                {char.industry_jobs.filter(j => j.status === 'active').slice(0, 5).map(job => (
-                  <div key={job.job_id} className="flex justify-between text-sm py-1 border-b border-border/30">
-                    <span>Job #{job.job_id}</span>
-                    <span className="text-foreground-muted">{new Date(job.end_date).toLocaleString()}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {char.market_orders && char.market_orders.length > 0 && (
-            <div className="mt-4">
-              <h3 className="text-sm font-medium text-foreground-muted mb-2">Market Orders</h3>
-              <div className="space-y-1">
-                {char.market_orders.slice(0, 5).map(order => (
-                  <div key={order.order_id} className="flex justify-between text-sm py-1 border-b border-border/30">
-                    <span className={order.is_buy_order ? 'text-positive' : 'text-accent-cyan'}>
-                      {order.is_buy_order ? 'Buy' : 'Sell'} x {order.volume_remain}
-                    </span>
-                    <span>{fmtIsk(order.price)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        <CharacterPanel key={char.character_id} char={char} />
       ))}
     </div>
   )
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
+function CharacterPanel({ char }: { char: CharData }) {
   return (
-    <div className="rounded bg-background-elevated p-3">
-      <p className="text-xs text-foreground-muted">{label}</p>
-      <p className="text-lg font-semibold">{value}</p>
+    <div className="space-y-4">
+      {/* Character header */}
+      <div className="flex items-center gap-3">
+        <img
+          src={`https://images.evetech.net/characters/${char.character_id}/portrait?size=64`}
+          alt={char.name}
+          className="w-12 h-12 rounded"
+        />
+        <div>
+          <h2 className="text-lg font-semibold text-accent-cyan">{char.name}</h2>
+          <div className="flex items-center gap-3 text-sm text-foreground-muted">
+            {char.wallet != null && <span className="text-accent-gold">{fmtIsk(char.wallet)} ISK</span>}
+            {char.total_sp != null && <span>{fmtNum(char.total_sp)} SP</span>}
+            {char.is_active && <span className="text-accent-cyan text-xs">★ Active</span>}
+          </div>
+        </div>
+      </div>
+
+      {char.error && (
+        <p className="text-negative text-sm">{char.error}</p>
+      )}
+
+      {!char.error && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Industry Jobs */}
+          <Card title={`Industry Jobs (${char.industry_jobs?.filter(j => j.status === 'active').length ?? 0})`} wide={true}>
+            {char.industry_jobs && char.industry_jobs.filter(j => j.status === 'active').length > 0 ? (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-foreground-muted border-b border-border/50">
+                    <th className="text-left py-1.5">Product</th>
+                    <th className="text-left py-1.5">Activity</th>
+                    <th className="text-right py-1.5">Runs</th>
+                    <th className="text-right py-1.5">Time Left</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {char.industry_jobs.filter(j => j.status === 'active').map(job => (
+                    <tr key={job.job_id} className="border-b border-border/30">
+                      <td className="py-1.5">{job.product_name || `#${job.product_type_id}`}</td>
+                      <td className="py-1.5 text-foreground-muted">{ACTIVITIES[job.activity_id] || `Activity ${job.activity_id}`}</td>
+                      <td className="py-1.5 text-right">{job.runs}</td>
+                      <td className={`py-1.5 text-right ${timeUntil(job.end_date) === '✓ Ready' ? 'text-positive' : ''}`}>
+                        {timeUntil(job.end_date)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="text-foreground-muted text-xs">No active jobs.</p>
+            )}
+          </Card>
+
+          {/* Skill Queue */}
+          <Card title={`Skill Queue (${char.skillqueue?.length ?? 0})`}>
+            {char.skillqueue && char.skillqueue.length > 0 ? (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-foreground-muted border-b border-border/50">
+                    <th className="text-left py-1.5">Skill</th>
+                    <th className="text-center py-1.5">Level</th>
+                    <th className="text-right py-1.5">Finishes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {char.skillqueue.slice(0, 10).map((sq, i) => (
+                    <tr key={i} className="border-b border-border/30">
+                      <td className="py-1.5">{sq.skill_name || `Skill ${sq.skill_id}`}</td>
+                      <td className="py-1.5 text-center">{['I','II','III','IV','V'][sq.finished_level - 1] || sq.finished_level}</td>
+                      <td className="py-1.5 text-right text-foreground-muted">
+                        {sq.finish_date ? new Date(sq.finish_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="text-foreground-muted text-xs">Skill queue is empty.</p>
+            )}
+          </Card>
+
+          {/* Loyalty Points */}
+          <Card title="Loyalty Points">
+            {char.loyalty_points && char.loyalty_points.length > 0 ? (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-foreground-muted border-b border-border/50">
+                    <th className="text-left py-1.5">Corporation</th>
+                    <th className="text-right py-1.5">LP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {char.loyalty_points.map(lp => (
+                    <tr key={lp.corporation_id} className="border-b border-border/30">
+                      <td className="py-1.5">{lp.corporation_name || `Corp #${lp.corporation_id}`}</td>
+                      <td className="py-1.5 text-right">{fmtNum(lp.loyalty_points)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="text-foreground-muted text-xs">No loyalty points.</p>
+            )}
+          </Card>
+
+          {/* Market Orders */}
+          <Card title={`Market Orders (${char.market_orders?.length ?? 0})`} wide={true}>
+            {char.market_orders && char.market_orders.length > 0 ? (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-foreground-muted border-b border-border/50">
+                    <th className="text-left py-1.5">Item</th>
+                    <th className="text-center py-1.5">Side</th>
+                    <th className="text-right py-1.5">Remaining</th>
+                    <th className="text-right py-1.5">Price</th>
+                    <th className="text-right py-1.5">Total Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {char.market_orders.map(order => (
+                    <tr key={order.order_id} className="border-b border-border/30">
+                      <td className="py-1.5">{order.type_name || `Type #${order.type_id}`}</td>
+                      <td className={`py-1.5 text-center ${order.is_buy_order ? 'text-negative' : 'text-positive'}`}>
+                        {order.is_buy_order ? 'Buy' : 'Sell'}
+                      </td>
+                      <td className="py-1.5 text-right">{order.volume_remain}/{order.volume_total}</td>
+                      <td className="py-1.5 text-right">{fmtIsk(order.price)}</td>
+                      <td className="py-1.5 text-right">{fmtIsk(order.price * order.volume_remain)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-border font-medium">
+                    <td className="py-1.5" colSpan={4}>Total</td>
+                    <td className="py-1.5 text-right">
+                      {fmtIsk(char.market_orders.reduce((s, o) => s + o.price * o.volume_remain, 0))}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            ) : (
+              <p className="text-foreground-muted text-xs">No open orders.</p>
+            )}
+          </Card>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Card({ title, children, wide }: { title: string; children: React.ReactNode; wide?: boolean }) {
+  return (
+    <div className={`rounded border border-border bg-background-elevated p-3 ${wide ? 'md:col-span-2' : ''}`}>
+      <h3 className="text-sm font-medium text-foreground-muted mb-2">{title}</h3>
+      {children}
     </div>
   )
 }

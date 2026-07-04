@@ -787,16 +787,9 @@
 <div id="auth-cfg-pop" class="hidden">
   <h4>EVE Online login</h4>
   <p class="cfg-hint">EVE login is configured on the server via the
-    <code>EVE_CLIENT_ID</code> and <code>EVE_CALLBACK_URL</code> environment variables.
-    Register the <b>Callback URL</b> below as the callback for your
-    <a href="https://developers.eveonline.com/applications" target="_blank" rel="noopener">EVE application</a>.</p>
+    <code>EVE_CLIENT_ID</code> and <code>EVE_CALLBACK_URL</code> environment variables.</p>
   <label class="cfg-l">Client ID</label>
   <div id="cfg-client-status" class="cfg-sub"></div>
-  <label class="cfg-l">Callback URL <span class="cfg-sub">(register this exact value)</span></label>
-  <div class="field-row">
-    <input id="cfg-callback" type="text" readonly>
-    <button id="cfg-copy" class="auth-btn">Copy</button>
-  </div>
   <div class="cfg-l" style="margin-top:10px">Scopes requested</div>
   <div id="cfg-scopes" class="cfg-scopes"></div>
   <div class="field-row" style="margin-top:12px; justify-content:flex-end">
@@ -3277,7 +3270,7 @@ setInterval(()=>{
 // ══════════════════════════════════════════════════════════════════════════
 const AUTH = { loggedIn:false, name:null, charId:null, data:null,
                characters:[], activeCharId:null,
-               cfg:{configured:false,callback_url:"",scopes:[]} };
+               cfg:{configured:false,scopes:[]} };
 const CHAR_REFRESH_MS = 300000;  // ESI caches character industry jobs for 5 min
 let charRefreshDeadline = 0;
 function tickCharRefreshTimer(){
@@ -3295,7 +3288,6 @@ async function loadAuthConfig(){
   try{ AUTH.cfg=await (await fetch("/api/auth/config")).json(); }catch(e){ return; }
   $("#cfg-client-status").textContent = AUTH.cfg.configured
     ? "✓ configured via EVE_CLIENT_ID" : "⚠ not set — configure EVE_CLIENT_ID on the server";
-  $("#cfg-callback").value=AUTH.cfg.callback_url||"";
   $("#cfg-scopes").innerHTML=(AUTH.cfg.scopes||[]).map(authEsc).join("<br>");
 }
 function openAuthCfg(){ loadAuthConfig(); $("#auth-cfg-pop").classList.remove("hidden"); }
@@ -3720,13 +3712,6 @@ $("#char-chip").onclick=e=>{
   switchTab("char");
 };
 $("#cfg-close").onclick=closeAuthCfg;
-$("#cfg-copy").onclick=()=>{
-  const t=$("#cfg-callback").value;
-  const done=()=>{ const b=$("#cfg-copy"); b.textContent="Copied"; setTimeout(()=>b.textContent="Copy",1200); };
-  if(navigator.clipboard&&navigator.clipboard.writeText)
-    navigator.clipboard.writeText(t).then(done).catch(()=>fallbackCopy(t,done));
-  else fallbackCopy(t,done);
-};
 // EVE login is configured via server env vars now — nothing to save here.
 
 // Re-pull character data (wallet, jobs, skill queue, LP) on EVE's cache cadence

@@ -127,20 +127,6 @@
   .auth-btn-sm:hover { background:var(--cyan); }
   #char-refresh-timer { position:absolute; top:100%; right:0; margin-top:4px;
     font-size:11px; color:var(--dim2); font-variant-numeric:tabular-nums; white-space:nowrap; }
-  #auth-cfg-pop {
-    position:absolute; top:50px; right:16px; z-index:60; width:380px;
-    background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
-    padding:14px 16px 16px; box-shadow:0 8px 30px rgba(0,0,0,.6);
-  }
-  #auth-cfg-pop h4 { font-size:13px; color:var(--cyan); margin-bottom:8px; }
-  #auth-cfg-pop .cfg-hint { font-size:12px; color:var(--dim); line-height:1.5; margin-bottom:12px; }
-  #auth-cfg-pop input { width:100%; background:var(--panel); border:1px solid var(--line2);
-    color:var(--fg); font:inherit; font-size:13px; border-radius:4px; padding:6px 8px; }
-  #auth-cfg-pop .field-row input { width:auto; flex:1; }
-  .cfg-l { font-size:10px; text-transform:uppercase; letter-spacing:.7px;
-    color:var(--dim); font-weight:700; margin:10px 0 3px; }
-  .cfg-sub { text-transform:none; letter-spacing:0; font-weight:400; color:var(--dim2); }
-  .cfg-scopes { font-size:11px; color:var(--dim); font-family:ui-monospace,monospace; line-height:1.6; }
   .lp-mylp { text-transform:none; letter-spacing:0; font-weight:600; color:var(--gold);
     font-size:10px; margin-left:6px; }
   #lp.locked { color:var(--gold); border-color:var(--line2); opacity:.85; cursor:not-allowed; }
@@ -772,7 +758,6 @@
   </nav>
   <div id="auth-region">
     <button id="login-eve" class="auth-btn" data-tip="Log in with your EVE Online account to load your skills, wallet, loyalty points and running industry jobs.">Log in with EVE</button>
-    <button id="login-cfg" class="auth-cog" title="EVE login settings" aria-label="EVE login settings">&#9881;</button>
     <div id="char-chip" class="hidden" data-tip="Click to open the Overview tab. Click ▾ to manage characters.">
       <span id="chip-name">&bull;&bull;&bull;</span>
       <span id="chip-wallet" class="chip-wallet"></span>
@@ -783,19 +768,7 @@
   </div>
 </header>
 
-<!-- EVE login settings popover -->
-<div id="auth-cfg-pop" class="hidden">
-  <h4>EVE Online login</h4>
-  <p class="cfg-hint">EVE login is configured on the server via the
-    <code>EVE_CLIENT_ID</code> and <code>EVE_CALLBACK_URL</code> environment variables.</p>
-  <label class="cfg-l">Client ID</label>
-  <div id="cfg-client-status" class="cfg-sub"></div>
-  <div class="cfg-l" style="margin-top:10px">Scopes requested</div>
-  <div id="cfg-scopes" class="cfg-scopes"></div>
-  <div class="field-row" style="margin-top:12px; justify-content:flex-end">
-    <button id="cfg-close" class="auth-btn">Close</button>
-  </div>
-</div>
+<!-- EVE login settings popover removed — login is fully env-configured -->
 
 <!-- Global cost settings (shared by LP + Industry) -->
 <div id="global-costs" class="ctrlbar global-costs">
@@ -3269,8 +3242,7 @@ setInterval(()=>{
 // EVE SSO / CHARACTER
 // ══════════════════════════════════════════════════════════════════════════
 const AUTH = { loggedIn:false, name:null, charId:null, data:null,
-               characters:[], activeCharId:null,
-               cfg:{configured:false,scopes:[]} };
+               characters:[], activeCharId:null };
 const CHAR_REFRESH_MS = 300000;  // ESI caches character industry jobs for 5 min
 let charRefreshDeadline = 0;
 function tickCharRefreshTimer(){
@@ -3284,14 +3256,7 @@ function authEsc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function romanLvl(n){ return ROMAN[n]||String(n||""); }
 
-async function loadAuthConfig(){
-  try{ AUTH.cfg=await (await fetch("/api/auth/config")).json(); }catch(e){ return; }
-  $("#cfg-client-status").textContent = AUTH.cfg.configured
-    ? "✓ configured via EVE_CLIENT_ID" : "⚠ not set — configure EVE_CLIENT_ID on the server";
-  $("#cfg-scopes").innerHTML=(AUTH.cfg.scopes||[]).map(authEsc).join("<br>");
-}
-function openAuthCfg(){ loadAuthConfig(); $("#auth-cfg-pop").classList.remove("hidden"); }
-function closeAuthCfg(){ $("#auth-cfg-pop").classList.add("hidden"); }
+// EVE login settings popover removed — login is fully env-configured.
 
 function renderAuthChip(){
   $("#login-eve").classList.toggle("hidden", AUTH.loggedIn);
@@ -3352,9 +3317,9 @@ async function checkAuth(){
 }
 
 async function doLogin(){
-  let r; try{ r=await (await fetch("/api/auth/login")).json(); }catch(e){ openAuthCfg(); return; }
+  let r; try{ r=await (await fetch("/api/auth/login")).json(); }catch(e){ setStatus("Could not start EVE login.", true); return; }
   if(r.url){ window.location.href=r.url; }
-  else { openAuthCfg(); if(r.error) setStatus(authEsc(r.error), true); }
+  else if(r.error){ setStatus(authEsc(r.error), true); }
 }
 async function doLogout(charId){
   const url=charId?`/api/auth/logout?char_id=${charId}`:"/api/auth/logout";
@@ -3696,7 +3661,6 @@ function updateMyLpBadge(){
 $("#login-eve").onclick=doLogin;
 $("#char-login-btn").onclick=doLogin;
 $("#ind-login-btn").onclick=doLogin;
-$("#login-cfg").onclick=()=>{ const p=$("#auth-cfg-pop"); p.classList.contains("hidden")?openAuthCfg():closeAuthCfg(); };
 $("#chip-dd-toggle").onclick=e=>{
   e.stopPropagation();
   const dd=$("#char-dropdown");
@@ -3711,8 +3675,6 @@ $("#char-chip").onclick=e=>{
   if(e.target.closest("#chip-dd-toggle")||e.target.closest("#char-dropdown")) return;
   switchTab("char");
 };
-$("#cfg-close").onclick=closeAuthCfg;
-// EVE login is configured via server env vars now — nothing to save here.
 
 // Re-pull character data (wallet, jobs, skill queue, LP) on EVE's cache cadence
 // so the job timers stay current. The per-second ticker handles the countdown

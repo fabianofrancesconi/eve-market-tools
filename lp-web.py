@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.79.0"
+__version__ = "1.80.0"
 
 import argparse
 import base64
@@ -377,17 +377,6 @@ def _refresh_char_blueprints(cid):
         _CHAR_BP_ME_TES[cid] = bp_map
     except (LPError, requests.RequestException):
         _CHAR_BP_ME_TES.setdefault(cid, {})
-
-
-def do_auth_config(q):
-    """Report the host-configured EVE login: whether a Client ID is set (via the
-    EVE_CLIENT_ID env var) and the effective callback URL to register with EVE.
-    Client ID and callback come from the environment now — nothing to save."""
-    return {
-        "configured": bool(_eve_client_id()),
-        "callback_url": _callback_url(),
-        "scopes": sso_core.SCOPES,
-    }
 
 
 def do_auth_login(q):
@@ -1770,7 +1759,6 @@ _GET_ROUTES = {
     "/api/ind/liquidity": do_ind_liquidity,
     "/api/ind/detail": do_ind_detail,
     "/api/ind/bpo-search": do_ind_bpo_search,
-    "/api/auth/config": do_auth_config,
     "/api/auth/login": do_auth_login,
     "/api/auth/status": do_auth_status,
     "/api/auth/logout": do_auth_logout,

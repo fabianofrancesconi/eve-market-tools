@@ -153,14 +153,6 @@ class TestEnvAuthConfig:
         monkeypatch.setattr(lp_web, "_SERVER_PORT", 8765)
         assert lp_web._callback_url() == "http://localhost:8765/callback"
 
-    def test_auth_config_reports_env_state(self, monkeypatch):
-        monkeypatch.setenv("EVE_CLIENT_ID", "cid")
-        monkeypatch.setenv("EVE_CALLBACK_URL", "https://app.example/callback")
-        cfg = lp_web.do_auth_config({})
-        assert cfg["configured"] is True
-        assert cfg["callback_url"] == "https://app.example/callback"
-        assert "scopes" in cfg
-
 
 # ── Auth status, switch, logout ───────────────────────────────────────────────
 

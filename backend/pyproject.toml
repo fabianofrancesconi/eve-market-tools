@@ -1,6 +1,6 @@
 [project]
 name = "eve-market-tools"
-version = "2.2.0"
+version = "2.3.0"
 description = "EVE Online market analysis tools — LP Store, Arbitrage, and Industry scanners"
 requires-python = ">=3.12"
 dependencies = [

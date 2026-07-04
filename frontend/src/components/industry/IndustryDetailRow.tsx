@@ -7,15 +7,15 @@ interface Material {
   name: string
   base_qty: number
   eff_qty: number
-  unit_price: number
-  line_cost: number
-  volume?: number
+  unit_price: number | null
+  line_cost: number | null
+  volume_each?: number | null
 }
 
 interface Datacore {
   name: string
-  qty: number
-  unit_price: number
+  quantity: number
+  unit_price: number | null
 }
 
 interface InventionData {
@@ -34,10 +34,17 @@ interface MissingSkill {
   prereq: boolean
 }
 
+interface ProductInfo {
+  type_id: number
+  name: string
+  quantity: number
+  volume_each: number | null
+}
+
 interface DetailData {
-  product_name: string
+  product: ProductInfo
   tech_level: number
-  materials: Material[]
+  required_items: Material[]
   material_cost: number
   eiv: number
   job_cost: number
@@ -45,24 +52,17 @@ interface DetailData {
   profit_patient: number
   profit_instant: number
   build_time: number
-  ask: number
-  bid: number
-  bp_price: number
+  ask: number | null
+  bid: number | null
+  bp_price: number | null
   bp_source: string
   bp_available: boolean
-  payback_runs: number
+  payback_runs: number | null
   me_used: number
   te_used: number
   owned_bp_me_te: string | null
   invention: InventionData | null
   missing_skills: MissingSkill[] | null
-  // legacy batch fields (computed locally now)
-  batch_total_cost?: number
-  batch_profit?: number
-  batch_build_time?: number
-  cargo_in?: number
-  cargo_out?: number
-  runs?: number
 }
 
 interface Props {
@@ -114,7 +114,7 @@ export function IndustryDetailRow({
 
   const copyProductName = () => {
     if (!detail) return
-    navigator.clipboard.writeText(detail.product_name).then(() => {
+    navigator.clipboard.writeText(detail.product.name).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     })
@@ -153,7 +153,7 @@ export function IndustryDetailRow({
             <div className="space-y-4">
               {/* Header with copy button */}
               <div className="flex items-center gap-2">
-                <span className="font-medium text-foreground">{detail.product_name}</span>
+                <span className="font-medium text-foreground">{detail.product.name}</span>
                 <button
                   onClick={copyProductName}
                   className="text-foreground-muted hover:text-accent-cyan transition-colors"
@@ -221,7 +221,7 @@ export function IndustryDetailRow({
                       </tr>
                     </thead>
                     <tbody>
-                      {detail.materials.map((m, i) => (
+                      {detail.required_items.map((m, i) => (
                         <tr key={i} className="border-b border-border/30">
                           <td className="px-2 py-1">{m.name}</td>
                           <td className="px-2 py-1 text-right text-foreground-muted">{fmtNum(m.base_qty)}</td>
@@ -337,13 +337,13 @@ export function IndustryDetailRow({
                   <div className="flex justify-between">
                     <span className="text-foreground-muted">Payback runs</span>
                     <span className={`${
-                      detail.payback_runs > 0 && detail.payback_runs < 50
+                      (detail.payback_runs ?? 0) > 0 && (detail.payback_runs ?? 0) < 50
                         ? 'text-positive'
-                        : detail.payback_runs >= 50
+                        : (detail.payback_runs ?? 0) >= 50
                           ? 'text-accent-gold'
                           : 'text-foreground-muted'
                     }`}>
-                      {detail.payback_runs > 0 ? fmtNum(detail.payback_runs) : 'N/A'}
+                      {detail.payback_runs ? fmtNum(detail.payback_runs) : 'N/A'}
                     </span>
                   </div>
                 </div>
@@ -382,9 +382,9 @@ export function IndustryDetailRow({
                           {detail.invention.datacores.map((dc, i) => (
                             <tr key={i} className="border-b border-border/30">
                               <td className="px-2 py-1">{dc.name}</td>
-                              <td className="px-2 py-1 text-right">{dc.qty}</td>
+                              <td className="px-2 py-1 text-right">{dc.quantity}</td>
                               <td className="px-2 py-1 text-right">{fmtIsk(dc.unit_price)}</td>
-                              <td className="px-2 py-1 text-right">{fmtIsk(dc.qty * dc.unit_price)}</td>
+                              <td className="px-2 py-1 text-right">{fmtIsk(dc.quantity * (dc.unit_price ?? 0))}</td>
                             </tr>
                           ))}
                         </tbody>

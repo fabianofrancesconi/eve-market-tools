@@ -15,7 +15,7 @@ from ..core.industry.sde import (
 )
 from ..core.industry.blueprints import assemble_blueprints, assemble_invention
 from ..core.industry.evaluate import evaluate_industry
-from ..core.industry.costs import tradeability, bulk_training_time
+from ..core.industry.costs import tradeability, bulk_training_time, missing_skills
 from ..core.industry.detail import build_industry_detail
 from ..core.arbitrage.scanner import fetch_fuzzwork_region
 from ..core.shared.names import resolve_names
@@ -165,6 +165,8 @@ async def detail(
 ):
     """Full detail breakdown for one blueprint."""
     cache_dir = settings.cache_dir
+    hub = TRADE_HUBS.get(station_id, {})
+    region_id = hub.get("region_id", JITA_REGION_ID)
     load_sde_industry(cache_dir, session=_session)
     conn = connect_sde(cache_dir)
     try:
@@ -185,12 +187,24 @@ async def detail(
         names = resolve_names(all_type_ids, _session, cache_dir)
         vols = volumes_for(conn, all_type_ids)
 
+        # T1 BPO buy-in price (region-wide Fuzzwork) so the detail panel can show
+        # BP price + payback like the scan does. Was previously omitted → blank.
+        bpo_prices = {}
+        if not inv:
+            bpo_region = fetch_fuzzwork_region([blueprint_id], region_id, _session)
+            bpo_prices = {bid: v["sell_min"] for bid, v in bpo_region.items() if v.get("sell_min")}
+
         params = {
             "me": me, "te": te, "job_rate": job_rate,
             "sales_tax": sales_tax, "broker_fee": broker_fee,
             "runs": runs, "skills_level": skills_level, "adjusted": adjusted,
+            "bpo_prices": bpo_prices,
         }
-        return build_industry_detail(bp, prices, names, vols, params)
+        result = build_industry_detail(bp, prices, names, vols, params)
+        result["tech_level"] = bp.get("tech_level")
+        result["missing_skills"] = missing_skills(bp, {}, conn, skills_level)
+        result["owned_bp_me_te"] = None
+        return result
     finally:
         conn.close()
 

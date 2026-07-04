@@ -79,7 +79,13 @@ Refresh sends `refresh=true`; Min ISK 5,000,000 persists; invalid region emits a
 `event: error` ("Scan failed: 404…") instead of hanging; no console errors.
 `tsc` clean; 425 backend tests pass. (Also removed the dead `scanner` import.)
 
-## Industry (biggest gap — largely anonymous-only vs master's character-aware tab)
+## Industry  🚧 IN PROGRESS (biggest gap — largely anonymous-only vs master's character-aware tab)
+- [x] **Detail panel field-mapping fix** (bug found during verification — worse than
+  LP): the panel read `detail.materials` / `detail.product_name`, but `build_industry_detail`
+  returns `required_items` / nested `product` and no `tech_level`/`missing_skills` —
+  so expanding a row **crashed** on `undefined.map`. Rewired to the real shape; the
+  detail endpoint now also computes `bpo_prices` (BP price/payback), `missing_skills`,
+  and `tech_level`. Verified: "Occult XL" T2 expands with a full materials table.
 - [ ] **Auth on the industry router** + feed real `skill_profile` and owned
   blueprints into scan/detail (`industry.py:129` `skill_profile = {}  # TODO`).
 - [ ] **"My skills" toggle** (actual trained levels gate buildability + build time).
@@ -93,7 +99,7 @@ Refresh sends `refresh=true`; Min ISK 5,000,000 persists; invalid region emits a
 - [ ] **⟳ Refresh SDE** button (endpoint `/api/industry/refresh-sde` exists, no UI).
 - [ ] **BPO cross-region search** (needs new `/api/industry/bpo-search` endpoint).
 - [ ] **"Pull live prices" (ESI)** in the detail row.
-- [ ] Pass `bpo_prices` to `/api/industry/detail` (BP price/payback blank today).
+- [x] Pass `bpo_prices` to `/api/industry/detail` (was blank) — done with the detail fix above.
 - [ ] Column reorder/resize/picker (Industry uses its own inline table).
 - [ ] Wire the Industry **tradeability weight** toggle (dead, like LP was).
 

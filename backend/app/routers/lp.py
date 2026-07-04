@@ -66,6 +66,7 @@ async def scan(
     sales_tax: float = Query(0.075),
     broker_fee: float = Query(0.03),
     use_esi_prices: bool = Query(False),
+    refresh: bool = Query(False),
 ):
     """Scan LP store offers and evaluate profitability."""
     cache_dir = settings.cache_dir
@@ -78,7 +79,7 @@ async def scan(
         return {"error": f"Failed to resolve corporation: {e}"}
 
     try:
-        offers = await asyncio.to_thread(get_offers, corp_id, _session, cache_dir)
+        offers = await asyncio.to_thread(get_offers, corp_id, _session, cache_dir, refresh)
         type_ids = set()
         for o in offers:
             type_ids.add(o["type_id"])
@@ -137,11 +138,20 @@ async def liquidity(
     if not tids:
         return {}
 
-    vols = await asyncio.to_thread(fetch_history_volumes, tids, region_id, _session, cache_dir)
-    fairs = await asyncio.to_thread(fetch_history_prices, tids, region_id, _session, cache_dir)
+    async def _safe(fn, *args, default):
+        """Run a blocking enrichment call, degrading to a default on any
+        (often transient) network error instead of 500-ing the whole batch."""
+        try:
+            return await asyncio.to_thread(fn, *args)
+        except Exception:
+            logger.warning("LP liquidity enrichment call %s failed", fn.__name__, exc_info=True)
+            return default
+
+    vols = await _safe(fetch_history_volumes, tids, region_id, _session, cache_dir, default={})
+    fairs = await _safe(fetch_history_prices, tids, region_id, _session, cache_dir, default={})
 
     # Fetch current ask prices for suggested_list_price calculation
-    prices = await asyncio.to_thread(fetch_prices, tids, _session, station_id)
+    prices = await _safe(fetch_prices, tids, _session, station_id, default={})
 
     result = {}
     for tid in tids:
@@ -151,8 +161,8 @@ async def liquidity(
         sell_vol = prices.get(tid, {}).get("sell_volume", 0)
 
         # Floor age from sell order stats
-        stats = await asyncio.to_thread(
-            fetch_sell_order_stats, tid, _session, station_id, region_id
+        stats = await _safe(
+            fetch_sell_order_stats, tid, _session, station_id, region_id, default=None
         )
         floor_age = stats["age_seconds"] if stats else None
 

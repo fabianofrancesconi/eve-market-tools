@@ -5,11 +5,21 @@ import { fmtIsk, fmtNum, fmtAge, fmtPct } from '../../lib/format'
 import { PriceChart, stationToRegion } from '../shared/PriceChart'
 
 interface RequiredItem {
-  name: string
   type_id: number
-  qty: number
-  unit_price: number
-  line_cost: number
+  name: string
+  quantity: number
+  unit_price: number | null
+  line_cost: number | null
+  volume_each: number | null
+  line_volume: number | null
+}
+
+interface OutputInfo {
+  type_id: number
+  name: string
+  quantity: number
+  volume_each: number | null
+  volume_per_redemption: number | null
 }
 
 interface SellOrderStats {
@@ -19,26 +29,35 @@ interface SellOrderStats {
   sell_orders_total: number
 }
 
+// Matches the backend `build_detail` output (+ router enrichments). Revenue is
+// already net of tax/broker; the per-mode tax/broker/net breakdown is derived
+// client-side from ask/bid and the fee rates.
 interface DetailData {
   offer_id: number
-  name: string
-  name_id: number
-  qty: number
-  lp_cost: number
-  isk_cost: number
+  output: OutputInfo
   required_items: RequiredItem[]
-  acquisition_cost: number
-  sell_value_patient: number
-  sell_value_instant: number
-  tax_patient: number
-  tax_instant: number
-  broker_patient: number
-  broker_instant: number
-  net_patient: number
-  net_instant: number
-  profit_patient: number
-  profit_instant: number
-  // New fields from enhanced detail API
+  ask: number | null
+  bid: number | null
+  spread_pct: number | null
+  buy_volume: number
+  sell_volume: number
+  lp_cost: number
+  isk_fee: number
+  req_cost: number
+  req_missing_price: boolean
+  total_cost: number
+  revenue_patient: number | null
+  revenue_instant: number | null
+  profit_patient: number | null
+  profit_instant: number | null
+  profit_best: number | null
+  isk_per_lp_patient: number | null
+  isk_per_lp_instant: number | null
+  isk_per_lp_best: number | null
+  input_volume_per_redemption: number | null
+  output_volume_per_redemption: number | null
+  max_units: number
+  // Router enrichments
   daily_vol: number | null
   days_to_clear: number | null
   fair_price: number | null
@@ -125,6 +144,69 @@ function CopyButton({ text }: { text: string }) {
   )
 }
 
+// Per-required-item purchase tracker: log the lots you've bought and see how
+// much of each item is still outstanding for the current redemption count.
+function LotTracker({ items, redemptions }: { items: RequiredItem[]; redemptions: number }) {
+  const [lots, setLots] = useState<Record<number, number[]>>({})
+  const [draft, setDraft] = useState<Record<number, string>>({})
+
+  if (!items || items.length === 0) {
+    return <p className="text-xs text-foreground-muted">No required items to track.</p>
+  }
+
+  const addLot = (tid: number) => {
+    const v = Math.floor(Number(draft[tid]))
+    if (!v || v <= 0) return
+    setLots(prev => ({ ...prev, [tid]: [...(prev[tid] ?? []), v] }))
+    setDraft(prev => ({ ...prev, [tid]: '' }))
+  }
+  const removeLot = (tid: number, idx: number) =>
+    setLots(prev => ({ ...prev, [tid]: (prev[tid] ?? []).filter((_, i) => i !== idx) }))
+
+  return (
+    <div className="space-y-2">
+      {items.map(item => {
+        const needed = item.quantity * redemptions
+        const itemLots = lots[item.type_id] ?? []
+        const bought = itemLots.reduce((s, n) => s + n, 0)
+        const remaining = needed - bought
+        return (
+          <div key={item.type_id} className="text-xs border-t border-border/30 pt-1.5 first:border-t-0">
+            <div className="flex justify-between gap-2">
+              <span className="text-foreground truncate">{item.name}</span>
+              <span className={remaining <= 0 ? 'text-positive whitespace-nowrap' : 'text-foreground-muted whitespace-nowrap'}>
+                {fmtNum(bought)} / {fmtNum(needed)} &middot; {remaining <= 0 ? 'done ✓' : `${fmtNum(remaining)} left`}
+              </span>
+            </div>
+            <div className="flex items-center gap-1 mt-1 flex-wrap">
+              {itemLots.map((n, i) => (
+                <button
+                  key={i}
+                  onClick={() => removeLot(item.type_id, i)}
+                  className="px-1.5 py-0.5 rounded bg-background-elevated text-foreground-muted hover:text-negative"
+                  title="Remove this lot"
+                >
+                  {fmtNum(n)} &times;
+                </button>
+              ))}
+              <input
+                type="number"
+                min={1}
+                value={draft[item.type_id] ?? ''}
+                onChange={e => setDraft(prev => ({ ...prev, [item.type_id]: e.target.value }))}
+                onKeyDown={e => { if (e.key === 'Enter') addLot(item.type_id) }}
+                placeholder="+qty"
+                className="w-16 bg-background border border-border rounded px-1.5 py-0.5 text-foreground focus:outline-none focus:border-accent-cyan"
+              />
+              <button onClick={() => addLot(item.type_id)} className="text-accent-cyan hover:underline">add</button>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export function LpDetailPanel({ offerId, corpId, lpBudget, stationId, salesTax, brokerFee, onClose }: LpDetailPanelProps) {
   const [redemptions, setRedemptions] = useState(1)
 
@@ -144,7 +226,7 @@ export function LpDetailPanel({ offerId, corpId, lpBudget, stationId, salesTax, 
   const maxByBuyBook = data?.output_buy_book
     ? (() => {
         const totalVol = data.output_buy_book.reduce((sum, [, vol]) => sum + vol, 0)
-        return data.qty > 0 ? Math.floor(totalVol / data.qty) : 999
+        return data.output.quantity > 0 ? Math.floor(totalVol / data.output.quantity) : 999
       })()
     : 999
 
@@ -159,13 +241,13 @@ export function LpDetailPanel({ offerId, corpId, lpBudget, stationId, salesTax, 
             <>
               <div className="flex items-center gap-1">
                 <h2 className="text-lg font-semibold text-accent-cyan truncate">
-                  {data?.name ?? 'Loading...'}
+                  {data?.output.name ?? 'Loading...'}
                 </h2>
-                {data?.name && <CopyButton text={data.name} />}
+                {data?.output.name && <CopyButton text={data.output.name} />}
               </div>
               {data && (
                 <p className="text-xs text-foreground-muted mt-0.5">
-                  {data.qty}&times; per redemption &middot; offer #{data.offer_id}
+                  {data.output.quantity}&times; per redemption &middot; offer #{data.offer_id}
                 </p>
               )}
             </>
@@ -268,7 +350,7 @@ export function LpDetailPanel({ offerId, corpId, lpBudget, stationId, salesTax, 
 
             {/* Price Chart */}
             <Section title="Price History (90d)" defaultOpen={true}>
-              <PriceChart typeId={data.name_id} regionId={regionId} />
+              <PriceChart typeId={data.output.type_id} regionId={regionId} />
             </Section>
 
             {/* Shopping List */}
@@ -287,9 +369,11 @@ export function LpDetailPanel({ offerId, corpId, lpBudget, stationId, salesTax, 
                     {data.required_items.map((item) => (
                       <tr key={item.type_id} className="border-t border-border/30">
                         <td className="py-1 text-foreground">{item.name}</td>
-                        <td className="py-1 text-right text-foreground-muted">{fmtNum(item.qty * redemptions)}</td>
+                        <td className="py-1 text-right text-foreground-muted">{fmtNum(item.quantity * redemptions)}</td>
                         <td className="py-1 text-right text-foreground-muted">{fmtIsk(item.unit_price)}</td>
-                        <td className="py-1 text-right">{fmtIsk(item.line_cost * redemptions)}</td>
+                        <td className="py-1 text-right">
+                          {item.line_cost != null ? fmtIsk(item.line_cost * redemptions) : '—'}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -298,7 +382,7 @@ export function LpDetailPanel({ offerId, corpId, lpBudget, stationId, salesTax, 
                       <tr className="border-t border-border/50 font-medium">
                         <td className="py-1 text-foreground-muted" colSpan={3}>Total ({redemptions}x)</td>
                         <td className="py-1 text-right">
-                          {fmtIsk(data.required_items.reduce((s, i) => s + i.line_cost, 0) * redemptions)}
+                          {fmtIsk(data.required_items.reduce((s, i) => s + (i.line_cost ?? 0), 0) * redemptions)}
                         </td>
                       </tr>
                     </tfoot>
@@ -307,6 +391,11 @@ export function LpDetailPanel({ offerId, corpId, lpBudget, stationId, salesTax, 
               ) : (
                 <p className="text-xs text-foreground-muted">No required items (LP + ISK only)</p>
               )}
+            </Section>
+
+            {/* Lot Tracker */}
+            <Section title="Lot tracker" defaultOpen={false}>
+              <LotTracker items={data.required_items} redemptions={redemptions} />
             </Section>
 
             {/* Order Book Depth */}
@@ -353,68 +442,79 @@ export function LpDetailPanel({ offerId, corpId, lpBudget, stationId, salesTax, 
                 </div>
                 <div className="flex justify-between">
                   <span className="text-foreground-muted">ISK cost (base)</span>
-                  <span>{fmtIsk(data.isk_cost * redemptions)}</span>
+                  <span>{fmtIsk(data.isk_fee * redemptions)}</span>
                 </div>
                 {data.required_items && data.required_items.length > 0 && (
                   <div className="flex justify-between">
                     <span className="text-foreground-muted">Required items</span>
-                    <span>{fmtIsk(data.required_items.reduce((s, i) => s + i.line_cost, 0) * redemptions)}</span>
+                    <span>{fmtIsk(data.required_items.reduce((s, i) => s + (i.line_cost ?? 0), 0) * redemptions)}</span>
                   </div>
                 )}
                 <div className="flex justify-between font-medium border-t border-border/50 pt-1">
                   <span className="text-foreground-muted">Total acquisition</span>
-                  <span>{fmtIsk(data.acquisition_cost * redemptions)}</span>
+                  <span>{fmtIsk(data.total_cost * redemptions)}</span>
                 </div>
               </div>
             </Section>
 
             {/* Profit Breakdown */}
             <Section title="Profit Breakdown" defaultOpen={true}>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-foreground-muted">
-                    <th className="text-left py-1"></th>
-                    <th className="text-right py-1">List (Patient)</th>
-                    <th className="text-right py-1">Instant</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/30">
-                  <tr>
-                    <td className="py-1 text-foreground-muted">Sell value</td>
-                    <td className="py-1 text-right">{fmtIsk(data.sell_value_patient * redemptions)}</td>
-                    <td className="py-1 text-right">{fmtIsk(data.sell_value_instant * redemptions)}</td>
-                  </tr>
-                  <tr>
-                    <td className="py-1 text-foreground-muted">- Sales tax</td>
-                    <td className="py-1 text-right text-negative">{fmtIsk(data.tax_patient * redemptions)}</td>
-                    <td className="py-1 text-right text-negative">{fmtIsk(data.tax_instant * redemptions)}</td>
-                  </tr>
-                  <tr>
-                    <td className="py-1 text-foreground-muted">- Broker fee</td>
-                    <td className="py-1 text-right text-negative">{fmtIsk(data.broker_patient * redemptions)}</td>
-                    <td className="py-1 text-right text-negative">{fmtIsk(data.broker_instant * redemptions)}</td>
-                  </tr>
-                  <tr>
-                    <td className="py-1 text-foreground-muted">Net revenue</td>
-                    <td className="py-1 text-right">{fmtIsk(data.net_patient * redemptions)}</td>
-                    <td className="py-1 text-right">{fmtIsk(data.net_instant * redemptions)}</td>
-                  </tr>
-                  <tr>
-                    <td className="py-1 text-foreground-muted">- Acquisition</td>
-                    <td className="py-1 text-right text-negative">{fmtIsk(data.acquisition_cost * redemptions)}</td>
-                    <td className="py-1 text-right text-negative">{fmtIsk(data.acquisition_cost * redemptions)}</td>
-                  </tr>
-                  <tr className="font-medium">
-                    <td className="py-1 text-foreground-muted">= Profit</td>
-                    <td className={`py-1 text-right ${(data.profit_patient ?? 0) >= 0 ? 'text-positive' : 'text-negative'}`}>
-                      {fmtIsk(data.profit_patient * redemptions)}
-                    </td>
-                    <td className={`py-1 text-right ${(data.profit_instant ?? 0) >= 0 ? 'text-positive' : 'text-negative'}`}>
-                      {fmtIsk(data.profit_instant * redemptions)}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              {(() => {
+                const q = data.output.quantity
+                const mul = (v: number | null) => (v != null ? v * redemptions : null)
+                const grossP = data.ask != null ? q * data.ask : null
+                const grossI = data.bid != null ? q * data.bid : null
+                const taxP = grossP != null ? grossP * (salesTax / 100) : null
+                const taxI = grossI != null ? grossI * (salesTax / 100) : null
+                const brokerP = grossP != null ? grossP * (brokerFee / 100) : null
+                return (
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-foreground-muted">
+                        <th className="text-left py-1"></th>
+                        <th className="text-right py-1">List (Patient)</th>
+                        <th className="text-right py-1">Instant</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/30">
+                      <tr>
+                        <td className="py-1 text-foreground-muted">Sell value</td>
+                        <td className="py-1 text-right">{fmtIsk(mul(grossP))}</td>
+                        <td className="py-1 text-right">{fmtIsk(mul(grossI))}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-1 text-foreground-muted">- Sales tax</td>
+                        <td className="py-1 text-right text-negative">{fmtIsk(mul(taxP))}</td>
+                        <td className="py-1 text-right text-negative">{fmtIsk(mul(taxI))}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-1 text-foreground-muted">- Broker fee</td>
+                        <td className="py-1 text-right text-negative">{fmtIsk(mul(brokerP))}</td>
+                        <td className="py-1 text-right text-foreground-muted">&mdash;</td>
+                      </tr>
+                      <tr>
+                        <td className="py-1 text-foreground-muted">Net revenue</td>
+                        <td className="py-1 text-right">{fmtIsk(mul(data.revenue_patient))}</td>
+                        <td className="py-1 text-right">{fmtIsk(mul(data.revenue_instant))}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-1 text-foreground-muted">- Acquisition</td>
+                        <td className="py-1 text-right text-negative">{fmtIsk(mul(data.total_cost))}</td>
+                        <td className="py-1 text-right text-negative">{fmtIsk(mul(data.total_cost))}</td>
+                      </tr>
+                      <tr className="font-medium">
+                        <td className="py-1 text-foreground-muted">= Profit</td>
+                        <td className={`py-1 text-right ${(data.profit_patient ?? 0) >= 0 ? 'text-positive' : 'text-negative'}`}>
+                          {fmtIsk(mul(data.profit_patient))}
+                        </td>
+                        <td className={`py-1 text-right ${(data.profit_instant ?? 0) >= 0 ? 'text-positive' : 'text-negative'}`}>
+                          {fmtIsk(mul(data.profit_instant))}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                )
+              })()}
               {data.daily_vol != null && (
                 <div className="mt-2 flex gap-3 text-[11px] text-foreground-muted">
                   <span>Daily vol: <span className="text-foreground">{fmtNum(data.daily_vol)}</span></span>

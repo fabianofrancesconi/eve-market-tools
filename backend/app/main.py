@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from . import __version__
 from .config import settings
 from .routers import auth, lp, arbitrage, industry, character, settings as settings_router
 from .middleware.security_headers import SecurityHeadersMiddleware
@@ -27,7 +28,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="EVE Market Tools",
-    version="1.76.0",
+    version=__version__,
     lifespan=lifespan,
 )
 

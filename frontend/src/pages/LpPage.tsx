@@ -5,6 +5,7 @@ import { fmtIsk, fmtPct, fmtNum, fmtAge } from '../lib/format'
 import { DataTable } from '../components/shared/DataTable'
 import { LpDetailPanel } from '../components/lp/LpDetailPanel'
 import { useUiStore } from '../stores/ui-store'
+import { useAuth } from '../hooks/use-auth'
 
 const TRADE_HUBS: Record<number, string> = {
   60003760: 'Jita 4-4',
@@ -17,6 +18,17 @@ const TRADE_HUBS: Record<number, string> = {
 interface NpcCorp {
   id: number
   name: string
+}
+
+interface LoyaltyEntry {
+  corporation_id: number
+  loyalty_points: number
+}
+
+interface CharData {
+  character_id: number
+  is_active: boolean
+  loyalty_points?: LoyaltyEntry[]
 }
 
 interface LpRow {
@@ -79,6 +91,39 @@ function spreadColor(pct: number | null): string {
   return 'text-negative'
 }
 
+// Tradeability = a 0–100 blend of two signals, each scored by its rank against
+// the other offers in this store: liquidity (higher daily_vol = better) and low
+// competition (lower days_to_clear = better). `weight` sets the proportion
+// (0 = all competition, 1 = all liquidity). Mirrors the master UI so the
+// Favor-quiet / Balanced / Favor-liquidity toggle actually changes the ranking.
+function withTradeability<T extends LpRow>(rows: T[], weight: number): T[] {
+  const loaded = rows.filter(r => r.daily_vol != null)
+  if (loaded.length === 0) return rows.map(r => ({ ...r, tradeability: null }))
+  const sortedVols = loaded.map(r => r.daily_vol as number).sort((a, b) => a - b)
+  const sortedDays = loaded
+    .map(r => (r.days_to_clear == null ? Infinity : r.days_to_clear))
+    .sort((a, b) => a - b)
+  const bisect = (arr: number[], v: number) => {
+    let lo = 0, hi = arr.length
+    while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < v) lo = m + 1; else hi = m }
+    return lo
+  }
+  const pctRank = (sorted: number[], v: number, higherBetter: boolean) => {
+    const n = sorted.length
+    if (n <= 1) return 100
+    const pos = bisect(sorted, v)
+    const beats = higherBetter ? pos : n - pos - (sorted[pos] === v ? 1 : 0)
+    return (beats / (n - 1)) * 100
+  }
+  return rows.map(r => {
+    if (r.daily_vol == null) return { ...r, tradeability: null }
+    const dayVal = r.days_to_clear == null ? Infinity : r.days_to_clear
+    const liq = pctRank(sortedVols, r.daily_vol as number, true)
+    const comp = pctRank(sortedDays, dayVal, false)
+    return { ...r, tradeability: Math.round(weight * liq + (1 - weight) * comp) }
+  })
+}
+
 export function LpPage() {
   // Store state
   const corp = useUiStore(s => s.lpCorp)
@@ -101,6 +146,14 @@ export function LpPage() {
   const setHideUnaffordable = useUiStore(s => s.setLpHideUnaffordable)
   const tradeWeight = useUiStore(s => s.lpTradeWeight)
   const setTradeWeight = useUiStore(s => s.setLpTradeWeight)
+  const sortKey = useUiStore(s => s.lpSortKey)
+  const setSortKey = useUiStore(s => s.setLpSortKey)
+  const sortDir = useUiStore(s => s.lpSortDir)
+  const setSortDir = useUiStore(s => s.setLpSortDir)
+  const colOrder = useUiStore(s => s.lpColOrder)
+  const setColOrder = useUiStore(s => s.setLpColOrder)
+  const colWidths = useUiStore(s => s.lpColWidths)
+  const setColWidths = useUiStore(s => s.setLpColWidths)
 
   // Local state
   const [scanTrigger, setScanTrigger] = useState(0)
@@ -108,6 +161,9 @@ export function LpPage() {
   const [enrichedRows, setEnrichedRows] = useState<Map<number, LiquidityEntry>>(new Map())
   const [liquidityLoading, setLiquidityLoading] = useState(false)
   const [corpDropdownOpen, setCorpDropdownOpen] = useState(false)
+  const [restoredScan, setRestoredScan] = useState<ScanResult | null>(null)
+  const [restoreChecked, setRestoreChecked] = useState(false)
+  const forceRefreshRef = useRef(false)
   const corpInputRef = useRef<HTMLInputElement>(null)
 
   // Corps list for autocomplete
@@ -125,13 +181,22 @@ export function LpPage() {
       .slice(0, 10)
   }, [corpsData, corp])
 
-  // Auto-scan on first load if corp is already set from persisted state
+  // Restore the last saved scan on mount (instant, no ESI hit). Only fall back
+  // to an auto-scan if there was nothing to restore.
   useEffect(() => {
-    if (corp.trim() && scanTrigger === 0) {
+    apiGet<{ lp: ScanResult | null }>('/api/lp/last-scan')
+      .then(res => { if (res.lp?.sellable) setRestoredScan(res.lp) })
+      .catch(() => {})
+      .finally(() => setRestoreChecked(true))
+  }, [])
+
+  useEffect(() => {
+    if (!restoreChecked) return
+    if (corp.trim() && scanTrigger === 0 && !restoredScan) {
       setScanTrigger(1)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [restoreChecked])
 
   // Escape key to close detail panel
   useEffect(() => {
@@ -149,14 +214,49 @@ export function LpPage() {
     [corp, budget, stationId, salesTax, brokerFee, scanTrigger]
   )
 
-  const { data, isFetching, refetch } = useQuery<ScanResult>({
+  const { data, isFetching } = useQuery<ScanResult>({
     queryKey: scanQueryKey,
-    queryFn: () =>
-      apiGet<ScanResult>(
-        `/api/lp/scan?corp=${encodeURIComponent(corp)}&lp_budget=${budget}&station_id=${stationId}&sales_tax=${salesTax / 100}&broker_fee=${brokerFee / 100}`
-      ),
+    queryFn: () => {
+      const refresh = forceRefreshRef.current
+      forceRefreshRef.current = false
+      return apiGet<ScanResult>(
+        `/api/lp/scan?corp=${encodeURIComponent(corp)}&lp_budget=${budget}&station_id=${stationId}&sales_tax=${salesTax / 100}&broker_fee=${brokerFee / 100}${refresh ? '&refresh=true' : ''}`
+      )
+    },
     enabled: scanEnabled,
   })
+
+  // Once a live scan resolves, drop the restored snapshot so it can't shadow
+  // subsequent scans.
+  useEffect(() => {
+    if (data) setRestoredScan(null)
+  }, [data])
+
+  const activeScan = data ?? restoredScan
+
+  // When logged in, drive the LP budget from the character's actual loyalty
+  // points for the viewed corp and lock the field (mirrors master).
+  const { isLoggedIn } = useAuth()
+  const { data: charData } = useQuery<CharData[]>({
+    queryKey: ['character-data'],
+    queryFn: () => apiGet('/api/character/data'),
+    enabled: isLoggedIn,
+    refetchInterval: 300_000,
+  })
+  const resolvedCorpId = useMemo(() => {
+    if (activeScan?.corp_id) return activeScan.corp_id
+    const q = corp.trim().toLowerCase()
+    return corpsData?.find(c => c.name.toLowerCase() === q)?.id ?? null
+  }, [activeScan?.corp_id, corp, corpsData])
+  const lpInfo = useMemo(() => {
+    if (!isLoggedIn || !charData || resolvedCorpId == null) return null
+    const active = charData.find(c => c.is_active) ?? charData[0]
+    const entry = active?.loyalty_points?.find(l => l.corporation_id === resolvedCorpId)
+    return { points: entry?.loyalty_points ?? 0, matched: !!entry }
+  }, [isLoggedIn, charData, resolvedCorpId])
+  useEffect(() => {
+    if (lpInfo && lpInfo.points !== budget) setBudget(lpInfo.points)
+  }, [lpInfo, budget, setBudget])
 
   const handleScan = useCallback(() => {
     if (!corp.trim()) return
@@ -166,14 +266,15 @@ export function LpPage() {
 
   const handleRefresh = useCallback(() => {
     if (!corp.trim()) return
+    forceRefreshRef.current = true
     setEnrichedRows(new Map())
-    refetch()
-  }, [corp, refetch])
+    setScanTrigger(c => c + 1)
+  }, [corp])
 
   // Liquidity enrichment: fetch after scan data arrives
   useEffect(() => {
-    if (!data?.sellable || data.sellable.length === 0) return
-    const typeIds = [...new Set(data.sellable.map(r => r.name_id))].filter(Boolean)
+    if (!activeScan?.sellable || activeScan.sellable.length === 0) return
+    const typeIds = [...new Set(activeScan.sellable.map(r => r.name_id))].filter(Boolean)
     if (typeIds.length === 0) return
 
     setLiquidityLoading(true)
@@ -189,7 +290,7 @@ export function LpPage() {
         // Silently fail — cells stay as spinners
       })
       .finally(() => setLiquidityLoading(false))
-  }, [data?.sellable, stationId])
+  }, [activeScan?.sellable, stationId])
 
   // Save scan results to backend for restore on next page load
   useEffect(() => {
@@ -198,22 +299,28 @@ export function LpPage() {
     }
   }, [data])
 
-  // Merge enrichment into rows
+  // Merge enrichment into rows, compute weighted tradeability, then append the
+  // unsellable offers (no Jita market) dimmed at the bottom, as master did.
   const enriched = useMemo(() => {
-    if (!data?.sellable) return []
-    return data.sellable.map((row) => {
+    if (!activeScan?.sellable) return []
+    const sellable = activeScan.sellable.map((row) => {
       const liq = enrichedRows.get(row.name_id)
-      if (!liq) return row
+      if (!liq) return { ...row, unsellable: false }
       return {
         ...row,
+        unsellable: false,
         daily_vol: liq.daily_vol,
         days_to_clear: liq.days_to_clear,
         list_price: liq.list_price,
         floor_age: liq.floor_age,
-        tradeability: liq.tradeability,
       }
     })
-  }, [data?.sellable, enrichedRows])
+    const scored = withTradeability(sellable, tradeWeight)
+    const unsellable = (activeScan.unsellable ?? []).map(r => ({
+      ...r, unsellable: true, tradeability: null,
+    }))
+    return [...scored, ...unsellable]
+  }, [activeScan, enrichedRows, tradeWeight])
 
   // Filtering
   const filtered = useMemo(() => {
@@ -225,15 +332,15 @@ export function LpPage() {
       const q = search.toLowerCase()
       rows = rows.filter(r => r.name?.toLowerCase().includes(q))
     } else {
-      // Max spread filter (only when not searching)
+      // Max spread filter (only when not searching) — unsellable rows are exempt
       if (maxSpread < 100) {
-        rows = rows.filter(r => r.spread_pct == null || r.spread_pct <= maxSpread)
+        rows = rows.filter(r => r.unsellable || r.spread_pct == null || r.spread_pct <= maxSpread)
       }
     }
 
-    // Hide illiquid: spread >= 25%
+    // Hide illiquid: spread >= 25% (unsellable rows are always kept)
     if (hideIlliquid) {
-      rows = rows.filter(r => r.spread_pct == null || r.spread_pct < 25)
+      rows = rows.filter(r => r.unsellable || r.spread_pct == null || r.spread_pct < 25)
     }
 
     // Hide unaffordable: max_units === 0
@@ -379,6 +486,22 @@ export function LpPage() {
         render: (r: LpRow) => fmtIsk(r.bid),
       },
       {
+        key: 'buy_volume',
+        header: 'Buy Demand',
+        align: 'right' as const,
+        width: '90px',
+        hiddenByDefault: true,
+        render: (r: LpRow) => fmtNum(r.buy_volume, 0),
+      },
+      {
+        key: 'qty',
+        header: 'Units',
+        align: 'right' as const,
+        width: '70px',
+        hiddenByDefault: true,
+        render: (r: LpRow) => fmtNum(r.qty, 0),
+      },
+      {
         key: 'output_volume',
         header: 'Vol m³',
         align: 'right' as const,
@@ -446,12 +569,25 @@ export function LpPage() {
           )}
         </div>
         <div className="w-24">
-          <label className="block text-xs text-foreground-muted mb-1 uppercase">LP Budget</label>
+          <label className="block text-xs text-foreground-muted mb-1 uppercase">
+            LP Budget
+            {lpInfo && (
+              <span
+                className="ml-1 text-accent-gold normal-case"
+                title={lpInfo.matched
+                  ? "Locked to your character's loyalty points for this corp"
+                  : 'Your character has no LP with this corp'}
+              >
+                {lpInfo.matched ? '🔒' : '🔒 0'}
+              </span>
+            )}
+          </label>
           <input
             type="number"
             value={budget}
             onChange={e => setBudget(Number(e.target.value))}
-            className="w-full px-2 py-1.5 rounded bg-background-elevated border border-border text-foreground text-sm focus:outline-none focus:border-accent-cyan"
+            readOnly={lpInfo != null}
+            className={`w-full px-2 py-1.5 rounded bg-background-elevated border border-border text-foreground text-sm focus:outline-none focus:border-accent-cyan ${lpInfo != null ? 'opacity-70 cursor-not-allowed' : ''}`}
           />
         </div>
         <div className="w-20">
@@ -506,7 +642,8 @@ export function LpPage() {
         </button>
         <button
           onClick={handleRefresh}
-          disabled={isFetching || !scanEnabled}
+          disabled={isFetching || !corp.trim()}
+          title="Force a fresh pull of this corp's LP offers (bypasses the 24h cache)"
           className="px-3 py-1.5 rounded border border-border text-foreground-muted text-sm hover:text-foreground hover:border-foreground-muted disabled:opacity-50 transition-colors"
         >
           &#x21bb; Refresh
@@ -558,19 +695,20 @@ export function LpPage() {
       </div>
 
       {/* Error */}
-      {data?.error && (
-        <p className="text-negative text-sm">{data.error}</p>
+      {activeScan?.error && (
+        <p className="text-negative text-sm">{activeScan.error}</p>
       )}
 
       {/* Status bar */}
-      {data?.corp_name && !data.error && (
+      {activeScan?.corp_name && !activeScan.error && (
         <p className="text-sm text-foreground-muted">
-          {data.corp_name} &mdash; {filtered.length} offers shown &middot; list vs instant sell
+          {activeScan.corp_name} &mdash; {filtered.length} offers shown &middot; list vs instant sell
+          {activeScan.unsellable?.length ? ` · ${activeScan.unsellable.length} unsellable` : ''}
         </p>
       )}
 
       {/* Table */}
-      {data?.sellable && (
+      {activeScan?.sellable && (
         <DataTable
           data={filtered}
           columns={columns}
@@ -578,17 +716,30 @@ export function LpPage() {
           onRowClick={(row) => setSelectedRow(row)}
           emptyMessage="No profitable offers found"
           showColumnPicker={true}
+          defaultSortKey={sortKey || null}
+          defaultSortDir={sortDir}
+          onSortChange={(k, d) => { setSortKey(k ?? ''); setSortDir(d ?? 'desc') }}
+          defaultColOrder={colOrder}
+          onColOrderChange={setColOrder}
+          defaultColWidths={colWidths}
+          onColWidthsChange={setColWidths}
           rowClassName={(r) =>
-            r.illiquid ? 'opacity-60' : r.max_units === 0 ? 'opacity-40 italic' : ''
+            r.unsellable
+              ? 'opacity-55 italic'
+              : r.illiquid
+                ? 'opacity-60'
+                : r.max_units === 0
+                  ? 'opacity-40 italic'
+                  : ''
           }
         />
       )}
 
       {/* Detail Panel */}
-      {selectedRow && data && (
+      {selectedRow && activeScan && (
         <LpDetailPanel
           offerId={selectedRow.offer_id}
-          corpId={data.corp_id}
+          corpId={activeScan.corp_id}
           lpBudget={budget}
           stationId={stationId}
           salesTax={salesTax}

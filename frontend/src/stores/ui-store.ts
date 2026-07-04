@@ -14,6 +14,8 @@ interface UiState {
   lpTradeWeight: number
   lpSortKey: string
   lpSortDir: 'asc' | 'desc'
+  lpColOrder: string[]
+  lpColWidths: Record<string, number>
   arbRegion: number
   arbMinIsk: number
   arbSalesTax: number
@@ -44,6 +46,8 @@ interface UiState {
   setLpTradeWeight: (v: number) => void
   setLpSortKey: (v: string) => void
   setLpSortDir: (v: 'asc' | 'desc') => void
+  setLpColOrder: (v: string[]) => void
+  setLpColWidths: (v: Record<string, number>) => void
   setArbRegion: (v: number) => void
   setArbMinIsk: (v: number) => void
   setArbSalesTax: (v: number) => void
@@ -79,6 +83,8 @@ export const useUiStore = create<UiState>()(
       lpTradeWeight: 0.5,
       lpSortKey: 'isk_per_lp_patient',
       lpSortDir: 'desc',
+      lpColOrder: [],
+      lpColWidths: {},
       arbRegion: 10000002,
       arbMinIsk: 1000000,
       arbSalesTax: 7.5,
@@ -109,6 +115,8 @@ export const useUiStore = create<UiState>()(
       setLpTradeWeight: (v) => set({ lpTradeWeight: v }),
       setLpSortKey: (v) => set({ lpSortKey: v }),
       setLpSortDir: (v) => set({ lpSortDir: v }),
+      setLpColOrder: (v) => set({ lpColOrder: v }),
+      setLpColWidths: (v) => set({ lpColWidths: v }),
       setArbRegion: (v) => set({ arbRegion: v }),
       setArbMinIsk: (v) => set({ arbMinIsk: v }),
       setArbSalesTax: (v) => set({ arbSalesTax: v }),
@@ -142,6 +150,8 @@ export const useUiStore = create<UiState>()(
         lpTradeWeight: state.lpTradeWeight,
         lpSortKey: state.lpSortKey,
         lpSortDir: state.lpSortDir,
+        lpColOrder: state.lpColOrder,
+        lpColWidths: state.lpColWidths,
         arbRegion: state.arbRegion,
         arbMinIsk: state.arbMinIsk,
         arbSalesTax: state.arbSalesTax,

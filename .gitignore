@@ -2,3 +2,5 @@ __pycache__/
 *.py[cod]
 .eve_scanner_cache/
 .claude/
+# Local throwaway SQLite DB used for running the backend in dev/verification
+backend/verify.db*

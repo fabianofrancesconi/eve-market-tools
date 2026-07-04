@@ -259,6 +259,7 @@ class TestCombinedCharData:
         cache.mkdir()
         monkeypatch.setattr(lp_web, "CACHE_DIR", cache)
         monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", cache / "jobs.json")
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", cache / "order_events.json")
         monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 1)
         monkeypatch.setattr(lp_web, "_CHARACTERS", {
             1: {"character_id": 1, "name": "Main", "scopes": [],

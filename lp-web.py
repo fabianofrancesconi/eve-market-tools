@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.73.0"
+__version__ = "1.74.0"
 
 import argparse
 import base64
@@ -84,6 +84,7 @@ ARB_SETTINGS_PATH = CACHE_DIR / "arb_settings.json"
 IND_SETTINGS_PATH = CACHE_DIR / "ind_settings.json"
 AUTH_SETTINGS_PATH = CACHE_DIR / "auth_settings.json"  # client_id + callback_url
 JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-run counter
+ORDER_EVENTS_PATH = CACHE_DIR / "order_events.json"  # market order sale/fill events
 USER_SETTINGS_DB_PATH = CACHE_DIR / "user_settings.sqlite"  # per-character synced settings
 LP_LAST_SCAN_PATH = CACHE_DIR / "lp_last_scan.json"
 IND_LAST_SCAN_PATH = CACHE_DIR / "ind_last_scan.json"
@@ -473,6 +474,105 @@ def _track_delivered_jobs(cid, jobs, names):
                 "since": entry["since"], "by_product": entry["by_product"]}
 
 
+ORDER_EVENT_EXPIRY = 7 * 24 * 3600  # auto-expire after 1 week
+
+
+def _track_order_changes(cid, current_orders, names):
+    """Compare current market orders with previously seen ones. Record sale/fill
+    events when volume_remain decreases or an order disappears entirely.
+    Also maintains per-order last_sale metadata for active orders."""
+    store = load_json(ORDER_EVENTS_PATH, {})
+    char_key = str(cid)
+    prev_key = f"_prev_{char_key}"
+    sales_key = f"_sales_{char_key}"
+    prev_orders = store.get(prev_key, {})
+    events = store.get(char_key, [])
+    last_sales = store.get(sales_key, {})
+
+    now = time.time()
+    events = [e for e in events if now - e["ts"] < ORDER_EVENT_EXPIRY and not e.get("dismissed")]
+
+    current_by_id = {}
+    for o in current_orders:
+        oid = o.get("order_id")
+        if oid:
+            current_by_id[str(oid)] = o
+
+    for oid_str, prev in prev_orders.items():
+        cur = current_by_id.get(oid_str)
+        prev_remain = prev.get("volume_remain", 0)
+        if cur is None:
+            sold = prev_remain
+        else:
+            sold = prev_remain - cur.get("volume_remain", 0)
+        if sold > 0:
+            events.append({
+                "id": f"{oid_str}_{int(now)}",
+                "ts": now,
+                "order_id": int(oid_str),
+                "type_name": prev.get("type_name") or names.get(prev.get("type_id"), "?"),
+                "sold": sold,
+                "price": prev.get("price", 0),
+                "is_buy_order": prev.get("is_buy_order", False),
+                "filled": cur is None,
+                "character_name": _CHARACTERS.get(cid, {}).get("name", ""),
+                "dismissed": False,
+            })
+            if cur is not None:
+                last_sales[oid_str] = {"ts": now, "sold": sold}
+
+    # Clean up last_sales for orders that no longer exist
+    last_sales = {k: v for k, v in last_sales.items() if k in current_by_id}
+
+    new_prev = {}
+    for o in current_orders:
+        oid = o.get("order_id")
+        if oid:
+            new_prev[str(oid)] = {
+                "volume_remain": o.get("volume_remain"),
+                "type_id": o.get("type_id"),
+                "type_name": o.get("type_name"),
+                "price": o.get("price"),
+                "is_buy_order": o.get("is_buy_order"),
+            }
+
+    store[prev_key] = new_prev
+    store[char_key] = events
+    store[sales_key] = last_sales
+    save_json(ORDER_EVENTS_PATH, store)
+    return events, last_sales
+
+
+def _get_order_events():
+    """Return all non-dismissed, non-expired events across all characters."""
+    store = load_json(ORDER_EVENTS_PATH, {})
+    now = time.time()
+    all_events = []
+    for key, val in store.items():
+        if key.startswith("_prev_"):
+            continue
+        if isinstance(val, list):
+            all_events.extend(
+                e for e in val
+                if not e.get("dismissed") and now - e["ts"] < ORDER_EVENT_EXPIRY
+            )
+    all_events.sort(key=lambda e: e["ts"], reverse=True)
+    return all_events
+
+
+def _dismiss_order_event(event_id):
+    """Mark a single event as dismissed, or dismiss all if event_id is 'all'."""
+    store = load_json(ORDER_EVENTS_PATH, {})
+    for key, val in store.items():
+        if key.startswith("_prev_"):
+            continue
+        if isinstance(val, list):
+            for e in val:
+                if event_id == "all" or e.get("id") == event_id:
+                    e["dismissed"] = True
+    save_json(ORDER_EVENTS_PATH, store)
+
+
 def _fetch_one_char_data(cid):
     """Fetch all ESI data for a single character. Returns a dict bundle."""
     token = _access_token(cid)
@@ -594,6 +694,13 @@ def _fetch_one_char_data(cid):
             "character_id": cid,
         })
 
+    _, last_sales = _track_order_changes(cid, orders_out, names)
+    for o in orders_out:
+        sale = last_sales.get(str(o.get("order_id")))
+        if sale:
+            o["last_sale_ts"] = sale["ts"]
+            o["last_sale_qty"] = sale["sold"]
+
     skill_profile = _CHAR_SKILL_PROFILES.get(cid, {})
     accounting_lvl = skill_profile.get(16622, 0)
     broker_rel_lvl = skill_profile.get(3446, 0)
@@ -674,6 +781,7 @@ def do_char_data(q):
         "market_orders_error": active_data.get("market_orders_error"),
         "accounting_level": active_data.get("accounting_level", 0),
         "broker_relations_level": active_data.get("broker_relations_level", 0),
+        "order_events": _get_order_events(),
     }
 
 
@@ -1832,6 +1940,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(do_ind_prefs(q))
             elif parsed.path == "/api/settings/sync":
                 self._send_json(do_settings_sync(q))
+            elif parsed.path == "/api/orders/dismiss":
+                event_id = q.get("id", [""])[0]
+                if event_id:
+                    _dismiss_order_event(event_id)
+                self._send_json({"ok": True})
             else:
                 self._send_json({"error": "not found"}, 404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):

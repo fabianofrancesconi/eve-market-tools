@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.77.0"
+__version__ = "1.78.0"
 
 import argparse
 import base64
@@ -20,6 +20,7 @@ import concurrent.futures
 import html
 import json
 import math
+import os
 import secrets
 import sqlite3
 import sys
@@ -83,7 +84,6 @@ CACHE_DIR = default_cache_dir()
 SETTINGS_PATH = CACHE_DIR / "lp_web_settings.json"
 ARB_SETTINGS_PATH = CACHE_DIR / "arb_settings.json"
 IND_SETTINGS_PATH = CACHE_DIR / "ind_settings.json"
-AUTH_SETTINGS_PATH = CACHE_DIR / "auth_settings.json"  # client_id + callback_url
 JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-run counter
 ORDER_EVENTS_PATH = CACHE_DIR / "order_events.json"  # market order sale/fill events
 USER_SETTINGS_DB_PATH = CACHE_DIR / "user_settings.sqlite"  # per-character synced settings
@@ -240,12 +240,10 @@ def save_user_settings(character_id, data):
 
 # ── EVE SSO helpers ───────────────────────────────────────────────────────────
 
-def load_auth_settings():
-    return _kv_load("auth_settings", AUTH_SETTINGS_PATH, {})
-
-
-def save_auth_settings(d):
-    _kv_save("auth_settings", AUTH_SETTINGS_PATH, d)
+def _eve_client_id():
+    """The EVE application Client ID, from the EVE_CLIENT_ID environment variable
+    (configured on the host, e.g. Railway) — not stored in the app settings."""
+    return (os.environ.get("EVE_CLIENT_ID") or "").strip()
 
 
 def _suggested_callback():
@@ -253,9 +251,9 @@ def _suggested_callback():
 
 
 def _callback_url():
-    """The redirect_uri to use — the explicit one the user saved, else the
-    suggested localhost callback for the bound port."""
-    return (load_auth_settings().get("callback_url") or "").strip() or _suggested_callback()
+    """The redirect_uri to use — from the EVE_CALLBACK_URL environment variable
+    when set (the deploy), else the suggested localhost callback (local dev)."""
+    return (os.environ.get("EVE_CALLBACK_URL") or "").strip() or _suggested_callback()
 
 
 def _persist_auth():
@@ -333,9 +331,9 @@ def _access_token(cid=None):
             raise LPError("Not logged in to EVE.")
         if char.get("access_token") and not sso_core.access_token_expired(char.get("expires_at")):
             return char["access_token"]
-        client_id = (load_auth_settings().get("client_id") or "").strip()
+        client_id = _eve_client_id()
         if not client_id:
-            raise LPError("No EVE application CLIENT_ID configured.")
+            raise LPError("EVE login is not configured (set EVE_CLIENT_ID).")
         tok = sso_core.refresh_access_token(client_id, char["refresh_token"], SESSION)
         claims = sso_core.decode_jwt_payload(tok["access_token"])
         char.update({
@@ -382,30 +380,21 @@ def _refresh_char_blueprints(cid):
 
 
 def do_auth_config(q):
-    """GET returns the saved CLIENT_ID + callback; with params, saves them."""
-    s = load_auth_settings()
-    changed = False
-    if "client_id" in q:
-        s["client_id"] = q["client_id"][0].strip()
-        changed = True
-    if "callback_url" in q:
-        s["callback_url"] = q["callback_url"][0].strip()
-        changed = True
-    if changed:
-        save_auth_settings(s)
+    """Report the host-configured EVE login: whether a Client ID is set (via the
+    EVE_CLIENT_ID env var) and the effective callback URL to register with EVE.
+    Client ID and callback come from the environment now — nothing to save."""
     return {
-        "client_id": s.get("client_id", ""),
-        "callback_url": s.get("callback_url", ""),
-        "suggested_callback": _suggested_callback(),
+        "configured": bool(_eve_client_id()),
+        "callback_url": _callback_url(),
         "scopes": sso_core.SCOPES,
     }
 
 
 def do_auth_login(q):
     """Begin the PKCE handshake — returns the authorize URL to send the browser to."""
-    client_id = (load_auth_settings().get("client_id") or "").strip()
+    client_id = _eve_client_id()
     if not client_id:
-        raise LPError("Enter your EVE application CLIENT_ID first (Login settings).")
+        raise LPError("EVE login is not configured — set the EVE_CLIENT_ID environment variable on the server.")
     verifier, challenge = sso_core.make_pkce()
     state = secrets.token_urlsafe(16)
     redirect_uri = _callback_url()
@@ -1831,7 +1820,7 @@ class Handler(BaseHTTPRequestHandler):
                             "request. Please try again.</p><p><a href='/'>Back to app</a></p>")
             return
         try:
-            client_id = (load_auth_settings().get("client_id") or "").strip()
+            client_id = _eve_client_id()
             tok = sso_core.exchange_code(client_id, handshake["redirect_uri"],
                                          code, handshake["verifier"], SESSION)
             claims = sso_core.decode_jwt_payload(tok["access_token"])

@@ -786,11 +786,12 @@
 <!-- EVE login settings popover -->
 <div id="auth-cfg-pop" class="hidden">
   <h4>EVE Online login</h4>
-  <p class="cfg-hint">Register an application at
-    <a href="https://developers.eveonline.com/applications" target="_blank" rel="noopener">developers.eveonline.com</a>
-    (Authentication only). Set its <b>Callback URL</b> to the value below, then paste the <b>Client ID</b> here.</p>
+  <p class="cfg-hint">EVE login is configured on the server via the
+    <code>EVE_CLIENT_ID</code> and <code>EVE_CALLBACK_URL</code> environment variables.
+    Register the <b>Callback URL</b> below as the callback for your
+    <a href="https://developers.eveonline.com/applications" target="_blank" rel="noopener">EVE application</a>.</p>
   <label class="cfg-l">Client ID</label>
-  <input id="cfg-client-id" type="text" placeholder="your application Client ID" autocomplete="off">
+  <div id="cfg-client-status" class="cfg-sub"></div>
   <label class="cfg-l">Callback URL <span class="cfg-sub">(register this exact value)</span></label>
   <div class="field-row">
     <input id="cfg-callback" type="text" readonly>
@@ -800,7 +801,6 @@
   <div id="cfg-scopes" class="cfg-scopes"></div>
   <div class="field-row" style="margin-top:12px; justify-content:flex-end">
     <button id="cfg-close" class="auth-btn">Close</button>
-    <button id="cfg-save" class="auth-btn primary-btn">Save</button>
   </div>
 </div>
 
@@ -3277,7 +3277,7 @@ setInterval(()=>{
 // ══════════════════════════════════════════════════════════════════════════
 const AUTH = { loggedIn:false, name:null, charId:null, data:null,
                characters:[], activeCharId:null,
-               cfg:{client_id:"",callback_url:"",suggested_callback:"",scopes:[]} };
+               cfg:{configured:false,callback_url:"",scopes:[]} };
 const CHAR_REFRESH_MS = 300000;  // ESI caches character industry jobs for 5 min
 let charRefreshDeadline = 0;
 function tickCharRefreshTimer(){
@@ -3293,8 +3293,9 @@ function romanLvl(n){ return ROMAN[n]||String(n||""); }
 
 async function loadAuthConfig(){
   try{ AUTH.cfg=await (await fetch("/api/auth/config")).json(); }catch(e){ return; }
-  $("#cfg-client-id").value=AUTH.cfg.client_id||"";
-  $("#cfg-callback").value=AUTH.cfg.callback_url||AUTH.cfg.suggested_callback||"";
+  $("#cfg-client-status").textContent = AUTH.cfg.configured
+    ? "✓ configured via EVE_CLIENT_ID" : "⚠ not set — configure EVE_CLIENT_ID on the server";
+  $("#cfg-callback").value=AUTH.cfg.callback_url||"";
   $("#cfg-scopes").innerHTML=(AUTH.cfg.scopes||[]).map(authEsc).join("<br>");
 }
 function openAuthCfg(){ loadAuthConfig(); $("#auth-cfg-pop").classList.remove("hidden"); }
@@ -3726,13 +3727,7 @@ $("#cfg-copy").onclick=()=>{
     navigator.clipboard.writeText(t).then(done).catch(()=>fallbackCopy(t,done));
   else fallbackCopy(t,done);
 };
-$("#cfg-save").onclick=async()=>{
-  const cid=encodeURIComponent($("#cfg-client-id").value.trim());
-  const cb=encodeURIComponent($("#cfg-callback").value.trim());
-  await fetch(`/api/auth/config?client_id=${cid}&callback_url=${cb}`).catch(()=>{});
-  closeAuthCfg();
-  setStatus('<span class="pill">EVE login settings saved</span>');
-};
+// EVE login is configured via server env vars now — nothing to save here.
 
 // Re-pull character data (wallet, jobs, skill queue, LP) on EVE's cache cadence
 // so the job timers stay current. The per-second ticker handles the countdown

@@ -106,8 +106,7 @@ class TestPerCharToken:
                 "expires_at": time.time() + 3600},
         })
         monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 1)
-        monkeypatch.setattr(lp_web, "AUTH_SETTINGS_PATH", tmp_path / "auth_settings.json")
-        (tmp_path / "auth_settings.json").write_text(json.dumps({"client_id": "test123"}))
+        monkeypatch.setenv("EVE_CLIENT_ID", "test123")  # client_id now comes from env
 
         # Mock token refresh for char 1
         fake_jwt = sso_core._b64url(b'{"a":1}') + "." + sso_core._b64url(
@@ -134,6 +133,33 @@ class TestPerCharToken:
                 "expires_at": time.time() + 3600},
         })
         assert lp_web._access_token() == "tok_B"
+
+
+# ── Env-based EVE login config (client_id + callback from env, not settings) ──
+
+class TestEnvAuthConfig:
+    def test_client_id_from_env(self, monkeypatch):
+        monkeypatch.delenv("EVE_CLIENT_ID", raising=False)
+        assert lp_web._eve_client_id() == ""
+        monkeypatch.setenv("EVE_CLIENT_ID", "  cid-123  ")
+        assert lp_web._eve_client_id() == "cid-123"  # trimmed
+
+    def test_callback_from_env_overrides_localhost(self, monkeypatch):
+        monkeypatch.setenv("EVE_CALLBACK_URL", "https://app.example/callback")
+        assert lp_web._callback_url() == "https://app.example/callback"
+
+    def test_callback_falls_back_to_localhost_when_unset(self, monkeypatch):
+        monkeypatch.delenv("EVE_CALLBACK_URL", raising=False)
+        monkeypatch.setattr(lp_web, "_SERVER_PORT", 8765)
+        assert lp_web._callback_url() == "http://localhost:8765/callback"
+
+    def test_auth_config_reports_env_state(self, monkeypatch):
+        monkeypatch.setenv("EVE_CLIENT_ID", "cid")
+        monkeypatch.setenv("EVE_CALLBACK_URL", "https://app.example/callback")
+        cfg = lp_web.do_auth_config({})
+        assert cfg["configured"] is True
+        assert cfg["callback_url"] == "https://app.example/callback"
+        assert "scopes" in cfg
 
 
 # ── Auth status, switch, logout ───────────────────────────────────────────────

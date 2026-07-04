@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 interface SseState<T> {
   progress: number
   message: string
+  subMessage: string
   result: T | null
   error: string | null
   isStreaming: boolean
@@ -10,7 +11,7 @@ interface SseState<T> {
 
 export function useSse<T>(url: string | null, trigger?: number): SseState<T> & { cancel: () => void } {
   const [state, setState] = useState<SseState<T>>({
-    progress: 0, message: '', result: null, error: null, isStreaming: false
+    progress: 0, message: '', subMessage: '', result: null, error: null, isStreaming: false
   })
   const esRef = useRef<EventSource | null>(null)
 
@@ -20,14 +21,14 @@ export function useSse<T>(url: string | null, trigger?: number): SseState<T> & {
       return
     }
 
-    setState({ progress: 0, message: '', result: null, error: null, isStreaming: true })
+    setState({ progress: 0, message: '', subMessage: '', result: null, error: null, isStreaming: true })
     const es = new EventSource(url, { withCredentials: true })
     esRef.current = es
 
     es.addEventListener('progress', (e) => {
       try {
         const data = JSON.parse(e.data)
-        setState(s => ({ ...s, progress: data.pct, message: data.msg || '' }))
+        setState(s => ({ ...s, progress: data.pct, message: data.msg || '', subMessage: data.sub || '' }))
       } catch {
         setState(s => ({ ...s, error: 'Invalid server response', isStreaming: false }))
         es.close()

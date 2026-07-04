@@ -230,4 +230,7 @@ async def ind_liquidity(
     if not tids:
         return {}
     vols = fetch_history_volumes(tids, region_id, _session, cache_dir)
-    return {tid: tradeability(v) for tid, v in vols.items()}
+    # Return raw mean daily volume + the absolute tradeability score. The client
+    # blends daily-vol vs days-to-sell into a weight-driven tradeability (and
+    # derives days-to-sell from the row's batch size), mirroring the LP tab.
+    return {tid: {"daily_vol": v, "tradeability": tradeability(v)} for tid, v in vols.items()}

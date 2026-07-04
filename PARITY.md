@@ -101,7 +101,12 @@ Refresh sends `refresh=true`; Min ISK 5,000,000 persists; invalid region emits a
 - [ ] **"Pull live prices" (ESI)** in the detail row.
 - [x] Pass `bpo_prices` to `/api/industry/detail` (was blank) — done with the detail fix above.
 - [ ] Column reorder/resize/picker (Industry uses its own inline table).
-- [ ] Wire the Industry **tradeability weight** toggle (dead, like LP was).
+- [x] **Tradeability + Days-to-sell columns** were permanently blank — `/industry/liquidity`
+  returned `{tid: number}` but the frontend read `.days_to_sell`/`.tradeability` (object).
+  Backend now returns `{daily_vol, tradeability}`; the client derives days-to-sell from
+  the row's batch size and computes a **weight-driven tradeability** (percentile blend,
+  like LP), so the **Favor-quiet / Balanced / Favor-liquidity toggle** (previously dead)
+  now re-ranks live. Verified: columns populate, toggle recomputes (35→45).
 
 ## Character / Overview
 - [ ] **Resolve loyalty-point corp names** — backend `fetch_loyalty_points` returns

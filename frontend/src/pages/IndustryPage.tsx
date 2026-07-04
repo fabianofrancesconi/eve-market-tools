@@ -24,8 +24,10 @@ type TradeWeight = 'balanced' | 'liquidity' | 'quiet'
 interface IndRow {
   blueprint_id: number
   product_id: number
+  out_qty: number
   product_name: string
   tech_level: number
+  daily_vol?: number | null
   isk_per_hour_patient: number | null
   isk_per_hour_instant: number | null
   profit_patient: number | null
@@ -57,7 +59,7 @@ interface MarketGroup {
 }
 
 interface LiquidityResult {
-  [typeId: string]: { days_to_sell: number; tradeability: number }
+  [typeId: string]: { daily_vol: number; tradeability: number }
 }
 
 /* ---------- helpers ---------- */
@@ -76,6 +78,38 @@ function Spinner() {
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
     </svg>
   )
+}
+
+// Tradeability = 0–100 blend of liquidity (higher daily_vol better) and low
+// competition (lower days_to_sell better), each ranked against the other rows.
+// weight 0 = all competition, 1 = all liquidity. Mirrors the LP tab so the
+// Favor-quiet / Balanced / Favor-liquidity toggle actually changes the ranking.
+function withTradeability<T extends IndRow>(rows: T[], weight: number): T[] {
+  const loaded = rows.filter(r => r.daily_vol != null)
+  if (loaded.length === 0) return rows.map(r => ({ ...r, tradeability: null }))
+  const sortedVols = loaded.map(r => r.daily_vol as number).sort((a, b) => a - b)
+  const sortedDays = loaded
+    .map(r => (r.days_to_sell == null ? Infinity : r.days_to_sell))
+    .sort((a, b) => a - b)
+  const bisect = (arr: number[], v: number) => {
+    let lo = 0, hi = arr.length
+    while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < v) lo = m + 1; else hi = m }
+    return lo
+  }
+  const pctRank = (sorted: number[], v: number, higherBetter: boolean) => {
+    const n = sorted.length
+    if (n <= 1) return 100
+    const pos = bisect(sorted, v)
+    const beats = higherBetter ? pos : n - pos - (sorted[pos] === v ? 1 : 0)
+    return (beats / (n - 1)) * 100
+  }
+  return rows.map(r => {
+    if (r.daily_vol == null) return { ...r, tradeability: null }
+    const dayVal = r.days_to_sell == null ? Infinity : r.days_to_sell
+    const liq = pctRank(sortedVols, r.daily_vol as number, true)
+    const comp = pctRank(sortedDays, dayVal, false)
+    return { ...r, tradeability: Math.round(weight * liq + (1 - weight) * comp) }
+  })
 }
 
 /* ---------- page component ---------- */
@@ -110,8 +144,8 @@ export function IndustryPage() {
   const [trigger, setTrigger] = useState(0)
   const { progress, message, subMessage, result, isStreaming } = useSse<IndRow[]>(url, trigger)
 
-  /* --- state: enrichment --- */
-  const [enrichedData, setEnrichedData] = useState<IndRow[] | null>(null)
+  /* --- state: enrichment (product_id -> mean daily volume) --- */
+  const [dailyVols, setDailyVols] = useState<Record<number, number>>({})
   const [enriching, setEnriching] = useState(false)
   const [enrichDone, setEnrichDone] = useState(0)
   const [enrichTotal, setEnrichTotal] = useState(0)
@@ -142,7 +176,7 @@ export function IndustryPage() {
   /* --- scan handler --- */
   const handleScan = () => {
     setExpandedId(null)
-    setEnrichedData(null)
+    setDailyVols({})
     setEnriching(false)
     enrichAbortRef.current = true
     setUrl(sseUrl('/api/industry/scan', {
@@ -156,11 +190,11 @@ export function IndustryPage() {
     setTrigger(t => t + 1)
   }
 
-  /* --- background enrichment --- */
+  /* --- background enrichment: fill mean daily volume per product --- */
   const enrichRows = useCallback(async (rows: IndRow[]) => {
     enrichAbortRef.current = false
     const typeIds = rows.map(r => r.product_id)
-    if (typeIds.length === 0) { setEnrichedData(rows); return }
+    if (typeIds.length === 0) return
 
     setEnriching(true)
     setEnrichDone(0)
@@ -172,7 +206,7 @@ export function IndustryPage() {
     }
     setEnrichTotal(typeIds.length)
 
-    const enrichMap: Record<number, { days_to_sell: number; tradeability: number }> = {}
+    const map: Record<number, number> = {}
     let done = 0
 
     for (const batch of batches) {
@@ -183,39 +217,40 @@ export function IndustryPage() {
           station_id: stationId,
         })
         for (const [tid, vals] of Object.entries(resp)) {
-          enrichMap[Number(tid)] = vals
+          map[Number(tid)] = vals.daily_vol
         }
       } catch {
         // silently skip failed batches
       }
       done += batch.length
       setEnrichDone(done)
-    }
-
-    if (!enrichAbortRef.current) {
-      const enriched = rows.map(r => {
-        const liq = enrichMap[r.product_id]
-        if (!liq) return r
-        return { ...r, days_to_sell: liq.days_to_sell, tradeability: liq.tradeability }
-      })
-      setEnrichedData(enriched)
+      setDailyVols({ ...map })
     }
     setEnriching(false)
   }, [stationId])
 
   useEffect(() => {
     if (result && result.length > 0) {
-      setEnrichedData(result)
+      setDailyVols({})
       enrichRows(result)
     }
   }, [result, enrichRows])
 
-  /* --- derived data --- */
-  const data = enrichedData ?? result
+  /* --- derived data: merge daily vol, derive days-to-sell + weighted tradeability --- */
+  const weightNum = tradeWeight === 'liquidity' ? 0.75 : tradeWeight === 'quiet' ? 0.25 : 0.5
+
+  const enriched = useMemo(() => {
+    if (!result) return []
+    const merged = result.map(r => {
+      const dv = dailyVols[r.product_id]
+      if (dv == null) return { ...r, daily_vol: null }
+      return { ...r, daily_vol: dv, days_to_sell: r.out_qty ? (r.out_qty * runs) / dv : null }
+    })
+    return withTradeability(merged, weightNum)
+  }, [result, dailyVols, runs, weightNum])
 
   const filtered = useMemo(() => {
-    if (!data) return []
-    let rows = data
+    let rows = enriched
 
     if (search.trim()) {
       const q = search.toLowerCase()
@@ -239,7 +274,7 @@ export function IndustryPage() {
     }
 
     return rows
-  }, [data, search, minTradeability, buildableOnly, hideT2, includeUnobtainable])
+  }, [enriched, search, minTradeability, buildableOnly, hideT2, includeUnobtainable])
 
   const sorted = useMemo(() => {
     if (!sortKey || !sortDir) return filtered
@@ -526,7 +561,7 @@ export function IndustryPage() {
       )}
 
       {/* Results table */}
-      {!isStreaming && data && (
+      {!isStreaming && result && (
         <>
           {/* Status bar */}
           <div className="flex items-center gap-3 text-sm text-foreground-muted">

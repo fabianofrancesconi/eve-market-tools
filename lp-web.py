@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.75.0"
+__version__ = "1.77.0"
 
 import argparse
 import base64
@@ -51,6 +51,7 @@ from urllib3.util.retry import Retry
 import arb_core
 import ind_core
 import sso_core
+import pg_store
 from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
     TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_prices,
@@ -145,28 +146,46 @@ def _ensure_arb_caches():
 
 # ── LP scanner helpers ──────────────────────────────────────────────────────
 
+# Durable user state (settings blobs, delivered-jobs counter, order events,
+# tokens, per-character synced settings) goes to Postgres when DATABASE_URL is
+# set (the Railway deploy), else to the original cache-dir files/SQLite — see
+# pg_store. Disposable caches (SDE, ESI responses) always stay on disk.
+
+def _kv_load(key, path, default):
+    if pg_store.enabled():
+        return pg_store.kv_get(key, default)
+    return load_json(path, default)
+
+
+def _kv_save(key, path, data):
+    if pg_store.enabled():
+        pg_store.kv_set(key, data)
+    else:
+        save_json(path, data)
+
+
 def load_settings():
-    return load_json(SETTINGS_PATH, {})
+    return _kv_load("lp_web_settings", SETTINGS_PATH, {})
 
 
 def save_settings(d):
-    save_json(SETTINGS_PATH, d)
+    _kv_save("lp_web_settings", SETTINGS_PATH, d)
 
 
 def load_arb_settings():
-    return load_json(ARB_SETTINGS_PATH, {})
+    return _kv_load("arb_settings", ARB_SETTINGS_PATH, {})
 
 
 def save_arb_settings(d):
-    save_json(ARB_SETTINGS_PATH, d)
+    _kv_save("arb_settings", ARB_SETTINGS_PATH, d)
 
 
 def load_ind_settings():
-    return load_json(IND_SETTINGS_PATH, {})
+    return _kv_load("ind_settings", IND_SETTINGS_PATH, {})
 
 
 def save_ind_settings(d):
-    save_json(IND_SETTINGS_PATH, d)
+    _kv_save("ind_settings", IND_SETTINGS_PATH, d)
 
 
 # ── Per-character synced settings ────────────────────────────────────────────
@@ -189,6 +208,8 @@ def _user_settings_conn():
 def load_user_settings(character_id):
     """Return the synced settings dict for `character_id`, or None if this
     character has never synced settings from any device yet."""
+    if pg_store.enabled():
+        return pg_store.user_settings_get(character_id)
     conn = _user_settings_conn()
     try:
         row = conn.execute(
@@ -201,6 +222,9 @@ def load_user_settings(character_id):
 
 
 def save_user_settings(character_id, data):
+    if pg_store.enabled():
+        pg_store.user_settings_set(character_id, data, time.time())
+        return
     conn = _user_settings_conn()
     try:
         conn.execute(
@@ -217,11 +241,11 @@ def save_user_settings(character_id, data):
 # ── EVE SSO helpers ───────────────────────────────────────────────────────────
 
 def load_auth_settings():
-    return load_json(AUTH_SETTINGS_PATH, {})
+    return _kv_load("auth_settings", AUTH_SETTINGS_PATH, {})
 
 
 def save_auth_settings(d):
-    save_json(AUTH_SETTINGS_PATH, d)
+    _kv_save("auth_settings", AUTH_SETTINGS_PATH, d)
 
 
 def _suggested_callback():
@@ -245,14 +269,25 @@ def _persist_auth():
             for c in _CHARACTERS.values()
         ],
     }
-    sso_core.save_tokens(CACHE_DIR, data)
+    if pg_store.enabled():
+        pg_store.kv_set("eve_auth", data)
+    else:
+        sso_core.save_tokens(CACHE_DIR, data)
 
 
 def _restore_auth():
     """Load persisted characters on startup. Migrates v1 (single char) to v2
     automatically so existing users don't need to re-login."""
     global _ACTIVE_CHAR_ID
-    saved = sso_core.load_tokens(CACHE_DIR)
+    if pg_store.enabled():
+        try:
+            saved = pg_store.kv_get("eve_auth", {})
+        except Exception as e:
+            print(f"[auth] could not load persisted tokens from Postgres: {e}",
+                  file=sys.stderr)
+            saved = {}
+    else:
+        saved = sso_core.load_tokens(CACHE_DIR)
     if saved.get("version") == 2:
         for c in saved.get("characters", []):
             cid = c["character_id"]
@@ -440,7 +475,7 @@ def _track_delivered_jobs(cid, jobs, names):
     window) are recorded as a baseline but not counted, so the counter only grows
     from the moment this feature started watching, as advertised to the user."""
     with _JOBS_TRACK_LOCK:
-        store = load_json(JOBS_TRACK_PATH, {})
+        store = _kv_load("ind_jobs_delivered", JOBS_TRACK_PATH, {})
         key = str(cid)
         entry = store.get(key)
         first_seen = entry is None
@@ -469,7 +504,7 @@ def _track_delivered_jobs(cid, jobs, names):
         entry["seen_job_ids"] = list(seen)
         if changed:
             store[key] = entry
-            save_json(JOBS_TRACK_PATH, store)
+            _kv_save("ind_jobs_delivered", JOBS_TRACK_PATH, store)
         return {"total_runs": entry["total_runs"], "total_jobs": entry["total_jobs"],
                 "since": entry["since"], "by_product": entry["by_product"]}
 
@@ -481,7 +516,7 @@ def _track_order_changes(cid, current_orders, names):
     """Compare current market orders with previously seen ones. Record sale/fill
     events when volume_remain decreases or an order disappears entirely.
     Also maintains per-order last_sale metadata for active orders."""
-    store = load_json(ORDER_EVENTS_PATH, {})
+    store = _kv_load("order_events", ORDER_EVENTS_PATH, {})
     char_key = str(cid)
     prev_key = f"_prev_{char_key}"
     sales_key = f"_sales_{char_key}"
@@ -539,13 +574,13 @@ def _track_order_changes(cid, current_orders, names):
     store[prev_key] = new_prev
     store[char_key] = events
     store[sales_key] = last_sales
-    save_json(ORDER_EVENTS_PATH, store)
+    _kv_save("order_events", ORDER_EVENTS_PATH, store)
     return events, last_sales
 
 
 def _get_order_events():
     """Return all non-dismissed, non-expired events across all characters."""
-    store = load_json(ORDER_EVENTS_PATH, {})
+    store = _kv_load("order_events", ORDER_EVENTS_PATH, {})
     now = time.time()
     all_events = []
     for key, val in store.items():
@@ -562,7 +597,7 @@ def _get_order_events():
 
 def _dismiss_order_event(event_id):
     """Mark a single event as dismissed, or dismiss all if event_id is 'all'."""
-    store = load_json(ORDER_EVENTS_PATH, {})
+    store = _kv_load("order_events", ORDER_EVENTS_PATH, {})
     for key, val in store.items():
         if key.startswith("_prev_"):
             continue
@@ -570,7 +605,7 @@ def _dismiss_order_event(event_id):
             for e in val:
                 if event_id == "all" or e.get("id") == event_id:
                     e["dismissed"] = True
-    save_json(ORDER_EVENTS_PATH, store)
+    _kv_save("order_events", ORDER_EVENTS_PATH, store)
 
 
 def _fetch_one_char_data(cid):

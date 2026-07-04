@@ -16,6 +16,12 @@ from .middleware.rate_limit import RateLimitMiddleware
 async def lifespan(app: FastAPI):
     cache_dir = Path(settings.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
+
+    from .database import Base, _get_engine
+    from . import models  # noqa: F401 — register all models with Base.metadata
+    async with _get_engine().begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     yield
 
 

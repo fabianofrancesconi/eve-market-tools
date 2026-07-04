@@ -1,7 +1,7 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { apiGet } from '../lib/api-client'
-import { fmtIsk, fmtPct, fmtNum } from '../lib/format'
+import { apiGet, apiPost } from '../lib/api-client'
+import { fmtIsk, fmtPct, fmtNum, fmtAge } from '../lib/format'
 import { DataTable } from '../components/shared/DataTable'
 import { LpDetailPanel } from '../components/lp/LpDetailPanel'
 import { useUiStore } from '../stores/ui-store'
@@ -12,6 +12,11 @@ const TRADE_HUBS: Record<number, string> = {
   60011866: 'Dodixie IX',
   60005686: 'Hek VIII',
   60004588: 'Rens VI',
+}
+
+interface NpcCorp {
+  id: number
+  name: string
 }
 
 interface LpRow {
@@ -35,17 +40,22 @@ interface LpRow {
   max_units: number
   cost_ea: number | null
   unsellable: boolean
+  illiquid?: boolean
+  output_volume?: number | null
   // Enriched from liquidity
   tradeability?: number | null
   daily_vol?: number | null
   days_to_clear?: number | null
+  list_price?: number | null
+  floor_age?: number | null
 }
 
-interface LiquidityRow {
-  type_id: number
-  tradeability: number
-  daily_vol: number
-  days_to_clear: number
+interface LiquidityEntry {
+  daily_vol: number | null
+  days_to_clear: number | null
+  list_price: number | null
+  floor_age: number | null
+  tradeability: number | null
 }
 
 interface ScanResult {
@@ -95,8 +105,42 @@ export function LpPage() {
   // Local state
   const [scanTrigger, setScanTrigger] = useState(0)
   const [selectedRow, setSelectedRow] = useState<LpRow | null>(null)
-  const [enrichedRows, setEnrichedRows] = useState<Map<number, LiquidityRow>>(new Map())
+  const [enrichedRows, setEnrichedRows] = useState<Map<number, LiquidityEntry>>(new Map())
   const [liquidityLoading, setLiquidityLoading] = useState(false)
+  const [corpDropdownOpen, setCorpDropdownOpen] = useState(false)
+  const corpInputRef = useRef<HTMLInputElement>(null)
+
+  // Corps list for autocomplete
+  const { data: corpsData } = useQuery<NpcCorp[]>({
+    queryKey: ['npc-corps'],
+    queryFn: () => apiGet('/api/lp/corps'),
+    staleTime: 24 * 60 * 60 * 1000,
+  })
+
+  const corpSuggestions = useMemo(() => {
+    if (!corpsData || !corp.trim()) return []
+    const q = corp.toLowerCase()
+    return corpsData
+      .filter(c => c.name.toLowerCase().includes(q))
+      .slice(0, 10)
+  }, [corpsData, corp])
+
+  // Auto-scan on first load if corp is already set from persisted state
+  useEffect(() => {
+    if (corp.trim() && scanTrigger === 0) {
+      setScanTrigger(1)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Escape key to close detail panel
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && selectedRow) setSelectedRow(null)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [selectedRow])
 
   // Build scan URL
   const scanEnabled = scanTrigger > 0 && corp.trim().length > 0
@@ -133,11 +177,11 @@ export function LpPage() {
     if (typeIds.length === 0) return
 
     setLiquidityLoading(true)
-    apiGet<LiquidityRow[]>(`/api/lp/liquidity?type_ids=${typeIds.join(',')}&station_id=${stationId}`)
-      .then((rows) => {
-        const map = new Map<number, LiquidityRow>()
-        for (const r of rows) {
-          map.set(r.type_id, r)
+    apiGet<Record<string, LiquidityEntry>>(`/api/lp/liquidity?type_ids=${typeIds.join(',')}&station_id=${stationId}`)
+      .then((resp) => {
+        const map = new Map<number, LiquidityEntry>()
+        for (const [tid, entry] of Object.entries(resp)) {
+          map.set(Number(tid), entry)
         }
         setEnrichedRows(map)
       })
@@ -147,6 +191,13 @@ export function LpPage() {
       .finally(() => setLiquidityLoading(false))
   }, [data?.sellable, stationId])
 
+  // Save scan results to backend for restore on next page load
+  useEffect(() => {
+    if (data && !data.error && data.sellable) {
+      apiPost('/api/lp/save-scan', { tab: 'lp', data }).catch(() => {})
+    }
+  }, [data])
+
   // Merge enrichment into rows
   const enriched = useMemo(() => {
     if (!data?.sellable) return []
@@ -155,9 +206,11 @@ export function LpPage() {
       if (!liq) return row
       return {
         ...row,
-        tradeability: liq.tradeability,
         daily_vol: liq.daily_vol,
         days_to_clear: liq.days_to_clear,
+        list_price: liq.list_price,
+        floor_age: liq.floor_age,
+        tradeability: liq.tradeability,
       }
     })
   }, [data?.sellable, enrichedRows])
@@ -204,22 +257,28 @@ export function LpPage() {
         header: 'List ISK/LP',
         align: 'right' as const,
         width: '100px',
-        render: (r: LpRow) => (
-          <span className={(r.isk_per_lp_patient ?? 0) > 0 ? 'text-positive' : 'text-negative'}>
-            {fmtIsk(r.isk_per_lp_patient)}
-          </span>
-        ),
+        render: (r: LpRow) => {
+          const isWin = r.isk_per_lp_patient != null && r.isk_per_lp_instant != null && r.isk_per_lp_patient >= r.isk_per_lp_instant
+          return (
+            <span className={`${(r.isk_per_lp_patient ?? 0) > 0 ? 'text-positive' : 'text-negative'} ${isWin ? 'font-semibold' : ''}`}>
+              {fmtIsk(r.isk_per_lp_patient)}
+            </span>
+          )
+        },
       },
       {
         key: 'isk_per_lp_instant',
         header: 'Instant ISK/LP',
         align: 'right' as const,
         width: '110px',
-        render: (r: LpRow) => (
-          <span className={(r.isk_per_lp_instant ?? 0) > 0 ? 'text-positive' : 'text-negative'}>
-            {fmtIsk(r.isk_per_lp_instant)}
-          </span>
-        ),
+        render: (r: LpRow) => {
+          const isWin = r.isk_per_lp_instant != null && r.isk_per_lp_patient != null && r.isk_per_lp_instant > r.isk_per_lp_patient
+          return (
+            <span className={`${(r.isk_per_lp_instant ?? 0) > 0 ? 'text-positive' : 'text-negative'} ${isWin ? 'font-semibold' : ''}`}>
+              {fmtIsk(r.isk_per_lp_instant)}
+            </span>
+          )
+        },
       },
       {
         key: 'profit_patient',
@@ -290,6 +349,22 @@ export function LpPage() {
         render: (r: LpRow) => fmtIsk(r.cost_ea),
       },
       {
+        key: 'list_price',
+        header: 'List @',
+        align: 'right' as const,
+        width: '90px',
+        render: (r: LpRow) =>
+          r.list_price != null ? fmtIsk(r.list_price) : liquidityLoading ? <Spinner /> : '-',
+      },
+      {
+        key: 'floor_age',
+        header: 'Floor age',
+        align: 'right' as const,
+        width: '70px',
+        render: (r: LpRow) =>
+          r.floor_age != null ? fmtAge(r.floor_age) : liquidityLoading ? <Spinner /> : '-',
+      },
+      {
         key: 'ask',
         header: 'Ask',
         align: 'right' as const,
@@ -302,6 +377,14 @@ export function LpPage() {
         align: 'right' as const,
         width: '90px',
         render: (r: LpRow) => fmtIsk(r.bid),
+      },
+      {
+        key: 'output_volume',
+        header: 'Vol m³',
+        align: 'right' as const,
+        width: '75px',
+        hiddenByDefault: true,
+        render: (r: LpRow) => r.output_volume != null ? fmtNum(r.output_volume, 1) : '-',
       },
     ],
     [liquidityLoading]
@@ -335,16 +418,32 @@ export function LpPage() {
 
       {/* Row 2: Main controls */}
       <div className="flex flex-wrap gap-2 items-end">
-        <div className="w-48">
+        <div className="w-48 relative">
           <label className="block text-xs text-foreground-muted mb-1 uppercase">Corporation</label>
           <input
+            ref={corpInputRef}
             type="text"
             value={corp}
-            onChange={e => setCorp(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleScan()}
+            onChange={e => { setCorp(e.target.value); setCorpDropdownOpen(true) }}
+            onFocus={() => setCorpDropdownOpen(true)}
+            onBlur={() => setTimeout(() => setCorpDropdownOpen(false), 150)}
+            onKeyDown={e => { if (e.key === 'Enter') { setCorpDropdownOpen(false); handleScan() } }}
             placeholder="e.g. Sisters of EVE"
             className="w-full px-2 py-1.5 rounded bg-background-elevated border border-border text-foreground text-sm placeholder:text-foreground-muted/50 focus:outline-none focus:border-accent-cyan"
           />
+          {corpDropdownOpen && corpSuggestions.length > 0 && (
+            <ul className="absolute z-50 mt-1 w-64 max-h-52 overflow-y-auto bg-background-panel border border-border rounded shadow-lg text-sm">
+              {corpSuggestions.map(c => (
+                <li
+                  key={c.id}
+                  onMouseDown={() => { setCorp(c.name); setCorpDropdownOpen(false) }}
+                  className="px-3 py-1.5 cursor-pointer hover:bg-background-elevated truncate"
+                >
+                  {c.name}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         <div className="w-24">
           <label className="block text-xs text-foreground-muted mb-1 uppercase">LP Budget</label>
@@ -478,6 +577,10 @@ export function LpPage() {
           keyFn={r => r.offer_id}
           onRowClick={(row) => setSelectedRow(row)}
           emptyMessage="No profitable offers found"
+          showColumnPicker={true}
+          rowClassName={(r) =>
+            r.illiquid ? 'opacity-60' : r.max_units === 0 ? 'opacity-40 italic' : ''
+          }
         />
       )}
 

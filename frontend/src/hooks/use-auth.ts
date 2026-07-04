@@ -1,9 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
 import { useCallback } from 'react'
 
+interface CharacterInfo {
+  character_id: number
+  name: string
+  is_active: boolean
+  wallet?: number | null
+}
+
 interface AuthStatus {
   logged_in: boolean
-  characters?: Array<{ character_id: number; name: string; is_active: boolean }>
+  characters?: CharacterInfo[]
 }
 
 export function useAuth() {
@@ -37,12 +44,26 @@ export function useAuth() {
     }
   }, [refetch])
 
+  const switchCharacter = useCallback(async (characterId: number) => {
+    try {
+      await fetch('/api/auth/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ character_id: characterId }),
+      })
+      refetch()
+    } catch (err) {
+      console.error('Switch character error:', err)
+    }
+  }, [refetch])
+
   return {
     isLoggedIn: data?.logged_in ?? false,
     characters: data?.characters ?? [],
     activeCharacter: data?.characters?.find(c => c.is_active),
     login,
     logout,
+    switchCharacter,
     refetch,
   }
 }

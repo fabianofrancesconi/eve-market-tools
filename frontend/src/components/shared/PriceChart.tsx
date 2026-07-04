@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiGet } from '../../lib/api-client'
 import {
@@ -9,6 +10,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   CartesianGrid,
+  ReferenceLine,
 } from 'recharts'
 
 interface HistoryPoint {
@@ -18,6 +20,7 @@ interface HistoryPoint {
   lowest: number
   volume: number
   order_count: number
+  sma30?: number
 }
 
 interface PriceChartProps {
@@ -45,6 +48,20 @@ export function PriceChart({ typeId, regionId }: PriceChartProps) {
     staleTime: 5 * 60 * 1000,
   })
 
+  const chartData = useMemo(() => {
+    if (!data || data.length === 0) return []
+    const pts = data.slice(-90)
+    for (let i = 0; i < pts.length; i++) {
+      if (i < 29) { pts[i].sma30 = undefined; continue }
+      let sum = 0
+      for (let j = i - 29; j <= i; j++) sum += pts[j].average
+      pts[i].sma30 = sum / 30
+    }
+    return pts
+  }, [data])
+
+  const ath = useMemo(() => chartData.length > 0 ? Math.max(...chartData.map(d => d.average)) : 0, [chartData])
+
   if (isLoading) {
     return (
       <div className="h-48 flex items-center justify-center text-foreground-muted text-sm">
@@ -61,12 +78,12 @@ export function PriceChart({ typeId, regionId }: PriceChartProps) {
     )
   }
 
-  const maxVol = Math.max(...data.map(d => d.volume))
+  const maxVol = Math.max(...chartData.map(d => d.volume))
 
   return (
     <div className="h-48 w-full">
       <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={data} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+        <ComposedChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
           <XAxis
             dataKey="date"
@@ -99,9 +116,11 @@ export function PriceChart({ typeId, regionId }: PriceChartProps) {
             formatter={(value, name) => {
               const v = Number(value)
               if (name === 'volume') return [v.toLocaleString(), 'Volume']
+              if (name === 'sma30') return [v.toLocaleString(undefined, { maximumFractionDigits: 2 }), 'MA30']
               return [v.toLocaleString(undefined, { maximumFractionDigits: 2 }), name === 'average' ? 'Avg Price' : String(name)]
             }}
           />
+          <ReferenceLine yAxisId="price" y={ath} stroke="rgba(250,204,21,0.3)" strokeDasharray="4 4" label={{ value: 'ATH', position: 'right', fill: '#facc15', fontSize: 9 }} />
           <Bar yAxisId="volume" dataKey="volume" fill="rgba(100,149,237,0.2)" isAnimationActive={false} />
           <Line
             yAxisId="price"
@@ -111,6 +130,17 @@ export function PriceChart({ typeId, regionId }: PriceChartProps) {
             dot={false}
             strokeWidth={1.5}
             isAnimationActive={false}
+          />
+          <Line
+            yAxisId="price"
+            type="monotone"
+            dataKey="sma30"
+            stroke="#f59e0b"
+            dot={false}
+            strokeWidth={1}
+            strokeDasharray="3 3"
+            isAnimationActive={false}
+            connectNulls
           />
         </ComposedChart>
       </ResponsiveContainer>

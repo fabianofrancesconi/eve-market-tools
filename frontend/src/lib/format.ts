@@ -35,3 +35,13 @@ export function fmtDuration(seconds: number | null | undefined): string {
   }
   return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
+
+export function fmtAge(seconds: number | null | undefined): string {
+  if (seconds == null) return '-'
+  const h = Math.floor(seconds / 3600)
+  if (h > 24) {
+    const d = Math.floor(h / 24)
+    return `${d}d`
+  }
+  return `${h}h`
+}

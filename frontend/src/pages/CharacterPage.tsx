@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiGet } from '../lib/api-client'
 import { fmtIsk, fmtNum } from '../lib/format'
@@ -75,6 +76,16 @@ function timeUntil(dateStr: string): string {
   return `${h}h ${m}m`
 }
 
+function postedAge(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime()
+  if (diff < 0) return '-'
+  const h = Math.floor(diff / 3600000)
+  if (h < 1) return '<1h'
+  if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24)
+  return `${d}d`
+}
+
 export function CharacterPage() {
   const { isLoggedIn, login } = useAuth()
 
@@ -106,11 +117,58 @@ export function CharacterPage() {
     return <p className="text-foreground-muted">Loading character data...</p>
   }
 
+  return <CharacterTabView characters={characters} />
+}
+
+function CharacterTabView({ characters }: { characters: CharData[] }) {
+  const [activeTab, setActiveTab] = useState<number | 'all'>(
+    characters.length > 1 ? 'all' : characters[0]?.character_id ?? 'all'
+  )
+
+  const visibleChars = activeTab === 'all'
+    ? characters
+    : characters.filter(c => c.character_id === activeTab)
+
   return (
-    <div className="space-y-8">
-      {characters.map(char => (
-        <CharacterPanel key={char.character_id} char={char} />
-      ))}
+    <div className="space-y-4">
+      {characters.length > 1 && (
+        <div className="flex gap-1 border-b border-border pb-1">
+          <button
+            onClick={() => setActiveTab('all')}
+            className={`px-3 py-1.5 text-sm rounded-t transition-colors ${
+              activeTab === 'all'
+                ? 'bg-accent-cyan/15 text-accent-cyan border-b-2 border-accent-cyan'
+                : 'text-foreground-muted hover:text-foreground'
+            }`}
+          >
+            All
+          </button>
+          {characters.map(c => (
+            <button
+              key={c.character_id}
+              onClick={() => setActiveTab(c.character_id)}
+              className={`px-3 py-1.5 text-sm rounded-t flex items-center gap-1.5 transition-colors ${
+                activeTab === c.character_id
+                  ? 'bg-accent-cyan/15 text-accent-cyan border-b-2 border-accent-cyan'
+                  : 'text-foreground-muted hover:text-foreground'
+              }`}
+            >
+              <img
+                src={`https://images.evetech.net/characters/${c.character_id}/portrait?size=32`}
+                className="w-4 h-4 rounded"
+                alt=""
+              />
+              {c.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="space-y-8">
+        {visibleChars.map(char => (
+          <CharacterPanel key={char.character_id} char={char} />
+        ))}
+      </div>
     </div>
   )
 }
@@ -234,6 +292,7 @@ function CharacterPanel({ char }: { char: CharData }) {
                     <th className="text-right py-1.5">Remaining</th>
                     <th className="text-right py-1.5">Price</th>
                     <th className="text-right py-1.5">Total Value</th>
+                    <th className="text-right py-1.5">Posted</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -246,12 +305,13 @@ function CharacterPanel({ char }: { char: CharData }) {
                       <td className="py-1.5 text-right">{order.volume_remain}/{order.volume_total}</td>
                       <td className="py-1.5 text-right">{fmtIsk(order.price)}</td>
                       <td className="py-1.5 text-right">{fmtIsk(order.price * order.volume_remain)}</td>
+                      <td className="py-1.5 text-right text-foreground-muted">{postedAge(order.issued)}</td>
                     </tr>
                   ))}
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-border font-medium">
-                    <td className="py-1.5" colSpan={4}>Total</td>
+                    <td className="py-1.5" colSpan={5}>Total</td>
                     <td className="py-1.5 text-right">
                       {fmtIsk(char.market_orders.reduce((s, o) => s + o.price * o.volume_remain, 0))}
                     </td>

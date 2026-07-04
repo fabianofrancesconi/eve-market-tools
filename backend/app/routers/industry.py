@@ -11,12 +11,13 @@ from ..core.market.history import fetch_history_volumes
 from ..core.industry.sde import (
     load_sde_industry, connect_sde, top_market_groups,
     expand_market_groups, manufacturing_candidates, candidates_for_blueprints,
-    fetch_adjusted_prices, volumes_for,
+    fetch_adjusted_prices, volumes_for, market_group_names,
 )
 from ..core.industry.blueprints import assemble_blueprints, assemble_invention
 from ..core.industry.evaluate import evaluate_industry
-from ..core.industry.costs import tradeability
+from ..core.industry.costs import tradeability, bulk_training_time
 from ..core.industry.detail import build_industry_detail
+from ..core.arbitrage.scanner import fetch_fuzzwork_region
 from ..core.shared.names import resolve_names
 
 router = APIRouter(prefix="/api/industry", tags=["industry"])
@@ -51,8 +52,8 @@ async def scan(
     station_id: int = Query(JITA_STATION_ID),
     me: int = Query(0),
     te: int = Query(0),
-    job_rate: float = Query(0.0),
-    sales_tax: float = Query(0.08),
+    job_rate: float = Query(0.06),
+    sales_tax: float = Query(0.075),
     broker_fee: float = Query(0.03),
     runs: int = Query(1),
     skills_level: int = Query(0),
@@ -102,6 +103,17 @@ async def scan(
             yield f"event: progress\ndata: {json.dumps({'pct': 60, 'msg': 'Fetching adjusted prices...'})}\n\n"
             adjusted = fetch_adjusted_prices(_session, cache_dir)
 
+            yield f"event: progress\ndata: {json.dumps({'pct': 65, 'msg': 'Fetching BPO prices...'})}\n\n"
+            t1_bp_ids = [bp["blueprint_id"] for bp in bps if not bp.get("invention")]
+            bpo_prices = {}
+            if t1_bp_ids:
+                bpo_region = fetch_fuzzwork_region(t1_bp_ids, region_id, _session)
+                bpo_prices = {
+                    bid: v["sell_min"]
+                    for bid, v in bpo_region.items()
+                    if v.get("sell_min")
+                }
+
             yield f"event: progress\ndata: {json.dumps({'pct': 70, 'msg': 'Evaluating...'})}\n\n"
             vols = volumes_for(conn, list(all_type_ids))
             params = {
@@ -109,14 +121,27 @@ async def scan(
                 "sales_tax": sales_tax, "broker_fee": broker_fee,
                 "runs": runs, "skills_level": skills_level,
                 "volumes": vols,
+                "bpo_prices": bpo_prices,
             }
             rows = evaluate_industry(bps, prices, adjusted, params)
 
-            yield f"event: progress\ndata: {json.dumps({'pct': 90, 'msg': 'Resolving names...'})}\n\n"
+            # Annotate training time for blueprints that need skills
+            skill_profile = {}  # TODO: fetch from character when authenticated
+            train_map = bulk_training_time(bps, skill_profile, conn, skills_level)
+            for r in rows:
+                r["train_hours"] = train_map.get(r["blueprint_id"])
+
+            yield f"event: progress\ndata: {json.dumps({'pct': 85, 'msg': 'Resolving names...'})}\n\n"
             name_ids = list(set(r["product_id"] for r in rows[:200]))
             names = resolve_names(name_ids, _session, cache_dir)
             for r in rows:
                 r["product_name"] = names.get(r["product_id"], r.get("product_name", ""))
+
+            # Resolve market group names for subcategory labels
+            gids_set = {r["market_group_id"] for r in rows if r.get("market_group_id")}
+            gnames = market_group_names(conn, gids_set)
+            for r in rows:
+                r["group_name"] = gnames.get(r.get("market_group_id"), "")
 
             yield f"event: progress\ndata: {json.dumps({'pct': 100, 'msg': 'Done'})}\n\n"
             yield f"event: result\ndata: {json.dumps(rows)}\n\n"
@@ -132,8 +157,8 @@ async def detail(
     station_id: int = Query(JITA_STATION_ID),
     me: int = Query(0),
     te: int = Query(0),
-    job_rate: float = Query(0.0),
-    sales_tax: float = Query(0.08),
+    job_rate: float = Query(0.06),
+    sales_tax: float = Query(0.075),
     broker_fee: float = Query(0.03),
     runs: int = Query(1),
     skills_level: int = Query(0),
@@ -168,6 +193,14 @@ async def detail(
         return build_industry_detail(bp, prices, names, vols, params)
     finally:
         conn.close()
+
+
+@router.get("/refresh-sde")
+async def refresh_sde():
+    """Force re-download the SDE data."""
+    cache_dir = settings.cache_dir
+    load_sde_industry(cache_dir, session=_session, refresh=True)
+    return {"status": "ok"}
 
 
 @router.get("/liquidity")

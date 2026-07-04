@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../../hooks/use-auth'
+import { fmtIsk } from '../../lib/format'
 
 const navItems = [
   { to: '/lp', label: 'LP Store' },
@@ -9,7 +11,8 @@ const navItems = [
 ]
 
 export function Header() {
-  const { isLoggedIn, activeCharacter, login } = useAuth()
+  const { isLoggedIn, activeCharacter, characters, login, logout, switchCharacter } = useAuth()
+  const [dropdownOpen, setDropdownOpen] = useState(false)
 
   return (
     <header className="border-b border-border bg-background-panel">
@@ -50,16 +53,67 @@ export function Header() {
           ))}
         </nav>
 
-        <div className="ml-auto">
+        <div className="ml-auto relative">
           {isLoggedIn && activeCharacter ? (
-            <div className="flex items-center gap-2">
-              <img
-                src={`https://images.evetech.net/characters/${activeCharacter.character_id}/portrait?size=32`}
-                className="w-6 h-6 rounded"
-                alt=""
-              />
-              <span className="text-sm text-foreground">{activeCharacter.name}</span>
-            </div>
+            <>
+              <button
+                onClick={() => setDropdownOpen(!dropdownOpen)}
+                onBlur={() => setTimeout(() => setDropdownOpen(false), 150)}
+                className="flex items-center gap-2 px-2 py-1 rounded hover:bg-background-elevated transition-colors"
+              >
+                <img
+                  src={`https://images.evetech.net/characters/${activeCharacter.character_id}/portrait?size=32`}
+                  className="w-7 h-7 rounded"
+                  alt=""
+                />
+                <div className="text-left">
+                  <span className="text-sm text-foreground block leading-tight">{activeCharacter.name}</span>
+                  {activeCharacter.wallet != null && (
+                    <span className="text-xs text-accent-gold leading-tight">{fmtIsk(activeCharacter.wallet)}</span>
+                  )}
+                </div>
+                <svg className="w-3 h-3 text-foreground-muted" viewBox="0 0 12 12">
+                  <path d="M3 5l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              </button>
+
+              {dropdownOpen && (
+                <div className="absolute right-0 mt-1 w-52 bg-background-panel border border-border rounded shadow-lg z-50 py-1">
+                  {characters && characters.length > 1 && (
+                    <>
+                      <div className="px-3 py-1 text-[10px] uppercase text-foreground-muted">Switch Character</div>
+                      {characters.filter(c => c.character_id !== activeCharacter.character_id).map(c => (
+                        <button
+                          key={c.character_id}
+                          onMouseDown={() => { switchCharacter(c.character_id); setDropdownOpen(false) }}
+                          className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-background-elevated text-sm"
+                        >
+                          <img
+                            src={`https://images.evetech.net/characters/${c.character_id}/portrait?size=32`}
+                            className="w-5 h-5 rounded"
+                            alt=""
+                          />
+                          {c.name}
+                        </button>
+                      ))}
+                      <div className="border-t border-border my-1" />
+                    </>
+                  )}
+                  <button
+                    onMouseDown={() => { login(); setDropdownOpen(false) }}
+                    className="w-full text-left px-3 py-1.5 text-sm text-foreground-muted hover:text-foreground hover:bg-background-elevated"
+                  >
+                    + Add character
+                  </button>
+                  <button
+                    onMouseDown={() => { logout(activeCharacter.character_id); setDropdownOpen(false) }}
+                    className="w-full text-left px-3 py-1.5 text-sm text-negative hover:bg-background-elevated"
+                  >
+                    Remove {activeCharacter.name}
+                  </button>
+                </div>
+              )}
+            </>
           ) : (
             <button
               onClick={login}

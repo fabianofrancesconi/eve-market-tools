@@ -1,9 +1,11 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useSse } from '../hooks/use-sse'
 import { sseUrl } from '../lib/api-client'
 import { fmtIsk, fmtPct, fmtNum } from '../lib/format'
 import { DataTable } from '../components/shared/DataTable'
 import { ProgressBar } from '../components/shared/ProgressBar'
+import { PriceChart } from '../components/shared/PriceChart'
+import { useUiStore } from '../stores/ui-store'
 
 const REGIONS: Record<number, string> = {
   10000002: 'The Forge (Jita)',
@@ -50,17 +52,32 @@ function riskColor(risk: string): string {
 }
 
 export function ArbitragePage() {
-  const [regionId, setRegionId] = useState(10000002)
-  const [salesTax, setSalesTax] = useState(7.5)
-  const [mode, setMode] = useState<Mode>('cross')
+  const regionId = useUiStore(s => s.arbRegion)
+  const setRegionId = useUiStore(s => s.setArbRegion)
+  const salesTax = useUiStore(s => s.arbSalesTax)
+  const setSalesTax = useUiStore(s => s.setArbSalesTax)
+  const mode = useUiStore(s => s.arbMode)
+  const setMode = useUiStore(s => s.setArbMode)
+  const maxJumps = useUiStore(s => s.arbMaxJumps)
+  const setMaxJumps = useUiStore(s => s.setArbMaxJumps)
+  const avoidLowsec = useUiStore(s => s.arbAvoidLowsec)
+  const setAvoidLowsec = useUiStore(s => s.setArbAvoidLowsec)
+  const routeFlag = useUiStore(s => s.arbRouteFlag)
+  const setRouteFlag = useUiStore(s => s.setArbRouteFlag)
   const [minIsk, setMinIsk] = useState<string>('')
-  const [maxJumps, setMaxJumps] = useState(6)
-  const [avoidLowsec, setAvoidLowsec] = useState(false)
-  const [routeFlag, setRouteFlag] = useState('shortest')
 
   const [url, setUrl] = useState<string | null>(null)
   const [trigger, setTrigger] = useState(0)
   const { progress, message, subMessage, result, isStreaming } = useSse<ArbRow[]>(url, trigger)
+  const [chartRow, setChartRow] = useState<ArbRow | null>(null)
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && chartRow) setChartRow(null)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [chartRow])
 
   const isCross = mode === 'cross'
 
@@ -68,17 +85,15 @@ export function ArbitragePage() {
     const params: Record<string, string | number | boolean> = {
       region_id: regionId,
       sales_tax: salesTax / 100,
-      cross_station: isCross,
+      mode: isCross ? 'region' : 'station',
       top: 100,
       refresh: false,
+      avoid_lowsec: avoidLowsec,
     }
     if (minIsk) params.min_isk = Number(minIsk)
     if (isCross) {
       params.max_jumps = maxJumps
-      params.avoid_lowsec = avoidLowsec
       params.route_flag = routeFlag
-    } else {
-      params.avoid_lowsec = avoidLowsec
     }
     setUrl(sseUrl('/api/arbitrage/scan', params))
     setTrigger(t => t + 1)
@@ -300,6 +315,7 @@ export function ArbitragePage() {
               >
                 <option value="shortest">Shortest</option>
                 <option value="secure">Secure</option>
+                <option value="insecure">Insecure</option>
               </select>
             </div>
           </>
@@ -349,9 +365,29 @@ export function ArbitragePage() {
             data={result}
             columns={columns}
             keyFn={r => `${r.type_id}-${r.sell_station_id}-${r.buy_station_id}`}
+            onRowClick={r => setChartRow(r)}
             emptyMessage="No arbitrage opportunities found"
           />
         </>
+      )}
+
+      {/* Price chart modal */}
+      {chartRow && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={() => setChartRow(null)}
+        >
+          <div
+            className="bg-background border border-border rounded-lg p-5 w-[600px] max-w-[90vw] space-y-3"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium text-foreground">{chartRow.name}</h3>
+              <button onClick={() => setChartRow(null)} className="text-foreground-muted hover:text-foreground text-lg">&times;</button>
+            </div>
+            <PriceChart typeId={chartRow.type_id} regionId={regionId} />
+          </div>
+        </div>
       )}
     </div>
   )

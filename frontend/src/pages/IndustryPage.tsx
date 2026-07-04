@@ -1,10 +1,11 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSse } from '../hooks/use-sse'
 import { apiGet, sseUrl } from '../lib/api-client'
 import { fmtIsk, fmtPct, fmtNum, fmtDuration } from '../lib/format'
 import { ProgressBar } from '../components/shared/ProgressBar'
 import { IndustryDetailRow } from '../components/industry/IndustryDetailRow'
+import { useUiStore } from '../stores/ui-store'
 
 /* ---------- constants ---------- */
 
@@ -45,6 +46,9 @@ interface IndRow {
   group_name: string
   market_group_id: number
   payback_runs: number | null
+  train_hours: number | null
+  bp_available: boolean
+  bp_source: string
 }
 
 interface MarketGroup {
@@ -77,19 +81,29 @@ function Spinner() {
 /* ---------- page component ---------- */
 
 export function IndustryPage() {
-  /* --- state: controls --- */
-  const [salesTax, setSalesTax] = useState(4.5)
-  const [brokerFee, setBrokerFee] = useState(1.5)
-  const [jobRate, setJobRate] = useState(6.0)
-  const [stationId, setStationId] = useState(60003760)
+  /* --- state: controls (persisted) --- */
+  const salesTax = useUiStore(s => s.indSalesTax)
+  const setSalesTax = useUiStore(s => s.setIndSalesTax)
+  const brokerFee = useUiStore(s => s.indBrokerFee)
+  const setBrokerFee = useUiStore(s => s.setIndBrokerFee)
+  const jobRate = useUiStore(s => s.indJobRate)
+  const setJobRate = useUiStore(s => s.setIndJobRate)
+  const stationId = useUiStore(s => s.indStationId)
+  const setStationId = useUiStore(s => s.setIndStationId)
+  const runs = useUiStore(s => s.indRuns)
+  const setRuns = useUiStore(s => s.setIndRuns)
+  const minTradeability = useUiStore(s => s.indMinTradeability)
+  const setMinTradeability = useUiStore(s => s.setIndMinTradeability)
+  const tradeWeight = useUiStore(s => s.indTradeWeight) as TradeWeight
+  const setTradeWeight = (v: TradeWeight) => useUiStore.getState().setIndTradeWeight(v)
+  const buildableOnly = useUiStore(s => s.indBuildableOnly)
+  const setBuildableOnly = useUiStore(s => s.setIndBuildableOnly)
+  const hideT2 = useUiStore(s => s.indHideT2)
+  const setHideT2 = useUiStore(s => s.setIndHideT2)
+  const includeUnobtainable = useUiStore(s => s.indIncludeUnobtainable)
+  const setIncludeUnobtainable = useUiStore(s => s.setIndIncludeUnobtainable)
   const [groupId, setGroupId] = useState('all')
-  const [runs, setRuns] = useState(1)
   const [search, setSearch] = useState('')
-  const [minTradeability, setMinTradeability] = useState<string>('')
-  const [tradeWeight, setTradeWeight] = useState<TradeWeight>('balanced')
-  const [buildableOnly, setBuildableOnly] = useState(false)
-  const [hideT2, setHideT2] = useState(false)
-  const [includeUnobtainable, setIncludeUnobtainable] = useState(false)
 
   /* --- state: scan --- */
   const [url, setUrl] = useState<string | null>(null)
@@ -105,6 +119,15 @@ export function IndustryPage() {
 
   /* --- state: detail expansion --- */
   const [expandedId, setExpandedId] = useState<number | null>(null)
+
+  // Escape key to close detail
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && expandedId != null) setExpandedId(null)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [expandedId])
 
   /* --- state: sorting --- */
   const [sortKey, setSortKey] = useState<string | null>(null)
@@ -123,15 +146,12 @@ export function IndustryPage() {
     setEnriching(false)
     enrichAbortRef.current = true
     setUrl(sseUrl('/api/industry/scan', {
-      market_group: groupId,
-      station: stationId,
-      job_rate: jobRate,
-      sales_tax: salesTax,
-      broker: brokerFee,
+      group_ids: groupId === 'all' ? '' : groupId,
+      station_id: stationId,
+      job_rate: jobRate / 100,
+      sales_tax: salesTax / 100,
+      broker_fee: brokerFee / 100,
       runs,
-      buildable_only: buildableOnly,
-      hide_t2: hideT2,
-      include_unbuildable: includeUnobtainable,
     }))
     setTrigger(t => t + 1)
   }
@@ -200,8 +220,17 @@ export function IndustryPage() {
     if (search.trim()) {
       const q = search.toLowerCase()
       rows = rows.filter(r => r.product_name?.toLowerCase().includes(q))
-      // search overrides other filters
       return rows
+    }
+
+    if (buildableOnly) {
+      rows = rows.filter(r => r.buildable)
+    }
+    if (hideT2) {
+      rows = rows.filter(r => r.tech_level !== 2)
+    }
+    if (!includeUnobtainable) {
+      rows = rows.filter(r => r.bp_available)
     }
 
     const minTrade = minTradeability !== '' ? Number(minTradeability) : null
@@ -210,7 +239,7 @@ export function IndustryPage() {
     }
 
     return rows
-  }, [data, search, minTradeability])
+  }, [data, search, minTradeability, buildableOnly, hideT2, includeUnobtainable])
 
   const sorted = useMemo(() => {
     if (!sortKey || !sortDir) return filtered
@@ -325,6 +354,15 @@ export function IndustryPage() {
       render: r => r.buildable
         ? <span className="text-positive">{'✓'}</span>
         : <span className="text-negative">{'✗'}</span>,
+    },
+    {
+      key: 'train_hours', header: 'Train time', width: '80px', align: 'right',
+      render: r => {
+        if (r.train_hours == null) return <>-</>
+        if (r.train_hours === 0) return <span className="text-positive">Ready</span>
+        const days = r.train_hours / 24
+        return <span className="text-accent-gold">{days >= 1 ? `${fmtNum(days, 1)}d` : `${fmtNum(r.train_hours, 1)}h`}</span>
+      },
     },
     {
       key: 'group_name', header: 'Category', width: '130px', align: 'left',
@@ -528,9 +566,8 @@ export function IndustryPage() {
                 </thead>
                 <tbody>
                   {sorted.map(row => (
-                    <>
+                    <Fragment key={row.blueprint_id}>
                       <tr
-                        key={row.blueprint_id}
                         className={`border-b border-border/50 hover:bg-background-elevated/50 cursor-pointer ${
                           expandedId === row.blueprint_id ? 'bg-background-elevated/40' : ''
                         }`}
@@ -560,7 +597,7 @@ export function IndustryPage() {
                           onClose={() => setExpandedId(null)}
                         />
                       )}
-                    </>
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

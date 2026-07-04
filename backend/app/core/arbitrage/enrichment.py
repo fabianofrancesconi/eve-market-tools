@@ -2,6 +2,8 @@
 from ..shared.constants import ESI, HEADERS, JITA_SYSTEM_ID
 from ..shared.cache import load_json, save_json
 
+_RISK_LABEL = {"high": "SAFE", "low": "LOWSEC", "null": "NULLSEC", "unknown": "?"}
+
 
 def load_lookup_cache(cache_dir):
     raw = load_json(cache_dir / "lookups.json", {})
@@ -179,8 +181,10 @@ def build_shown(results, top, already_enriched, avoid_lowsec, round_trip, route_
                                     session, station_cache, route_cache):
                 continue
         enrich_security([r], session, system_cache)
-        if avoid_lowsec and sec_band(row_risk_sec(r)) != "high":
+        band = sec_band(row_risk_sec(r))
+        if avoid_lowsec and band != "high":
             continue
+        r["risk"] = _RISK_LABEL.get(band, "?")
         shown.append(r)
         if len(shown) >= top:
             break

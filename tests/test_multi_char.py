@@ -292,6 +292,46 @@ class TestCrossCharBlueprintAnnotations:
         assert rows[2]["other_owners"] == []
 
 
+# ── Blueprint-ownership refresh on scan (transfers between alts) ──────────────
+
+class TestBlueprintRefreshOnScan:
+    def test_refreshes_every_linked_character(self, monkeypatch):
+        acct = _acct({1: "A", 2: "B"})
+        calls = []
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints",
+                            lambda a, cid: calls.append(cid))
+        lp_web._refresh_all_blueprints(acct, force=True)
+        assert sorted(calls) == [1, 2]
+
+    def test_throttle_skips_rapid_repeat(self, monkeypatch):
+        acct = _acct({1: "A"})
+        calls = []
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints",
+                            lambda a, cid: calls.append(cid))
+        lp_web._refresh_all_blueprints(acct, force=True)    # sets bp_refreshed_at
+        lp_web._refresh_all_blueprints(acct, force=False)   # within interval → skip
+        assert calls == [1]
+
+    def test_force_bypasses_throttle(self, monkeypatch):
+        acct = _acct({1: "A"})
+        calls = []
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints",
+                            lambda a, cid: calls.append(cid))
+        lp_web._refresh_all_blueprints(acct, force=True)
+        lp_web._refresh_all_blueprints(acct, force=True)    # forced → refreshes again
+        assert calls == [1, 1]
+
+    def test_throttle_expires(self, monkeypatch):
+        acct = _acct({1: "A"})
+        calls = []
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints",
+                            lambda a, cid: calls.append(cid))
+        lp_web._refresh_all_blueprints(acct, force=False)
+        acct.bp_refreshed_at -= (lp_web._BP_REFRESH_MIN_INTERVAL + 1)
+        lp_web._refresh_all_blueprints(acct, force=False)   # interval elapsed → refresh
+        assert calls == [1, 1]
+
+
 # ── Combined char data output ─────────────────────────────────────────────────
 
 class TestCombinedCharData:

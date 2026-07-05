@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.85.0"
+__version__ = "1.86.0"
 
 import argparse
 import base64
@@ -117,6 +117,7 @@ class Account:
         # runtime-only caches (refetched from ESI; never persisted)
         self.skill_profiles: dict = {}          # cid -> {skill_id: level}
         self.bp_me_tes: dict = {}               # cid -> {type_id: (me,te,bpo,runs)}
+        self.bp_refreshed_at = 0.0              # last owned-blueprint refresh (throttle)
         self.lock = threading.RLock()
 
 
@@ -609,6 +610,29 @@ def _refresh_char_blueprints(acct, cid):
         acct.bp_me_tes.setdefault(cid, {})
         if bp_map is not None:
             acct.bp_me_tes[cid] = bp_map
+
+
+_BP_REFRESH_MIN_INTERVAL = 15  # seconds — dedupe the industry tab's preview burst
+
+
+def _refresh_all_blueprints(acct, force=False):
+    """Refresh owned-blueprint ownership for EVERY linked character, in parallel,
+    so a blueprint transferred between alts is reflected on the next scan without
+    a re-login. Throttled (unless forced) so the industry tab's rapid preview
+    scans don't each re-hit ESI. Freshness is ultimately bounded by ESI's own
+    ~1h cache on /characters/{id}/blueprints/."""
+    with acct.lock:
+        if not force and (time.time() - acct.bp_refreshed_at) < _BP_REFRESH_MIN_INTERVAL:
+            return
+        acct.bp_refreshed_at = time.time()
+        char_ids = list(acct.characters.keys())
+    if not char_ids:
+        return
+    if len(char_ids) == 1:
+        _refresh_char_blueprints(acct, char_ids[0])
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(char_ids), 8)) as pool:
+            list(pool.map(lambda c: _refresh_char_blueprints(acct, c), char_ids))
 
 
 def do_auth_login(q):
@@ -1744,6 +1768,12 @@ def do_ind_scan(q, emit=None):
     except (ValueError, TypeError):
         fav_ids = set()
     params = _ind_params(q)
+    # Refresh owned-blueprint ownership across ALL linked characters so transfers
+    # between alts show up here without a re-login. Full (user-initiated) scans
+    # always refresh; the tab's auto-fired preview scans share a short throttle so
+    # they don't triple-hit ESI on tab open.
+    _emit({"type": "progress", "pct": 2, "msg": "Refreshing blueprint ownership…", "sub": ""})
+    _refresh_all_blueprints(acct, force=not (favorites_only or owned_only))
     with acct.lock:
         ind_cid = acct.active_char_id
         ind_skill_profile = dict(acct.skill_profiles.get(ind_cid, {})) if ind_cid else {}

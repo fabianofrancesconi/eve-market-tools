@@ -3540,7 +3540,7 @@ function _renderCharPanel(c){
   h+=`<div class="char-card-header"><h3>Industry jobs (${cJobs.length})</h3></div><div class="char-card-body">`;
   if(cJobs.length){
     h+=`<div class="char-card-scroll"><table class="mini char-jobs-tbl"><thead><tr>`;
-    h+=`<th>Product</th><th>Activity</th><th>System</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>`;
+    h+=`<th>Product</th><th>Activity</th><th>Location</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>`;
     h+=`</tr></thead><tbody>`;
     for(const j of cJobs){
       const end=Date.parse(j.end), rem=end-Date.now();
@@ -3549,7 +3549,7 @@ function _renderCharPanel(c){
         ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
         :`<span class="timer-cell done">✓ Ready</span>`;
       h+=`<tr><td>${authEsc(j.product_name)}</td><td>${authEsc(j.activity)}</td>`
-        +`<td>${authEsc(j.system_name||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
+        +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
     }
     h+=`</tbody></table></div>`;
   } else h+=`<div class="char-none">No active jobs.</div>`;
@@ -3629,7 +3629,7 @@ function _renderAllPanel(chars){
   h+=`<div class="char-card-header"><h3>Industry jobs (${allJobs.length})</h3></div><div class="char-card-body">`;
   if(allJobs.length){
     h+=`<div class="char-card-scroll"><table class="mini char-jobs-tbl"><thead><tr>`;
-    h+=`<th>Character</th><th>Product</th><th>Activity</th><th>System</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>`;
+    h+=`<th>Character</th><th>Product</th><th>Activity</th><th>Location</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>`;
     h+=`</tr></thead><tbody>`;
     for(const j of allJobs){
       const end=Date.parse(j.end), rem=end-Date.now();
@@ -3638,7 +3638,7 @@ function _renderAllPanel(chars){
         ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
         :`<span class="timer-cell done">✓ Ready</span>`;
       h+=`<tr><td>${authEsc(j._char)}</td><td>${authEsc(j.product_name)}</td><td>${authEsc(j.activity)}</td>`
-        +`<td>${authEsc(j.system_name||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
+        +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
     }
     h+=`</tbody></table></div>`;
   } else h+=`<div class="char-none">No active jobs.</div>`;

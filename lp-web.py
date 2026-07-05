@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.87.9"
+__version__ = "1.87.10"
 
 import argparse
 import base64
@@ -59,7 +59,8 @@ from lp_core import (
     fetch_history_volumes,
     fetch_orderbook_jita, fetch_order_rank, fetch_prices, fetch_prices_esi,
     fetch_sell_order_stats, get_offers,
-    load_json, resolve_corp_id, resolve_corp_name, resolve_names, resolve_station_region,
+    load_json, resolve_corp_id, resolve_corp_name, resolve_names,
+    resolve_station_names, resolve_station_region,
     resolve_volumes, save_json, suggested_list_price,
 )
 
@@ -939,13 +940,17 @@ def _fetch_one_char_data_uncached(acct, cid):
     for j in jobs:
         name_ids.add(j.get("blueprint_type_id"))
         name_ids.add(j.get("product_type_id"))
-        name_ids.add(j.get("solar_system_id"))
     for qd in queue:
         name_ids.add(qd.get("skill_id"))
     for o in orders:
         name_ids.add(o.get("type_id"))
     name_ids.discard(None)
     names = resolve_names(list(name_ids), SESSION, CACHE_DIR) if name_ids else {}
+
+    job_station_ids = {j.get("station_id") for j in jobs
+                       if j.get("status") in ("active", "paused", "ready")}
+    job_station_ids.discard(None)
+    station_names = resolve_station_names(list(job_station_ids), SESSION, CACHE_DIR)
 
     runs_tracked = _track_delivered_jobs(acct, cid, jobs, names)
 
@@ -974,7 +979,7 @@ def _fetch_one_char_data_uncached(acct, cid):
             "status": j.get("status"),
             "start": j.get("start_date"),
             "end": j.get("end_date"),
-            "system_name": names.get(j.get("solar_system_id"), "?"),
+            "location": station_names.get(j.get("station_id"), "Structure"),
             "character_name": char_name,
             "character_id": cid,
         })

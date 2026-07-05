@@ -299,6 +299,31 @@ def resolve_station_region(station_id, session, cache_dir):
     return region_id
 
 
+def resolve_station_names(station_ids, session, cache_dir):
+    """station_id -> station name, persistently cached.
+    NPC stations (< 1e9) are resolved via /universe/stations/{id}/.
+    Player structures (>= 1e9) return None (need auth + scope we don't have)."""
+    path = Path(cache_dir) / "station_names.json"
+    cache = {int(k): v for k, v in load_json(path, {}).items()}
+    dirty = False
+    for sid in station_ids:
+        if sid in cache or sid is None:
+            continue
+        if sid >= 1_000_000_000:
+            continue
+        try:
+            r = session.get(f"{ESI}/universe/stations/{sid}/",
+                            headers=HEADERS, timeout=15)
+            r.raise_for_status()
+            cache[sid] = r.json()["name"]
+            dirty = True
+        except (requests.RequestException, KeyError, ValueError):
+            pass
+    if dirty:
+        save_json(path, {str(k): v for k, v in cache.items()})
+    return cache
+
+
 def fetch_order_rank(type_id, side, my_order_id, session, station_id, region_id):
     """1-based queue position of `my_order_id` among open `side` orders for
     `type_id` at `station_id` -- price first, then issued time (EVE's real

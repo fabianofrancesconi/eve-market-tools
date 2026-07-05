@@ -256,7 +256,8 @@ class TestGate:
     def test_public_paths_allowed_without_session(self, pg):
         h = _FakeHandler("")
         h._setup_request()
-        for p in ("/", "/api/auth/login", "/api/auth/status", "/callback", "/favicon.ico"):
+        for p in ("/", "/api/auth/login", "/api/auth/status", "/api/auth/logout",
+                  "/callback", "/favicon.ico"):
             assert h._gate(p) is True
 
     def test_valid_session_passes_gate(self, pg):

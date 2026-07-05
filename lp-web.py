@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.84.0"
+__version__ = "1.85.0"
 
 import argparse
 import base64
@@ -2090,8 +2090,11 @@ _POST_ROUTES = {
 # Session cookie + the endpoints reachable without one (multi-user mode). The app
 # shell and the login handshake must stay public; everything else needs a session.
 _COOKIE_NAME = "emt_sid"
+# /api/auth/logout is public so it always clears the browser cookie, even when
+# the session is already gone/expired (otherwise a stale cookie could never be
+# cleared — the gate would 401 the logout before it ran).
 _PUBLIC_PATHS = ({"/", "/favicon.ico", "/callback", "/api/corps",
-                  "/api/auth/login", "/api/auth/status"} | TAB_ROUTES)
+                  "/api/auth/login", "/api/auth/status", "/api/auth/logout"} | TAB_ROUTES)
 _MAX_BODY = 2 * 1024 * 1024  # reject request bodies larger than 2 MiB
 
 

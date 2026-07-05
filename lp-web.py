@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.87.18"
+__version__ = "1.87.19"
 
 import argparse
 import base64
@@ -1041,7 +1041,9 @@ def _fetch_one_char_data_uncached(acct, cid):
             "character_id": cid,
         })
 
-    _, last_sales = _track_order_changes(acct, cid, orders_out, names)
+    last_sales = {}
+    if not orders_error:
+        _, last_sales = _track_order_changes(acct, cid, orders_out, names)
     for o in orders_out:
         sale = last_sales.get(str(o.get("order_id")))
         if sale:

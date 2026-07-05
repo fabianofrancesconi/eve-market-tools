@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.82.0"
+__version__ = "1.83.0"
 
 import argparse
 import base64
@@ -2054,6 +2054,15 @@ _GET_ROUTES = {
     "/api/char/data": do_char_data,
 }
 
+# Uniform POST endpoints: take the merged query/body params, return a JSON dict.
+# (Routes needing the raw body or the current account stay inline in do_POST.)
+_POST_ROUTES = {
+    "/api/prefs": do_prefs,
+    "/api/arb/prefs": do_arb_prefs,
+    "/api/ind/prefs": do_ind_prefs,
+    "/api/settings/sync": do_settings_sync,
+}
+
 # Session cookie + the endpoints reachable without one (multi-user mode). The app
 # shell and the login handshake must stay public; everything else needs a session.
 _COOKIE_NAME = "emt_sid"
@@ -2301,19 +2310,13 @@ class Handler(BaseHTTPRequestHandler):
                 if tab in ("lp", "ind") and blob:
                     _save_last_scan(current_account(), tab, blob)
                 self._send_json({"ok": True})
-            elif parsed.path == "/api/prefs":
-                self._send_json(do_prefs(q))
-            elif parsed.path == "/api/arb/prefs":
-                self._send_json(do_arb_prefs(q))
-            elif parsed.path == "/api/ind/prefs":
-                self._send_json(do_ind_prefs(q))
-            elif parsed.path == "/api/settings/sync":
-                self._send_json(do_settings_sync(q))
             elif parsed.path == "/api/orders/dismiss":
                 event_id = q.get("id", [""])[0]
                 if event_id:
                     _dismiss_order_event(current_account(), event_id)
                 self._send_json({"ok": True})
+            elif parsed.path in _POST_ROUTES:
+                self._send_json(_POST_ROUTES[parsed.path](q))
             else:
                 self._send_json({"error": "not found"}, 404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):

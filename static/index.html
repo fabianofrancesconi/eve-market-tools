@@ -3500,6 +3500,9 @@ async function refreshCharData(){
   return _charDataInFlight;
 }
 async function _doRefreshCharData(){
+  if(!AUTH.data){
+    $("#char-body").innerHTML=`<div class="init-loading"><div class="init-spinner"></div>Loading…</div>`;
+  }
   let d;
   try{ d=await (await fetch("/api/char/data")).json(); }
   catch(e){ _retryCharDataSoon(); return; }

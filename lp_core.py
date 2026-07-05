@@ -299,17 +299,21 @@ def resolve_station_region(station_id, session, cache_dir):
     return region_id
 
 
+_station_name_errors = {}
+
+
 def resolve_station_names(station_ids, session, cache_dir, token=None):
     """station_id -> station name, persistently cached.
     NPC stations (< 1e9) are resolved via /universe/stations/{id}/.
     Player structures (>= 1e9) are resolved via /universe/structures/{id}/
-    (requires esi-universe.read_structures.v1 + docking access)."""
+    (requires esi-universe.read_structures.v1 + docking access).
+    Errors are cached in-memory only (retried on restart)."""
     path = Path(cache_dir) / "station_names.json"
     raw = load_json(path, {})
     cache = {int(k): v for k, v in raw.items() if not v.startswith("[")}
     dirty = len(cache) < len(raw)
     for sid in station_ids:
-        if sid in cache or sid is None:
+        if sid in cache or sid in _station_name_errors or sid is None:
             continue
         try:
             if sid >= 1_000_000_000:
@@ -326,15 +330,21 @@ def resolve_station_names(station_ids, session, cache_dir, token=None):
             cache[sid] = r.json()["name"]
             dirty = True
         except requests.HTTPError as e:
-            status = e.response.status_code if e.response is not None else None
-            if status == 403:
-                cache[sid] = "Private structure (no docking rights)"
-                dirty = True
+            if e.response is not None:
+                try:
+                    msg = e.response.json().get("error", "")
+                except (ValueError, AttributeError):
+                    msg = ""
+                _station_name_errors[sid] = (
+                    f"Structure ({msg})" if msg
+                    else f"Structure (HTTP {e.response.status_code})")
         except (requests.RequestException, KeyError, ValueError):
             pass
     if dirty:
         save_json(path, {str(k): v for k, v in cache.items()})
-    return cache
+    result = dict(cache)
+    result.update(_station_name_errors)
+    return result
 
 
 def fetch_order_rank(type_id, side, my_order_id, session, station_id, region_id):

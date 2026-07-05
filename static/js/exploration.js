@@ -209,3 +209,31 @@ document.addEventListener("click", (e)=>{
   if(!sidebar){ $("#exp-results").classList.add("hidden"); }
 });
 expRenderRecent();
+
+// Sidebar resize handle
+(function(){
+  const handle = $("#exp-resize-handle");
+  const layout = handle.parentElement;
+  let dragging = false, startX, startW;
+  handle.addEventListener("mousedown", (e)=>{
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startW = layout.querySelector(".exp-sidebar").offsetWidth;
+    handle.classList.add("active");
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  });
+  document.addEventListener("mousemove", (e)=>{
+    if(!dragging) return;
+    const w = Math.max(180, Math.min(600, startW + (e.clientX - startX)));
+    layout.style.gridTemplateColumns = w + "px 6px 1fr";
+  });
+  document.addEventListener("mouseup", ()=>{
+    if(!dragging) return;
+    dragging = false;
+    handle.classList.remove("active");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  });
+})();

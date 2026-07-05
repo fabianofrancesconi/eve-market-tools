@@ -771,11 +771,16 @@
   .notes-tree-item.active { background:var(--panel3); color:var(--cyan); }
   .notes-tree-item .ni-icon { font-size:14px; flex-shrink:0; width:18px; text-align:center; }
   .notes-tree-item .ni-label { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .notes-tree-item .ni-del {
-    opacity:0; font-size:12px; color:var(--dim); cursor:pointer; padding:0 4px;
+  .notes-tree-item .ni-actions {
+    display:flex; gap:2px; opacity:0; margin-left:auto; flex-shrink:0;
   }
-  .notes-tree-item:hover .ni-del { opacity:1; }
-  .notes-tree-item .ni-del:hover { color:var(--red); }
+  .notes-tree-item:hover .ni-actions { opacity:1; }
+  .notes-tree-item .ni-btn {
+    font-size:11px; color:var(--dim); cursor:pointer; padding:1px 4px;
+    border:none; background:none; border-radius:3px; line-height:1;
+  }
+  .notes-tree-item .ni-btn:hover { color:var(--fg); background:var(--panel3); }
+  .notes-tree-item .ni-btn.ni-del:hover { color:var(--red); }
   .notes-tree-item input.ni-inline-edit { flex:1; min-width:0; }
   .notes-tree-children { padding-left:14px; }
   .notes-tree-folder > .notes-tree-item .ni-icon { color:var(--gold); }
@@ -4269,13 +4274,13 @@ function _makeTreeItem(n, depth){
   item.dataset.id=n.id;
   const icon=n.kind==="folder"?"📁":"📄";
   const label=n.title||(n.kind==="folder"?"Untitled folder":"Untitled");
-  item.innerHTML=`<span class="ni-icon">${icon}</span><span class="ni-label">${_esc(label)}</span><span class="ni-del">✕</span>`;
-  item.onclick=e=>{ if(e.target.classList.contains("ni-del")||e.target.tagName==="INPUT") return; selectNote(n.id); };
+  item.innerHTML=`<span class="ni-icon">${icon}</span><span class="ni-label">${_esc(label)}</span><span class="ni-actions"><button class="ni-btn ni-rename" title="Rename">✎</button><button class="ni-btn ni-del" title="Delete">✕</button></span>`;
+  item.onclick=e=>{
+    if(e.target.closest(".ni-actions")||e.target.tagName==="INPUT") return;
+    selectNote(n.id);
+  };
+  item.querySelector(".ni-rename").onclick=e=>{ e.stopPropagation(); _inlineEditLabel(item, n); };
   item.querySelector(".ni-del").onclick=e=>{ e.stopPropagation(); deleteNote(n.id); };
-  item.addEventListener("dblclick", e=>{
-    if(e.target.tagName==="INPUT") return;
-    _inlineEditLabel(item, n);
-  });
   item.addEventListener("dragstart", e=>{
     NOTES.dragId=n.id;
     e.dataTransfer.effectAllowed="move";

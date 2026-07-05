@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.87.15"
+__version__ = "1.87.16"
 
 import argparse
 import base64
@@ -981,8 +981,6 @@ def _fetch_one_char_data_uncached(acct, cid):
             "start": j.get("start_date"),
             "end": j.get("end_date"),
             "location": station_names.get(j.get("facility_id"), "Structure"),
-            "facility_id": j.get("facility_id"),
-            "station_id": j.get("station_id"),
             "character_name": char_name,
             "character_id": cid,
         })

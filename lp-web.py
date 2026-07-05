@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.86.0"
+__version__ = "1.87.0"
 
 import argparse
 import base64
@@ -2085,12 +2085,48 @@ def do_ind_bpo_search(q):
                           "jumps": jumps}}
 
 
+# ── Notes API ──────────────────────────────────────────────────────────────
+
+def do_notes_list(q):
+    acct = current_account()
+    if not acct or not pg_store.enabled():
+        return {"notes": []}
+    return {"notes": pg_store.notes_list(acct.account_id)}
+
+
+def do_notes_save(q):
+    acct = current_account()
+    if not acct or not pg_store.enabled():
+        return {"error": "not available"}
+    note_id = q.get("id", [""])[0]
+    parent_id = q.get("parent_id", [None])[0] or None
+    kind = q.get("kind", ["note"])[0]
+    title = q.get("title", [""])[0]
+    body = q.get("body", [""])[0]
+    pos = int(q.get("pos", ["0"])[0])
+    if not note_id:
+        return {"error": "missing id"}
+    ts = pg_store.notes_upsert(acct.account_id, note_id, parent_id, kind, title, body, pos)
+    return {"ok": True, "updated_at": ts}
+
+
+def do_notes_delete(q):
+    acct = current_account()
+    if not acct or not pg_store.enabled():
+        return {"error": "not available"}
+    note_id = q.get("id", [""])[0]
+    if not note_id:
+        return {"error": "missing id"}
+    pg_store.notes_delete(acct.account_id, note_id)
+    return {"ok": True}
+
+
 # ── HTTP handler ────────────────────────────────────────────────────────────
 
 # Clean URLs the SPA uses for each tab — all serve the app shell so a refresh
 # or bookmark on any module reloads straight back into it.
 TAB_ROUTES = {"/lp", "/arbitrage", "/arb", "/industry", "/ind",
-              "/character", "/char"}
+              "/character", "/char", "/notes"}
 
 _GET_ROUTES = {
     "/api/corps": lambda q: get_npc_corps(),
@@ -2104,6 +2140,7 @@ _GET_ROUTES = {
     "/api/auth/login": do_auth_login,
     "/api/auth/switch": do_auth_switch,
     "/api/char/data": do_char_data,
+    "/api/notes": do_notes_list,
     # /api/auth/status and /api/auth/logout are handled explicitly in do_GET so
     # they can refresh / clear the session cookie.
 }
@@ -2115,6 +2152,8 @@ _POST_ROUTES = {
     "/api/arb/prefs": do_arb_prefs,
     "/api/ind/prefs": do_ind_prefs,
     "/api/settings/sync": do_settings_sync,
+    "/api/notes/save": do_notes_save,
+    "/api/notes/delete": do_notes_delete,
 }
 
 # Session cookie + the endpoints reachable without one (multi-user mode). The app

@@ -89,6 +89,7 @@
   }
   .tab:hover { color:var(--fg); }
   .tab.active { color:var(--cyan); border-bottom-color:var(--cyan2); }
+  .tab-right { margin-left:auto; }
 
   /* ── EVE login (header right) ─────────────────────────────────────── */
   #auth-region { margin-left:auto; display:flex; align-items:center; gap:8px; position:relative; }
@@ -744,6 +745,65 @@
   .ind-chip .chip-count { opacity:.55; font-weight:400; font-size:11px; }
   .ind-hide-btn { cursor:pointer; color:var(--dim); font-size:11px; padding:0 3px; opacity:.5; transition:opacity .12s; }
   .ind-hide-btn:hover { opacity:1; color:var(--orange,#e8a040); }
+
+  /* ── Notes tab ───────────────────────────────────────────────────── */
+  #notes-tablewrap { display:flex; height:100%; overflow:hidden; }
+  .notes-sidebar {
+    width:240px; min-width:180px; border-right:1px solid var(--line);
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  .notes-sidebar-hdr {
+    padding:10px 12px; display:flex; align-items:center; gap:6px;
+    border-bottom:1px solid var(--line); flex-shrink:0;
+  }
+  .notes-sidebar-hdr button {
+    background:var(--panel3); border:1px solid var(--line2); color:var(--fg);
+    font-size:12px; border-radius:4px; padding:3px 8px; cursor:pointer;
+  }
+  .notes-sidebar-hdr button:hover { border-color:var(--cyan2); color:var(--cyan); }
+  .notes-tree { flex:1; overflow-y:auto; padding:6px 0; }
+  .notes-tree-item {
+    display:flex; align-items:center; gap:4px; padding:4px 10px; cursor:pointer;
+    font-size:13px; color:var(--fg); border-radius:4px; margin:1px 6px;
+    transition:background .1s;
+  }
+  .notes-tree-item:hover { background:var(--panel2); }
+  .notes-tree-item.active { background:var(--panel3); color:var(--cyan); }
+  .notes-tree-item .ni-icon { font-size:14px; flex-shrink:0; width:18px; text-align:center; }
+  .notes-tree-item .ni-label { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .notes-tree-item .ni-del {
+    opacity:0; font-size:12px; color:var(--dim); cursor:pointer; padding:0 4px;
+  }
+  .notes-tree-item:hover .ni-del { opacity:1; }
+  .notes-tree-item .ni-del:hover { color:var(--red); }
+  .notes-tree-children { padding-left:14px; }
+  .notes-tree-folder > .notes-tree-item .ni-icon { color:var(--gold); }
+  .notes-editor {
+    flex:1; display:flex; flex-direction:column; overflow:hidden;
+  }
+  .notes-editor-hdr {
+    padding:10px 14px; border-bottom:1px solid var(--line); flex-shrink:0;
+  }
+  .notes-editor-hdr input {
+    width:100%; background:transparent; border:none; color:var(--fg);
+    font:inherit; font-size:16px; font-weight:600; outline:none;
+  }
+  .notes-editor-hdr input::placeholder { color:var(--dim2); }
+  .notes-editor-body {
+    flex:1; padding:14px; overflow-y:auto;
+  }
+  .notes-editor-body textarea {
+    width:100%; height:100%; background:transparent; border:none; color:var(--fg);
+    font:14px/1.6 "Segoe UI",system-ui,sans-serif; resize:none; outline:none;
+  }
+  .notes-editor-body textarea::placeholder { color:var(--dim2); }
+  .notes-empty {
+    flex:1; display:flex; align-items:center; justify-content:center;
+    color:var(--dim); font-size:14px;
+  }
+  .notes-tree-children.drag-over, .notes-tree.drag-over {
+    background:rgba(79,195,247,.06); border-radius:4px;
+  }
 </style>
 </head>
 <body>
@@ -756,6 +816,7 @@
     <button class="tab" data-tab="ind">Industry</button>
     <button class="tab hidden" id="char-tab-btn" data-tab="char">Overview</button>
   </nav>
+  <button class="tab tab-right" data-tab="notes">Notes</button>
   <div id="auth-region">
     <button id="login-eve" class="auth-btn" data-tip="Log in with your EVE Online account to load your skills, wallet, loyalty points and running industry jobs.">Log in with EVE</button>
     <div id="char-chip" class="hidden" data-tip="Click to open the Overview tab. Click ▾ to manage characters.">
@@ -977,6 +1038,19 @@
       <button id="char-login-btn" class="auth-btn primary-btn">Log in with EVE</button>
     </div>
     <div id="char-body" class="hidden"></div>
+  </div>
+  <!-- Notes tab -->
+  <div id="notes-tablewrap" class="tablewrap hidden">
+    <div class="notes-sidebar">
+      <div class="notes-sidebar-hdr">
+        <button id="notes-add-folder" data-tip="New folder">+ Folder</button>
+        <button id="notes-add-note" data-tip="New note">+ Note</button>
+      </div>
+      <div class="notes-tree" id="notes-tree"></div>
+    </div>
+    <div class="notes-editor" id="notes-editor">
+      <div class="notes-empty">Select or create a note</div>
+    </div>
   </div>
   <!-- LP detail panel -->
   <div id="detail"><div class="inner"></div></div>
@@ -1244,9 +1318,10 @@ function saveLS(){
 // ── Tab switching ─────────────────────────────────────────────────────────
 let ACTIVE_TAB = "lp";
 // Each tab has a clean URL so a refresh/bookmark reopens the same module.
-const TAB_PATH = { lp:"/", arb:"/arbitrage", ind:"/industry", char:"/character" };
+const TAB_PATH = { lp:"/", arb:"/arbitrage", ind:"/industry", char:"/character", notes:"/notes" };
 const PATH_TAB = { "/":"lp", "/lp":"lp", "/arbitrage":"arb", "/arb":"arb",
-                   "/industry":"ind", "/ind":"ind", "/character":"char", "/char":"char" };
+                   "/industry":"ind", "/ind":"ind", "/character":"char", "/char":"char",
+                   "/notes":"notes" };
 function switchTab(tab, opts){
   opts = opts || {};
   ACTIVE_TAB = tab;
@@ -1257,23 +1332,27 @@ function switchTab(tab, opts){
     if(location.pathname !== p) history.pushState({tab}, "", p);
   }
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===tab));
+  $("#global-costs").classList.toggle("hidden", tab==="notes"||tab==="char");
   $("#lp-controls").classList.toggle("hidden", tab!=="lp");
   $("#arb-controls").classList.toggle("hidden", tab!=="arb");
   $("#lp-tablewrap").classList.toggle("hidden", tab!=="lp");
   $("#arb-tablewrap").classList.toggle("hidden", tab!=="arb");
   $("#char-tablewrap").classList.toggle("hidden", tab!=="char");
+  $("#notes-tablewrap").classList.toggle("hidden", tab!=="notes");
   updateIndGate();
   if(tab!=="lp") closeDetail();
   setStatus("");
   document.title = tab==="lp" ? "EVE LP Store Scanner"
                 : tab==="arb" ? "EVE Arbitrage Scanner"
-                : tab==="char" ? "EVE Character Overview" : "EVE Industry Planner";
+                : tab==="char" ? "EVE Character Overview"
+                : tab==="notes" ? "EVE Notes" : "EVE Industry Planner";
   postPrefs('/api/prefs',{active_tab:tab}); saveLS();
   if(tab==="ind" && AUTH.loggedIn){
     if(!IND.groupsLoaded) loadIndGroups();
-    renderIndTable(); renderIndStatus();   // show whatever's loaded (e.g. a favourites preview) immediately
+    renderIndTable(); renderIndStatus();
   }
   if(tab==="char" && AUTH.loggedIn) refreshCharData();
+  if(tab==="notes" && !NOTES.loaded) loadNotes();
 }
 // The Industry planner has no manual ME/TE/skill inputs — it needs a real
 // character's owned blueprints and trained skills, so it's gated behind login
@@ -4065,6 +4144,7 @@ async function loadSettings(){
       // just below; don't re-push history for either.
       if(s.active_tab==="arb") switchTab("arb", {url:false});
       else if(s.active_tab==="ind") switchTab("ind", {url:false});
+      else if(s.active_tab==="notes") switchTab("notes", {url:false});
   }
   // A deep link / refresh on a tab URL wins over the saved pref. "/" is not an
   // explicit choice, so it defers to the pref restored above.
@@ -4100,6 +4180,191 @@ async function loadSettings(){
   // Hide while scrolling/clicking so it never lingers in a stale spot.
   document.addEventListener("scroll",()=>{ if(cur){ cur=null; tip.classList.remove("show"); } }, true);
 })();
+
+// ══════════════════════════════════════════════════════════════════════════
+// NOTES TAB
+// ══════════════════════════════════════════════════════════════════════════
+const NOTES = { items:[], loaded:false, active:null, saveTimer:null, dragId:null };
+const NOTES_MAX_DEPTH = 3;
+
+function _uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+
+function _noteDepth(id){
+  let depth=0, cur=NOTES.items.find(x=>x.id===id);
+  while(cur && cur.parent_id){ depth++; cur=NOTES.items.find(x=>x.id===cur.parent_id); }
+  return depth;
+}
+
+function _subtreeMaxDepth(id){
+  let max=0;
+  function walk(pid, d){ NOTES.items.filter(n=>n.parent_id===pid).forEach(n=>{ if(d>max) max=d; if(n.kind==="folder") walk(n.id,d+1); }); }
+  walk(id, 1);
+  return max;
+}
+
+async function loadNotes(){
+  try{
+    const r=await fetch("/api/notes"); const d=await r.json();
+    NOTES.items=d.notes||[]; NOTES.loaded=true; renderNotesTree();
+  }catch(e){ console.error("notes load",e); }
+}
+
+function renderNotesTree(){
+  const tree=$("#notes-tree");
+  tree.innerHTML="";
+  const byParent={};
+  NOTES.items.forEach(n=>{ const p=n.parent_id||"__root__"; (byParent[p]=byParent[p]||[]).push(n); });
+  function build(parentId, container, depth){
+    const children=byParent[parentId]||[];
+    children.sort((a,b)=>a.pos-b.pos);
+    children.forEach(n=>{
+      if(n.kind==="folder"){
+        const wrap=document.createElement("div");
+        wrap.className="notes-tree-folder";
+        wrap.dataset.id=n.id;
+        const item=_makeTreeItem(n, depth);
+        wrap.appendChild(item);
+        const sub=document.createElement("div");
+        sub.className="notes-tree-children";
+        sub.dataset.folderId=n.id;
+        sub.addEventListener("dragover", _onDragOver);
+        sub.addEventListener("drop", e=>_onDrop(e, n.id));
+        build(n.id, sub, depth+1);
+        wrap.appendChild(sub);
+        container.appendChild(wrap);
+      } else {
+        const item=_makeTreeItem(n, depth);
+        container.appendChild(item);
+      }
+    });
+  }
+  tree.dataset.folderId="__root__";
+  tree.addEventListener("dragover", _onDragOver);
+  tree.addEventListener("drop", e=>_onDrop(e, null));
+  build("__root__", tree, 0);
+}
+
+function _makeTreeItem(n, depth){
+  const item=document.createElement("div");
+  item.className="notes-tree-item"+(NOTES.active===n.id?" active":"");
+  item.draggable=true;
+  item.dataset.id=n.id;
+  const icon=n.kind==="folder"?"📁":"📄";
+  const label=n.title||(n.kind==="folder"?"Untitled folder":"Untitled");
+  item.innerHTML=`<span class="ni-icon">${icon}</span><span class="ni-label">${_esc(label)}</span><span class="ni-del">✕</span>`;
+  item.onclick=e=>{ if(!e.target.classList.contains("ni-del")) selectNote(n.id); };
+  item.querySelector(".ni-del").onclick=e=>{ e.stopPropagation(); deleteNote(n.id); };
+  item.addEventListener("dragstart", e=>{
+    NOTES.dragId=n.id;
+    e.dataTransfer.effectAllowed="move";
+    item.style.opacity="0.5";
+  });
+  item.addEventListener("dragend", ()=>{ item.style.opacity=""; NOTES.dragId=null; });
+  return item;
+}
+
+function _onDragOver(e){
+  e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect="move";
+  document.querySelectorAll(".drag-over").forEach(el=>el.classList.remove("drag-over"));
+  e.currentTarget.classList.add("drag-over");
+}
+
+function _onDrop(e, targetFolderId){
+  e.preventDefault(); e.stopPropagation();
+  document.querySelectorAll(".drag-over").forEach(el=>el.classList.remove("drag-over"));
+  const dragId=NOTES.dragId; if(!dragId) return;
+  const dragged=NOTES.items.find(x=>x.id===dragId); if(!dragged) return;
+  if(targetFolderId===dragId) return;
+  // Prevent dropping a folder into its own descendant
+  let check=targetFolderId;
+  while(check){ if(check===dragId) return; const p=NOTES.items.find(x=>x.id===check); check=p?p.parent_id:null; }
+  // Enforce max depth
+  const targetDepth=targetFolderId?_noteDepth(targetFolderId)+1:0;
+  const dragSubDepth=dragged.kind==="folder"?_subtreeMaxDepth(dragId):0;
+  if(targetDepth+dragSubDepth>=NOTES_MAX_DEPTH && dragged.kind==="folder") return;
+  if(targetDepth>=NOTES_MAX_DEPTH) return;
+  // Move
+  dragged.parent_id=targetFolderId||null;
+  dragged.pos=NOTES.items.filter(n=>(n.parent_id||null)===(targetFolderId||null)&&n.id!==dragId).length;
+  renderNotesTree();
+  _persistNote(dragged);
+}
+
+function _esc(s){ const d=document.createElement("span"); d.textContent=s; return d.innerHTML; }
+
+function selectNote(id){
+  NOTES.active=id;
+  renderNotesTree();
+  const n=NOTES.items.find(x=>x.id===id);
+  const ed=$("#notes-editor");
+  if(!n){ ed.innerHTML=`<div class="notes-empty">Select or create a note</div>`; return; }
+  if(n.kind==="folder"){
+    ed.innerHTML=`<div class="notes-editor-hdr"><input id="note-title" placeholder="Folder name…" value="${_esc(n.title)}"></div><div class="notes-empty">Folder — select a note inside, or drag items here</div>`;
+  } else {
+    ed.innerHTML=`<div class="notes-editor-hdr"><input id="note-title" placeholder="Note title…" value="${_esc(n.title)}"></div><div class="notes-editor-body"><textarea id="note-body" placeholder="Write here…">${_esc(n.body)}</textarea></div>`;
+    $("#note-body").oninput=()=>_scheduleNoteSave(id);
+  }
+  $("#note-title").oninput=()=>_scheduleNoteSave(id);
+}
+
+function _scheduleNoteSave(id){
+  if(NOTES.saveTimer) clearTimeout(NOTES.saveTimer);
+  NOTES.saveTimer=setTimeout(()=>_saveActiveNote(id), 600);
+}
+
+function _saveActiveNote(id){
+  const n=NOTES.items.find(x=>x.id===id); if(!n) return;
+  const titleEl=$("#note-title"), bodyEl=$("#note-body");
+  if(titleEl) n.title=titleEl.value;
+  if(bodyEl) n.body=bodyEl.value;
+  renderNotesTree();
+  _persistNote(n);
+}
+
+async function _persistNote(n){
+  try{
+    await fetch("/api/notes/save",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id:n.id, parent_id:n.parent_id, kind:n.kind, title:n.title, body:n.body, pos:String(n.pos)})});
+  }catch(e){ console.error("note save",e); }
+}
+
+async function addNote(kind, parentId){
+  // Enforce depth
+  const parentDepth=parentId?_noteDepth(parentId)+1:0;
+  if(kind==="folder" && parentDepth>=NOTES_MAX_DEPTH-1) return;
+  if(parentDepth>=NOTES_MAX_DEPTH) return;
+  const id=_uid();
+  const pos=NOTES.items.filter(n=>(n.parent_id||null)===(parentId||null)).length;
+  const n={id, parent_id:parentId||null, kind, title:"", body:"", pos, created_at:Date.now()/1000, updated_at:Date.now()/1000};
+  NOTES.items.push(n);
+  selectNote(id);
+  _persistNote(n);
+  const titleEl=$("#note-title"); if(titleEl) titleEl.focus();
+}
+
+async function deleteNote(id){
+  const idsToRemove=new Set([id]);
+  let queue=[id];
+  while(queue.length){ const pid=queue.shift(); NOTES.items.filter(n=>n.parent_id===pid).forEach(n=>{ idsToRemove.add(n.id); queue.push(n.id); }); }
+  NOTES.items=NOTES.items.filter(n=>!idsToRemove.has(n.id));
+  if(idsToRemove.has(NOTES.active)){ NOTES.active=null; $("#notes-editor").innerHTML=`<div class="notes-empty">Select or create a note</div>`; }
+  renderNotesTree();
+  try{
+    await fetch("/api/notes/delete",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id})});
+  }catch(e){ console.error("note del",e); }
+}
+
+$("#notes-add-folder").onclick=()=>{
+  const sel=NOTES.active&&NOTES.items.find(x=>x.id===NOTES.active);
+  const parent=(sel&&sel.kind==="folder")?sel.id:(sel?sel.parent_id:null);
+  addNote("folder", parent);
+};
+$("#notes-add-note").onclick=()=>{
+  const sel=NOTES.active&&NOTES.items.find(x=>x.id===NOTES.active);
+  const parent=(sel&&sel.kind==="folder")?sel.id:(sel?sel.parent_id:null);
+  addNote("note", parent);
+};
 
 loadSettings();
 checkAuth();

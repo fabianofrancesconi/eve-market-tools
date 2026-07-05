@@ -133,6 +133,19 @@ def _ensure_schema(pool):
             "dismissed BOOLEAN NOT NULL DEFAULT FALSE, "
             "data JSONB NOT NULL, "
             "PRIMARY KEY (account_id, event_id))")
+        # ── notes tree (v1.87+) ────────────────────────────────────────────
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mono_notes ("
+            "id TEXT NOT NULL, "
+            "account_id BIGINT NOT NULL, "
+            "parent_id TEXT, "
+            "kind TEXT NOT NULL DEFAULT 'note', "
+            "title TEXT NOT NULL DEFAULT '', "
+            "body TEXT NOT NULL DEFAULT '', "
+            "pos INTEGER NOT NULL DEFAULT 0, "
+            "created_at DOUBLE PRECISION NOT NULL, "
+            "updated_at DOUBLE PRECISION NOT NULL, "
+            "PRIMARY KEY (account_id, id))")
     _schema_ready = True
 
 
@@ -374,3 +387,51 @@ def order_events_dismiss(account_id, event_id):
         else:
             conn.execute("UPDATE mono_order_events SET dismissed=TRUE WHERE "
                          "account_id=%s AND event_id=%s", (account_id, event_id))
+
+
+# ── notes (per-account tree of folders + notes) ────────────────────────────
+
+def notes_list(account_id):
+    """All notes/folders for an account, ordered by position."""
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT id, parent_id, kind, title, body, pos, created_at, updated_at "
+            "FROM mono_notes WHERE account_id=%s ORDER BY pos",
+            (account_id,)).fetchall()
+    return [{"id": r[0], "parent_id": r[1], "kind": r[2], "title": r[3],
+             "body": r[4], "pos": r[5], "created_at": r[6], "updated_at": r[7]}
+            for r in rows]
+
+
+def notes_upsert(account_id, note_id, parent_id, kind, title, body, pos):
+    """Create or update a note/folder."""
+    now = time.time()
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_notes (id, account_id, parent_id, kind, title, body, pos, "
+            "created_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (account_id, id) DO UPDATE SET "
+            "parent_id=EXCLUDED.parent_id, kind=EXCLUDED.kind, title=EXCLUDED.title, "
+            "body=EXCLUDED.body, pos=EXCLUDED.pos, updated_at=EXCLUDED.updated_at",
+            (note_id, account_id, parent_id, kind, title, body, pos, now, now))
+    return now
+
+
+def notes_delete(account_id, note_id):
+    """Delete a note/folder and all its descendants."""
+    with _get_pool().connection() as conn:
+        with conn.transaction():
+            to_delete = [note_id]
+            queue = [note_id]
+            while queue:
+                pid = queue.pop()
+                children = conn.execute(
+                    "SELECT id FROM mono_notes WHERE account_id=%s AND parent_id=%s",
+                    (account_id, pid)).fetchall()
+                for row in children:
+                    to_delete.append(row[0])
+                    queue.append(row[0])
+            for nid in to_delete:
+                conn.execute(
+                    "DELETE FROM mono_notes WHERE account_id=%s AND id=%s",
+                    (account_id, nid))

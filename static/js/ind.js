@@ -63,7 +63,7 @@ function indSetColgroup(){
 }
 
 let IND_RESIZING=false;
-const _IND_RESIZE_CTX={get resizing(){return IND_RESIZING;},set resizing(v){IND_RESIZING=v;},tblSel:'#ind-tbl',get colw(){return IND.colw;},setCg:indSetColgroup,save:saveIndPrefs};
+const _IND_RESIZE_CTX={get resizing(){return IND_RESIZING;},set resizing(v){IND_RESIZING=v;},tblSel:'#ind-tbl',get colw(){return IND.colw;},setCg:indSetColgroup,save(){saveIndPrefs();}};
 function startIndResize(e,key){ startResize(e,key,_IND_RESIZE_CTX); }
 
 // ── Industry column drag-to-reorder (mirrors the LP store) ─────────────────

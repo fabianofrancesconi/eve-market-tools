@@ -328,10 +328,14 @@ def resolve_station_names(station_ids, session, cache_dir, token=None):
             cache[sid] = r.json()["name"]
             dirty = True
         except requests.HTTPError as e:
-            log.warning("resolve_station_names: HTTP %s for facility %s",
-                        e.response.status_code if e.response is not None else "?", sid)
+            status = e.response.status_code if e.response is not None else "?"
+            log.warning("resolve_station_names: HTTP %s for facility %s", status, sid)
+            cache[sid] = f"[ESI {status}]"
+            dirty = True
         except (requests.RequestException, KeyError, ValueError) as e:
             log.warning("resolve_station_names: %s for facility %s", e, sid)
+            cache[sid] = f"[err: {type(e).__name__}]"
+            dirty = True
     if dirty:
         save_json(path, {str(k): v for k, v in cache.items()})
     return cache

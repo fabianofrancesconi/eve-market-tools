@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.87.8"
+__version__ = "1.87.9"
 
 import argparse
 import base64
@@ -939,6 +939,7 @@ def _fetch_one_char_data_uncached(acct, cid):
     for j in jobs:
         name_ids.add(j.get("blueprint_type_id"))
         name_ids.add(j.get("product_type_id"))
+        name_ids.add(j.get("solar_system_id"))
     for qd in queue:
         name_ids.add(qd.get("skill_id"))
     for o in orders:
@@ -973,6 +974,7 @@ def _fetch_one_char_data_uncached(acct, cid):
             "status": j.get("status"),
             "start": j.get("start_date"),
             "end": j.get("end_date"),
+            "system_name": names.get(j.get("solar_system_id"), "?"),
             "character_name": char_name,
             "character_id": cid,
         })

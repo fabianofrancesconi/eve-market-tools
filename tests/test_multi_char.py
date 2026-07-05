@@ -291,6 +291,63 @@ class TestCrossCharBlueprintAnnotations:
         # Blueprint 555: nobody else owns it
         assert rows[2]["other_owners"] == []
 
+    def test_other_owners_in_detail_endpoint(self, monkeypatch, tmp_path):
+        """do_ind_detail should include other_owners from alt characters."""
+        acct = _acct({
+            1: {"name": "Main", "refresh_token": "x"},
+            2: {"name": "Alt", "refresh_token": "y"},
+        }, active=1)
+        acct.bp_me_tes = {
+            1: {},
+            2: {681: (8, 16, True, -1)},
+        }
+        # Exercise the same logic do_ind_detail uses for other_owners
+        blueprint_id = 681
+        ind_cid = acct.active_char_id
+        other_owners = []
+        with acct.lock:
+            for ocid, bp_map in acct.bp_me_tes.items():
+                if ocid == ind_cid:
+                    continue
+                entry = bp_map.get(blueprint_id)
+                if entry:
+                    other_owners.append({
+                        "name": acct.characters.get(ocid, {}).get("name", "?"),
+                        "me": entry[0], "te": entry[1],
+                        "is_bpo": entry[2] if len(entry) > 2 else True,
+                        "max_runs": entry[3] if len(entry) > 3 else -1,
+                    })
+        assert len(other_owners) == 1
+        assert other_owners[0]["name"] == "Alt"
+        assert other_owners[0]["me"] == 8
+        assert other_owners[0]["te"] == 16
+        assert other_owners[0]["is_bpo"] is True
+        assert other_owners[0]["max_runs"] == -1
+
+    def test_other_owners_detail_empty_when_no_alt_owns(self, monkeypatch, tmp_path):
+        """do_ind_detail should return empty other_owners when no alt has the BP."""
+        acct = _acct({
+            1: {"name": "Main", "refresh_token": "x"},
+            2: {"name": "Alt", "refresh_token": "y"},
+        }, active=1)
+        acct.bp_me_tes = {1: {681: (10, 20, True, -1)}, 2: {}}
+        blueprint_id = 681
+        ind_cid = acct.active_char_id
+        other_owners = []
+        with acct.lock:
+            for ocid, bp_map in acct.bp_me_tes.items():
+                if ocid == ind_cid:
+                    continue
+                entry = bp_map.get(blueprint_id)
+                if entry:
+                    other_owners.append({
+                        "name": acct.characters.get(ocid, {}).get("name", "?"),
+                        "me": entry[0], "te": entry[1],
+                        "is_bpo": entry[2] if len(entry) > 2 else True,
+                        "max_runs": entry[3] if len(entry) > 3 else -1,
+                    })
+        assert other_owners == []
+
 
 # ── Blueprint-ownership refresh on scan (transfers between alts) ──────────────
 

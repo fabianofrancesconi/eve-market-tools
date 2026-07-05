@@ -252,6 +252,7 @@
   .ind-balance-btn.on { background:var(--accent); color:#fff; border-color:var(--accent2); }
   .ind-group-sub { display:block; font-size:10px; color:var(--dim2); line-height:1.2; margin-top:1px; }
   .ind-yours { color:#6ecf6e; font-weight:600; margin-left:8px; }
+  .ind-alt-owns { color:#a0cfee; font-weight:600; margin-left:8px; }
   .ind-not-yours { color:var(--dim2); margin-left:8px; }
 
   .global-costs {
@@ -3219,7 +3220,9 @@ function renderIndDetail(d, container){
       <span>ME / TE used</span><b>${d.me_used} / ${d.te_used}</b>
       <span>Ownership</span><b>${d.owned_me_te
           ? `<span class="ind-yours">✓ You own this blueprint${isBpo?" (Original — infinite runs)":" (Copy)"}</span>`
-          : `<span class="ind-not-yours">✗ Not in your blueprints</span>`}</b>
+          : (d.other_owners&&d.other_owners.length
+            ? `<span class="ind-alt-owns">✓ Owned by ${d.other_owners.map(o=>`${o.name} (${o.is_bpo?"BPO":"BPC"}${o.is_bpo?"":", "+o.max_runs+" runs"} · ME ${o.me} / TE ${o.te})`).join(", ")}</span>`
+            : `<span class="ind-not-yours">✗ Not in your blueprints</span>`)}</b>
       <span>Blueprint payback</span><b>${payback}</b>
       <span>Tradeability</span><b>${d.tradeability==null?"—":d.tradeability+" / 100"}${d.daily_units!=null?` (${fmtNum(d.daily_units)} units/day)`:""}</b>
     </div>

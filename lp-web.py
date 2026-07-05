@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.87.19"
+__version__ = "1.87.20"
 
 import argparse
 import base64
@@ -2049,6 +2049,21 @@ def do_ind_detail(q):
                               "is_bpo": owned_me_te[2] if len(owned_me_te) > 2 else True,
                               "max_runs": owned_me_te[3] if len(owned_me_te) > 3 else -1}
                              if owned_me_te else None)
+    # Cross-character ownership: show if any other linked char owns this BPO/BPC
+    other_owners = []
+    with acct.lock:
+        for ocid, bp_map in acct.bp_me_tes.items():
+            if ocid == ind_cid:
+                continue
+            entry = bp_map.get(blueprint_id)
+            if entry:
+                other_owners.append({
+                    "name": acct.characters.get(ocid, {}).get("name", "?"),
+                    "me": entry[0], "te": entry[1],
+                    "is_bpo": entry[2] if len(entry) > 2 else True,
+                    "max_runs": entry[3] if len(entry) > 3 else -1,
+                })
+    detail["other_owners"] = other_owners
     # Tradeability for this product (daily units traded, ~30d median).
     dv = fetch_history_volumes([bp["product_id"]],
                                TRADE_HUBS[station_id]["region_id"],

@@ -146,6 +146,14 @@ def _ensure_schema(pool):
             "created_at DOUBLE PRECISION NOT NULL, "
             "updated_at DOUBLE PRECISION NOT NULL, "
             "PRIMARY KEY (account_id, id))")
+        # ── wallet history (v1.88+) ───────────────────────────────────────
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mono_wallet_history ("
+            "account_id BIGINT NOT NULL, "
+            "character_id BIGINT NOT NULL, "
+            "ts DOUBLE PRECISION NOT NULL, "
+            "balance DOUBLE PRECISION NOT NULL, "
+            "PRIMARY KEY (account_id, character_id, ts))")
     _schema_ready = True
 
 
@@ -435,3 +443,37 @@ def notes_delete(account_id, note_id):
                 conn.execute(
                     "DELETE FROM mono_notes WHERE account_id=%s AND id=%s",
                     (account_id, nid))
+
+
+# ── wallet history ─────────────────────────────────────────────────────────
+
+def wallet_history_append(account_id, character_id, ts, balance):
+    """Append a wallet snapshot. Ignores duplicates."""
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_wallet_history (account_id, character_id, ts, balance) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+            (account_id, character_id, ts, balance))
+
+
+def wallet_history_query(account_id, since_ts):
+    """Return {character_id: [(ts, balance), ...]} for all characters since a time."""
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT character_id, ts, balance FROM mono_wallet_history "
+            "WHERE account_id=%s AND ts>=%s ORDER BY ts",
+            (account_id, since_ts)).fetchall()
+    result = {}
+    for cid, ts, bal in rows:
+        result.setdefault(cid, []).append((ts, bal))
+    return result
+
+
+def wallet_history_prune(account_id, max_age_seconds):
+    """Delete points older than max_age_seconds. Returns rows removed."""
+    cutoff = time.time() - max_age_seconds
+    with _get_pool().connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM mono_wallet_history WHERE account_id=%s AND ts<%s",
+            (account_id, cutoff))
+        return cur.rowcount

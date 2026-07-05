@@ -817,7 +817,41 @@
     opacity:0; transition:opacity .25s ease; pointer-events:none; z-index:9000;
   }
   #notes-toast.show { opacity:1; }
+
+  /* ── Wallet history chart ─────────────────────────────────────────── */
+  .wallet-chart-wrap {
+    grid-column: 1 / -1;
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 18px;
+  }
+  .wallet-chart-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .wallet-chart-header h3 { margin:0; border:none; padding:0; font-size:12px;
+    text-transform:uppercase; letter-spacing:.5px; color:var(--dim); }
+  .wallet-chart-range { display:flex; gap:4px; }
+  .wallet-chart-range button {
+    background:var(--panel3); border:1px solid var(--line2);
+    color:var(--dim); font-size:10px; padding:2px 8px;
+    border-radius:4px; cursor:pointer; transition:border-color .15s, color .15s;
+  }
+  .wallet-chart-range button:hover { color:var(--fg); border-color:var(--dim); }
+  .wallet-chart-range button.active { color:var(--cyan); border-color:var(--cyan); }
+  .wallet-chart-stats {
+    font-size:11px; color:var(--dim); margin-top:8px;
+    display:flex; flex-wrap:wrap; gap:12px;
+  }
+  .wallet-chart-stats .k { margin-right:4px; }
+  .wallet-chart-stats .v { color:var(--fg); font-weight:600; }
+  .wallet-chart-none {
+    color:var(--dim); font-size:12px; text-align:center; padding:30px 0;
+  }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/apexcharts@3/dist/apexcharts.min.js"></script>
 </head>
 <body>
 
@@ -3512,6 +3546,7 @@ async function _doRefreshCharData(){
   if(d.error){ setStatus(authEsc(d.error), true); _retryCharDataSoon(); return; }
   charRetryCount = 0;
   AUTH.data=d;
+  _walletHistoryCache=null;
   // Auto-fill sales tax from Accounting skill: base 7.5% × (1 − 0.11 × level)
   if(d.accounting_level!=null){
     const tax=7.5*(1-0.11*d.accounting_level);
@@ -3543,6 +3578,18 @@ function _renderCharPanel(c){
   const cOrdersError=c.market_orders_error;
   const ordersVal=cOrders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0),0);
   let h=`<div class="char-grid">`;
+
+  // Wallet history chart
+  h+=`<div class="wallet-chart-wrap">`;
+  h+=`<div class="wallet-chart-header"><h3>Wallet Balance</h3>`;
+  h+=`<div class="wallet-chart-range">`;
+  h+=`<button class="wcr-btn${_walletChartDays===7?' active':''}" data-days="7">7d</button>`;
+  h+=`<button class="wcr-btn${_walletChartDays===30?' active':''}" data-days="30">30d</button>`;
+  h+=`<button class="wcr-btn${_walletChartDays===90?' active':''}" data-days="90">90d</button>`;
+  h+=`</div></div>`;
+  h+=`<div id="walletChartContainer" style="min-height:200px"></div>`;
+  h+=`<div class="wallet-chart-stats" id="walletChartStats"></div>`;
+  h+=`</div>`;
 
   // Industry jobs
   h+=`<section class="char-card${cJobs.length>3?' char-card-wide':''}">`;
@@ -3633,6 +3680,18 @@ function _renderAllPanel(chars){
   const ordersVal=allOrders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0),0);
   let h=`<div class="char-grid">`;
 
+  // Wallet history chart
+  h+=`<div class="wallet-chart-wrap">`;
+  h+=`<div class="wallet-chart-header"><h3>Wallet Balance</h3>`;
+  h+=`<div class="wallet-chart-range">`;
+  h+=`<button class="wcr-btn${_walletChartDays===7?' active':''}" data-days="7">7d</button>`;
+  h+=`<button class="wcr-btn${_walletChartDays===30?' active':''}" data-days="30">30d</button>`;
+  h+=`<button class="wcr-btn${_walletChartDays===90?' active':''}" data-days="90">90d</button>`;
+  h+=`</div></div>`;
+  h+=`<div id="walletChartContainer" style="min-height:200px"></div>`;
+  h+=`<div class="wallet-chart-stats" id="walletChartStats"></div>`;
+  h+=`</div>`;
+
   // Industry jobs — unified with character name
   h+=`<section class="char-card${allJobs.length>3?' char-card-wide':''}">`;
   h+=`<div class="char-card-header"><h3>Industry jobs (${allJobs.length})</h3></div><div class="char-card-body">`;
@@ -3701,6 +3760,125 @@ function _renderAllPanel(chars){
 
   h+=`</div>`;
   return h;
+}
+
+// ── Wallet History Chart ────────────────────────────────────────────────
+let _walletChart=null;
+let _walletHistoryCache=null;
+let _walletChartDays=30;
+
+async function _loadWalletHistory(days){
+  try{
+    const r=await fetch(`/api/char/wallet-history?days=${days}`);
+    const d=await r.json();
+    if(d.error) return null;
+    return d.series;
+  }catch{ return null; }
+}
+
+function _combinedWalletSeries(series){
+  const allPts=[];
+  for(const cid of Object.keys(series)){
+    for(const [ts,bal] of (series[cid].data||[]))
+      allPts.push({ts,cid,bal});
+  }
+  if(!allPts.length) return [];
+  allPts.sort((a,b)=>a.ts-b.ts);
+  const last={};
+  const combined=[];
+  for(const p of allPts){
+    last[p.cid]=p.bal;
+    combined.push([p.ts, Object.values(last).reduce((s,v)=>s+v,0)]);
+  }
+  return combined;
+}
+
+function _walletChartStats(series, charId){
+  let points;
+  if(charId){
+    points=(series[charId]&&series[charId].data)||[];
+  } else {
+    points=_combinedWalletSeries(series);
+  }
+  if(!points.length) return '';
+  const vals=points.map(p=>p[1]);
+  const min=Math.min(...vals), max=Math.max(...vals);
+  const avg=vals.reduce((s,v)=>s+v,0)/vals.length;
+  const change=vals[vals.length-1]-vals[0];
+  const pct=vals[0]?(change/vals[0]*100):0;
+  const col=change>=0?'var(--green2)':'var(--red)';
+  return `<span><span class="k">Min</span><span class="v">${fmtISK(min)}</span></span>`
+    +`<span><span class="k">Max</span><span class="v">${fmtISK(max)}</span></span>`
+    +`<span><span class="k">Avg</span><span class="v">${fmtISK(avg)}</span></span>`
+    +`<span><span class="k">Change</span><span class="v" style="color:${col}">${change>=0?'+':''}${fmtISK(change)} (${pct>=0?'+':''}${pct.toFixed(1)}%)</span></span>`;
+}
+
+async function renderWalletChart(charId){
+  const container=document.getElementById('walletChartContainer');
+  if(!container) return;
+  if(typeof ApexCharts==='undefined'){
+    container.innerHTML='<div class="wallet-chart-none">Chart unavailable (no internet)</div>';
+    return;
+  }
+  if(!_walletHistoryCache){
+    container.innerHTML='<div class="wallet-chart-none">Loading…</div>';
+    _walletHistoryCache=await _loadWalletHistory(_walletChartDays);
+  }
+  if(!_walletHistoryCache||!Object.keys(_walletHistoryCache).length){
+    container.innerHTML='<div class="wallet-chart-none">No wallet history yet. Data will appear after the next refresh cycle.</div>';
+    return;
+  }
+
+  let apexSeries=[];
+  if(charId){
+    const s=_walletHistoryCache[charId];
+    if(s&&s.data.length)
+      apexSeries=[{name:s.name, data:s.data.map(([ts,v])=>[ts*1000,v])}];
+  } else {
+    const combined=_combinedWalletSeries(_walletHistoryCache);
+    if(combined.length)
+      apexSeries.push({name:'Combined', data:combined.map(([ts,v])=>[ts*1000,v])});
+    for(const cid of Object.keys(_walletHistoryCache)){
+      const s=_walletHistoryCache[cid];
+      if(s.data.length)
+        apexSeries.push({name:s.name, data:s.data.map(([ts,v])=>[ts*1000,v])});
+    }
+  }
+  if(!apexSeries.length){
+    container.innerHTML='<div class="wallet-chart-none">No wallet history for this character yet.</div>';
+    return;
+  }
+
+  if(_walletChart){_walletChart.destroy();_walletChart=null;}
+  container.innerHTML='';
+
+  const opts={
+    chart:{
+      type:'area', height:200,
+      background:'transparent',
+      toolbar:{show:true, tools:{zoom:true,zoomin:true,zoomout:true,pan:true,reset:true,download:false}},
+      zoom:{enabled:true,type:'x'},
+      animations:{enabled:true,easing:'easeinout',speed:400},
+      fontFamily:'inherit',
+    },
+    theme:{mode:'dark'},
+    colors:charId?['#4fc3f7']:['#4fc3f7','#66bb6a','#f0c040','#e05555','#ab47bc'],
+    series:apexSeries,
+    xaxis:{type:'datetime',labels:{style:{colors:'#5a7a95',fontSize:'10px'}}},
+    yaxis:{labels:{style:{colors:'#5a7a95',fontSize:'10px'},formatter:v=>fmtISK(v)}},
+    stroke:{curve:'smooth',width:charId?2:[3,1.5,1.5,1.5,1.5]},
+    fill:{type:'gradient',gradient:{opacityFrom:0.25,opacityTo:0.02}},
+    tooltip:{theme:'dark',x:{format:'dd MMM HH:mm'},y:{formatter:v=>fmtISK(v)+' ISK'}},
+    grid:{borderColor:'#1f3044',strokeDashArray:3},
+    legend:{show:apexSeries.length>1,position:'top',fontSize:'11px',
+      labels:{colors:'#c8d8e8'},markers:{size:4}},
+    dataLabels:{enabled:false},
+  };
+  _walletChart=new ApexCharts(container,opts);
+  _walletChart.render();
+
+  const statsEl=document.getElementById('walletChartStats');
+  if(statsEl) statsEl.innerHTML=_walletChartStats(_walletHistoryCache,charId);
 }
 
 function renderCharData(){
@@ -3775,6 +3953,21 @@ function renderCharData(){
       if(eid==="all") d.order_events=[];
       else d.order_events=(d.order_events||[]).filter(e=>e.id!==eid);
       renderCharData();
+    };
+  });
+
+  // Wallet chart
+  const activeCharId=(!multiChar||_charTabIdx===0)?null:String(chars[_charTabIdx-1]?.character_id||'');
+  renderWalletChart(activeCharId||null);
+
+  // Wire range buttons
+  document.querySelectorAll('.wcr-btn').forEach(btn=>{
+    btn.onclick=async()=>{
+      _walletChartDays=parseInt(btn.dataset.days);
+      _walletHistoryCache=null;
+      document.querySelectorAll('.wcr-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      await renderWalletChart(activeCharId||null);
     };
   });
 }

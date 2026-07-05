@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.87.20"
+__version__ = "1.88.0"
 
 import argparse
 import base64
@@ -87,6 +87,7 @@ ARB_SETTINGS_PATH = CACHE_DIR / "arb_settings.json"
 IND_SETTINGS_PATH = CACHE_DIR / "ind_settings.json"
 JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-run counter
 ORDER_EVENTS_PATH = CACHE_DIR / "order_events.json"  # market order sale/fill events
+WALLET_HISTORY_PATH = CACHE_DIR / "wallet_history.json"  # ISK balance time-series
 USER_SETTINGS_DB_PATH = CACHE_DIR / "user_settings.sqlite"  # per-character synced settings
 LP_LAST_SCAN_PATH = CACHE_DIR / "lp_last_scan.json"
 IND_LAST_SCAN_PATH = CACHE_DIR / "ind_last_scan.json"
@@ -533,6 +534,31 @@ def _sweep_loop(interval=3600):
             pass
 
 
+_BG_REFRESH_INTERVAL = 300  # 5 minutes
+
+
+def _bg_char_refresh_loop():
+    """Background loop: periodically refresh all active accounts' ESI data
+    so wallet history accumulates even when no browser is open."""
+    time.sleep(30)
+    while True:
+        try:
+            accounts = list(_ACCOUNTS.values())
+            for acct in accounts:
+                with acct.lock:
+                    char_ids = list(acct.characters.keys())
+                if not char_ids:
+                    continue
+                for cid in char_ids:
+                    try:
+                        _fetch_one_char_data(acct, cid)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        time.sleep(_BG_REFRESH_INTERVAL)
+
+
 def _warn_if_multi_replica():
     """This monolith caches sessions/accounts in-process and serializes token
     refresh per-process, so it must run as a single replica. Warn loudly if the
@@ -792,6 +818,64 @@ def _track_delivered_jobs(acct, cid, jobs, names):
         return result
 
 
+_WALLET_RECORD_LOCK = threading.Lock()
+_WALLET_LAST_RECORDED = {}
+_WALLET_PRUNE_LAST = 0.0
+
+
+def _record_wallet_snapshot(acct, cid, balance):
+    """Record a wallet balance data point for the given character."""
+    if balance is None:
+        return
+    now = time.time()
+    if now - _WALLET_LAST_RECORDED.get(cid, 0) < 60:
+        return
+    _WALLET_LAST_RECORDED[cid] = now
+    if pg_store.enabled():
+        pg_store.wallet_history_append(acct.account_id, cid, now, balance)
+    else:
+        with _WALLET_RECORD_LOCK:
+            store = load_json(WALLET_HISTORY_PATH, {})
+            series = store.setdefault(str(cid), [])
+            series.append([now, balance])
+            save_json(WALLET_HISTORY_PATH, store)
+    _maybe_prune_wallet_history(acct)
+
+
+def _maybe_prune_wallet_history(acct):
+    """Downsample old data at most once per hour."""
+    global _WALLET_PRUNE_LAST
+    now = time.time()
+    if now - _WALLET_PRUNE_LAST < 3600:
+        return
+    _WALLET_PRUNE_LAST = now
+    if pg_store.enabled():
+        pg_store.wallet_history_prune(acct.account_id, 365 * 86400)
+    else:
+        with _WALLET_RECORD_LOCK:
+            store = load_json(WALLET_HISTORY_PATH, {})
+            cutoff_7d = now - 7 * 86400
+            cutoff_90d = now - 90 * 86400
+            cutoff_365d = now - 365 * 86400
+            changed = False
+            for cid_str in list(store.keys()):
+                series = store[cid_str]
+                if not series:
+                    continue
+                new_series = []
+                for pt in series:
+                    ts = pt[0]
+                    if ts < cutoff_365d:
+                        changed = True
+                        continue
+                    new_series.append(pt)
+                if len(new_series) != len(series):
+                    changed = True
+                store[cid_str] = new_series
+            if changed:
+                save_json(WALLET_HISTORY_PATH, store)
+
+
 def _compute_order_deltas(prev_orders, last_sales, current_orders, names, char_name):
     """Pure diff of current vs previously-seen orders. Returns
     ``(new_events, new_prev, new_sales)`` — new_events are freshly-detected
@@ -910,6 +994,7 @@ def _fetch_one_char_data(acct, cid):
         return cached[1]
     result = _fetch_one_char_data_uncached(acct, cid)
     _CHAR_DATA_CACHE[cid] = (time.time(), result)
+    _record_wallet_snapshot(acct, cid, result.get("wallet"))
     return result
 
 
@@ -1133,6 +1218,57 @@ def do_char_data(q):
         "broker_relations_level": active_data.get("broker_relations_level", 0),
         "order_events": _get_order_events(acct),
     }
+
+
+def _downsample(series, max_points=500):
+    """Reduce a [(ts, balance), ...] list to at most max_points via averaging."""
+    if len(series) <= max_points:
+        return series
+    bucket_size = len(series) / max_points
+    result = []
+    i = 0.0
+    while int(i) < len(series):
+        end = min(int(i + bucket_size), len(series))
+        chunk = series[int(i):end]
+        avg_ts = sum(p[0] for p in chunk) / len(chunk)
+        avg_bal = sum(p[1] for p in chunk) / len(chunk)
+        result.append([avg_ts, avg_bal])
+        i += bucket_size
+    return result
+
+
+def do_wallet_history(q):
+    """Return wallet balance time-series for all characters."""
+    acct = require_account()
+    days = min(int(q.get("days", ["30"])[0] or 30), 365)
+    since_ts = time.time() - days * 86400
+
+    with acct.lock:
+        char_ids = list(acct.characters.keys())
+        char_names = {cid: acct.characters[cid].get("name", "?")
+                      for cid in char_ids}
+
+    if pg_store.enabled():
+        raw = pg_store.wallet_history_query(acct.account_id, since_ts)
+    else:
+        store = load_json(WALLET_HISTORY_PATH, {})
+        raw = {}
+        for cid in char_ids:
+            pts = store.get(str(cid), [])
+            filtered = [(ts, bal) for ts, bal in pts if ts >= since_ts]
+            if filtered:
+                raw[cid] = filtered
+
+    series = {}
+    for cid in char_ids:
+        pts = raw.get(cid, [])
+        if pts:
+            series[str(cid)] = {
+                "name": char_names.get(cid, "?"),
+                "data": _downsample(pts),
+            }
+
+    return {"series": series}
 
 
 def _all_type_ids(offers):
@@ -2181,6 +2317,7 @@ _GET_ROUTES = {
     "/api/auth/login": do_auth_login,
     "/api/auth/switch": do_auth_switch,
     "/api/char/data": do_char_data,
+    "/api/char/wallet-history": do_wallet_history,
     "/api/notes": do_notes_list,
     # /api/auth/status and /api/auth/logout are handled explicitly in do_GET so
     # they can refresh / clear the session cookie.
@@ -2524,6 +2661,7 @@ def main():
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     threading.Thread(target=get_npc_corps, daemon=True).start()
     threading.Thread(target=_sweep_loop, daemon=True).start()
+    threading.Thread(target=_bg_char_refresh_loop, daemon=True).start()
     print(f"EVE Market Tools running at {url}", file=sys.stderr)
     print("Press Ctrl+C to stop.", file=sys.stderr)
     if not args.no_browser:

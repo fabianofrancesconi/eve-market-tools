@@ -304,6 +304,8 @@ def resolve_station_names(station_ids, session, cache_dir, token=None):
     NPC stations (< 1e9) are resolved via /universe/stations/{id}/.
     Player structures (>= 1e9) are resolved via /universe/structures/{id}/
     (requires esi-universe.read_structures.v1 + docking access)."""
+    import logging
+    log = logging.getLogger(__name__)
     path = Path(cache_dir) / "station_names.json"
     cache = {int(k): v for k, v in load_json(path, {}).items()}
     dirty = False
@@ -313,6 +315,7 @@ def resolve_station_names(station_ids, session, cache_dir, token=None):
         try:
             if sid >= 1_000_000_000:
                 if not token:
+                    log.warning("resolve_station_names: no token for structure %s", sid)
                     continue
                 r = session.get(f"{ESI}/universe/structures/{sid}/",
                                 headers={"Authorization": f"Bearer {token}",
@@ -324,10 +327,11 @@ def resolve_station_names(station_ids, session, cache_dir, token=None):
             r.raise_for_status()
             cache[sid] = r.json()["name"]
             dirty = True
-        except requests.HTTPError:
-            pass
-        except (requests.RequestException, KeyError, ValueError):
-            pass
+        except requests.HTTPError as e:
+            log.warning("resolve_station_names: HTTP %s for facility %s",
+                        e.response.status_code if e.response is not None else "?", sid)
+        except (requests.RequestException, KeyError, ValueError) as e:
+            log.warning("resolve_station_names: %s for facility %s", e, sid)
     if dirty:
         save_json(path, {str(k): v for k, v in cache.items()})
     return cache

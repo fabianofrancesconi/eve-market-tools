@@ -3551,8 +3551,9 @@ function _renderCharPanel(c){
       if(isFinite(end)) tcell=rem>0
         ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
         :`<span class="timer-cell done">✓ Ready</span>`;
+      const loc = j.location==="Structure" ? `Structure (f:${j.facility_id} s:${j.station_id})` : j.location;
       h+=`<tr><td>${authEsc(j.product_name)}</td><td>${authEsc(j.activity)}</td>`
-        +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
+        +`<td>${authEsc(loc||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
     }
     h+=`</tbody></table></div>`;
   } else h+=`<div class="char-none">No active jobs.</div>`;

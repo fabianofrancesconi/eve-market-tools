@@ -3485,7 +3485,13 @@ function _retryCharDataSoon(){
   setTimeout(()=>{ if(AUTH.loggedIn) refreshCharData(); }, delay);
   charRefreshDeadline=Date.now()+delay; tickCharRefreshTimer();
 }
+let _charDataInFlight=null;
 async function refreshCharData(){
+  if(_charDataInFlight) return _charDataInFlight;
+  _charDataInFlight=_doRefreshCharData().finally(()=>{ _charDataInFlight=null; });
+  return _charDataInFlight;
+}
+async function _doRefreshCharData(){
   let d;
   try{ d=await (await fetch("/api/char/data")).json(); }
   catch(e){ _retryCharDataSoon(); return; }

@@ -4200,9 +4200,10 @@ const NOTES_MAX_DEPTH = 3;
 
 function _uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 
+function _isRootParent(p){ return !p||p==="None"||p==="null"; }
 function _noteDepth(id){
   let depth=0, cur=NOTES.items.find(x=>x.id===id);
-  while(cur && cur.parent_id){ depth++; cur=NOTES.items.find(x=>x.id===cur.parent_id); }
+  while(cur && !_isRootParent(cur.parent_id)){ depth++; cur=NOTES.items.find(x=>x.id===cur.parent_id); }
   return depth;
 }
 
@@ -4217,7 +4218,7 @@ async function loadNotes(){
   try{
     const r=await fetch("/api/notes"); const d=await r.json();
     NOTES.items=d.notes||[];
-    NOTES.loaded=NOTES.items.length>0||AUTH.loggedIn;
+    NOTES.loaded=true;
     renderNotesTree();
   }catch(e){ console.error("notes load",e); }
 }
@@ -4226,7 +4227,7 @@ function renderNotesTree(){
   const tree=$("#notes-tree");
   tree.innerHTML="";
   const byParent={};
-  NOTES.items.forEach(n=>{ const p=n.parent_id||"__root__"; (byParent[p]=byParent[p]||[]).push(n); });
+  NOTES.items.forEach(n=>{ const p=(n.parent_id&&n.parent_id!=="None"&&n.parent_id!=="null")?n.parent_id:"__root__"; (byParent[p]=byParent[p]||[]).push(n); });
   function build(parentId, container, depth){
     const children=byParent[parentId]||[];
     children.sort((a,b)=>a.pos-b.pos);

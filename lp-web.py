@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.87.3"
+__version__ = "1.87.4"
 
 import argparse
 import base64
@@ -2099,7 +2099,8 @@ def do_notes_save(q):
     if not acct or not pg_store.enabled():
         return {"error": "not available"}
     note_id = q.get("id", [""])[0]
-    parent_id = q.get("parent_id", [None])[0] or None
+    raw_parent = q.get("parent_id", [None])[0]
+    parent_id = None if (not raw_parent or raw_parent == "None" or raw_parent == "null") else raw_parent
     kind = q.get("kind", ["note"])[0]
     title = q.get("title", [""])[0]
     body = q.get("body", [""])[0]

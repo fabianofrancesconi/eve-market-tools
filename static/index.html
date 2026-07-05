@@ -1181,12 +1181,31 @@ function settingsBlob(){
 // logged-in character uses converges on the same columns/filters/etc. Cheap
 // no-op server-side when nobody is logged in.
 let _settingsSyncTimer=null;
-function syncSettingsToServer(blob){
-  clearTimeout(_settingsSyncTimer);
-  _settingsSyncTimer=setTimeout(()=>{
-    fetch('/api/settings/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({blob:JSON.stringify(blob)})}).catch(()=>{});
-  }, 800);
+let _pendingBlob=null;
+function _postSettings(blob){
+  // keepalive lets the POST survive a page navigation / tab close.
+  return fetch('/api/settings/sync',{method:'POST',keepalive:true,
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({blob:JSON.stringify(blob)})}).catch(()=>{});
 }
+function syncSettingsToServer(blob){
+  _pendingBlob=blob;
+  clearTimeout(_settingsSyncTimer);
+  _settingsSyncTimer=setTimeout(()=>{ _pendingBlob=null; _postSettings(blob); }, 800);
+}
+// Push any debounced change to the server immediately when the page is being
+// hidden/closed, so opening another browser never shows a stale view. The server
+// is the source of truth (see loadSettings); localStorage is only a paint cache.
+function flushSettings(){
+  if(_pendingBlob==null) return;
+  const blob=_pendingBlob; _pendingBlob=null;
+  clearTimeout(_settingsSyncTimer);
+  _postSettings(blob);
+}
+window.addEventListener('pagehide',flushSettings);
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='hidden') flushSettings();
+});
 function saveLS(){
   const blob=settingsBlob();
   try{ localStorage.setItem(LS_KEY,JSON.stringify(blob)); }catch(e){}

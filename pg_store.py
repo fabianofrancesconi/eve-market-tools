@@ -23,6 +23,7 @@ does.
 """
 import os
 import threading
+import time
 
 _pool = None
 _pool_lock = threading.Lock()
@@ -82,6 +83,29 @@ def _ensure_schema(pool):
             "character_id BIGINT PRIMARY KEY, "
             "settings_json JSONB NOT NULL, "
             "updated_at DOUBLE PRECISION NOT NULL)")
+        # ── multi-user model (v1.81+) ──────────────────────────────────────
+        # An account is a set of linked EVE characters; a browser session
+        # (cookie) points at one account. Settings are per-account.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mono_accounts ("
+            "account_id BIGINT PRIMARY KEY, "        # = the first linked char id
+            "data JSONB NOT NULL, "                  # {characters:[...], active_char_id}
+            "updated_at DOUBLE PRECISION NOT NULL)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mono_char_account ("
+            "character_id BIGINT PRIMARY KEY, "      # reverse index: char -> account
+            "account_id BIGINT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mono_sessions ("
+            "sid TEXT PRIMARY KEY, "
+            "account_id BIGINT NOT NULL, "
+            "created_at DOUBLE PRECISION NOT NULL, "
+            "last_seen DOUBLE PRECISION NOT NULL)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mono_account_settings ("
+            "account_id BIGINT PRIMARY KEY, "
+            "settings_json JSONB NOT NULL, "
+            "updated_at DOUBLE PRECISION NOT NULL)")
     _schema_ready = True
 
 
@@ -122,3 +146,107 @@ def user_settings_set(character_id, data, updated_at):
             "VALUES (%s, %s, %s) ON CONFLICT (character_id) DO UPDATE SET "
             "settings_json = EXCLUDED.settings_json, updated_at = EXCLUDED.updated_at",
             (character_id, Jsonb(data), updated_at))
+
+
+# ── accounts (a set of linked EVE characters) ────────────────────────────────
+
+def account_get(account_id):
+    with _get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT data FROM mono_accounts WHERE account_id = %s",
+            (account_id,)).fetchone()
+    return row[0] if row else None
+
+
+def account_set(account_id, data, updated_at):
+    from psycopg.types.json import Jsonb
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_accounts (account_id, data, updated_at) "
+            "VALUES (%s, %s, %s) ON CONFLICT (account_id) DO UPDATE SET "
+            "data = EXCLUDED.data, updated_at = EXCLUDED.updated_at",
+            (account_id, Jsonb(data), updated_at))
+
+
+def account_delete(account_id):
+    with _get_pool().connection() as conn:
+        conn.execute("DELETE FROM mono_accounts WHERE account_id = %s", (account_id,))
+
+
+# ── character -> account reverse index ───────────────────────────────────────
+
+def char_account_get(character_id):
+    with _get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT account_id FROM mono_char_account WHERE character_id = %s",
+            (character_id,)).fetchone()
+    return row[0] if row else None
+
+
+def char_account_set(character_id, account_id):
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_char_account (character_id, account_id) VALUES (%s, %s) "
+            "ON CONFLICT (character_id) DO UPDATE SET account_id = EXCLUDED.account_id",
+            (character_id, account_id))
+
+
+def char_account_delete(character_id):
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "DELETE FROM mono_char_account WHERE character_id = %s", (character_id,))
+
+
+# ── browser sessions (cookie sid -> account) ─────────────────────────────────
+
+def session_get(sid):
+    """Return the account_id for a session id, or None. Touches last_seen."""
+    with _get_pool().connection() as conn:
+        row = conn.execute(
+            "UPDATE mono_sessions SET last_seen = %s WHERE sid = %s "
+            "RETURNING account_id", (time.time(), sid)).fetchone()
+    return row[0] if row else None
+
+
+def session_set(sid, account_id):
+    now = time.time()
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_sessions (sid, account_id, created_at, last_seen) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (sid) DO UPDATE SET "
+            "account_id = EXCLUDED.account_id, last_seen = EXCLUDED.last_seen",
+            (sid, account_id, now, now))
+
+
+def session_delete(sid):
+    with _get_pool().connection() as conn:
+        conn.execute("DELETE FROM mono_sessions WHERE sid = %s", (sid,))
+
+
+def sessions_sweep(max_idle_seconds):
+    """Delete sessions idle longer than max_idle_seconds. Returns rows removed."""
+    cutoff = time.time() - max_idle_seconds
+    with _get_pool().connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM mono_sessions WHERE last_seen < %s", (cutoff,))
+        return cur.rowcount
+
+
+# ── per-account settings (searches, filters, columns, ...) ───────────────────
+
+def account_settings_get(account_id):
+    with _get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT settings_json FROM mono_account_settings WHERE account_id = %s",
+            (account_id,)).fetchone()
+    return row[0] if row else None
+
+
+def account_settings_set(account_id, data, updated_at):
+    from psycopg.types.json import Jsonb
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_account_settings (account_id, settings_json, updated_at) "
+            "VALUES (%s, %s, %s) ON CONFLICT (account_id) DO UPDATE SET "
+            "settings_json = EXCLUDED.settings_json, updated_at = EXCLUDED.updated_at",
+            (account_id, Jsonb(data), updated_at))

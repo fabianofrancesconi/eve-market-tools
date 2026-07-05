@@ -9,19 +9,28 @@ import importlib
 lp_web = importlib.import_module("lp-web")
 
 
+def _acct(chars=None):
+    """A minimal legacy Account with the given {cid: name} characters."""
+    a = lp_web.Account(1)
+    for cid, name in (chars or {1: "Tester"}).items():
+        a.characters[cid] = {"character_id": cid, "name": name}
+    a.active_char_id = next(iter(a.characters), None)
+    return a
+
+
 class TestTrackOrderChanges:
     """Unit tests for _track_order_changes."""
 
     def test_first_sync_no_events(self, monkeypatch, tmp_path):
         """First sync (no previous orders) should produce zero events."""
         monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", tmp_path / "ev.json")
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {1: {"name": "Tester"}})
+        acct = _acct()
         orders = [
             {"order_id": 100, "type_id": 34, "type_name": "Tritanium",
              "volume_remain": 1000, "volume_total": 1000, "price": 5.0,
              "is_buy_order": False},
         ]
-        events, last_sales = lp_web._track_order_changes(1, orders, {})
+        events, last_sales = lp_web._track_order_changes(acct, 1, orders, {})
         assert events == []
         assert last_sales == {}
 
@@ -29,7 +38,7 @@ class TestTrackOrderChanges:
         """When volume_remain decreases, a partial-sell event is recorded."""
         evpath = tmp_path / "ev.json"
         monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {1: {"name": "Tester"}})
+        acct = _acct()
 
         # First sync: seed the baseline
         orders_t0 = [
@@ -37,7 +46,7 @@ class TestTrackOrderChanges:
              "volume_remain": 1000, "volume_total": 1000, "price": 5.0,
              "is_buy_order": False},
         ]
-        lp_web._track_order_changes(1, orders_t0, {})
+        lp_web._track_order_changes(acct, 1, orders_t0, {})
 
         # Second sync: 200 units sold
         orders_t1 = [
@@ -45,7 +54,7 @@ class TestTrackOrderChanges:
              "volume_remain": 800, "volume_total": 1000, "price": 5.0,
              "is_buy_order": False},
         ]
-        events, last_sales = lp_web._track_order_changes(1, orders_t1, {})
+        events, last_sales = lp_web._track_order_changes(acct, 1, orders_t1, {})
         assert len(events) == 1
         assert events[0]["sold"] == 200
         assert events[0]["filled"] is False
@@ -59,7 +68,7 @@ class TestTrackOrderChanges:
         """When an order disappears entirely, a filled event is recorded."""
         evpath = tmp_path / "ev.json"
         monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {1: {"name": "Tester"}})
+        acct = _acct()
 
         # Seed
         orders_t0 = [
@@ -67,10 +76,10 @@ class TestTrackOrderChanges:
              "volume_remain": 50, "volume_total": 100, "price": 10.0,
              "is_buy_order": False},
         ]
-        lp_web._track_order_changes(1, orders_t0, {})
+        lp_web._track_order_changes(acct, 1, orders_t0, {})
 
         # Order gone
-        events, last_sales = lp_web._track_order_changes(1, [], {})
+        events, last_sales = lp_web._track_order_changes(acct, 1, [], {})
         assert len(events) == 1
         assert events[0]["sold"] == 50
         assert events[0]["filled"] is True
@@ -81,43 +90,43 @@ class TestTrackOrderChanges:
         """If volume_remain doesn't change, no event is created."""
         evpath = tmp_path / "ev.json"
         monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {1: {"name": "Tester"}})
+        acct = _acct()
 
         orders = [
             {"order_id": 300, "type_id": 36, "type_name": "Mexallon",
              "volume_remain": 500, "volume_total": 500, "price": 50.0,
              "is_buy_order": False},
         ]
-        lp_web._track_order_changes(1, orders, {})
-        events, _ = lp_web._track_order_changes(1, orders, {})
+        lp_web._track_order_changes(acct, 1, orders, {})
+        events, _ = lp_web._track_order_changes(acct, 1, orders, {})
         assert events == []
 
     def test_volume_increase_no_event(self, monkeypatch, tmp_path):
         """If volume_remain increases (e.g. order modified), no sale event."""
         evpath = tmp_path / "ev.json"
         monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {1: {"name": "Tester"}})
+        acct = _acct()
 
         orders_t0 = [
             {"order_id": 400, "type_id": 37, "type_name": "Isogen",
              "volume_remain": 100, "volume_total": 100, "price": 70.0,
              "is_buy_order": False},
         ]
-        lp_web._track_order_changes(1, orders_t0, {})
+        lp_web._track_order_changes(acct, 1, orders_t0, {})
 
         orders_t1 = [
             {"order_id": 400, "type_id": 37, "type_name": "Isogen",
              "volume_remain": 200, "volume_total": 200, "price": 70.0,
              "is_buy_order": False},
         ]
-        events, _ = lp_web._track_order_changes(1, orders_t1, {})
+        events, _ = lp_web._track_order_changes(acct, 1, orders_t1, {})
         assert events == []
 
     def test_multiple_orders_tracked(self, monkeypatch, tmp_path):
         """Multiple orders can generate events in one sync."""
         evpath = tmp_path / "ev.json"
         monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {1: {"name": "Tester"}})
+        acct = _acct()
 
         orders_t0 = [
             {"order_id": 500, "type_id": 34, "type_name": "Tritanium",
@@ -127,7 +136,7 @@ class TestTrackOrderChanges:
              "volume_remain": 50, "volume_total": 50, "price": 10.0,
              "is_buy_order": False},
         ]
-        lp_web._track_order_changes(1, orders_t0, {})
+        lp_web._track_order_changes(acct, 1, orders_t0, {})
 
         # Both sell some
         orders_t1 = [
@@ -138,7 +147,7 @@ class TestTrackOrderChanges:
              "volume_remain": 30, "volume_total": 50, "price": 10.0,
              "is_buy_order": False},
         ]
-        events, _ = lp_web._track_order_changes(1, orders_t1, {})
+        events, _ = lp_web._track_order_changes(acct, 1, orders_t1, {})
         assert len(events) == 2
         sold_amounts = sorted(e["sold"] for e in events)
         assert sold_amounts == [20, 20]
@@ -147,14 +156,14 @@ class TestTrackOrderChanges:
         """Events from prior syncs persist (not overwritten)."""
         evpath = tmp_path / "ev.json"
         monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {1: {"name": "Tester"}})
+        acct = _acct()
 
         orders_t0 = [
             {"order_id": 600, "type_id": 34, "type_name": "Tritanium",
              "volume_remain": 100, "volume_total": 100, "price": 5.0,
              "is_buy_order": False},
         ]
-        lp_web._track_order_changes(1, orders_t0, {})
+        lp_web._track_order_changes(acct, 1, orders_t0, {})
 
         # First sale
         orders_t1 = [
@@ -162,7 +171,7 @@ class TestTrackOrderChanges:
              "volume_remain": 80, "volume_total": 100, "price": 5.0,
              "is_buy_order": False},
         ]
-        lp_web._track_order_changes(1, orders_t1, {})
+        lp_web._track_order_changes(acct, 1, orders_t1, {})
 
         # Second sale
         orders_t2 = [
@@ -170,7 +179,7 @@ class TestTrackOrderChanges:
              "volume_remain": 50, "volume_total": 100, "price": 5.0,
              "is_buy_order": False},
         ]
-        events, _ = lp_web._track_order_changes(1, orders_t2, {})
+        events, _ = lp_web._track_order_changes(acct, 1, orders_t2, {})
         assert len(events) == 2
         assert events[0]["sold"] == 20
         assert events[1]["sold"] == 30
@@ -179,7 +188,7 @@ class TestTrackOrderChanges:
         """Events older than ORDER_EVENT_EXPIRY are dropped."""
         evpath = tmp_path / "ev.json"
         monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {1: {"name": "Tester"}})
+        acct = _acct()
 
         # Manually seed an old event
         old_event = {
@@ -193,7 +202,7 @@ class TestTrackOrderChanges:
             "_prev_1": {},
         })
 
-        events, _ = lp_web._track_order_changes(1, [], {})
+        events, _ = lp_web._track_order_changes(acct, 1, [], {})
         assert len(events) == 0  # old event was cleaned
 
 
@@ -211,7 +220,7 @@ class TestGetOrderEvents:
             ],
             "_prev_1": {},
         })
-        events = lp_web._get_order_events()
+        events = lp_web._get_order_events(_acct())
         assert len(events) == 1
         assert events[0]["id"] == "a"
 
@@ -224,7 +233,7 @@ class TestGetOrderEvents:
             ],
             "_prev_1": {},
         })
-        assert lp_web._get_order_events() == []
+        assert lp_web._get_order_events(_acct()) == []
 
     def test_aggregates_multiple_characters(self, monkeypatch, tmp_path):
         evpath = tmp_path / "ev.json"
@@ -235,7 +244,7 @@ class TestGetOrderEvents:
             "2": [{"id": "y", "ts": now - 5, "dismissed": False, "sold": 2}],
             "_prev_1": {}, "_prev_2": {},
         })
-        events = lp_web._get_order_events()
+        events = lp_web._get_order_events(_acct())
         assert len(events) == 2
         # Sorted by ts descending (most recent first)
         assert events[0]["id"] == "y"
@@ -255,8 +264,8 @@ class TestDismissOrderEvent:
                 {"id": "b", "ts": now, "dismissed": False, "sold": 3},
             ],
         })
-        lp_web._dismiss_order_event("a")
-        events = lp_web._get_order_events()
+        lp_web._dismiss_order_event(_acct(), "a")
+        events = lp_web._get_order_events(_acct())
         assert len(events) == 1
         assert events[0]["id"] == "b"
 
@@ -273,8 +282,8 @@ class TestDismissOrderEvent:
                 {"id": "c", "ts": now, "dismissed": False, "sold": 1},
             ],
         })
-        lp_web._dismiss_order_event("all")
-        assert lp_web._get_order_events() == []
+        lp_web._dismiss_order_event(_acct(), "all")
+        assert lp_web._get_order_events(_acct()) == []
 
 
 class TestMaxSpreadClientSide:

@@ -31,7 +31,34 @@ _spec = importlib.util.spec_from_file_location("lp_web", _ROOT / "lp-web.py")
 lp_web = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lp_web)
 
+
+def _acct(chars=None, active=None):
+    """A legacy Account for direct-call tests. chars = {cid: name}."""
+    ids = list((chars or {}).keys())
+    a = lp_web.Account(ids[0] if ids else 1)
+    for cid, name in (chars or {}).items():
+        a.characters[cid] = {"character_id": cid, "name": name,
+                             "scopes": [], "refresh_token": "x"}
+    a.active_char_id = active if (active in a.characters) else (ids[0] if ids else None)
+    return a
+
+
+def _use_account(acct):
+    """Bind the current request thread to an account (for direct handler calls)."""
+    lp_web._REQUEST.account = acct
+
 from lp_core import LPError  # noqa: E402
+
+
+import pytest as _pytest_for_fixture  # noqa: E402
+
+
+@_pytest_for_fixture.fixture(autouse=True)
+def _reset_request_ctx():
+    """Isolate the per-thread request account between tests."""
+    lp_web._REQUEST.account = None
+    yield
+    lp_web._REQUEST.account = None
 
 
 # ---------------------------------------------------------------------------
@@ -501,8 +528,8 @@ class TestApiSettingsEndpoint:
 
     def test_not_logged_in_reports_unsynced(self, tmp_server, monkeypatch):
         base, _ = tmp_server
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", None)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "characters", {})
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "active_char_id", None)
         data, _ = http_get(f"{base}/api/settings")
         assert data["_server_synced"] is False
         assert data["_logged_in"] is False
@@ -510,8 +537,8 @@ class TestApiSettingsEndpoint:
     def test_logged_in_without_prior_sync_falls_back_to_files(self, tmp_server, monkeypatch, tmp_path):
         base, _ = tmp_server
         monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 42)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "characters", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "active_char_id", 42)
         data, _ = http_get(f"{base}/api/settings")
         assert data["_server_synced"] is False
         assert data["_logged_in"] is True
@@ -519,8 +546,8 @@ class TestApiSettingsEndpoint:
     def test_logged_in_with_prior_sync_returns_synced_blob(self, tmp_server, monkeypatch, tmp_path):
         base, _ = tmp_server
         monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 42)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "characters", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "active_char_id", 42)
         lp_web.save_user_settings(42, {"active_tab": "ind"})
         data, _ = http_get(f"{base}/api/settings")
         assert data["_server_synced"] is True
@@ -556,24 +583,21 @@ class TestUserSettingsSync:
 
     def test_sync_without_login_is_a_noop(self, monkeypatch, tmp_path):
         monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", None)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
+        _use_account(None)
         result = lp_web.do_settings_sync({"blob": ['{"active_tab":"lp"}']})
         assert result == {"ok": True, "synced": False}
         assert not (tmp_path / "user_settings.sqlite").exists()
 
     def test_sync_while_logged_in_persists_blob(self, monkeypatch, tmp_path):
         monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 42)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
+        _use_account(_acct({42: "T"}, active=42))
         result = lp_web.do_settings_sync({"blob": ['{"active_tab":"ind","col_widths":{"name":120}}']})
         assert result == {"ok": True, "synced": True}
         assert lp_web.load_user_settings(42) == {"active_tab": "ind", "col_widths": {"name": 120}}
 
     def test_sync_rejects_invalid_json(self, monkeypatch, tmp_path):
         monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 42)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
+        _use_account(_acct({42: "T"}, active=42))
         with pytest.raises(LPError):
             lp_web.do_settings_sync({"blob": ["not json"]})
 
@@ -1001,12 +1025,12 @@ class TestIndustryLoginRequired:
     login is mandatory rather than an optional fallback."""
 
     def test_scan_without_login_raises(self, monkeypatch):
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
+        _use_account(None)
         with pytest.raises(LPError):
             lp_web.do_ind_scan({})
 
     def test_detail_without_login_raises(self, monkeypatch):
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
+        _use_account(None)
         with pytest.raises(LPError):
             lp_web.do_ind_detail({"blueprint_id": ["681"]})
 
@@ -1097,10 +1121,6 @@ class TestIndustryRoutes:
 
     def test_owned_only_includes_char_blueprints(self, monkeypatch):
         """owned_only=1 loads blueprints the character owns via ESI."""
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 123)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {123: {"character_id": 123, "name": "T", "scopes": [], "refresh_token": "x"}})
-        monkeypatch.setattr(lp_web, "_CHAR_BP_ME_TES", {123: {681: (10, 20)}})
-        monkeypatch.setattr(lp_web, "_CHAR_SKILL_PROFILES", {123: {}})
         html = lp_web.INDEX_HTML
         assert "loadOwnedPreview" in html
         assert 'owned_only:"1"' in html or "owned_only" in html
@@ -1202,40 +1222,40 @@ class TestDeliveredRunsTracker:
     def test_first_sight_is_baseline_not_counted(self, tmp_path, monkeypatch):
         monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", tmp_path / "jobs.json")
         jobs = [self._job(1), self._job(2, status="active", runs=5)]
-        rt = lp_web._track_delivered_jobs(42, jobs, {165: "Test Frigate"})
+        rt = lp_web._track_delivered_jobs(_acct(), 42, jobs, {165: "Test Frigate"})
         assert rt["total_runs"] == 0
         assert rt["total_jobs"] == 0
 
     def test_new_delivery_after_baseline_is_counted(self, tmp_path, monkeypatch):
         monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", tmp_path / "jobs.json")
-        lp_web._track_delivered_jobs(42, [self._job(1)], {165: "Test Frigate"})
+        lp_web._track_delivered_jobs(_acct(), 42, [self._job(1)], {165: "Test Frigate"})
         rt = lp_web._track_delivered_jobs(
-            42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
+            _acct(), 42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
         assert rt["total_runs"] == 25
         assert rt["total_jobs"] == 1
 
     def test_same_job_not_double_counted(self, tmp_path, monkeypatch):
         monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", tmp_path / "jobs.json")
-        lp_web._track_delivered_jobs(42, [self._job(1)], {165: "Test Frigate"})
-        lp_web._track_delivered_jobs(42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
-        rt = lp_web._track_delivered_jobs(42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
+        lp_web._track_delivered_jobs(_acct(), 42, [self._job(1)], {165: "Test Frigate"})
+        lp_web._track_delivered_jobs(_acct(), 42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
+        rt = lp_web._track_delivered_jobs(_acct(), 42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
         assert rt["total_runs"] == 25
         assert rt["total_jobs"] == 1
 
     def test_persists_across_calls(self, tmp_path, monkeypatch):
         path = tmp_path / "jobs.json"
         monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", path)
-        lp_web._track_delivered_jobs(42, [self._job(1)], {165: "Test Frigate"})
-        lp_web._track_delivered_jobs(42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
+        lp_web._track_delivered_jobs(_acct(), 42, [self._job(1)], {165: "Test Frigate"})
+        lp_web._track_delivered_jobs(_acct(), 42, [self._job(1), self._job(2, runs=25)], {165: "Test Frigate"})
         saved = json.loads(path.read_text())
         assert saved["42"]["total_runs"] == 25
 
     def test_separate_characters_tracked_independently(self, tmp_path, monkeypatch):
         monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", tmp_path / "jobs.json")
-        lp_web._track_delivered_jobs(1, [self._job(1)], {})
-        lp_web._track_delivered_jobs(2, [self._job(1)], {})  # same job_id, different char
-        rt1 = lp_web._track_delivered_jobs(1, [self._job(1), self._job(2, runs=7)], {})
-        rt2 = lp_web._track_delivered_jobs(2, [self._job(1), self._job(2, runs=9)], {})
+        lp_web._track_delivered_jobs(_acct(), 1, [self._job(1)], {})
+        lp_web._track_delivered_jobs(_acct(), 2, [self._job(1)], {})  # same job_id, different char
+        rt1 = lp_web._track_delivered_jobs(_acct(), 1, [self._job(1), self._job(2, runs=7)], {})
+        rt2 = lp_web._track_delivered_jobs(_acct(), 2, [self._job(1), self._job(2, runs=9)], {})
         assert rt1["total_runs"] == 7
         assert rt2["total_runs"] == 9
 
@@ -1249,14 +1269,16 @@ class TestDeliveredRunsTracker:
 class TestCharDataOrdersIsolation:
     def _login(self, monkeypatch):
         import time as _time
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 42)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {42: {
+        acct = lp_web.Account(42)
+        acct.characters[42] = {
             "character_id": 42, "name": "Test Char", "scopes": [],
             "refresh_token": "RT", "access_token": "TOK",
             "expires_at": _time.time() + 3600,
-        }})
-        monkeypatch.setattr(lp_web, "_CHAR_SKILL_PROFILES", {42: {}})
-        monkeypatch.setattr(lp_web, "_CHAR_BP_ME_TES", {42: {}})
+        }
+        acct.active_char_id = 42
+        acct.skill_profiles[42] = {}
+        acct.bp_me_tes[42] = {}
+        _use_account(acct)
 
     def _http_error(self, status):
         resp = MagicMock(status_code=status)

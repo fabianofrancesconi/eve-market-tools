@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.80.0"
+__version__ = "1.81.0"
 
 import argparse
 import base64
@@ -91,22 +91,54 @@ LP_LAST_SCAN_PATH = CACHE_DIR / "lp_last_scan.json"
 IND_LAST_SCAN_PATH = CACHE_DIR / "ind_last_scan.json"
 REFRESHED_CORPS = set()
 
-# ── EVE SSO state (single process, multi-character) ──────────────────────────
-# Pending PKCE handshakes keyed by `state` (verifier + redirect_uri), set in
-# /api/auth/login and consumed once in /callback.
+# ── EVE SSO / accounts / sessions ────────────────────────────────────────────
+# An *account* is a set of linked EVE characters; a browser *session* (cookie)
+# points at one account. All per-user state lives on the Account object, so
+# concurrent users on the public deploy never see each other's characters.
+#
+# Two modes, gated on pg_store.enabled() (i.e. DATABASE_URL):
+#   • multi-user (Postgres): one Account per session, resolved from the cookie;
+#     unauthenticated requests to non-public endpoints are rejected (401).
+#   • legacy single-user (local `python lp-web.py`, tests): one implicit global
+#     account, no cookie and no gate — behaviour is identical to before.
+
+class Account:
+    """All state for one user (a set of linked EVE characters).
+
+    `characters`, `skill_profiles` and `bp_me_tes` are only ever mutated/iterated
+    under `self.lock`, so a scan running in one request thread can't collide with
+    a login/logout in another."""
+    def __init__(self, account_id=None):
+        self.account_id = account_id            # int, = the first linked char id
+        # character_id -> {character_id, name, scopes, refresh_token,
+        #                  access_token, expires_at}
+        self.characters: dict = {}
+        self.active_char_id: int | None = None
+        # runtime-only caches (refetched from ESI; never persisted)
+        self.skill_profiles: dict = {}          # cid -> {skill_id: level}
+        self.bp_me_tes: dict = {}               # cid -> {type_id: (me,te,bpo,runs)}
+        self.lock = threading.RLock()
+
+
+# Pending PKCE handshakes keyed by `state` -> {verifier, redirect_uri, ts}.
 _PKCE: dict = {}
-# All linked characters, keyed by character_id (int).
-# Each entry: {character_id, name, scopes, refresh_token, access_token, expires_at}
-_CHARACTERS: dict = {}
-_CHARACTERS_LOCK = threading.RLock()
-# The "active" character. Selected from the header dropdown, it drives every
-# per-character view: LP-tab budget, Industry skills/BP calculations, and the
-# wallet shown in the header chip.
-_ACTIVE_CHAR_ID: int | None = None
-# Per-character skill profiles: {cid: {skill_id: trained_level}}
-_CHAR_SKILL_PROFILES: dict = {}
-# Per-character owned blueprints: {cid: {type_id: (me, te, is_bpo, runs)}}
-_CHAR_BP_ME_TES: dict = {}
+_PKCE_LOCK = threading.Lock()
+_PKCE_TTL = 600  # abandoned handshakes are swept after 10 minutes
+
+# In-memory caches: cookie sid -> Account, and account_id -> Account. Both are
+# hydrated lazily from Postgres and guarded by _REGISTRY_LOCK.
+_SESSIONS: dict = {}
+_ACCOUNTS: dict = {}
+_REGISTRY_LOCK = threading.RLock()
+_SESSION_TTL = 30 * 24 * 3600  # idle sessions expire after 30 days
+
+# The single implicit account used only in legacy (no-Postgres) mode.
+_LEGACY_ACCOUNT = Account()
+
+# Per-request context (ThreadingHTTPServer = one thread per request). `.account`
+# is the resolved Account (or None when unauthenticated in multi-user mode).
+_REQUEST = threading.local()
+
 # The host:port the server is actually bound to, for the suggested callback URL.
 _SERVER_PORT = 8765
 
@@ -151,41 +183,66 @@ def _ensure_arb_caches():
 # set (the Railway deploy), else to the original cache-dir files/SQLite — see
 # pg_store. Disposable caches (SDE, ESI responses) always stay on disk.
 
-def _kv_load(key, path, default):
+# In multi-user (Postgres) mode the per-tool settings blobs and the per-field
+# /api/prefs endpoints are obsolete: the client pushes its full settings blob to
+# the account row via /api/settings/sync (the single source of truth), so these
+# become no-ops there and only the local file store remains for no-login dev.
+
+def load_settings():
+    return {} if pg_store.enabled() else load_json(SETTINGS_PATH, {})
+
+
+def save_settings(d):
+    if not pg_store.enabled():
+        save_json(SETTINGS_PATH, d)
+
+
+def load_arb_settings():
+    return {} if pg_store.enabled() else load_json(ARB_SETTINGS_PATH, {})
+
+
+def save_arb_settings(d):
+    if not pg_store.enabled():
+        save_json(ARB_SETTINGS_PATH, d)
+
+
+def load_ind_settings():
+    return {} if pg_store.enabled() else load_json(IND_SETTINGS_PATH, {})
+
+
+def save_ind_settings(d):
+    if not pg_store.enabled():
+        save_json(IND_SETTINGS_PATH, d)
+
+
+# ── Account-scoped durable blobs (counters, order events, last scan) ──────────
+# Keyed per account in Postgres so users never see each other's data; a plain
+# file in legacy mode (single user).
+
+def _acct_kv_load(acct, key, path, default):
     if pg_store.enabled():
-        return pg_store.kv_get(key, default)
+        return pg_store.kv_get(f"{key}:{acct.account_id}", default) if acct else default
     return load_json(path, default)
 
 
-def _kv_save(key, path, data):
+def _acct_kv_save(acct, key, path, data):
     if pg_store.enabled():
-        pg_store.kv_set(key, data)
+        if acct:
+            pg_store.kv_set(f"{key}:{acct.account_id}", data)
     else:
         save_json(path, data)
 
 
-def load_settings():
-    return _kv_load("lp_web_settings", SETTINGS_PATH, {})
+def _load_last_scan(acct, tag):
+    key, path = (("lp_last_scan", LP_LAST_SCAN_PATH) if tag == "lp"
+                 else ("ind_last_scan", IND_LAST_SCAN_PATH))
+    return _acct_kv_load(acct, key, path, None)
 
 
-def save_settings(d):
-    _kv_save("lp_web_settings", SETTINGS_PATH, d)
-
-
-def load_arb_settings():
-    return _kv_load("arb_settings", ARB_SETTINGS_PATH, {})
-
-
-def save_arb_settings(d):
-    _kv_save("arb_settings", ARB_SETTINGS_PATH, d)
-
-
-def load_ind_settings():
-    return _kv_load("ind_settings", IND_SETTINGS_PATH, {})
-
-
-def save_ind_settings(d):
-    _kv_save("ind_settings", IND_SETTINGS_PATH, d)
+def _save_last_scan(acct, tag, blob):
+    key, path = (("lp_last_scan", LP_LAST_SCAN_PATH) if tag == "lp"
+                 else ("ind_last_scan", IND_LAST_SCAN_PATH))
+    _acct_kv_save(acct, key, path, blob)
 
 
 # ── Per-character synced settings ────────────────────────────────────────────
@@ -256,77 +313,177 @@ def _callback_url():
     return (os.environ.get("EVE_CALLBACK_URL") or "").strip() or _suggested_callback()
 
 
-def _persist_auth():
-    """Write all linked characters + the active selection to disk."""
-    data = {
+# ── Account / session management ─────────────────────────────────────────────
+
+def current_account():
+    """The Account for the in-flight request, or None (unauthenticated)."""
+    return getattr(_REQUEST, "account", None)
+
+
+def require_account():
+    """The current Account, or raise LPError. An account always has ≥1 linked
+    character (login = EVE SSO), so this doubles as the login check."""
+    acct = current_account()
+    if acct is None or not acct.characters:
+        raise LPError("Log in with EVE to continue.")
+    return acct
+
+
+# `_require_login` kept as an alias for the several handlers that used it.
+def _require_login():
+    require_account()
+
+
+def _account_blob(acct):
+    """The persistable form of an account (characters + active selection)."""
+    return {
         "version": 2,
-        "active_char_id": _ACTIVE_CHAR_ID,
+        "active_char_id": acct.active_char_id,
         "characters": [
             {"character_id": c["character_id"], "name": c["name"],
              "scopes": c["scopes"], "refresh_token": c["refresh_token"]}
-            for c in _CHARACTERS.values()
+            for c in acct.characters.values()
         ],
     }
+
+
+def _persist_account(acct):
+    """Durably store one account's characters + active selection."""
+    data = _account_blob(acct)
     if pg_store.enabled():
-        pg_store.kv_set("eve_auth", data)
+        if acct.account_id is None:
+            return
+        pg_store.account_set(acct.account_id, data, time.time())
+        for cid in acct.characters:
+            pg_store.char_account_set(cid, acct.account_id)
     else:
         sso_core.save_tokens(CACHE_DIR, data)
 
 
-def _restore_auth():
-    """Load persisted characters on startup. Migrates v1 (single char) to v2
-    automatically so existing users don't need to re-login."""
-    global _ACTIVE_CHAR_ID
+def _hydrate_account(account_id, saved):
+    """Build an Account from a persisted blob (v1 single-char or v2 multi)."""
+    acct = Account(account_id)
+    if saved.get("version") == 2:
+        chars = saved.get("characters", [])
+        active = saved.get("active_char_id")
+    elif saved.get("refresh_token") and saved.get("character_id"):
+        chars = [saved]
+        active = saved["character_id"]
+    else:
+        chars, active = [], None
+    for c in chars:
+        cid = c["character_id"]
+        acct.characters[cid] = {
+            "character_id": cid, "name": c.get("name"),
+            "scopes": c.get("scopes", []),
+            "refresh_token": c["refresh_token"],
+            "access_token": None, "expires_at": 0,
+        }
+    acct.active_char_id = active if active in acct.characters else next(iter(acct.characters), None)
+    return acct
+
+
+def _get_account_by_id(account_id):
+    """Load (and cache) the account with this id from Postgres, or None."""
+    with _REGISTRY_LOCK:
+        acct = _ACCOUNTS.get(account_id)
+    if acct is not None:
+        return acct
+    data = pg_store.account_get(account_id)
+    if data is None:
+        return None
+    acct = _hydrate_account(account_id, data)
+    with _REGISTRY_LOCK:
+        _ACCOUNTS[account_id] = acct
+    return acct
+
+
+def _resolve_session(sid):
+    """Resolve a cookie session id to its Account (multi-user mode), or None."""
+    if not sid:
+        return None
+    with _REGISTRY_LOCK:
+        acct = _SESSIONS.get(sid)
+    if acct is not None:
+        return acct
+    account_id = pg_store.session_get(sid)
+    if account_id is None:
+        return None
+    acct = _get_account_by_id(account_id)
+    if acct is not None:
+        with _REGISTRY_LOCK:
+            _SESSIONS[sid] = acct
+    return acct
+
+
+def _new_session(acct):
+    """Mint a session id bound to an account, cache and persist it."""
+    sid = secrets.token_urlsafe(32)
+    with _REGISTRY_LOCK:
+        _SESSIONS[sid] = acct
+    if pg_store.enabled():
+        pg_store.session_set(sid, acct.account_id)
+    return sid
+
+
+def _migrate_legacy_auth():
+    """One-time: fold the pre-multiuser global `eve_auth` blob into a real
+    account so the existing Railway deploy keeps its linked characters and
+    settings (users just re-authenticate once to get a session cookie)."""
+    if pg_store.kv_get("eve_auth_migrated"):
+        return
+    saved = pg_store.kv_get("eve_auth", {}) or {}
+    acct = _hydrate_account(None, saved)
+    if acct.characters:
+        acct.account_id = acct.active_char_id or next(iter(acct.characters))
+        _persist_account(acct)
+        # Carry the old per-character settings row over to the new account key.
+        old = pg_store.user_settings_get(acct.account_id)
+        if old is not None:
+            pg_store.account_settings_set(acct.account_id, old, time.time())
+        print(f"[auth] migrated legacy eve_auth → account {acct.account_id} "
+              f"({len(acct.characters)} character(s))", file=sys.stderr)
+    pg_store.kv_set("eve_auth_migrated", True)
+
+
+def _startup_restore():
+    """On boot: legacy mode loads the single file-backed account; multi-user mode
+    runs the one-time legacy→account migration (sessions load lazily per cookie)."""
     if pg_store.enabled():
         try:
-            saved = pg_store.kv_get("eve_auth", {})
-        except Exception as e:
-            print(f"[auth] could not load persisted tokens from Postgres: {e}",
+            _migrate_legacy_auth()
+        except Exception as e:  # noqa: BLE001
+            print(f"[auth] legacy migration skipped: {type(e).__name__}: {e}",
                   file=sys.stderr)
-            saved = {}
-    else:
-        saved = sso_core.load_tokens(CACHE_DIR)
-    if saved.get("version") == 2:
-        for c in saved.get("characters", []):
-            cid = c["character_id"]
-            _CHARACTERS[cid] = {
-                "character_id": cid,
-                "name": c["name"],
-                "scopes": c.get("scopes", []),
-                "refresh_token": c["refresh_token"],
-                "access_token": None,
-                "expires_at": 0,
-            }
-        _ACTIVE_CHAR_ID = saved.get("active_char_id")
-        if _ACTIVE_CHAR_ID not in _CHARACTERS:
-            _ACTIVE_CHAR_ID = next(iter(_CHARACTERS), None)
-    elif saved.get("refresh_token") and saved.get("character_id"):
-        cid = saved["character_id"]
-        _CHARACTERS[cid] = {
-            "character_id": cid,
-            "name": saved.get("name"),
-            "scopes": saved.get("scopes", []),
-            "refresh_token": saved["refresh_token"],
-            "access_token": None,
-            "expires_at": 0,
-        }
-        _ACTIVE_CHAR_ID = cid
-        _persist_auth()
+        return
+    saved = sso_core.load_tokens(CACHE_DIR)
+    acct = _hydrate_account(None, saved)
+    _LEGACY_ACCOUNT.characters = acct.characters
+    _LEGACY_ACCOUNT.active_char_id = acct.active_char_id
+    if saved.get("version") != 2 and _LEGACY_ACCOUNT.characters:
+        _persist_account(_LEGACY_ACCOUNT)  # upgrade v1 file to v2
 
 
-def _require_login():
-    """Raise LPError unless at least one character is logged in."""
-    if not _CHARACTERS:
-        raise LPError("Log in with EVE to use the Industry planner.")
+def _sweep_expired():
+    """Drop abandoned PKCE handshakes and idle sessions. Cheap; called on login."""
+    now = time.time()
+    with _PKCE_LOCK:
+        for st in [s for s, h in _PKCE.items() if now - h.get("ts", 0) > _PKCE_TTL]:
+            _PKCE.pop(st, None)
+    if pg_store.enabled():
+        try:
+            pg_store.sessions_sweep(_SESSION_TTL)
+        except Exception:  # noqa: BLE001
+            pass
 
 
-def _access_token(cid=None):
-    """A valid bearer token for the given character (defaults to active).
-    Refreshes transparently when expired."""
-    with _CHARACTERS_LOCK:
+def _access_token(acct, cid=None):
+    """A valid bearer token for one of the account's characters (defaults to the
+    active one). Refreshes transparently when expired."""
+    with acct.lock:
         if cid is None:
-            cid = _ACTIVE_CHAR_ID
-        char = _CHARACTERS.get(cid)
+            cid = acct.active_char_id
+        char = acct.characters.get(cid)
         if not char or not char.get("refresh_token"):
             raise LPError("Not logged in to EVE.")
         if char.get("access_token") and not sso_core.access_token_expired(char.get("expires_at")):
@@ -343,25 +500,29 @@ def _access_token(cid=None):
             "name": claims.get("name") or char["name"],
             "scopes": claims.get("scopes") or char["scopes"],
         })
-        _persist_auth()
+        _persist_account(acct)
         return char["access_token"]
 
 
-def _refresh_skill_profile(cid):
+def _refresh_skill_profile(acct, cid):
     """Pull the character's skills and cache {skill_id: level} for Industry."""
     try:
-        skills = sso_core.fetch_skills(_access_token(cid), cid, SESSION)
-        _CHAR_SKILL_PROFILES[cid] = sso_core.skill_profile_from_skills(skills)
+        skills = sso_core.fetch_skills(_access_token(acct, cid), cid, SESSION)
+        profile = sso_core.skill_profile_from_skills(skills)
     except (LPError, requests.RequestException):
-        _CHAR_SKILL_PROFILES.setdefault(cid, {})
+        profile = {}
+    with acct.lock:
+        acct.skill_profiles.setdefault(cid, {})
+        if profile:
+            acct.skill_profiles[cid] = profile
 
 
-def _refresh_char_blueprints(cid):
+def _refresh_char_blueprints(acct, cid):
     """Pull the character's owned blueprints and cache each type's best ME/TE.
     Supplements from active industry jobs (a running manufacturing job proves
     ownership even if the blueprints endpoint hasn't caught up)."""
     try:
-        token = _access_token(cid)
+        token = _access_token(acct, cid)
         bps = sso_core.fetch_character_blueprints(token, cid, SESSION)
         bp_map = sso_core.owned_blueprint_lookup(bps)
         try:
@@ -374,9 +535,12 @@ def _refresh_char_blueprints(cid):
                     bp_map[bp_tid] = (0, 0, True, -1)
         except (LPError, requests.RequestException):
             pass
-        _CHAR_BP_ME_TES[cid] = bp_map
     except (LPError, requests.RequestException):
-        _CHAR_BP_ME_TES.setdefault(cid, {})
+        bp_map = None
+    with acct.lock:
+        acct.bp_me_tes.setdefault(cid, {})
+        if bp_map is not None:
+            acct.bp_me_tes[cid] = bp_map
 
 
 def do_auth_login(q):
@@ -384,76 +548,109 @@ def do_auth_login(q):
     client_id = _eve_client_id()
     if not client_id:
         raise LPError("EVE login is not configured — set the EVE_CLIENT_ID environment variable on the server.")
+    _sweep_expired()
     verifier, challenge = sso_core.make_pkce()
     state = secrets.token_urlsafe(16)
     redirect_uri = _callback_url()
-    _PKCE[state] = {"verifier": verifier, "redirect_uri": redirect_uri}
+    with _PKCE_LOCK:
+        _PKCE[state] = {"verifier": verifier, "redirect_uri": redirect_uri,
+                        "ts": time.time()}
     url = sso_core.build_authorize_url(client_id, redirect_uri, sso_core.SCOPES, state, challenge)
     return {"url": url}
 
 
 def do_auth_status(q):
-    chars = [{"character_id": c["character_id"], "name": c["name"]}
-             for c in _CHARACTERS.values()]
-    active = _CHARACTERS.get(_ACTIVE_CHAR_ID)
-    return {
-        "logged_in": bool(_CHARACTERS),
-        "characters": chars,
-        "active_char_id": _ACTIVE_CHAR_ID,
-        "character_id": _ACTIVE_CHAR_ID,
-        "name": active["name"] if active else None,
-        "scopes": active["scopes"] if active else [],
-    }
+    acct = current_account()
+    if acct is None:
+        return {"logged_in": False, "characters": [], "active_char_id": None,
+                "character_id": None, "name": None, "scopes": []}
+    with acct.lock:
+        chars = [{"character_id": c["character_id"], "name": c["name"]}
+                 for c in acct.characters.values()]
+        active = acct.characters.get(acct.active_char_id)
+        return {
+            "logged_in": bool(acct.characters),
+            "characters": chars,
+            "active_char_id": acct.active_char_id,
+            "character_id": acct.active_char_id,
+            "name": active["name"] if active else None,
+            "scopes": active["scopes"] if active else [],
+        }
 
 
 def do_auth_switch(q):
     """Switch the active character. It drives the LP budget, the Industry
     skills/BP calculations and the header wallet, so refresh that character's
     skill profile and blueprints while we're here."""
-    global _ACTIVE_CHAR_ID
-    with _CHARACTERS_LOCK:
+    acct = require_account()
+    cid = None
+    with acct.lock:
         if "active_char_id" in q:
-            cid = int(q["active_char_id"][0])
-            if cid in _CHARACTERS:
-                _ACTIVE_CHAR_ID = cid
-                _refresh_skill_profile(cid)
-                _refresh_char_blueprints(cid)
-        _persist_auth()
+            want = int(q["active_char_id"][0])
+            if want in acct.characters:
+                acct.active_char_id = want
+                cid = want
+        _persist_account(acct)
+    if cid is not None:
+        _refresh_skill_profile(acct, cid)
+        _refresh_char_blueprints(acct, cid)
     return do_auth_status({})
 
 
+def _forget_account(acct):
+    """Drop an account and all its sessions from the caches + store."""
+    with _REGISTRY_LOCK:
+        _ACCOUNTS.pop(acct.account_id, None)
+        for sid in [s for s, a in _SESSIONS.items() if a is acct]:
+            _SESSIONS.pop(sid, None)
+            if pg_store.enabled():
+                pg_store.session_delete(sid)
+    if pg_store.enabled() and acct.account_id is not None:
+        for cid in list(acct.characters):
+            pg_store.char_account_delete(cid)
+        pg_store.account_delete(acct.account_id)
+
+
 def do_auth_logout(q):
+    acct = current_account()
+    if acct is None:
+        return {"ok": True}
     char_id = q.get("char_id", [None])[0]
-    global _ACTIVE_CHAR_ID
-    with _CHARACTERS_LOCK:
+    with acct.lock:
         if char_id:
             cid = int(char_id)
-            _CHARACTERS.pop(cid, None)
-            _CHAR_SKILL_PROFILES.pop(cid, None)
-            _CHAR_BP_ME_TES.pop(cid, None)
-            if _ACTIVE_CHAR_ID == cid:
-                _ACTIVE_CHAR_ID = next(iter(_CHARACTERS), None)
+            acct.characters.pop(cid, None)
+            acct.skill_profiles.pop(cid, None)
+            acct.bp_me_tes.pop(cid, None)
+            if pg_store.enabled():
+                pg_store.char_account_delete(cid)
+            if acct.active_char_id == cid:
+                acct.active_char_id = next(iter(acct.characters), None)
+            remaining = bool(acct.characters)
         else:
-            _CHARACTERS.clear()
-            _CHAR_SKILL_PROFILES.clear()
-            _CHAR_BP_ME_TES.clear()
-            _ACTIVE_CHAR_ID = None
-            _PKCE.clear()
-        _persist_auth()
+            acct.characters.clear()
+            acct.skill_profiles.clear()
+            acct.bp_me_tes.clear()
+            acct.active_char_id = None
+            remaining = False
+    if remaining:
+        _persist_account(acct)
+    else:
+        _forget_account(acct)
     return {"ok": True}
 
 
 _JOBS_TRACK_LOCK = threading.Lock()
 
 
-def _track_delivered_jobs(cid, jobs, names):
+def _track_delivered_jobs(acct, cid, jobs, names):
     """Cumulative counter of runs/jobs the character has *delivered*, persisted
     across restarts. Only counts jobs newly seen as "delivered" — the first time
     a character is observed, its already-delivered jobs (ESI's 90-day completed
     window) are recorded as a baseline but not counted, so the counter only grows
     from the moment this feature started watching, as advertised to the user."""
     with _JOBS_TRACK_LOCK:
-        store = _kv_load("ind_jobs_delivered", JOBS_TRACK_PATH, {})
+        store = _acct_kv_load(acct, "ind_jobs_delivered", JOBS_TRACK_PATH, {})
         key = str(cid)
         entry = store.get(key)
         first_seen = entry is None
@@ -482,7 +679,7 @@ def _track_delivered_jobs(cid, jobs, names):
         entry["seen_job_ids"] = list(seen)
         if changed:
             store[key] = entry
-            _kv_save("ind_jobs_delivered", JOBS_TRACK_PATH, store)
+            _acct_kv_save(acct, "ind_jobs_delivered", JOBS_TRACK_PATH, store)
         return {"total_runs": entry["total_runs"], "total_jobs": entry["total_jobs"],
                 "since": entry["since"], "by_product": entry["by_product"]}
 
@@ -490,11 +687,11 @@ def _track_delivered_jobs(cid, jobs, names):
 ORDER_EVENT_EXPIRY = 7 * 24 * 3600  # auto-expire after 1 week
 
 
-def _track_order_changes(cid, current_orders, names):
+def _track_order_changes(acct, cid, current_orders, names):
     """Compare current market orders with previously seen ones. Record sale/fill
     events when volume_remain decreases or an order disappears entirely.
     Also maintains per-order last_sale metadata for active orders."""
-    store = _kv_load("order_events", ORDER_EVENTS_PATH, {})
+    store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
     char_key = str(cid)
     prev_key = f"_prev_{char_key}"
     sales_key = f"_sales_{char_key}"
@@ -528,7 +725,7 @@ def _track_order_changes(cid, current_orders, names):
                 "price": prev.get("price", 0),
                 "is_buy_order": prev.get("is_buy_order", False),
                 "filled": cur is None,
-                "character_name": _CHARACTERS.get(cid, {}).get("name", ""),
+                "character_name": acct.characters.get(cid, {}).get("name", ""),
                 "dismissed": False,
             })
             if cur is not None:
@@ -552,13 +749,13 @@ def _track_order_changes(cid, current_orders, names):
     store[prev_key] = new_prev
     store[char_key] = events
     store[sales_key] = last_sales
-    _kv_save("order_events", ORDER_EVENTS_PATH, store)
+    _acct_kv_save(acct, "order_events", ORDER_EVENTS_PATH, store)
     return events, last_sales
 
 
-def _get_order_events():
-    """Return all non-dismissed, non-expired events across all characters."""
-    store = _kv_load("order_events", ORDER_EVENTS_PATH, {})
+def _get_order_events(acct):
+    """Return all non-dismissed, non-expired events across the account's chars."""
+    store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
     now = time.time()
     all_events = []
     for key, val in store.items():
@@ -573,9 +770,9 @@ def _get_order_events():
     return all_events
 
 
-def _dismiss_order_event(event_id):
+def _dismiss_order_event(acct, event_id):
     """Mark a single event as dismissed, or dismiss all if event_id is 'all'."""
-    store = _kv_load("order_events", ORDER_EVENTS_PATH, {})
+    store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
     for key, val in store.items():
         if key.startswith("_prev_"):
             continue
@@ -583,15 +780,15 @@ def _dismiss_order_event(event_id):
             for e in val:
                 if event_id == "all" or e.get("id") == event_id:
                     e["dismissed"] = True
-    _kv_save("order_events", ORDER_EVENTS_PATH, store)
+    _acct_kv_save(acct, "order_events", ORDER_EVENTS_PATH, store)
 
 
-def _fetch_one_char_data(cid):
+def _fetch_one_char_data(acct, cid):
     """Fetch all ESI data for a single character. Returns a dict bundle."""
-    token = _access_token(cid)
-    char_name = _CHARACTERS[cid]["name"]
-    _refresh_skill_profile(cid)
-    _refresh_char_blueprints(cid)
+    token = _access_token(acct, cid)
+    char_name = acct.characters[cid]["name"]
+    _refresh_skill_profile(acct, cid)
+    _refresh_char_blueprints(acct, cid)
 
     wallet = sso_core.fetch_wallet(token, cid, SESSION)
     skills = sso_core.fetch_skills(token, cid, SESSION)
@@ -620,7 +817,7 @@ def _fetch_one_char_data(cid):
     name_ids.discard(None)
     names = resolve_names(list(name_ids), SESSION, CACHE_DIR) if name_ids else {}
 
-    runs_tracked = _track_delivered_jobs(cid, jobs, names)
+    runs_tracked = _track_delivered_jobs(acct, cid, jobs, names)
 
     activity_label = {1: "Manufacturing",
                       3: "TE Research",
@@ -707,14 +904,15 @@ def _fetch_one_char_data(cid):
             "character_id": cid,
         })
 
-    _, last_sales = _track_order_changes(cid, orders_out, names)
+    _, last_sales = _track_order_changes(acct, cid, orders_out, names)
     for o in orders_out:
         sale = last_sales.get(str(o.get("order_id")))
         if sale:
             o["last_sale_ts"] = sale["ts"]
             o["last_sale_qty"] = sale["sold"]
 
-    skill_profile = _CHAR_SKILL_PROFILES.get(cid, {})
+    with acct.lock:
+        skill_profile = acct.skill_profiles.get(cid, {})
     accounting_lvl = skill_profile.get(16622, 0)
     broker_rel_lvl = skill_profile.get(3446, 0)
 
@@ -737,18 +935,18 @@ def _fetch_one_char_data(cid):
 
 def do_char_data(q):
     """Fetch data for all linked characters and return a combined bundle."""
-    if not _CHARACTERS:
-        raise LPError("Not logged in to EVE.")
-
-    char_ids = list(_CHARACTERS.keys())
+    acct = require_account()
+    with acct.lock:
+        char_ids = list(acct.characters.keys())
+        active_char_id = acct.active_char_id
     results = {}
 
     if len(char_ids) == 1:
         cid = char_ids[0]
-        results[cid] = _fetch_one_char_data(cid)
+        results[cid] = _fetch_one_char_data(acct, cid)
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(char_ids)) as pool:
-            futures = {pool.submit(_fetch_one_char_data, cid): cid for cid in char_ids}
+            futures = {pool.submit(_fetch_one_char_data, acct, cid): cid for cid in char_ids}
             for f in concurrent.futures.as_completed(futures):
                 cid = futures[f]
                 try:
@@ -771,7 +969,7 @@ def do_char_data(q):
     combined_jobs.sort(key=lambda x: x.get("end") or "")
     combined_orders.sort(key=lambda o: o.get("issued") or "", reverse=True)
 
-    active_data = results.get(_ACTIVE_CHAR_ID) or next(iter(results.values()), {})
+    active_data = results.get(active_char_id) or next(iter(results.values()), {})
 
     return {
         "characters": [results[cid] for cid in char_ids if cid in results],
@@ -780,7 +978,7 @@ def do_char_data(q):
         "combined_orders": combined_orders,
         "combined_queue": combined_queue,
         "combined_runs_tracked": combined_runs,
-        "active_char_id": _ACTIVE_CHAR_ID,
+        "active_char_id": active_char_id,
         "name": active_data.get("name"),
         "character_id": active_data.get("character_id"),
         "wallet": active_data.get("wallet"),
@@ -794,7 +992,7 @@ def do_char_data(q):
         "market_orders_error": active_data.get("market_orders_error"),
         "accounting_level": active_data.get("accounting_level", 0),
         "broker_relations_level": active_data.get("broker_relations_level", 0),
-        "order_events": _get_order_events(),
+        "order_events": _get_order_events(acct),
     }
 
 
@@ -1045,20 +1243,40 @@ def get_npc_corps():
     return NPC_CORPS
 
 
+def load_account_settings(acct):
+    """The full per-account settings blob (searches/filters/columns/…), or None
+    if this account has never synced yet. Server-authoritative and identical
+    across every browser/device the user logs in from."""
+    if acct is None or not acct.characters:
+        return None
+    if pg_store.enabled():
+        return pg_store.account_settings_get(acct.account_id)
+    # Legacy single-user mode keys the blob by the active character.
+    return load_user_settings(acct.active_char_id) if acct.active_char_id else None
+
+
+def save_account_settings(acct, data):
+    if acct is None or not acct.characters:
+        return
+    if pg_store.enabled():
+        pg_store.account_settings_set(acct.account_id, data, time.time())
+    elif acct.active_char_id:
+        save_user_settings(acct.active_char_id, data)
+
+
 def do_settings_sync(q):
-    """Push the full client-side settings blob for the logged-in character to
-    the server, so other devices see the same columns/filters/etc. No-op when
-    no character is logged in (unauthenticated use keeps the per-field
-    /api/prefs, /api/arb/prefs, /api/ind/prefs endpoints as its only store)."""
-    character_id = _ACTIVE_CHAR_ID
-    if not character_id:
+    """Persist the full client-side settings blob for the account, remotely, so
+    every browser the user logs in from converges on the same view. No-op when
+    unauthenticated."""
+    acct = current_account()
+    if acct is None or not acct.characters:
         return {"ok": True, "synced": False}
     blob = q.get("blob", ["{}"])[0]
     try:
         data = json.loads(blob)
     except json.JSONDecodeError:
         raise LPError("Invalid settings payload.")
-    save_user_settings(character_id, data)
+    save_account_settings(acct, data)
     return {"ok": True, "synced": True}
 
 
@@ -1409,7 +1627,7 @@ def _patch_group_names(rows):
 
 def do_ind_scan(q, emit=None):
     """Rank manufacturable items by profitability. Streams SSE progress."""
-    _require_login()
+    acct = require_account()
 
     def _emit(d):
         if emit:
@@ -1436,9 +1654,10 @@ def do_ind_scan(q, emit=None):
     except (ValueError, TypeError):
         fav_ids = set()
     params = _ind_params(q)
-    ind_cid = _ACTIVE_CHAR_ID
-    ind_skill_profile = _CHAR_SKILL_PROFILES.get(ind_cid, {}) if ind_cid else {}
-    ind_bp_me_te = _CHAR_BP_ME_TES.get(ind_cid, {}) if ind_cid else {}
+    with acct.lock:
+        ind_cid = acct.active_char_id
+        ind_skill_profile = dict(acct.skill_profiles.get(ind_cid, {})) if ind_cid else {}
+        ind_bp_me_te = dict(acct.bp_me_tes.get(ind_cid, {})) if ind_cid else {}
     if ind_skill_profile:
         params["skill_profile"] = ind_skill_profile
     if ind_bp_me_te:
@@ -1552,12 +1771,14 @@ def do_ind_scan(q, emit=None):
             r["liq_loaded"] = True   # the rest get scored by the background fill
 
     _emit({"type": "progress", "pct": 97, "msg": "Formatting results…", "sub": ""})
-    # Cross-character blueprint ownership annotations
+    # Cross-character blueprint ownership annotations (this account's chars only)
     other_owners_map = {}
-    for other_cid, bp_map in _CHAR_BP_ME_TES.items():
+    with acct.lock:
+        bp_snapshot = [(ocid, acct.characters.get(ocid, {}).get("name", "?"),
+                        dict(bp_map)) for ocid, bp_map in acct.bp_me_tes.items()]
+    for other_cid, other_name, bp_map in bp_snapshot:
         if other_cid == ind_cid:
             continue
-        other_name = _CHARACTERS.get(other_cid, {}).get("name", "?")
         for tid, entry in bp_map.items():
             other_owners_map.setdefault(tid, []).append({
                 "character_id": other_cid,
@@ -1607,15 +1828,16 @@ def do_ind_liquidity(q):
 def do_ind_detail(q):
     """Full breakdown for one blueprint, with accurate (ESI packaged) cargo
     volumes resolved lazily for just this item's inputs and output."""
-    _require_login()
+    acct = require_account()
     blueprint_id = int(q["blueprint_id"][0])
     station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
     if station_id not in TRADE_HUBS:
         station_id = JITA_STATION_ID
     params = _ind_params(q)
-    ind_cid = _ACTIVE_CHAR_ID
-    ind_skill_profile = _CHAR_SKILL_PROFILES.get(ind_cid, {}) if ind_cid else {}
-    ind_bp_me_te = _CHAR_BP_ME_TES.get(ind_cid, {}) if ind_cid else {}
+    with acct.lock:
+        ind_cid = acct.active_char_id
+        ind_skill_profile = dict(acct.skill_profiles.get(ind_cid, {})) if ind_cid else {}
+        ind_bp_me_te = dict(acct.bp_me_tes.get(ind_cid, {})) if ind_cid else {}
     if ind_skill_profile:
         params["skill_profile"] = ind_skill_profile
     owned_me_te = ind_bp_me_te.get(blueprint_id)
@@ -1766,6 +1988,19 @@ _GET_ROUTES = {
     "/api/char/data": do_char_data,
 }
 
+# Session cookie + the endpoints reachable without one (multi-user mode). The app
+# shell and the login handshake must stay public; everything else needs a session.
+_COOKIE_NAME = "emt_sid"
+_PUBLIC_PATHS = ({"/", "/favicon.ico", "/callback", "/api/corps",
+                  "/api/auth/login", "/api/auth/status"} | TAB_ROUTES)
+_MAX_BODY = 2 * 1024 * 1024  # reject request bodies larger than 2 MiB
+
+
+def _cookie_header(sid):
+    secure = "; Secure" if _callback_url().startswith("https") else ""
+    return (f"{_COOKIE_NAME}={sid}; HttpOnly; Path=/; SameSite=Lax; "
+            f"Max-Age={_SESSION_TTL}{secure}")
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -1787,22 +2022,53 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _redirect(self, location):
+    def _redirect(self, location, set_sid=None):
         self.send_response(302)
         self.send_header("Location", location)
+        if set_sid:
+            self.send_header("Set-Cookie", _cookie_header(set_sid))
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _cookies(self):
+        jar = {}
+        for part in (self.headers.get("Cookie", "") or "").split(";"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                jar[k.strip()] = v.strip()
+        return jar
+
+    def _setup_request(self):
+        """Resolve the request's Account into the per-thread context. Legacy mode
+        always uses the single implicit account; multi-user resolves the cookie."""
+        _REQUEST.account = None
+        if not pg_store.enabled():
+            _REQUEST.account = _LEGACY_ACCOUNT
+            return
+        try:
+            _REQUEST.account = _resolve_session(self._cookies().get(_COOKIE_NAME))
+        except Exception:  # noqa: BLE001 — never let a session-store hiccup 500
+            _REQUEST.account = None
+
+    def _gate(self, path):
+        """In multi-user mode, reject non-public requests without a session."""
+        if pg_store.enabled() and path not in _PUBLIC_PATHS and current_account() is None:
+            self._send_json({"error": "Log in with EVE to continue.",
+                             "login_required": True}, 401)
+            return False
+        return True
+
     def _handle_callback(self, q):
         """EVE SSO redirect target: validate state, exchange the code for tokens,
-        add the character to _CHARACTERS, then bounce back to the app."""
+        attach the character to an account, mint a session cookie, bounce back."""
         if "error" in q:
             self._send_html(f"<h2>EVE login failed</h2><p>{html.escape(q['error'][0])}</p>"
                             "<p><a href='/'>Back to app</a></p>")
             return
         state = q.get("state", [""])[0]
         code = q.get("code", [""])[0]
-        handshake = _PKCE.pop(state, None)
+        with _PKCE_LOCK:
+            handshake = _PKCE.pop(state, None)
         if not handshake or not code:
             self._send_html("<h2>EVE login failed</h2><p>Invalid or expired login "
                             "request. Please try again.</p><p><a href='/'>Back to app</a></p>")
@@ -1813,9 +2079,19 @@ class Handler(BaseHTTPRequestHandler):
                                          code, handshake["verifier"], SESSION)
             claims = sso_core.decode_jwt_payload(tok["access_token"])
             cid = claims["character_id"]
-            global _ACTIVE_CHAR_ID
-            with _CHARACTERS_LOCK:
-                _CHARACTERS[cid] = {
+            # Which account does this character join? An existing session's
+            # account (adding a character), else the account this character is
+            # already known to belong to (re-login), else a brand-new account.
+            acct = current_account()
+            if acct is None:
+                account_id = pg_store.char_account_get(cid) if pg_store.enabled() else None
+                acct = _get_account_by_id(account_id) if account_id is not None else None
+                if acct is None:
+                    acct = Account(cid)
+            with acct.lock:
+                if acct.account_id is None:
+                    acct.account_id = cid
+                acct.characters[cid] = {
                     "character_id": cid,
                     "name": claims["name"],
                     "scopes": claims.get("scopes", []),
@@ -1823,17 +2099,24 @@ class Handler(BaseHTTPRequestHandler):
                     "access_token": tok["access_token"],
                     "expires_at": time.time() + int(tok.get("expires_in", 1200)),
                 }
-                if _ACTIVE_CHAR_ID is None:
-                    _ACTIVE_CHAR_ID = cid
-                _persist_auth()
-            _refresh_skill_profile(cid)
-            _refresh_char_blueprints(cid)
+                if acct.active_char_id is None:
+                    acct.active_char_id = cid
+                _persist_account(acct)
+            with _REGISTRY_LOCK:
+                _ACCOUNTS[acct.account_id] = acct
+            _refresh_skill_profile(acct, cid)
+            _refresh_char_blueprints(acct, cid)
+            set_sid = None
+            if pg_store.enabled():
+                existing = self._cookies().get(_COOKIE_NAME)
+                if not existing or _resolve_session(existing) is not acct:
+                    set_sid = _new_session(acct)
         except Exception as e:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             self._send_html(f"<h2>EVE login failed</h2><p>{html.escape(f'{type(e).__name__}: {e}')}</p>"
                             "<p><a href='/'>Back to app</a></p>")
             return
-        self._redirect("/")
+        self._redirect("/", set_sid)
 
     def _sse_emit(self, data):
         try:
@@ -1853,9 +2136,9 @@ class Handler(BaseHTTPRequestHandler):
             result = scan_fn(q, emit=emit)
             emit({"type": "result", **result})
             if tag == "lp":
-                save_json(LP_LAST_SCAN_PATH, result)
+                _save_last_scan(current_account(), "lp", result)
             elif tag == "ind" and not result.get("favorites_only") and not result.get("owned_only"):
-                save_json(IND_LAST_SCAN_PATH, result)
+                _save_last_scan(current_account(), "ind", result)
         except LPError as e:
             print(f"[{tag}] LPError: {e}", file=sys.stderr)
             emit({"type": "error", "error": str(e)})
@@ -1870,6 +2153,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         q = parse_qs(parsed.query)
         try:
+            self._setup_request()
+            if not self._gate(parsed.path):
+                return
             if parsed.path == "/" or parsed.path in TAB_ROUTES:
                 self._send_html(INDEX_HTML)
             elif parsed.path == "/favicon.ico":
@@ -1879,8 +2165,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(_FAVICON_SVG)
             elif parsed.path == "/api/settings":
-                character_id = _ACTIVE_CHAR_ID
-                synced = load_user_settings(character_id) if character_id else None
+                acct = current_account()
+                synced = load_account_settings(acct)
                 if synced is not None:
                     synced["_server_synced"] = True
                     self._send_json(synced)
@@ -1889,17 +2175,18 @@ class Handler(BaseHTTPRequestHandler):
                     merged["arb"] = load_arb_settings()
                     merged["ind"] = load_ind_settings()
                     merged["_server_synced"] = False
-                    merged["_logged_in"] = bool(character_id)
+                    merged["_logged_in"] = bool(acct and acct.characters)
                     self._send_json(merged)
             elif parsed.path == "/api/last-scan":
-                lp_data = load_json(LP_LAST_SCAN_PATH, None)
-                ind_data = load_json(IND_LAST_SCAN_PATH, None)
+                acct = current_account()
+                lp_data = _load_last_scan(acct, "lp")
+                ind_data = _load_last_scan(acct, "ind")
                 if ind_data and ind_data.get("rows"):
                     _patch_group_names(ind_data["rows"])
                 self._send_json({"lp": lp_data, "ind": ind_data})
             elif parsed.path == "/api/scan":
                 result = do_scan(q)
-                save_json(LP_LAST_SCAN_PATH, result)
+                _save_last_scan(current_account(), "lp", result)
                 self._send_json(result)
             elif parsed.path == "/api/arb/scan":
                 self._handle_arb_scan(q)
@@ -1925,7 +2212,13 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         q = parse_qs(urlparse(self.path).query)
         try:
+            self._setup_request()
+            if not self._gate(parsed.path):
+                return
             length = int(self.headers.get("Content-Length", 0))
+            if length > _MAX_BODY:
+                self._send_json({"error": "request too large"}, 413)
+                return
             body = self.rfile.read(length) if length else b""
             if body:
                 try:
@@ -1939,10 +2232,8 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
                 tab = data.get("tab", "")
                 blob = data.get("blob")
-                if tab == "lp" and blob:
-                    save_json(LP_LAST_SCAN_PATH, blob)
-                elif tab == "ind" and blob:
-                    save_json(IND_LAST_SCAN_PATH, blob)
+                if tab in ("lp", "ind") and blob:
+                    _save_last_scan(current_account(), tab, blob)
                 self._send_json({"ok": True})
             elif parsed.path == "/api/prefs":
                 self._send_json(do_prefs(q))
@@ -1955,7 +2246,7 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/orders/dismiss":
                 event_id = q.get("id", [""])[0]
                 if event_id:
-                    _dismiss_order_event(event_id)
+                    _dismiss_order_event(current_account(), event_id)
                 self._send_json({"ok": True})
             else:
                 self._send_json({"error": "not found"}, 404)
@@ -1984,7 +2275,7 @@ def main():
 
     global _SERVER_PORT
     _SERVER_PORT = args.port
-    _restore_auth()
+    _startup_restore()
 
     url = f"http://{args.host if args.host != '0.0.0.0' else 'localhost'}:{args.port}"
     server = ThreadingHTTPServer((args.host, args.port), Handler)

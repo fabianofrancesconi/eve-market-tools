@@ -1,9 +1,9 @@
 """
-Tests for multi-character (alt account) support.
+Tests for multi-character (alt account) support + the multi-user account model.
 
-Covers: v1→v2 auth migration, per-character token refresh, character switching,
-logout (single + all), cross-character blueprint annotations, and combined
-char data output shape.
+Covers: v1→v2 auth migration (legacy file mode), per-character token refresh,
+character switching, logout (single + all), cross-character blueprint
+annotations, and combined char data output shape.
 """
 import json
 import time
@@ -23,11 +23,39 @@ _spec.loader.exec_module(lp_web)
 from lp_core import LPError
 
 
-# ── Auth file migration (v1 → v2) ────────────────────────────────────────────
+def _acct(chars=None, active=None):
+    """Build an Account from {cid: name} (or richer {cid: dict})."""
+    ids = list((chars or {}).keys())
+    a = lp_web.Account(ids[0] if ids else 1)
+    for cid, val in (chars or {}).items():
+        if isinstance(val, dict):
+            a.characters[cid] = {"character_id": cid, "scopes": [],
+                                 "refresh_token": "x", **val}
+        else:
+            a.characters[cid] = {"character_id": cid, "name": val,
+                                 "scopes": [], "refresh_token": "x"}
+    a.active_char_id = active if (active in a.characters) else (ids[0] if ids else None)
+    return a
+
+
+def _use_account(acct):
+    lp_web._REQUEST.account = acct
+
+
+@pytest.fixture(autouse=True)
+def _legacy_mode(monkeypatch):
+    """These tests exercise the legacy (file-backed, single-account) path."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    lp_web._REQUEST.account = None
+    yield
+    lp_web._REQUEST.account = None
+
+
+# ── Auth file migration (v1 → v2), legacy mode ───────────────────────────────
 
 class TestAuthMigration:
     def test_v1_file_migrates_to_v2(self, tmp_path, monkeypatch):
-        """Existing single-character eve_auth.json loads into _CHARACTERS."""
+        """Existing single-character eve_auth.json loads into the legacy account."""
         v1_data = {
             "refresh_token": "old_refresh",
             "character_id": 123,
@@ -35,14 +63,15 @@ class TestAuthMigration:
             "scopes": ["esi-skills.read_skills.v1"],
         }
         (tmp_path / "eve_auth.json").write_text(json.dumps(v1_data))
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", None)
         monkeypatch.setattr(lp_web, "CACHE_DIR", tmp_path)
-        lp_web._restore_auth()
-        assert 123 in lp_web._CHARACTERS
-        assert lp_web._CHARACTERS[123]["name"] == "OldChar"
-        assert lp_web._CHARACTERS[123]["refresh_token"] == "old_refresh"
-        assert lp_web._ACTIVE_CHAR_ID == 123
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "characters", {})
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "active_char_id", None)
+        lp_web._startup_restore()
+        acct = lp_web._LEGACY_ACCOUNT
+        assert 123 in acct.characters
+        assert acct.characters[123]["name"] == "OldChar"
+        assert acct.characters[123]["refresh_token"] == "old_refresh"
+        assert acct.active_char_id == 123
         # Verify it rewrote as v2
         saved = json.loads((tmp_path / "eve_auth.json").read_text())
         assert saved["version"] == 2
@@ -59,22 +88,23 @@ class TestAuthMigration:
             ],
         }
         (tmp_path / "eve_auth.json").write_text(json.dumps(v2_data))
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", None)
         monkeypatch.setattr(lp_web, "CACHE_DIR", tmp_path)
-        lp_web._restore_auth()
-        assert 100 in lp_web._CHARACTERS
-        assert 200 in lp_web._CHARACTERS
-        assert lp_web._ACTIVE_CHAR_ID == 100
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "characters", {})
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "active_char_id", None)
+        lp_web._startup_restore()
+        acct = lp_web._LEGACY_ACCOUNT
+        assert 100 in acct.characters
+        assert 200 in acct.characters
+        assert acct.active_char_id == 100
 
     def test_empty_file_means_no_login(self, tmp_path, monkeypatch):
         (tmp_path / "eve_auth.json").write_text("{}")
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", None)
         monkeypatch.setattr(lp_web, "CACHE_DIR", tmp_path)
-        lp_web._restore_auth()
-        assert lp_web._CHARACTERS == {}
-        assert lp_web._ACTIVE_CHAR_ID is None
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "characters", {})
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "active_char_id", None)
+        lp_web._startup_restore()
+        assert lp_web._LEGACY_ACCOUNT.characters == {}
+        assert lp_web._LEGACY_ACCOUNT.active_char_id is None
 
     def test_v2_with_deleted_active_char_falls_back(self, tmp_path, monkeypatch):
         """If active_char_id points to a character not in the list, pick first."""
@@ -86,11 +116,11 @@ class TestAuthMigration:
             ],
         }
         (tmp_path / "eve_auth.json").write_text(json.dumps(v2_data))
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {})
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", None)
         monkeypatch.setattr(lp_web, "CACHE_DIR", tmp_path)
-        lp_web._restore_auth()
-        assert lp_web._ACTIVE_CHAR_ID == 100
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "characters", {})
+        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "active_char_id", None)
+        lp_web._startup_restore()
+        assert lp_web._LEGACY_ACCOUNT.active_char_id == 100
 
 
 # ── Token refresh per character ───────────────────────────────────────────────
@@ -98,14 +128,11 @@ class TestAuthMigration:
 class TestPerCharToken:
     def test_access_token_refreshes_correct_character(self, monkeypatch, tmp_path):
         monkeypatch.setattr(lp_web, "CACHE_DIR", tmp_path)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {
-            1: {"character_id": 1, "name": "A", "scopes": [],
-                "refresh_token": "rt_A", "access_token": None, "expires_at": 0},
-            2: {"character_id": 2, "name": "B", "scopes": [],
-                "refresh_token": "rt_B", "access_token": "valid_B",
+        acct = _acct({
+            1: {"name": "A", "refresh_token": "rt_A", "access_token": None, "expires_at": 0},
+            2: {"name": "B", "refresh_token": "rt_B", "access_token": "valid_B",
                 "expires_at": time.time() + 3600},
-        })
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 1)
+        }, active=1)
         monkeypatch.setenv("EVE_CLIENT_ID", "test123")  # client_id now comes from env
 
         # Mock token refresh for char 1
@@ -113,26 +140,22 @@ class TestPerCharToken:
             json.dumps({"sub": "CHARACTER:EVE:1", "name": "A", "scp": []}).encode()
         ) + "." + sso_core._b64url(b'sig')
         mock_tok = {"access_token": fake_jwt, "refresh_token": "rt_A_new", "expires_in": 1200}
-        monkeypatch.setattr(sso_core, "refresh_access_token",
-                            lambda *a, **k: mock_tok)
+        monkeypatch.setattr(sso_core, "refresh_access_token", lambda *a, **k: mock_tok)
 
-        token = lp_web._access_token(1)
+        token = lp_web._access_token(acct, 1)
         assert token == fake_jwt
-        assert lp_web._CHARACTERS[1]["access_token"] == fake_jwt
+        assert acct.characters[1]["access_token"] == fake_jwt
 
         # Char 2 doesn't need refresh — returns cached token
-        token2 = lp_web._access_token(2)
-        assert token2 == "valid_B"
+        assert lp_web._access_token(acct, 2) == "valid_B"
 
     def test_access_token_defaults_to_active(self, monkeypatch, tmp_path):
         monkeypatch.setattr(lp_web, "CACHE_DIR", tmp_path)
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 2)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {
-            2: {"character_id": 2, "name": "B", "scopes": [],
-                "refresh_token": "rt", "access_token": "tok_B",
+        acct = _acct({
+            2: {"name": "B", "refresh_token": "rt", "access_token": "tok_B",
                 "expires_at": time.time() + 3600},
-        })
-        assert lp_web._access_token() == "tok_B"
+        }, active=2)
+        assert lp_web._access_token(acct) == "tok_B"
 
 
 # ── Env-based EVE login config (client_id + callback from env, not settings) ──
@@ -159,15 +182,16 @@ class TestEnvAuthConfig:
 class TestAuthEndpoints:
     def _setup_two_chars(self, monkeypatch, tmp_path):
         monkeypatch.setattr(lp_web, "CACHE_DIR", tmp_path)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {
-            10: {"character_id": 10, "name": "Main", "scopes": ["s1"],
-                 "refresh_token": "rt1", "access_token": None, "expires_at": 0},
-            20: {"character_id": 20, "name": "Alt", "scopes": ["s2"],
-                 "refresh_token": "rt2", "access_token": None, "expires_at": 0},
-        })
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 10)
-        monkeypatch.setattr(lp_web, "_CHAR_SKILL_PROFILES", {10: {}, 20: {}})
-        monkeypatch.setattr(lp_web, "_CHAR_BP_ME_TES", {10: {}, 20: {}})
+        acct = _acct({
+            10: {"name": "Main", "scopes": ["s1"], "refresh_token": "rt1",
+                 "access_token": None, "expires_at": 0},
+            20: {"name": "Alt", "scopes": ["s2"], "refresh_token": "rt2",
+                 "access_token": None, "expires_at": 0},
+        }, active=10)
+        acct.skill_profiles = {10: {}, 20: {}}
+        acct.bp_me_tes = {10: {}, 20: {}}
+        _use_account(acct)
+        return acct
 
     def test_auth_status_returns_all_characters(self, monkeypatch, tmp_path):
         self._setup_two_chars(monkeypatch, tmp_path)
@@ -179,45 +203,45 @@ class TestAuthEndpoints:
         assert st["name"] == "Main"
 
     def test_switch_active_character(self, monkeypatch, tmp_path):
-        self._setup_two_chars(monkeypatch, tmp_path)
+        acct = self._setup_two_chars(monkeypatch, tmp_path)
         # Stub skill/bp refresh to avoid actual ESI calls
-        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda cid: None)
-        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda cid: None)
+        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda a, cid: None)
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda a, cid: None)
         result = lp_web.do_auth_switch({"active_char_id": ["20"]})
         assert result["active_char_id"] == 20
         assert result["name"] == "Alt"
-        assert lp_web._ACTIVE_CHAR_ID == 20
+        assert acct.active_char_id == 20
 
     def test_switch_active_character_refreshes_skills_and_blueprints(self, monkeypatch, tmp_path):
         """Switching the active character re-pulls its skills + blueprints, since
         it now also drives the Industry planner."""
         self._setup_two_chars(monkeypatch, tmp_path)
         refreshed = []
-        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda cid: refreshed.append(("skills", cid)))
-        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda cid: refreshed.append(("bps", cid)))
+        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda a, cid: refreshed.append(("skills", cid)))
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda a, cid: refreshed.append(("bps", cid)))
         lp_web.do_auth_switch({"active_char_id": ["20"]})
         assert ("skills", 20) in refreshed
         assert ("bps", 20) in refreshed
 
     def test_switch_invalid_char_id_ignored(self, monkeypatch, tmp_path):
-        self._setup_two_chars(monkeypatch, tmp_path)
-        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda cid: None)
-        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda cid: None)
+        acct = self._setup_two_chars(monkeypatch, tmp_path)
+        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda a, cid: None)
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda a, cid: None)
         lp_web.do_auth_switch({"active_char_id": ["999"]})
-        assert lp_web._ACTIVE_CHAR_ID == 10  # unchanged
+        assert acct.active_char_id == 10  # unchanged
 
     def test_logout_single_character(self, monkeypatch, tmp_path):
-        self._setup_two_chars(monkeypatch, tmp_path)
+        acct = self._setup_two_chars(monkeypatch, tmp_path)
         lp_web.do_auth_logout({"char_id": ["10"]})
-        assert 10 not in lp_web._CHARACTERS
-        assert 20 in lp_web._CHARACTERS
-        assert lp_web._ACTIVE_CHAR_ID == 20
+        assert 10 not in acct.characters
+        assert 20 in acct.characters
+        assert acct.active_char_id == 20
 
     def test_logout_all(self, monkeypatch, tmp_path):
-        self._setup_two_chars(monkeypatch, tmp_path)
+        acct = self._setup_two_chars(monkeypatch, tmp_path)
         lp_web.do_auth_logout({})
-        assert lp_web._CHARACTERS == {}
-        assert lp_web._ACTIVE_CHAR_ID is None
+        assert acct.characters == {}
+        assert acct.active_char_id is None
 
 
 # ── Cross-character blueprint annotations ─────────────────────────────────────
@@ -225,28 +249,28 @@ class TestAuthEndpoints:
 class TestCrossCharBlueprintAnnotations:
     def test_other_owners_populated_in_scan_rows(self, monkeypatch, tmp_path):
         """Industry scan rows should carry other_owners from alt characters."""
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 1)
-        monkeypatch.setattr(lp_web, "_CHAR_BP_ME_TES", {
+        acct = _acct({
+            1: {"name": "Main", "refresh_token": "x"},
+            2: {"name": "Alt", "refresh_token": "y"},
+        }, active=1)
+        acct.bp_me_tes = {
             1: {681: (10, 20, True, -1)},
             2: {681: (8, 16, True, -1), 999: (0, 0, False, 50)},
-        })
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {
-            1: {"character_id": 1, "name": "Main", "scopes": [], "refresh_token": "x"},
-            2: {"character_id": 2, "name": "Alt", "scopes": [], "refresh_token": "y"},
-        })
-        # Simulate rows that would come from evaluate_industry
+        }
         rows = [
             {"blueprint_id": 681, "product_name": "Item A"},
             {"blueprint_id": 999, "product_name": "Item B"},
             {"blueprint_id": 555, "product_name": "Item C"},
         ]
-        # Build the other_owners_map the same way the scan does
-        ind_cid = lp_web._ACTIVE_CHAR_ID
+        # Build the other_owners_map the same way do_ind_scan does now.
+        ind_cid = acct.active_char_id
         other_owners_map = {}
-        for other_cid, bp_map in lp_web._CHAR_BP_ME_TES.items():
+        with acct.lock:
+            bp_snapshot = [(ocid, acct.characters.get(ocid, {}).get("name", "?"),
+                            dict(bp_map)) for ocid, bp_map in acct.bp_me_tes.items()]
+        for other_cid, other_name, bp_map in bp_snapshot:
             if other_cid == ind_cid:
                 continue
-            other_name = lp_web._CHARACTERS.get(other_cid, {}).get("name", "?")
             for tid, entry in bp_map.items():
                 other_owners_map.setdefault(tid, []).append({
                     "character_id": other_cid,
@@ -278,17 +302,15 @@ class TestCombinedCharData:
         monkeypatch.setattr(lp_web, "CACHE_DIR", cache)
         monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", cache / "jobs.json")
         monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", cache / "order_events.json")
-        monkeypatch.setattr(lp_web, "_ACTIVE_CHAR_ID", 1)
-        monkeypatch.setattr(lp_web, "_CHARACTERS", {
-            1: {"character_id": 1, "name": "Main", "scopes": [],
-                "refresh_token": "rt1", "access_token": "tok1",
+        acct = _acct({
+            1: {"name": "Main", "refresh_token": "rt1", "access_token": "tok1",
                 "expires_at": time.time() + 3600},
-            2: {"character_id": 2, "name": "Alt", "scopes": [],
-                "refresh_token": "rt2", "access_token": "tok2",
+            2: {"name": "Alt", "refresh_token": "rt2", "access_token": "tok2",
                 "expires_at": time.time() + 3600},
-        })
-        monkeypatch.setattr(lp_web, "_CHAR_SKILL_PROFILES", {1: {}, 2: {}})
-        monkeypatch.setattr(lp_web, "_CHAR_BP_ME_TES", {1: {}, 2: {}})
+        }, active=1)
+        acct.skill_profiles = {1: {}, 2: {}}
+        acct.bp_me_tes = {1: {}, 2: {}}
+        _use_account(acct)
         # Mock all ESI fetchers
         monkeypatch.setattr(lp_web.sso_core, "fetch_wallet", lambda *a, **k: 500_000.0)
         monkeypatch.setattr(lp_web.sso_core, "fetch_skills",

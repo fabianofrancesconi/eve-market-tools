@@ -776,6 +776,7 @@
   }
   .notes-tree-item:hover .ni-del { opacity:1; }
   .notes-tree-item .ni-del:hover { color:var(--red); }
+  .notes-tree-item input.ni-inline-edit { flex:1; min-width:0; }
   .notes-tree-children { padding-left:14px; }
   .notes-tree-folder > .notes-tree-item .ni-icon { color:var(--gold); }
   .notes-editor {
@@ -3449,6 +3450,7 @@ async function checkAuth(){
   if(AUTH.loggedIn){
     refreshCharData();
     if(location.pathname==="/character" || location.pathname==="/char") switchTab("char", {url:false});
+    if(!NOTES.loaded || !NOTES.items.length) loadNotes();
   }
 }
 
@@ -4214,7 +4216,9 @@ function _subtreeMaxDepth(id){
 async function loadNotes(){
   try{
     const r=await fetch("/api/notes"); const d=await r.json();
-    NOTES.items=d.notes||[]; NOTES.loaded=true; renderNotesTree();
+    NOTES.items=d.notes||[];
+    NOTES.loaded=NOTES.items.length>0||AUTH.loggedIn;
+    renderNotesTree();
   }catch(e){ console.error("notes load",e); }
 }
 
@@ -4261,8 +4265,12 @@ function _makeTreeItem(n, depth){
   const icon=n.kind==="folder"?"📁":"📄";
   const label=n.title||(n.kind==="folder"?"Untitled folder":"Untitled");
   item.innerHTML=`<span class="ni-icon">${icon}</span><span class="ni-label">${_esc(label)}</span><span class="ni-del">✕</span>`;
-  item.onclick=e=>{ if(!e.target.classList.contains("ni-del")) selectNote(n.id); };
+  item.onclick=e=>{ if(e.target.classList.contains("ni-del")||e.target.tagName==="INPUT") return; selectNote(n.id); };
   item.querySelector(".ni-del").onclick=e=>{ e.stopPropagation(); deleteNote(n.id); };
+  item.addEventListener("dblclick", e=>{
+    if(e.target.tagName==="INPUT") return;
+    _inlineEditLabel(item, n);
+  });
   item.addEventListener("dragstart", e=>{
     NOTES.dragId=n.id;
     e.dataTransfer.effectAllowed="move";
@@ -4270,6 +4278,29 @@ function _makeTreeItem(n, depth){
   });
   item.addEventListener("dragend", ()=>{ item.style.opacity=""; NOTES.dragId=null; });
   return item;
+}
+
+function _inlineEditLabel(item, n){
+  const labelSpan=item.querySelector(".ni-label");
+  const inp=document.createElement("input");
+  inp.type="text"; inp.value=n.title;
+  inp.className="ni-inline-edit";
+  inp.style.cssText="background:var(--bg);border:1px solid var(--cyan2);color:var(--fg);font:inherit;font-size:12px;padding:1px 4px;border-radius:3px;width:100%;outline:none;";
+  labelSpan.replaceWith(inp);
+  inp.focus(); inp.select();
+  const commit=()=>{
+    n.title=inp.value;
+    _persistNote(n);
+    renderNotesTree();
+    // Also update the editor header if this note is active
+    const titleEl=$("#note-title");
+    if(titleEl && NOTES.active===n.id) titleEl.value=n.title;
+  };
+  inp.addEventListener("keydown", e=>{
+    if(e.key==="Enter"){ e.preventDefault(); commit(); }
+    if(e.key==="Escape"){ renderNotesTree(); }
+  });
+  inp.addEventListener("blur", commit);
 }
 
 function _onDragOver(e){
@@ -4354,8 +4385,9 @@ async function addNote(kind, parentId){
   const n={id, parent_id:parentId||null, kind, title:"", body:"", pos, created_at:Date.now()/1000, updated_at:Date.now()/1000};
   NOTES.items.push(n);
   selectNote(id);
-  _persistNote(n);
-  const titleEl=$("#note-title"); if(titleEl) titleEl.focus();
+  // Start inline rename in the tree
+  const treeItem=document.querySelector(`.notes-tree-item[data-id="${id}"]`);
+  if(treeItem) _inlineEditLabel(treeItem, n);
 }
 
 async function deleteNote(id){

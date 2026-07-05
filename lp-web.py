@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.88.1"
+__version__ = "1.89.0"
 
 import argparse
 import base64
@@ -2345,7 +2345,7 @@ def do_notes_delete(q):
 # Clean URLs the SPA uses for each tab — all serve the app shell so a refresh
 # or bookmark on any module reloads straight back into it.
 TAB_ROUTES = {"/lp", "/arbitrage", "/arb", "/industry", "/ind",
-              "/character", "/char", "/notes"}
+              "/character", "/char", "/notes", "/exploration", "/exp"}
 
 _GET_ROUTES = {
     "/api/corps": lambda q: get_npc_corps(),

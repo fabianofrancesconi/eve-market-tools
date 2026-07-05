@@ -850,6 +850,67 @@
   .wallet-chart-none {
     color:var(--dim); font-size:12px; text-align:center; padding:30px 0;
   }
+  /* Exploration tab */
+  .exp-container { max-width:820px; margin:0 auto; padding:24px 16px; }
+  .exp-search-input {
+    width:100%; padding:12px 16px; font-size:15px; border-radius:6px;
+    border:1px solid var(--line2); background:var(--panel2); color:var(--fg);
+    outline:none; transition:border-color .15s;
+  }
+  .exp-search-input:focus { border-color:var(--cyan); }
+  .exp-search-input::placeholder { color:var(--dim); }
+  .exp-results {
+    margin-top:8px; max-height:260px; overflow-y:auto;
+    border:1px solid var(--line); border-radius:6px; background:var(--panel);
+  }
+  .exp-result-item {
+    padding:9px 14px; cursor:pointer; display:flex; align-items:center; gap:10px;
+    border-bottom:1px solid var(--line); transition:background .08s;
+  }
+  .exp-result-item:last-child { border-bottom:none; }
+  .exp-result-item:hover, .exp-result-item.selected { background:var(--panel2); }
+  .exp-result-name { flex:1; color:var(--fg); font-size:13px; }
+  .exp-result-badge {
+    display:inline-block; padding:1px 7px; border-radius:3px;
+    font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.3px;
+  }
+  .exp-badge-safe { background:var(--green); color:#000; }
+  .exp-badge-caution { background:var(--yellow); color:#000; }
+  .exp-badge-dangerous { background:var(--red); color:#fff; }
+  .exp-type-badge {
+    display:inline-block; padding:1px 6px; border-radius:3px;
+    font-size:10px; background:var(--panel3); border:1px solid var(--line2); color:var(--dim);
+  }
+  .exp-cards {
+    display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:20px;
+  }
+  @media(max-width:700px){ .exp-cards { grid-template-columns:1fr; } }
+  .exp-card {
+    border:1px solid var(--line2); border-radius:8px;
+    background:var(--panel); overflow:hidden;
+  }
+  .exp-card-header {
+    padding:10px 16px; font-size:12px; font-weight:700; letter-spacing:1px;
+    background:var(--panel2); border-bottom:1px solid var(--line);
+  }
+  .exp-danger-card .exp-card-header { color:var(--red); }
+  .exp-loot-card .exp-card-header { color:var(--gold); }
+  .exp-card-body { padding:14px 16px; font-size:13px; line-height:1.7; }
+  .exp-card-body .exp-label { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.5px; margin-top:10px; }
+  .exp-card-body .exp-label:first-child { margin-top:0; }
+  .exp-card-body .exp-value { color:var(--fg); margin-top:2px; }
+  .exp-danger-badge {
+    display:inline-block; padding:3px 12px; border-radius:12px;
+    font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
+  }
+  .exp-loot-tier {
+    display:inline-block; padding:3px 12px; border-radius:12px;
+    font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
+  }
+  .exp-tier-low { background:var(--dim2); color:var(--fg); }
+  .exp-tier-medium { background:#1565c0; color:#fff; }
+  .exp-tier-high { background:var(--gold); color:#000; }
+  .exp-tier-jackpot { background:#7b1fa2; color:#fff; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/apexcharts@3/dist/apexcharts.min.js"></script>
 </head>
@@ -862,6 +923,7 @@
     <button class="tab" data-tab="arb">Arbitrage</button>
     <button class="tab" data-tab="ind">Industry</button>
     <button class="tab hidden" id="char-tab-btn" data-tab="char">Overview</button>
+    <button class="tab" data-tab="exp">Exploration</button>
   </nav>
   <button class="tab tab-right" data-tab="notes">Notes</button>
   <div id="auth-region">
@@ -1085,6 +1147,25 @@
       <button id="char-login-btn" class="auth-btn primary-btn">Log in with EVE</button>
     </div>
     <div id="char-body" class="hidden"></div>
+  </div>
+  <!-- Exploration tab -->
+  <div id="exp-tablewrap" class="tablewrap hidden">
+    <div class="exp-container">
+      <div class="exp-search-wrap">
+        <input id="exp-search" type="text" placeholder="Type a site name (e.g. &quot;forgotten&quot;, &quot;ghost&quot;, &quot;abando&quot;)..." class="exp-search-input">
+      </div>
+      <div id="exp-results" class="exp-results hidden"></div>
+      <div id="exp-cards" class="exp-cards hidden">
+        <div class="exp-card exp-danger-card" id="exp-danger-card">
+          <div class="exp-card-header">DANGER</div>
+          <div class="exp-card-body" id="exp-danger-body"></div>
+        </div>
+        <div class="exp-card exp-loot-card" id="exp-loot-card">
+          <div class="exp-card-header">LOOT</div>
+          <div class="exp-card-body" id="exp-loot-body"></div>
+        </div>
+      </div>
+    </div>
   </div>
   <!-- Notes tab -->
   <div id="notes-tablewrap" class="tablewrap hidden">
@@ -1366,10 +1447,10 @@ function saveLS(){
 // ── Tab switching ─────────────────────────────────────────────────────────
 let ACTIVE_TAB = "lp";
 // Each tab has a clean URL so a refresh/bookmark reopens the same module.
-const TAB_PATH = { lp:"/", arb:"/arbitrage", ind:"/industry", char:"/character", notes:"/notes" };
+const TAB_PATH = { lp:"/", arb:"/arbitrage", ind:"/industry", char:"/character", notes:"/notes", exp:"/exploration" };
 const PATH_TAB = { "/":"lp", "/lp":"lp", "/arbitrage":"arb", "/arb":"arb",
                    "/industry":"ind", "/ind":"ind", "/character":"char", "/char":"char",
-                   "/notes":"notes" };
+                   "/notes":"notes", "/exploration":"exp", "/exp":"exp" };
 function switchTab(tab, opts){
   opts = opts || {};
   ACTIVE_TAB = tab;
@@ -1380,20 +1461,22 @@ function switchTab(tab, opts){
     if(location.pathname !== p) history.pushState({tab}, "", p);
   }
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===tab));
-  $("#global-costs").classList.toggle("hidden", tab==="notes"||tab==="char");
+  $("#global-costs").classList.toggle("hidden", tab==="notes"||tab==="char"||tab==="exp");
   $("#lp-controls").classList.toggle("hidden", tab!=="lp");
   $("#arb-controls").classList.toggle("hidden", tab!=="arb");
   $("#lp-tablewrap").classList.toggle("hidden", tab!=="lp");
   $("#arb-tablewrap").classList.toggle("hidden", tab!=="arb");
   $("#char-tablewrap").classList.toggle("hidden", tab!=="char");
   $("#notes-tablewrap").classList.toggle("hidden", tab!=="notes");
+  $("#exp-tablewrap").classList.toggle("hidden", tab!=="exp");
   updateIndGate();
   if(tab!=="lp") closeDetail();
   setStatus("");
   document.title = tab==="lp" ? "EVE LP Store Scanner"
                 : tab==="arb" ? "EVE Arbitrage Scanner"
                 : tab==="char" ? "EVE Character Overview"
-                : tab==="notes" ? "EVE Notes" : "EVE Industry Planner";
+                : tab==="notes" ? "EVE Notes"
+                : tab==="exp" ? "EVE Exploration Guide" : "EVE Industry Planner";
   postPrefs('/api/prefs',{active_tab:tab}); saveLS();
   if(tab==="ind" && AUTH.loggedIn){
     if(!IND.groupsLoaded) loadIndGroups();
@@ -4363,6 +4446,7 @@ async function loadSettings(){
       if(s.active_tab==="arb") switchTab("arb", {url:false});
       else if(s.active_tab==="ind") switchTab("ind", {url:false});
       else if(s.active_tab==="notes") switchTab("notes", {url:false});
+      else if(s.active_tab==="exp") switchTab("exp", {url:false});
   }
   // A deep link / refresh on a tab URL wins over the saved pref. "/" is not an
   // explicit choice, so it defers to the pref restored above.
@@ -4624,6 +4708,183 @@ $("#notes-add-note").onclick=()=>{
   const parent=(sel&&sel.kind==="folder")?sel.id:(sel?sel.parent_id:null);
   addNote("note", parent);
 };
+
+// ══════════════════════════════════════════════════════════════════════════
+// EXPLORATION TAB
+// ══════════════════════════════════════════════════════════════════════════
+const EXP_SITES = [
+  // ── K-space Relic Sites (safe) ──────────────────────────────────────────
+  {name:"Ruined Angel Monument Site",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Armor Plates","Power Circuits","Charred Micro Circuit"],estimatedValue:"5-20M"},
+  {name:"Ruined Angel Crystal Quarry",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Armor Plates","Power Circuits"],estimatedValue:"5-20M"},
+  {name:"Ruined Angel Science Outpost",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Armor Plates","Burned Logic Circuit"],estimatedValue:"5-20M"},
+  {name:"Ruined Angel Temple Site",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Intact Armor Plates","Power Circuits"],estimatedValue:"5-25M"},
+  {name:"Ruined Blood Raider Monument Site",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Armor Plates","Charred Micro Circuit"],estimatedValue:"5-20M"},
+  {name:"Ruined Blood Raider Crystal Quarry",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Armor Plates","Power Circuits"],estimatedValue:"5-20M"},
+  {name:"Ruined Blood Raider Science Outpost",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Intact Armor Plates","Power Circuits"],estimatedValue:"5-25M"},
+  {name:"Ruined Blood Raider Temple Site",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Intact Armor Plates","Power Circuits"],estimatedValue:"5-25M"},
+  {name:"Ruined Guristas Monument Site",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Armor Plates","Charred Micro Circuit"],estimatedValue:"5-20M"},
+  {name:"Ruined Guristas Crystal Quarry",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Armor Plates","Power Circuits"],estimatedValue:"5-20M"},
+  {name:"Ruined Guristas Science Outpost",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Intact Armor Plates","Power Circuits"],estimatedValue:"5-25M"},
+  {name:"Ruined Guristas Temple Site",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Intact Armor Plates","Burned Logic Circuit"],estimatedValue:"5-25M"},
+  {name:"Ruined Sansha Monument Site",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Armor Plates","Charred Micro Circuit"],estimatedValue:"5-20M"},
+  {name:"Ruined Sansha Crystal Quarry",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Armor Plates","Power Circuits"],estimatedValue:"5-20M"},
+  {name:"Ruined Sansha Science Outpost",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Intact Armor Plates","Power Circuits"],estimatedValue:"5-25M"},
+  {name:"Ruined Sansha Temple Site",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Intact Armor Plates","Power Circuits"],estimatedValue:"5-25M"},
+  {name:"Ruined Serpentis Monument Site",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Armor Plates","Charred Micro Circuit"],estimatedValue:"5-20M"},
+  {name:"Ruined Serpentis Crystal Quarry",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Armor Plates","Power Circuits"],estimatedValue:"5-20M"},
+  {name:"Ruined Serpentis Science Outpost",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Intact Armor Plates","Power Circuits"],estimatedValue:"5-25M"},
+  {name:"Ruined Serpentis Temple Site",type:"relic",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"medium",lootSummary:"T1/T2 salvage, faction materials",lootExamples:["Intact Armor Plates","Power Circuits"],estimatedValue:"5-25M"},
+  // ── K-space Data Sites (safe) ───────────────────────────────────────────
+  {name:"Angel Lookout",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors, faction BPCs",lootExamples:["Datacore - Mechanical Engineering","Parity Decryptor"],estimatedValue:"3-15M"},
+  {name:"Angel Mainframe",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors, faction BPCs",lootExamples:["Datacore - Electronic Engineering","Process Decryptor"],estimatedValue:"3-15M"},
+  {name:"Angel Info Shard",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors",lootExamples:["Datacore - Minmatar Starship Engineering"],estimatedValue:"2-10M"},
+  {name:"Blood Raider Lookout",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors, faction BPCs",lootExamples:["Datacore - Laser Physics","Parity Decryptor"],estimatedValue:"3-15M"},
+  {name:"Blood Raider Mainframe",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors, faction BPCs",lootExamples:["Datacore - Amarr Starship Engineering","Process Decryptor"],estimatedValue:"3-15M"},
+  {name:"Blood Raider Info Shard",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors",lootExamples:["Datacore - Laser Physics"],estimatedValue:"2-10M"},
+  {name:"Guristas Lookout",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors, faction BPCs",lootExamples:["Datacore - Caldari Starship Engineering","Symmetry Decryptor"],estimatedValue:"3-15M"},
+  {name:"Guristas Mainframe",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors, faction BPCs",lootExamples:["Datacore - Graviton Physics","Attainment Decryptor"],estimatedValue:"3-15M"},
+  {name:"Guristas Info Shard",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors",lootExamples:["Datacore - Caldari Starship Engineering"],estimatedValue:"2-10M"},
+  {name:"Sansha Lookout",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors, faction BPCs",lootExamples:["Datacore - Electromagnetic Physics","Parity Decryptor"],estimatedValue:"3-15M"},
+  {name:"Sansha Mainframe",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors, faction BPCs",lootExamples:["Datacore - Electronic Engineering","Attainment Decryptor"],estimatedValue:"3-15M"},
+  {name:"Sansha Info Shard",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors",lootExamples:["Datacore - Electromagnetic Physics"],estimatedValue:"2-10M"},
+  {name:"Serpentis Lookout",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors, faction BPCs",lootExamples:["Datacore - Gallente Starship Engineering","Symmetry Decryptor"],estimatedValue:"3-15M"},
+  {name:"Serpentis Mainframe",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors, faction BPCs",lootExamples:["Datacore - Plasma Physics","Process Decryptor"],estimatedValue:"3-15M"},
+  {name:"Serpentis Info Shard",type:"data",space:["nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, decryptors",lootExamples:["Datacore - Gallente Starship Engineering"],estimatedValue:"2-10M"},
+  // ── Lowsec Relic Sites (safe) ───────────────────────────────────────────
+  {name:"Crumbling Angel Antiquated Outpost",type:"relic",space:["lowsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely. Slightly lower value than nullsec equivalents.",lootTier:"low",lootSummary:"T1 salvage materials",lootExamples:["Charred Micro Circuit","Burned Logic Circuit","Fried Interface Circuit"],estimatedValue:"2-10M"},
+  {name:"Crumbling Blood Raider Antiquated Outpost",type:"relic",space:["lowsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"T1 salvage materials",lootExamples:["Charred Micro Circuit","Burned Logic Circuit"],estimatedValue:"2-10M"},
+  {name:"Crumbling Guristas Antiquated Outpost",type:"relic",space:["lowsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"T1 salvage materials",lootExamples:["Charred Micro Circuit","Burned Logic Circuit"],estimatedValue:"2-10M"},
+  {name:"Crumbling Sansha Antiquated Outpost",type:"relic",space:["lowsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"T1 salvage materials",lootExamples:["Charred Micro Circuit","Burned Logic Circuit"],estimatedValue:"2-10M"},
+  {name:"Crumbling Serpentis Antiquated Outpost",type:"relic",space:["lowsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"T1 salvage materials",lootExamples:["Charred Micro Circuit","Burned Logic Circuit"],estimatedValue:"2-10M"},
+  // ── Lowsec Data Sites (safe) ────────────────────────────────────────────
+  {name:"Angel Lesser Outpost",type:"data",space:["lowsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, low-tier decryptors",lootExamples:["Datacore - Mechanical Engineering"],estimatedValue:"1-5M"},
+  {name:"Blood Raider Lesser Outpost",type:"data",space:["lowsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, low-tier decryptors",lootExamples:["Datacore - Laser Physics"],estimatedValue:"1-5M"},
+  {name:"Guristas Lesser Outpost",type:"data",space:["lowsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, low-tier decryptors",lootExamples:["Datacore - Graviton Physics"],estimatedValue:"1-5M"},
+  {name:"Sansha Lesser Outpost",type:"data",space:["lowsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, low-tier decryptors",lootExamples:["Datacore - Electromagnetic Physics"],estimatedValue:"1-5M"},
+  {name:"Serpentis Lesser Outpost",type:"data",space:["lowsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Datacores, low-tier decryptors",lootExamples:["Datacore - Plasma Physics"],estimatedValue:"1-5M"},
+  // ── Highsec Data Sites (safe) ───────────────────────────────────────────
+  {name:"Angel Minor Outpost",type:"data",space:["highsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely. Very low value in highsec.",lootTier:"low",lootSummary:"Low-tier datacores",lootExamples:["Datacore - Mechanical Engineering"],estimatedValue:"0.5-3M"},
+  {name:"Blood Raider Minor Outpost",type:"data",space:["highsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Low-tier datacores",lootExamples:["Datacore - Laser Physics"],estimatedValue:"0.5-3M"},
+  {name:"Guristas Minor Outpost",type:"data",space:["highsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Low-tier datacores",lootExamples:["Datacore - Graviton Physics"],estimatedValue:"0.5-3M"},
+  {name:"Sansha Minor Outpost",type:"data",space:["highsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Low-tier datacores",lootExamples:["Datacore - Electromagnetic Physics"],estimatedValue:"0.5-3M"},
+  {name:"Serpentis Minor Outpost",type:"data",space:["highsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"No NPCs. Hack freely.",lootTier:"low",lootSummary:"Low-tier datacores",lootExamples:["Datacore - Plasma Physics"],estimatedValue:"0.5-3M"},
+  // ── Wormhole Relic Sites (dangerous — Sleepers) ─────────────────────────
+  {name:"Forgotten Perimeter Coronation Platform",type:"relic",space:["wormhole"],whClass:[1,2],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Frigates and cruisers, ~100-200 DPS total",hazards:["combat_npcs"],tips:"Sleeper NPCs are already on grid when you land. They aggress immediately — you must kill them all before hacking. Cannot be speed-tanked in a frigate.",lootTier:"high",lootSummary:"Blue loot + T3 materials (ancient salvage)",lootExamples:["Sleeper Drone AI Nexus","Neural Network Analyzer","Ancient Coordinates Database"],estimatedValue:"20-60M"},
+  {name:"Forgotten Perimeter Power Array",type:"relic",space:["wormhole"],whClass:[1,2],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Frigates and cruisers, ~100-200 DPS total",hazards:["combat_npcs"],tips:"Sleeper NPCs are already on grid when you land. They aggress immediately — kill them all before hacking any container.",lootTier:"high",lootSummary:"Blue loot + T3 materials",lootExamples:["Sleeper Drone AI Nexus","Neural Network Analyzer"],estimatedValue:"20-60M"},
+  {name:"Forgotten Perimeter Habitation Coils",type:"relic",space:["wormhole"],whClass:[1,2],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Frigates and cruisers, ~100-200 DPS total",hazards:["combat_npcs"],tips:"Sleeper NPCs are already on grid when you land. They aggress immediately — kill them all before hacking any container.",lootTier:"high",lootSummary:"Blue loot + T3 materials",lootExamples:["Sleeper Drone AI Nexus","Neural Network Analyzer"],estimatedValue:"20-60M"},
+  {name:"Forgotten Core Information Pen",type:"relic",space:["wormhole"],whClass:[3,4],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Cruisers and battleships, ~400-800 DPS",hazards:["combat_npcs"],tips:"Heavy Sleeper presence already on grid. They aggress on landing. Need a T3C, battleship, or fleet to clear before hacking.",lootTier:"high",lootSummary:"Blue loot + T3 materials, higher quantities",lootExamples:["Sleeper Drone AI Nexus","Neural Network Analyzer","Ancient Coordinates Database"],estimatedValue:"40-120M"},
+  {name:"Forgotten Core Assembly Hall",type:"relic",space:["wormhole"],whClass:[3,4],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Cruisers and battleships, ~400-800 DPS",hazards:["combat_npcs"],tips:"Heavy Sleeper presence on grid from the start. Aggress immediately. Need T3C or fleet to clear before hacking.",lootTier:"high",lootSummary:"Blue loot + T3 materials",lootExamples:["Sleeper Drone AI Nexus","Neural Network Analyzer"],estimatedValue:"40-120M"},
+  {name:"Forgotten Core Circuitry Disassembler",type:"relic",space:["wormhole"],whClass:[3,4],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Cruisers and battleships, ~400-800 DPS",hazards:["combat_npcs"],tips:"Heavy Sleeper presence on grid from the start. Aggress immediately. Need T3C or fleet to clear before hacking.",lootTier:"high",lootSummary:"Blue loot + T3 materials",lootExamples:["Sleeper Drone AI Nexus","Neural Network Analyzer"],estimatedValue:"40-120M"},
+  {name:"Forgotten Frontier Quarantine Outpost",type:"relic",space:["wormhole"],whClass:[5,6],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Battleships and capital-class, ~1500+ DPS",hazards:["combat_npcs"],tips:"Capital-class Sleepers on grid from landing. Can trigger capital escalation if you bring caps. Fleet mandatory — solo impossible.",lootTier:"high",lootSummary:"Large quantities of blue loot + T3 materials",lootExamples:["Sleeper Drone AI Nexus","Neural Network Analyzer","Ancient Coordinates Database"],estimatedValue:"80-250M"},
+  {name:"Forgotten Frontier Recursive Research Center",type:"relic",space:["wormhole"],whClass:[5,6],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Battleships and capital-class, ~1500+ DPS",hazards:["combat_npcs"],tips:"Capital-class Sleepers present on grid. Aggress immediately on landing. Fleet required — solo impossible.",lootTier:"high",lootSummary:"Large quantities of blue loot + T3 materials",lootExamples:["Sleeper Drone AI Nexus","Neural Network Analyzer"],estimatedValue:"80-250M"},
+  // ── Wormhole Data Sites (dangerous — Sleepers) ──────────────────────────
+  {name:"Unsecured Perimeter Transponder Farm",type:"data",space:["wormhole"],whClass:[1,2],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Frigates and cruisers, ~100-200 DPS total",hazards:["combat_npcs"],tips:"Sleeper NPCs are already on grid when you land. They aggress immediately — kill them all before hacking any container.",lootTier:"medium",lootSummary:"Datacores, sleeper components, skillbooks",lootExamples:["Sleeper Data Library","Sleeper Drone AI Nexus"],estimatedValue:"10-40M"},
+  {name:"Unsecured Perimeter Comms Relay",type:"data",space:["wormhole"],whClass:[1,2],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Frigates and cruisers, ~100-200 DPS total",hazards:["combat_npcs"],tips:"Sleeper NPCs are already on grid when you land. They aggress immediately — kill them all before hacking any container.",lootTier:"medium",lootSummary:"Datacores, sleeper components",lootExamples:["Sleeper Data Library"],estimatedValue:"10-40M"},
+  {name:"Unsecured Perimeter Amplifier",type:"data",space:["wormhole"],whClass:[1,2],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Frigates and cruisers, ~100-200 DPS total",hazards:["combat_npcs"],tips:"Sleeper NPCs are already on grid when you land. They aggress immediately — kill them all before hacking any container.",lootTier:"medium",lootSummary:"Datacores, sleeper components",lootExamples:["Sleeper Data Library"],estimatedValue:"10-40M"},
+  {name:"Unsecured Core Backup Array",type:"data",space:["wormhole"],whClass:[3,4],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Cruisers and battleships, ~400-800 DPS",hazards:["combat_npcs"],tips:"Heavy Sleeper presence on grid from the start. Aggress immediately. Need T3C or fleet to clear before hacking.",lootTier:"medium",lootSummary:"Datacores, sleeper components, higher quantities",lootExamples:["Sleeper Data Library","Sleeper Drone AI Nexus"],estimatedValue:"20-60M"},
+  {name:"Unsecured Core Emergence",type:"data",space:["wormhole"],whClass:[3,4],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Cruisers and battleships, ~400-800 DPS",hazards:["combat_npcs"],tips:"Heavy Sleeper presence on grid from the start. Aggress immediately. Need T3C or fleet to clear before hacking.",lootTier:"medium",lootSummary:"Datacores, sleeper components",lootExamples:["Sleeper Data Library"],estimatedValue:"20-60M"},
+  {name:"Unsecured Frontier Enclave Relay",type:"data",space:["wormhole"],whClass:[5,6],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Battleships and capital-class, ~1500+ DPS",hazards:["combat_npcs"],tips:"Capital-class Sleepers present on grid. Aggress immediately on landing. Fleet required — solo impossible.",lootTier:"high",lootSummary:"High-value datacores and sleeper components",lootExamples:["Sleeper Data Library","Sleeper Drone AI Nexus"],estimatedValue:"50-150M"},
+  {name:"Unsecured Frontier Database",type:"data",space:["wormhole"],whClass:[5,6],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Battleships and capital-class, ~1500+ DPS",hazards:["combat_npcs"],tips:"Capital-class Sleepers present on grid. Aggress immediately on landing. Fleet required — solo impossible.",lootTier:"high",lootSummary:"High-value datacores and sleeper components",lootExamples:["Sleeper Data Library","Sleeper Drone AI Nexus"],estimatedValue:"50-150M"},
+  // ── Ghost Sites (all dangerous — exploding cans + response fleet) ───────
+  {name:"Lesser Sansha Covert Research Facility",type:"ghost",space:["highsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in after ~1 minute. Will destroy your ship.",hazards:["exploding_cans","response_fleet"],tips:"A hidden timer starts the moment you land on grid (~60s). When it expires OR you fail a hack, ALL containers explode simultaneously dealing 5000+ damage. Hack ONE can as fast as possible, loot it, then warp out. Do NOT try multiple cans. Response fleet arrives when timer ends.",lootTier:"high",lootSummary:"Faction implant BPCs, Covert Research Tools",lootExamples:["Low-grade Ascendancy Alpha BPC","Covert Research Tools"],estimatedValue:"10-80M"},
+  {name:"Lesser Blood Raider Covert Research Facility",type:"ghost",space:["highsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in after ~1 minute.",hazards:["exploding_cans","response_fleet"],tips:"Hidden ~60s timer starts on landing. When it expires OR you fail a hack, ALL cans explode (5000+ damage). Hack one can, loot, warp out. Never attempt a second can.",lootTier:"high",lootSummary:"Faction implant BPCs, Covert Research Tools",lootExamples:["Low-grade Talisman Alpha BPC","Covert Research Tools"],estimatedValue:"10-80M"},
+  {name:"Lesser Angel Covert Research Facility",type:"ghost",space:["highsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in after ~1 minute.",hazards:["exploding_cans","response_fleet"],tips:"Hidden ~60s timer starts on landing. When it expires OR you fail a hack, ALL cans explode (5000+ damage). Hack one can, loot, warp out. Never attempt a second can.",lootTier:"high",lootSummary:"Faction implant BPCs, Covert Research Tools",lootExamples:["Low-grade Halo Alpha BPC","Covert Research Tools"],estimatedValue:"10-80M"},
+  {name:"Lesser Guristas Covert Research Facility",type:"ghost",space:["highsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in after ~1 minute.",hazards:["exploding_cans","response_fleet"],tips:"Hidden ~60s timer starts on landing. When it expires OR you fail a hack, ALL cans explode (5000+ damage). Hack one can, loot, warp out. Never attempt a second can.",lootTier:"high",lootSummary:"Faction implant BPCs, Covert Research Tools",lootExamples:["Low-grade Crystal Alpha BPC","Covert Research Tools"],estimatedValue:"10-80M"},
+  {name:"Lesser Serpentis Covert Research Facility",type:"ghost",space:["highsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in after ~1 minute.",hazards:["exploding_cans","response_fleet"],tips:"Hidden ~60s timer starts on landing. When it expires OR you fail a hack, ALL cans explode (5000+ damage). Hack one can, loot, warp out. Never attempt a second can.",lootTier:"high",lootSummary:"Faction implant BPCs, Covert Research Tools",lootExamples:["Low-grade Snake Alpha BPC","Covert Research Tools"],estimatedValue:"10-80M"},
+  {name:"Standard Sansha Covert Research Facility",type:"ghost",space:["lowsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in after ~1 minute. Stronger than lesser variant.",hazards:["exploding_cans","response_fleet"],tips:"Same mechanic as Lesser but harder: ~60s hidden timer on landing, explosions deal ~7000 damage. Hack one can, loot immediately, warp out. One attempt only.",lootTier:"high",lootSummary:"Mid-grade implant BPCs, Covert Research Tools",lootExamples:["Mid-grade Ascendancy Alpha BPC","Covert Research Tools"],estimatedValue:"30-150M"},
+  {name:"Standard Blood Raider Covert Research Facility",type:"ghost",space:["lowsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in after ~1 minute.",hazards:["exploding_cans","response_fleet"],tips:"~60s hidden timer starts on landing. Fail a hack or run out of time and ALL cans explode (~7000 damage). Hack one can, loot, warp. One shot only.",lootTier:"high",lootSummary:"Mid-grade implant BPCs, Covert Research Tools",lootExamples:["Mid-grade Talisman Alpha BPC","Covert Research Tools"],estimatedValue:"30-150M"},
+  {name:"Standard Angel Covert Research Facility",type:"ghost",space:["lowsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in after ~1 minute.",hazards:["exploding_cans","response_fleet"],tips:"~60s hidden timer starts on landing. Fail a hack or run out of time and ALL cans explode (~7000 damage). Hack one can, loot, warp. One shot only.",lootTier:"high",lootSummary:"Mid-grade implant BPCs, Covert Research Tools",lootExamples:["Mid-grade Halo Alpha BPC","Covert Research Tools"],estimatedValue:"30-150M"},
+  {name:"Standard Guristas Covert Research Facility",type:"ghost",space:["lowsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in after ~1 minute.",hazards:["exploding_cans","response_fleet"],tips:"~60s hidden timer starts on landing. Fail a hack or run out of time and ALL cans explode (~7000 damage). Hack one can, loot, warp. One shot only.",lootTier:"high",lootSummary:"Mid-grade implant BPCs, Covert Research Tools",lootExamples:["Mid-grade Crystal Alpha BPC","Covert Research Tools"],estimatedValue:"30-150M"},
+  {name:"Standard Serpentis Covert Research Facility",type:"ghost",space:["lowsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in after ~1 minute.",hazards:["exploding_cans","response_fleet"],tips:"~60s hidden timer starts on landing. Fail a hack or run out of time and ALL cans explode (~7000 damage). Hack one can, loot, warp. One shot only.",lootTier:"high",lootSummary:"Mid-grade implant BPCs, Covert Research Tools",lootExamples:["Mid-grade Snake Alpha BPC","Covert Research Tools"],estimatedValue:"30-150M"},
+  {name:"Improved Sansha Covert Research Facility",type:"ghost",space:["nullsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Strong response fleet, ~1 minute timer.",hazards:["exploding_cans","response_fleet"],tips:"~60s hidden timer from landing. Explosions deal ~8000 damage on fail/timeout — enough to kill most cruisers. Hack one can fast, loot, warp. Extremely high value makes the risk worthwhile.",lootTier:"jackpot",lootSummary:"High-grade implant BPCs, Covert Research Tools",lootExamples:["High-grade Ascendancy Alpha BPC","Covert Research Tools"],estimatedValue:"50-500M"},
+  {name:"Improved Blood Raider Covert Research Facility",type:"ghost",space:["nullsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Strong response fleet, ~1 minute timer.",hazards:["exploding_cans","response_fleet"],tips:"~60s hidden timer. ALL cans explode on fail/timeout (~8000 damage). One hack attempt, loot, warp. Jackpot-tier loot justifies the risk.",lootTier:"jackpot",lootSummary:"High-grade implant BPCs, Covert Research Tools",lootExamples:["High-grade Talisman Alpha BPC","Covert Research Tools"],estimatedValue:"50-500M"},
+  {name:"Improved Angel Covert Research Facility",type:"ghost",space:["nullsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Strong response fleet, ~1 minute timer.",hazards:["exploding_cans","response_fleet"],tips:"~60s hidden timer. ALL cans explode on fail/timeout (~8000 damage). One hack attempt, loot, warp. Jackpot-tier loot justifies the risk.",lootTier:"jackpot",lootSummary:"High-grade implant BPCs, Covert Research Tools",lootExamples:["High-grade Halo Alpha BPC","Covert Research Tools"],estimatedValue:"50-500M"},
+  {name:"Improved Guristas Covert Research Facility",type:"ghost",space:["nullsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Strong response fleet, ~1 minute timer.",hazards:["exploding_cans","response_fleet"],tips:"~60s hidden timer. ALL cans explode on fail/timeout (~8000 damage). One hack attempt, loot, warp. Jackpot-tier loot justifies the risk.",lootTier:"jackpot",lootSummary:"High-grade implant BPCs, Covert Research Tools",lootExamples:["High-grade Crystal Alpha BPC","Covert Research Tools"],estimatedValue:"50-500M"},
+  {name:"Improved Serpentis Covert Research Facility",type:"ghost",space:["nullsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Strong response fleet, ~1 minute timer.",hazards:["exploding_cans","response_fleet"],tips:"~60s hidden timer. ALL cans explode on fail/timeout (~8000 damage). One hack attempt, loot, warp. Jackpot-tier loot justifies the risk.",lootTier:"jackpot",lootSummary:"High-grade implant BPCs, Covert Research Tools",lootExamples:["High-grade Snake Alpha BPC","Covert Research Tools"],estimatedValue:"50-500M"},
+  {name:"Superior Sansha Covert Research Facility",type:"ghost",space:["wormhole"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Sleeper response fleet, extremely deadly.",hazards:["exploding_cans","response_fleet"],tips:"Wormhole ghost site — same ~60s timer mechanic. Sleeper response fleet instead of faction NPCs (even deadlier). Explosions + Sleepers = instant death if you linger. Hack one can, loot, warp immediately.",lootTier:"jackpot",lootSummary:"High-grade implant BPCs, Covert Research Tools, Sleeper components",lootExamples:["High-grade Ascendancy Alpha BPC","Covert Research Tools"],estimatedValue:"80-600M"},
+  {name:"Superior Blood Raider Covert Research Facility",type:"ghost",space:["wormhole"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Sleeper response fleet, extremely deadly.",hazards:["exploding_cans","response_fleet"],tips:"Wormhole ghost site — ~60s timer, Sleeper response fleet on expiry. Explosions + Sleepers = instant death. One can only, warp out immediately after looting.",lootTier:"jackpot",lootSummary:"High-grade implant BPCs, Covert Research Tools",lootExamples:["High-grade Talisman Alpha BPC","Covert Research Tools"],estimatedValue:"80-600M"},
+  {name:"Superior Angel Covert Research Facility",type:"ghost",space:["wormhole"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Sleeper response fleet, extremely deadly.",hazards:["exploding_cans","response_fleet"],tips:"Wormhole ghost site — ~60s timer, Sleeper response fleet on expiry. Explosions + Sleepers = instant death. One can only, warp out immediately after looting.",lootTier:"jackpot",lootSummary:"High-grade implant BPCs, Covert Research Tools",lootExamples:["High-grade Halo Alpha BPC","Covert Research Tools"],estimatedValue:"80-600M"},
+  {name:"Superior Guristas Covert Research Facility",type:"ghost",space:["wormhole"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Sleeper response fleet, extremely deadly.",hazards:["exploding_cans","response_fleet"],tips:"Wormhole ghost site — ~60s timer, Sleeper response fleet on expiry. Explosions + Sleepers = instant death. One can only, warp out immediately after looting.",lootTier:"jackpot",lootSummary:"High-grade implant BPCs, Covert Research Tools",lootExamples:["High-grade Crystal Alpha BPC","Covert Research Tools"],estimatedValue:"80-600M"},
+  {name:"Superior Serpentis Covert Research Facility",type:"ghost",space:["wormhole"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Sleeper response fleet, extremely deadly.",hazards:["exploding_cans","response_fleet"],tips:"Wormhole ghost site — ~60s timer, Sleeper response fleet on expiry. Explosions + Sleepers = instant death. One can only, warp out immediately after looting.",lootTier:"jackpot",lootSummary:"High-grade implant BPCs, Covert Research Tools",lootExamples:["High-grade Snake Alpha BPC","Covert Research Tools"],estimatedValue:"80-600M"},
+  // ── Sleeper Caches (environmental hazards) ──────────────────────────────
+  {name:"Limited Sleeper Cache",type:"sleeper_cache",space:["highsec","lowsec","nullsec","wormhole"],danger:"caution",hasNPCs:false,npcType:null,npcDetail:null,hazards:["env_damage"],tips:"No NPCs but sentry turrets activate when you approach containers, and plasma clouds deal passive damage (~200 DPS). Hack the Hyperfluct Generator first to disable the clouds. Use a tractor beam to pull containers out of damaging areas. Smallest cache tier — single room.",lootTier:"medium",lootSummary:"Polarized weapon BPCs, sleeper blue loot, implant BPCs",lootExamples:["Polarized Torpedo Launcher BPC","Wrecked Components"],estimatedValue:"10-50M"},
+  {name:"Standard Sleeper Cache",type:"sleeper_cache",space:["lowsec","nullsec","wormhole"],danger:"dangerous",hasNPCs:false,npcType:null,npcDetail:null,hazards:["env_damage"],tips:"Multi-room puzzle site. Sentries activate on approach, plasma clouds deal ongoing damage. First room: hack the Archive to unlock side rooms. Timed hacking in some rooms — container self-destructs if too slow. Need both Data AND Relic Analyzers. Bring tank (500+ DPS in clouds), mobile depot to refit. ~20-30 min to complete.",lootTier:"high",lootSummary:"Polarized weapon BPCs, faction modules, implant BPCs, blue loot",lootExamples:["Polarized Torpedo Launcher BPC","Wrecked Components","Intact Armor Plates"],estimatedValue:"50-200M"},
+  {name:"Superior Sleeper Cache",type:"sleeper_cache",space:["nullsec","wormhole"],danger:"dangerous",hasNPCs:false,npcType:null,npcDetail:null,hazards:["env_damage"],tips:"Largest and hardest. Main chamber + three archive rooms, each with unique mechanics. Sentry guns activate on approach, plasma clouds ramp up damage. Containers self-destruct on timer or failed hack. Remote-repair the Pristine cache to access bonus loot. Need Data + Relic Analyzers, 800+ DPS tank, mobile depot. 45-90 min to fully clear.",lootTier:"jackpot",lootSummary:"Polarized weapon BPCs, faction modules, high-value implant BPCs, blue loot",lootExamples:["Polarized Torpedo Launcher BPC","Intact Armor Plates","Neural Network Analyzer"],estimatedValue:"100-500M+"},
+  // ── Gas Sites ───────────────────────────────────────────────────────────
+  {name:"Bountiful Frontier Reservoir",type:"gas",space:["wormhole"],whClass:[1,2,3],danger:"caution",hasNPCs:true,npcType:"Sleeper",npcDetail:"Frigates spawn ~15-20 minutes after first warp-in",hazards:["timed_spawn"],tips:"NPCs spawn exactly 15-20 min after the FIRST player warps in (not you specifically — if someone warped in earlier and left, the timer is already running). Set a 15-min timer on landing. Warp out before it expires. Bring Ventures or Prospects — align out while huffing.",lootTier:"medium",lootSummary:"C50/C60 gas (polymer reactions, T3 production)",lootExamples:["Fullerite-C50","Fullerite-C60"],estimatedValue:"10-40M"},
+  {name:"Vital Core Reservoir",type:"gas",space:["wormhole"],whClass:[1,2,3],danger:"caution",hasNPCs:true,npcType:"Sleeper",npcDetail:"Frigates spawn ~15-20 minutes after first warp-in",hazards:["timed_spawn"],tips:"NPC spawn timer starts on first warp-in (15-20 min). May already be ticking if someone else visited. Set a timer, huff aligned, warp before it expires.",lootTier:"medium",lootSummary:"C50/C60 gas",lootExamples:["Fullerite-C50","Fullerite-C60"],estimatedValue:"10-40M"},
+  {name:"Minor Perimeter Reservoir",type:"gas",space:["wormhole"],whClass:[1,2],danger:"caution",hasNPCs:true,npcType:"Sleeper",npcDetail:"Frigates spawn ~15-20 minutes after first warp-in",hazards:["timed_spawn"],tips:"NPC spawn timer (15-20 min from first player warp-in). Lower class = weaker NPCs but still dangerous for a Venture. Huff aligned out, warp at 15 min.",lootTier:"low",lootSummary:"C28/C32 gas",lootExamples:["Fullerite-C28","Fullerite-C32"],estimatedValue:"5-15M"},
+  {name:"Ordinary Perimeter Reservoir",type:"gas",space:["wormhole"],whClass:[1,2],danger:"caution",hasNPCs:true,npcType:"Sleeper",npcDetail:"Frigates spawn ~15-20 minutes after first warp-in",hazards:["timed_spawn"],tips:"NPC spawn timer (15-20 min from first warp-in). Huff aligned out, warp before timer expires.",lootTier:"low",lootSummary:"C28/C32 gas",lootExamples:["Fullerite-C28","Fullerite-C32"],estimatedValue:"5-15M"},
+  {name:"Token Perimeter Reservoir",type:"gas",space:["wormhole"],whClass:[1,2],danger:"caution",hasNPCs:true,npcType:"Sleeper",npcDetail:"Frigates spawn ~15-20 minutes after first warp-in",hazards:["timed_spawn"],tips:"NPC spawn timer (15-20 min from first warp-in). Huff aligned out, warp before timer expires.",lootTier:"low",lootSummary:"C28/C32 gas",lootExamples:["Fullerite-C28","Fullerite-C32"],estimatedValue:"5-15M"},
+  {name:"Instrumental Core Reservoir",type:"gas",space:["wormhole"],whClass:[3,4,5,6],danger:"caution",hasNPCs:true,npcType:"Sleeper",npcDetail:"Cruisers/battleships spawn ~15-20 min after first warp-in",hazards:["timed_spawn"],tips:"Same 15-20 min spawn timer but NPCs are cruiser/battleship class — will shred a Venture instantly. Huff aligned, warp at 15 min. Consider a Prospect (covert cloak) for faster escape.",lootTier:"high",lootSummary:"C320/C540 gas (very valuable)",lootExamples:["Fullerite-C320","Fullerite-C540"],estimatedValue:"50-200M"},
+  {name:"Vital Core Perimeter",type:"gas",space:["wormhole"],whClass:[5,6],danger:"caution",hasNPCs:true,npcType:"Sleeper",npcDetail:"Battleships spawn ~15-20 min after first warp-in",hazards:["timed_spawn"],tips:"C5/C6 gas — highest value but battleship Sleepers spawn after 15-20 min. They will instantly kill mining frigates. Must warp out before spawn. Timer starts on first ever warp-in to the site.",lootTier:"high",lootSummary:"C320/C540 gas",lootExamples:["Fullerite-C320","Fullerite-C540"],estimatedValue:"80-300M"},
+  {name:"Nebula Cytoserocin (all regions)",altNames:["Lime Cytoserocin","Malachite Cytoserocin","Celadon Cytoserocin","Viridian Cytoserocin","Chartreuse Cytoserocin","Gamboge Cytoserocin","Vermillion Cytoserocin","Azure Cytoserocin"],type:"gas",space:["lowsec","nullsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"K-space gas sites. No NPCs. Safe to mine indefinitely. Found in specific regions based on color.",lootTier:"medium",lootSummary:"Cytoserocin gas (booster production)",lootExamples:["Lime Cytoserocin","Malachite Cytoserocin"],estimatedValue:"10-50M"},
+  {name:"Nebula Mykoserocin (all regions)",altNames:["Lime Mykoserocin","Malachite Mykoserocin","Celadon Mykoserocin","Viridian Mykoserocin","Chartreuse Mykoserocin","Gamboge Mykoserocin","Vermillion Mykoserocin","Azure Mykoserocin"],type:"gas",space:["highsec","lowsec"],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"K-space gas sites. No NPCs. Safe to mine. Found in highsec/lowsec based on color.",lootTier:"low",lootSummary:"Mykoserocin gas (synth booster production)",lootExamples:["Lime Mykoserocin","Azure Mykoserocin"],estimatedValue:"5-20M"},
+  // ── Wormhole Pirate Data/Relic (safe — no Sleepers!) ────────────────────
+  {name:"Abandoned Research Station (faction)",altNames:["Abandoned Angel Research Station","Abandoned Blood Raider Research Station","Abandoned Guristas Research Station","Abandoned Sansha Research Station","Abandoned Serpentis Research Station"],type:"data",space:["wormhole"],whClass:[1,2,3],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"Pirate faction sites IN wormholes. Despite being in w-space, these have NO Sleeper NPCs. Safe to hack like k-space sites.",lootTier:"low",lootSummary:"Same as k-space faction data sites: datacores, decryptors",lootExamples:["Datacores","Decryptors"],estimatedValue:"3-15M"},
+  {name:"Forgotten Missile Launcher (faction relic in WH)",altNames:["Abandoned Angel Relic","Abandoned Blood Raider Relic","Abandoned Guristas Relic","Abandoned Sansha Relic","Abandoned Serpentis Relic"],type:"relic",space:["wormhole"],whClass:[1,2,3],danger:"safe",hasNPCs:false,npcType:null,npcDetail:null,hazards:[],tips:"Pirate faction relic sites IN wormholes. Despite being in w-space, these have NO Sleeper NPCs. Named differently from Sleeper relic sites (no 'Forgotten Perimeter/Core/Frontier' pattern).",lootTier:"medium",lootSummary:"Same as k-space relic sites: T2 salvage",lootExamples:["Intact Armor Plates","Power Circuits"],estimatedValue:"5-25M"},
+];
+
+let EXP = { selected: null };
+
+function expSearch(){
+  const q = ($("#exp-search").value||"").trim().toLowerCase();
+  const results = $("#exp-results");
+  const cards = $("#exp-cards");
+  if(q.length < 2){ results.classList.add("hidden"); return; }
+  const matches = EXP_SITES.filter(s=>{
+    if(s.name.toLowerCase().includes(q)) return true;
+    if(s.altNames && s.altNames.some(a=>a.toLowerCase().includes(q))) return true;
+    return false;
+  });
+  if(!matches.length){
+    results.innerHTML = `<div class="exp-result-item"><span class="exp-result-name" style="color:var(--dim)">No matching sites found</span></div>`;
+    results.classList.remove("hidden");
+    return;
+  }
+  results.innerHTML = matches.slice(0,20).map((s,i)=>{
+    const dangerCls = s.danger==="safe"?"exp-badge-safe":s.danger==="caution"?"exp-badge-caution":"exp-badge-dangerous";
+    return `<div class="exp-result-item" data-idx="${EXP_SITES.indexOf(s)}">
+      <span class="exp-result-name">${esc(s.name)}</span>
+      <span class="exp-type-badge">${esc(s.type.replace("_"," "))}</span>
+      <span class="exp-result-badge ${dangerCls}">${esc(s.danger)}</span>
+    </div>`;
+  }).join("");
+  results.classList.remove("hidden");
+  results.querySelectorAll(".exp-result-item[data-idx]").forEach(el=>{
+    el.onclick = ()=> expSelect(EXP_SITES[+el.dataset.idx]);
+  });
+}
+
+function expSelect(site){
+  EXP.selected = site;
+  $("#exp-results").classList.add("hidden");
+  $("#exp-cards").classList.remove("hidden");
+  // Danger card
+  const dangerCls = site.danger==="safe"?"exp-badge-safe":site.danger==="caution"?"exp-badge-caution":"exp-badge-dangerous";
+  const hazardLabels = {combat_npcs:"Combat NPCs",exploding_cans:"Exploding containers",env_damage:"Environmental damage",response_fleet:"Response fleet",timed_spawn:"Timed NPC spawn"};
+  let dangerHtml = `<div class="exp-label">THREAT LEVEL</div>
+    <div class="exp-value"><span class="exp-danger-badge ${dangerCls}">${esc(site.danger)}</span></div>`;
+  dangerHtml += `<div class="exp-label">NPCs</div>
+    <div class="exp-value">${site.hasNPCs ? esc(site.npcType||"Yes") : "None"}</div>`;
+  if(site.npcDetail) dangerHtml += `<div class="exp-label">NPC DETAIL</div><div class="exp-value">${esc(site.npcDetail)}</div>`;
+  if(site.hazards.length) dangerHtml += `<div class="exp-label">HAZARDS</div><div class="exp-value">${site.hazards.map(h=>esc(hazardLabels[h]||h)).join(", ")}</div>`;
+  dangerHtml += `<div class="exp-label">TIPS</div><div class="exp-value">${esc(site.tips)}</div>`;
+  if(site.space) dangerHtml += `<div class="exp-label">FOUND IN</div><div class="exp-value">${site.space.join(", ")}${site.whClass?" (C"+site.whClass.join(",")+")":""}</div>`;
+  $("#exp-danger-body").innerHTML = dangerHtml;
+  // Loot card
+  const tierCls = "exp-tier-"+(site.lootTier||"low");
+  let lootHtml = `<div class="exp-label">LOOT TIER</div>
+    <div class="exp-value"><span class="exp-loot-tier ${tierCls}">${esc(site.lootTier||"low")}</span></div>`;
+  lootHtml += `<div class="exp-label">SUMMARY</div><div class="exp-value">${esc(site.lootSummary)}</div>`;
+  if(site.lootExamples&&site.lootExamples.length) lootHtml += `<div class="exp-label">EXAMPLE DROPS</div><div class="exp-value">${site.lootExamples.map(e=>esc(e)).join(", ")}</div>`;
+  lootHtml += `<div class="exp-label">ESTIMATED VALUE</div><div class="exp-value">${esc(site.estimatedValue)}</div>`;
+  $("#exp-loot-body").innerHTML = lootHtml;
+}
+
+function esc(s){ return s==null?"":String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+$("#exp-search").addEventListener("input", expSearch);
 
 loadSettings();
 checkAuth();

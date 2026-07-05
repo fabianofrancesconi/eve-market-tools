@@ -650,7 +650,7 @@ class TestHttpRouting:
     def test_tab_routes_cover_every_tab(self):
         # The clean URL map in the front-end must have a matching server route
         # for each non-root tab, or a refresh there would 404.
-        for path in ("/arbitrage", "/industry", "/character"):
+        for path in ("/arbitrage", "/industry", "/character", "/exploration"):
             assert path in lp_web.TAB_ROUTES
         # Front-end path<->tab maps are present and consistent.
         assert 'const TAB_PATH = {' in lp_web.INDEX_HTML

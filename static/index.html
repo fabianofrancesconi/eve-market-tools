@@ -3558,7 +3558,8 @@ async function _doRefreshCharData(){
     $("#g-broker").value=fee.toFixed(2);
   }
   saveLS(); recalcIndProfits();
-  charRefreshDeadline=Date.now()+CHAR_REFRESH_MS; tickCharRefreshTimer();
+  const refreshMs=d.next_refresh_in!=null?d.next_refresh_in*1000:CHAR_REFRESH_MS;
+  charRefreshDeadline=Date.now()+refreshMs; tickCharRefreshTimer();
   const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge();
   // If the character LP just changed the locked budget for the corp on screen,
@@ -3837,12 +3838,7 @@ async function renderWalletChart(charId){
   } else {
     const combined=_combinedWalletSeries(_walletHistoryCache);
     if(combined.length)
-      apexSeries.push({name:'Combined', data:combined.map(([ts,v])=>[ts*1000,v])});
-    for(const cid of Object.keys(_walletHistoryCache)){
-      const s=_walletHistoryCache[cid];
-      if(s.data.length)
-        apexSeries.push({name:s.name, data:s.data.map(([ts,v])=>[ts*1000,v])});
-    }
+      apexSeries.push({name:'Total', data:combined.map(([ts,v])=>[ts*1000,v])});
   }
   if(!apexSeries.length){
     container.innerHTML='<div class="wallet-chart-none">No wallet history for this character yet.</div>';

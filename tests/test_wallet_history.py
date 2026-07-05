@@ -148,3 +148,60 @@ class TestWalletHistoryEndpoint:
 
         result = lp_web.do_wallet_history({"days": ["30"]})
         assert result["series"] == {}
+
+
+class TestCompactSeries:
+    def test_recent_data_unchanged(self):
+        """Data within 7 days is kept at full resolution."""
+        now = time.time()
+        series = [[now - i * 300, 100.0 + i] for i in range(10)]
+        result, changed = lp_web._compact_series(series, now)
+        assert not changed
+        assert result == series
+
+    def test_old_data_compacted_hourly(self):
+        """Data 7–90 days old is compacted to one point per hour."""
+        now = time.time()
+        # Align base to start of an hour so all 12 points land in one bucket
+        base = (int((now - 10 * 86400) // 3600)) * 3600
+        # 12 points within the same hour (every 5 min = 12*300 = 3600)
+        series = [[base + i * 200, 1000.0 + i] for i in range(12)]
+        result, changed = lp_web._compact_series(series, now)
+        assert changed
+        assert len(result) == 1
+        assert abs(result[0][1] - sum(1000.0 + i for i in range(12)) / 12) < 0.01
+
+    def test_very_old_data_compacted_daily(self):
+        """Data 90–365 days old is compacted to one point per day."""
+        now = time.time()
+        # Align base to start of a UTC day so all points land in one bucket
+        base = (int((now - 100 * 86400) // 86400)) * 86400
+        # 12 points within the same day (every 2 hours)
+        series = [[base + i * 7200, 5000.0 + i * 10] for i in range(12)]
+        result, changed = lp_web._compact_series(series, now)
+        assert changed
+        assert len(result) == 1
+
+    def test_ancient_data_discarded(self):
+        """Data older than 365 days is removed."""
+        now = time.time()
+        series = [[now - 400 * 86400, 999.0], [now - 100, 500.0]]
+        result, changed = lp_web._compact_series(series, now)
+        assert changed
+        assert len(result) == 1
+        assert result[0][1] == 500.0
+
+    def test_mixed_ages(self):
+        """Series with points in all age buckets is properly segmented."""
+        now = time.time()
+        series = [
+            [now - 400 * 86400, 1.0],   # >365d: discard
+            [now - 100 * 86400, 2.0],   # 90-365d: daily
+            [now - 100 * 86400 + 3600, 4.0],  # same day as above
+            [now - 10 * 86400, 3.0],    # 7-90d: hourly
+            [now - 100, 4.0],           # <7d: keep
+        ]
+        result, changed = lp_web._compact_series(series, now)
+        assert changed
+        # 1 daily avg + 1 hourly + 1 recent = 3
+        assert len(result) == 3

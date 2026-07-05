@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.88.0"
+__version__ = "1.88.1"
 
 import argparse
 import base64
@@ -842,37 +842,73 @@ def _record_wallet_snapshot(acct, cid, balance):
     _maybe_prune_wallet_history(acct)
 
 
+def _compact_series(series, now):
+    """Compact a list of [ts, balance] points:
+    - Last 7 days: keep full resolution
+    - 7–90 days old: one point per hour (average)
+    - 90–365 days old: one point per day (average)
+    - Older than 365 days: discard
+    Returns (new_series, changed)."""
+    cutoff_7d = now - 7 * 86400
+    cutoff_90d = now - 90 * 86400
+    cutoff_365d = now - 365 * 86400
+
+    recent = []
+    hourly_buckets = {}
+    daily_buckets = {}
+
+    for pt in series:
+        ts = pt[0]
+        if ts < cutoff_365d:
+            continue
+        elif ts < cutoff_90d:
+            day_key = int(ts // 86400)
+            daily_buckets.setdefault(day_key, []).append(pt)
+        elif ts < cutoff_7d:
+            hour_key = int(ts // 3600)
+            hourly_buckets.setdefault(hour_key, []).append(pt)
+        else:
+            recent.append(pt)
+
+    compacted = []
+    for day_key in sorted(daily_buckets):
+        pts = daily_buckets[day_key]
+        avg_ts = sum(p[0] for p in pts) / len(pts)
+        avg_bal = sum(p[1] for p in pts) / len(pts)
+        compacted.append([avg_ts, avg_bal])
+    for hour_key in sorted(hourly_buckets):
+        pts = hourly_buckets[hour_key]
+        avg_ts = sum(p[0] for p in pts) / len(pts)
+        avg_bal = sum(p[1] for p in pts) / len(pts)
+        compacted.append([avg_ts, avg_bal])
+    compacted.extend(recent)
+
+    changed = len(compacted) != len(series)
+    return compacted, changed
+
+
 def _maybe_prune_wallet_history(acct):
-    """Downsample old data at most once per hour."""
+    """Compact old data at most once per hour."""
     global _WALLET_PRUNE_LAST
     now = time.time()
     if now - _WALLET_PRUNE_LAST < 3600:
         return
     _WALLET_PRUNE_LAST = now
     if pg_store.enabled():
-        pg_store.wallet_history_prune(acct.account_id, 365 * 86400)
+        pg_store.wallet_history_compact(acct.account_id, now)
     else:
         with _WALLET_RECORD_LOCK:
             store = load_json(WALLET_HISTORY_PATH, {})
-            cutoff_7d = now - 7 * 86400
-            cutoff_90d = now - 90 * 86400
-            cutoff_365d = now - 365 * 86400
-            changed = False
+            any_changed = False
             for cid_str in list(store.keys()):
                 series = store[cid_str]
                 if not series:
                     continue
-                new_series = []
-                for pt in series:
-                    ts = pt[0]
-                    if ts < cutoff_365d:
-                        changed = True
-                        continue
-                    new_series.append(pt)
-                if len(new_series) != len(series):
-                    changed = True
-                store[cid_str] = new_series
-            if changed:
+                new_series, changed = _compact_series(series, now)
+                if changed:
+                    store[cid_str] = new_series
+                    any_changed = True
+            if any_changed:
                 save_json(WALLET_HISTORY_PATH, store)
 
 
@@ -1195,6 +1231,11 @@ def do_char_data(q):
 
     active_data = results.get(active_char_id) or next(iter(results.values()), {})
 
+    now = time.time()
+    oldest_cache_ts = min(
+        (_CHAR_DATA_CACHE.get(cid, (now,))[0] for cid in char_ids), default=now)
+    next_refresh_in = max(0, _CHAR_DATA_TTL - (now - oldest_cache_ts))
+
     return {
         "characters": [results[cid] for cid in char_ids if cid in results],
         "combined_wallet": combined_wallet,
@@ -1217,6 +1258,7 @@ def do_char_data(q):
         "accounting_level": active_data.get("accounting_level", 0),
         "broker_relations_level": active_data.get("broker_relations_level", 0),
         "order_events": _get_order_events(acct),
+        "next_refresh_in": next_refresh_in,
     }
 
 

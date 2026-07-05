@@ -469,11 +469,61 @@ def wallet_history_query(account_id, since_ts):
     return result
 
 
-def wallet_history_prune(account_id, max_age_seconds):
-    """Delete points older than max_age_seconds. Returns rows removed."""
-    cutoff = time.time() - max_age_seconds
-    with _get_pool().connection() as conn:
-        cur = conn.execute(
+def wallet_history_compact(account_id, now=None):
+    """Compact old data: 7–90 days → hourly averages, 90–365 days → daily averages,
+    >365 days → delete. Operates per-character within a transaction."""
+    if now is None:
+        now = time.time()
+    cutoff_7d = now - 7 * 86400
+    cutoff_90d = now - 90 * 86400
+    cutoff_365d = now - 365 * 86400
+
+    with _get_pool().connection() as conn, conn.transaction():
+        conn.execute(
             "DELETE FROM mono_wallet_history WHERE account_id=%s AND ts<%s",
-            (account_id, cutoff))
-        return cur.rowcount
+            (account_id, cutoff_365d))
+
+        rows = conn.execute(
+            "SELECT character_id, ts, balance FROM mono_wallet_history "
+            "WHERE account_id=%s AND ts<%s ORDER BY character_id, ts",
+            (account_id, cutoff_7d)).fetchall()
+        if not rows:
+            return
+
+        from collections import defaultdict
+        char_points = defaultdict(list)
+        for cid, ts, bal in rows:
+            char_points[cid].append((ts, bal))
+
+        for cid, points in char_points.items():
+            hourly_buckets = defaultdict(list)
+            daily_buckets = defaultdict(list)
+            for ts, bal in points:
+                if ts < cutoff_90d:
+                    daily_buckets[int(ts // 86400)].append((ts, bal))
+                else:
+                    hourly_buckets[int(ts // 3600)].append((ts, bal))
+
+            compacted = []
+            for bucket in sorted(daily_buckets):
+                pts = daily_buckets[bucket]
+                avg_ts = sum(t for t, _ in pts) / len(pts)
+                avg_bal = sum(b for _, b in pts) / len(pts)
+                compacted.append((avg_ts, avg_bal))
+            for bucket in sorted(hourly_buckets):
+                pts = hourly_buckets[bucket]
+                avg_ts = sum(t for t, _ in pts) / len(pts)
+                avg_bal = sum(b for _, b in pts) / len(pts)
+                compacted.append((avg_ts, avg_bal))
+
+            if len(compacted) < len(points):
+                conn.execute(
+                    "DELETE FROM mono_wallet_history WHERE account_id=%s "
+                    "AND character_id=%s AND ts<%s",
+                    (account_id, cid, cutoff_7d))
+                for avg_ts, avg_bal in compacted:
+                    conn.execute(
+                        "INSERT INTO mono_wallet_history "
+                        "(account_id, character_id, ts, balance) "
+                        "VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                        (account_id, cid, avg_ts, avg_bal))

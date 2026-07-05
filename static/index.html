@@ -3422,7 +3422,8 @@ function renderCharDropdown(){
       +`<button class="char-dd-rm" data-cid="${c.character_id}" title="Remove ${authEsc(c.name)}">✕</button>`
       +`</div>`;
   }).join("")
-    +`<div class="char-dd-row char-dd-add"><button id="add-char-btn" class="auth-btn-sm">+ Add character</button></div>`;
+    +`<div class="char-dd-row char-dd-add"><button id="add-char-btn" class="auth-btn-sm">+ Add character</button></div>`
+    +`<div class="char-dd-row char-dd-add"><button id="logout-all-btn" class="auth-btn-sm" style="color:var(--red,#e55)">Logout all</button></div>`;
   dd.querySelectorAll(".char-dd-name").forEach(el=>{
     el.onclick=e=>{
       e.stopPropagation();
@@ -3435,6 +3436,8 @@ function renderCharDropdown(){
   });
   const addBtn=dd.querySelector("#add-char-btn");
   if(addBtn) addBtn.onclick=e=>{ e.stopPropagation(); doLogin(); };
+  const logoutAllBtn=dd.querySelector("#logout-all-btn");
+  if(logoutAllBtn) logoutAllBtn.onclick=e=>{ e.stopPropagation(); doLogout(); };
 }
 async function switchActiveChar(cid){
   await fetch(`/api/auth/switch?active_char_id=${cid}`);

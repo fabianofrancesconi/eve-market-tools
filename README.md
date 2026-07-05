@@ -1,6 +1,8 @@
 # EVE Market Tools
 
-A local web app with three market utilities for EVE Online, served from a single Python script with no framework dependencies beyond `requests`.
+> **Try it now** — no install required: **[eve-market-tools-production.up.railway.app](https://eve-market-tools-production.up.railway.app/)**
+
+A web app with three market utilities for EVE Online, served from a single Python script with no framework dependencies beyond `requests`.
 
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)
 [![Docker](https://img.shields.io/badge/ghcr.io-eve--market--tools-blue?logo=docker)](https://ghcr.io/fabianofrancesconi/eve-market-tools)

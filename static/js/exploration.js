@@ -160,6 +160,15 @@ function expSelect(site){
 
   $("#exp-site-title").textContent = site.name;
 
+  // Hero strip — key metrics at a glance
+  const heroDangerCls = site.danger==="safe"?"exp-badge-safe":site.danger==="caution"?"exp-badge-caution":"exp-badge-dangerous";
+  const heroTierCls = "exp-tier-"+(site.lootTier||"low");
+  $("#exp-hero").innerHTML = `
+    <div class="exp-hero-chip"><span class="exp-hero-label">Danger</span><span class="exp-hero-value"><span class="exp-danger-badge ${heroDangerCls}">${esc(site.danger)}</span></span></div>
+    <div class="exp-hero-chip"><span class="exp-hero-label">Loot Tier</span><span class="exp-hero-value"><span class="exp-loot-tier ${heroTierCls}">${esc(site.lootTier||"low")}</span></span></div>
+    <div class="exp-hero-chip"><span class="exp-hero-label">Est. Value</span><span class="exp-hero-value" style="color:var(--gold)">${esc(site.estimatedValue)}</span></div>
+    <div class="exp-hero-chip"><span class="exp-hero-label">Space</span><span class="exp-hero-value">${esc(site.space.join(", "))}${site.whClass?" <span style='font-size:13px;color:var(--dim);font-weight:400'>C"+site.whClass.join(",")+"</span>":""}</span></div>`;
+
   // WHAT TO EXPECT card
   const dangerCls = site.danger==="safe"?"exp-badge-safe":site.danger==="caution"?"exp-badge-caution":"exp-badge-dangerous";
   let triggerHtml = `<div class="exp-label">DANGER LEVEL</div>

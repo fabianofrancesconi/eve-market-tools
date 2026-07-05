@@ -215,6 +215,8 @@ expRenderRecent();
   const handle = $("#exp-resize-handle");
   const layout = handle.parentElement;
   let dragging = false, startX, startW;
+  const saved = localStorage.getItem("exp-sidebar-width");
+  if(saved){ layout.style.gridTemplateColumns = saved + "px 6px 1fr"; }
   handle.addEventListener("mousedown", (e)=>{
     e.preventDefault();
     dragging = true;
@@ -235,5 +237,7 @@ expRenderRecent();
     handle.classList.remove("active");
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
+    const w = layout.querySelector(".exp-sidebar").offsetWidth;
+    localStorage.setItem("exp-sidebar-width", w);
   });
 })();

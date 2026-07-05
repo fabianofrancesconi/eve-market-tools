@@ -804,6 +804,14 @@
   .notes-tree-children.drag-over, .notes-tree.drag-over {
     background:rgba(79,195,247,.06); border-radius:4px;
   }
+  #notes-toast {
+    position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+    background:var(--panel3); border:1px solid var(--line2); color:var(--cyan);
+    font-size:13px; font-weight:600; padding:8px 18px; border-radius:6px;
+    box-shadow:0 4px 16px rgba(0,0,0,.5);
+    opacity:0; transition:opacity .25s ease; pointer-events:none; z-index:9000;
+  }
+  #notes-toast.show { opacity:1; }
 </style>
 </head>
 <body>
@@ -1052,6 +1060,7 @@
       <div class="notes-empty">Select or create a note</div>
     </div>
   </div>
+  <div id="notes-toast">Note saved</div>
   <!-- LP detail panel -->
   <div id="detail"><div class="inner"></div></div>
   <!-- Price history modal (ARB rows) -->
@@ -4309,7 +4318,7 @@ function selectNote(id){
 
 function _scheduleNoteSave(id){
   if(NOTES.saveTimer) clearTimeout(NOTES.saveTimer);
-  NOTES.saveTimer=setTimeout(()=>_saveActiveNote(id), 600);
+  NOTES.saveTimer=setTimeout(()=>_saveActiveNote(id), 3000);
 }
 
 function _saveActiveNote(id){
@@ -4325,7 +4334,14 @@ async function _persistNote(n){
   try{
     await fetch("/api/notes/save",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({id:n.id, parent_id:n.parent_id, kind:n.kind, title:n.title, body:n.body, pos:String(n.pos)})});
+    _showNotesToast();
   }catch(e){ console.error("note save",e); }
+}
+
+function _showNotesToast(){
+  const t=$("#notes-toast"); t.classList.add("show");
+  if(NOTES.toastTimer) clearTimeout(NOTES.toastTimer);
+  NOTES.toastTimer=setTimeout(()=>t.classList.remove("show"), 2000);
 }
 
 async function addNote(kind, parentId){

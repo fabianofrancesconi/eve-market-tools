@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.87.10"
+__version__ = "1.87.11"
 
 import argparse
 import base64
@@ -950,7 +950,8 @@ def _fetch_one_char_data_uncached(acct, cid):
     job_station_ids = {j.get("station_id") for j in jobs
                        if j.get("status") in ("active", "paused", "ready")}
     job_station_ids.discard(None)
-    station_names = resolve_station_names(list(job_station_ids), SESSION, CACHE_DIR)
+    station_names = resolve_station_names(list(job_station_ids), SESSION, CACHE_DIR,
+                                              token=token)
 
     runs_tracked = _track_delivered_jobs(acct, cid, jobs, names)
 

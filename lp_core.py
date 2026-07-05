@@ -299,21 +299,28 @@ def resolve_station_region(station_id, session, cache_dir):
     return region_id
 
 
-def resolve_station_names(station_ids, session, cache_dir):
+def resolve_station_names(station_ids, session, cache_dir, token=None):
     """station_id -> station name, persistently cached.
     NPC stations (< 1e9) are resolved via /universe/stations/{id}/.
-    Player structures (>= 1e9) return None (need auth + scope we don't have)."""
+    Player structures (>= 1e9) are resolved via /universe/structures/{id}/
+    (requires esi-universe.read_structures.v1 + docking access)."""
     path = Path(cache_dir) / "station_names.json"
     cache = {int(k): v for k, v in load_json(path, {}).items()}
     dirty = False
     for sid in station_ids:
         if sid in cache or sid is None:
             continue
-        if sid >= 1_000_000_000:
-            continue
         try:
-            r = session.get(f"{ESI}/universe/stations/{sid}/",
-                            headers=HEADERS, timeout=15)
+            if sid >= 1_000_000_000:
+                if not token:
+                    continue
+                r = session.get(f"{ESI}/universe/structures/{sid}/",
+                                headers={"Authorization": f"Bearer {token}",
+                                         **HEADERS},
+                                timeout=15)
+            else:
+                r = session.get(f"{ESI}/universe/stations/{sid}/",
+                                headers=HEADERS, timeout=15)
             r.raise_for_status()
             cache[sid] = r.json()["name"]
             dirty = True

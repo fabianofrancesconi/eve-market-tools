@@ -22,9 +22,9 @@ Build-location profiles capture each station or structure's ME/TE, system cost i
 
 ---
 
-## Log in with EVE (optional)
+## Log in with EVE
 
-Log in with your EVE Online account to pull live character data into the tools. Click **Log in with EVE** in the top-right corner.
+Log in with your EVE Online account to pull live character data into the tools. Click **Log in with EVE** in the top-right corner. You can link **multiple characters** (alts) to one login and switch the active one from the header dropdown.
 
 What it adds:
 - A **Character** tab with your wallet balance, total SP, **loyalty points** per corporation, your **skill queue** with finish times, and your **currently running industry jobs** with live countdown timers.
@@ -32,17 +32,35 @@ What it adds:
 - The **Industry** planner gains a **My skills** toggle that swaps the uniform "Skills @" assumption for your character's *actual* trained skill levels, so build times and the Build? gate match your character.
 - Your real running manufacturing jobs drive the Industry table's timer column (matched by blueprint), with a per-second live countdown. The job list is re-pulled from EVE every 5 minutes (EVE's cache cadence for industry jobs).
 
+Login is **optional when running locally** (the tools work without it, minus the character-specific features) but **required on a shared/hosted deployment** — see *Deployment modes* below.
+
 ### One-time setup
 
-EVE's SSO requires each user to register their own application (it's free and takes a minute):
+EVE's SSO requires registering an application (free, takes a minute). Unlike older versions, the Client ID and callback are **configured via environment variables on the server**, not entered in the UI:
 
 1. Go to **[developers.eveonline.com/applications](https://developers.eveonline.com/applications)** and create a new application.
 2. Set **Connection Type** to *Authentication Only*.
-3. Set the **Callback URL** to exactly the value shown in the app's login settings (the ⚙ button next to *Log in with EVE*) — by default `http://localhost:8765/callback`.
-4. Copy the application's **Client ID** and paste it into the same login-settings panel, then **Save**.
-5. Click **Log in with EVE**, approve on EVE's site, and you'll be redirected back logged in.
+3. Set the **Callback URL** to exactly match `EVE_CALLBACK_URL` (see below). For local use that's `http://localhost:8765/callback`; for a hosted deploy it's `https://your-host/callback`.
+4. Copy the application's **Client ID**.
+5. Start the server with the two environment variables set:
 
-This uses the OAuth2 **PKCE** native-app flow, so there is **no client secret**. The scopes requested are read-only: skills, skill queue, wallet, loyalty points and industry jobs. The refresh token is stored in the cache directory (`.eve_scanner_cache/eve_auth.json`) like the other local settings; delete that file or click the **✕** on the character chip to log out.
+   ```bash
+   EVE_CLIENT_ID=<your-client-id> \
+   EVE_CALLBACK_URL=http://localhost:8765/callback \
+   python lp-web.py
+   ```
+
+   `EVE_CALLBACK_URL` is optional locally (defaults to `http://localhost:<port>/callback`); set it explicitly for any non-localhost host.
+6. Click **Log in with EVE**, approve on EVE's site, and you'll be redirected back logged in.
+
+This uses the OAuth2 **PKCE** native-app flow, so there is **no client secret**. The scopes requested are read-only: skills, skill queue, wallet, loyalty points, market orders, blueprints and industry jobs. Click the **✕** on a character chip to log out that character.
+
+## Deployment modes
+
+The same `lp-web.py` runs in one of two modes, chosen automatically by whether a `DATABASE_URL` is set:
+
+- **Local / single-user (no `DATABASE_URL`)** — all state (tokens, settings, caches) lives in the cache directory (`.eve_scanner_cache/`). Login is optional; there's one implicit user. This is the default `python lp-web.py` behaviour and what the test suite exercises.
+- **Hosted / multi-user (`DATABASE_URL` set, e.g. Postgres)** — the app becomes a real multi-user service. Login with EVE is **mandatory**: a browser session cookie is issued on login and every API endpoint requires it, so unauthenticated visitors can't see or touch anyone's data. Each login is an **account** (a set of linked characters); all durable state — SSO tokens, per-account settings (searches, filters, columns — server-authoritative, so the same account sees an identical view across browsers/devices), delivered-run and order-sale counters — is stored in Postgres (`mono_*` tables). Rebuildable caches (the SDE, ESI/market JSON) stay on disk. Run it as a **single replica**: sessions/accounts are cached in-process and token refresh is serialised per-process.
 
 ---
 

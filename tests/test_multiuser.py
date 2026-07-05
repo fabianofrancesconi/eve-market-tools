@@ -276,6 +276,53 @@ class TestGate:
         assert h._gate("/api/scan") is True
 
 
+class TestCookiesAndLogout:
+    def test_expire_cookie_header_clears(self, pg):
+        h = lp_web._expire_cookie_header()
+        assert h.startswith("emt_sid=;")
+        assert "Max-Age=0" in h and "HttpOnly" in h
+
+    def test_session_cookie_header_has_flags(self, pg):
+        h = lp_web._cookie_header("abc")
+        assert h.startswith("emt_sid=abc;")
+        assert "HttpOnly" in h and "SameSite=Lax" in h and "Max-Age=" in h
+
+    def test_logout_deletes_session_and_account(self, pg):
+        a = _acct(pg, 100, "Main")
+        sid = lp_web._new_session(a)
+        lp_web._REQUEST.account = a
+        lp_web.do_auth_logout({})       # full logout
+        assert pg.session_get(sid) is None      # session row gone
+        assert pg.account_get(100) is None      # account row gone
+        assert sid not in lp_web._SESSIONS      # dropped from cache
+
+
+class TestScanCap:
+    def test_saturated_scans_return_503(self, pg):
+        acquired = 0
+        while lp_web._SCAN_SLOTS.acquire(blocking=False):
+            acquired += 1
+        try:
+            h = _FakeHandler("")
+            h._handle_sse_scan({}, lambda q, emit=None: {}, "lp")
+            assert h.sent[0] == 503
+        finally:
+            for _ in range(acquired):
+                lp_web._SCAN_SLOTS.release()
+
+    def test_slot_released_after_scan(self, pg):
+        # A completed scan must return its slot (no leak). _FakeHandler lacks the
+        # SSE socket methods, so stub the streaming bits to exercise the finally.
+        h = _FakeHandler("")
+        h.send_response = lambda *a, **k: None
+        h.send_header = lambda *a, **k: None
+        h.end_headers = lambda *a, **k: None
+        h._sse_emit = lambda data: None
+        before = lp_web._SCAN_SLOTS._value
+        h._handle_sse_scan({}, lambda q, emit=None: {"rows": []}, "arb")
+        assert lp_web._SCAN_SLOTS._value == before
+
+
 # ── Legacy → account migration ────────────────────────────────────────────────
 
 class TestMigration:

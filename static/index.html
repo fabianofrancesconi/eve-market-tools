@@ -1042,6 +1042,35 @@
 <script>
 const $ = s => document.querySelector(s);
 const COL_LAYOUT_VERSION = 6;
+
+// Session-expiry handling (multi-user deploy): the server returns
+// 401 {login_required:true} once a session cookie is gone/expired. Wrap fetch so
+// any API call hitting that shows a one-time "log in again" banner instead of
+// failing silently with confusing errors.
+const _origFetch = window.fetch.bind(window);
+let _sessionExpiredShown = false;
+async function _onSessionExpired(){
+  if(_sessionExpiredShown) return; _sessionExpiredShown = true;
+  const bar = document.createElement('div');
+  bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;'
+    + 'background:#7a1f1f;color:#fff;padding:10px 16px;text-align:center;'
+    + 'font:14px system-ui,sans-serif';
+  bar.innerHTML = 'Your session expired. <a href="#" style="color:#ffe08a">Log in with EVE again</a>';
+  bar.querySelector('a').onclick = async (e) => {
+    e.preventDefault();
+    try { const j = await (await _origFetch('/api/auth/login')).json();
+          if(j.url) location.href = j.url; } catch(_) { location.reload(); }
+  };
+  document.body.appendChild(bar);
+}
+window.fetch = async function(...args){
+  const r = await _origFetch(...args);
+  if(r.status === 401){
+    try { const j = await r.clone().json(); if(j && j.login_required) _onSessionExpired(); }
+    catch(_) {}
+  }
+  return r;
+};
 function postPrefs(path,params){fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(params)}).catch(()=>{});}
 function startResize(e,key,ctx){
   e.preventDefault(); e.stopPropagation();

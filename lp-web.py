@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.83.0"
+__version__ = "1.84.0"
 
 import argparse
 import base64
@@ -509,7 +509,8 @@ def _startup_restore():
 
 
 def _sweep_expired():
-    """Drop abandoned PKCE handshakes and idle sessions. Cheap; called on login."""
+    """Drop abandoned PKCE handshakes and idle sessions. Cheap; run on login and
+    on a background timer so it happens even when nobody logs in for a while."""
     now = time.time()
     with _PKCE_LOCK:
         for st in [s for s, h in _PKCE.items() if now - h.get("ts", 0) > _PKCE_TTL]:
@@ -519,6 +520,29 @@ def _sweep_expired():
             pg_store.sessions_sweep(_SESSION_TTL)
         except Exception:  # noqa: BLE001
             pass
+
+
+def _sweep_loop(interval=3600):
+    while True:
+        time.sleep(interval)
+        try:
+            _sweep_expired()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _warn_if_multi_replica():
+    """This monolith caches sessions/accounts in-process and serializes token
+    refresh per-process, so it must run as a single replica. Warn loudly if the
+    host env suggests otherwise (the in-memory caches + per-account lock are only
+    correct within one process — see the single-replica invariant)."""
+    for var in ("RAILWAY_REPLICA_COUNT", "NUM_REPLICAS", "WEB_CONCURRENCY"):
+        val = os.environ.get(var)
+        if val and val.isdigit() and int(val) > 1:
+            print(f"[WARN] {var}={val}: this app must run as a SINGLE replica — it "
+                  "caches sessions/accounts in-process and serialises per-account "
+                  "token refresh per-process. Multiple replicas can race.",
+                  file=sys.stderr)
 
 
 def _access_token(acct, cid=None):
@@ -2048,10 +2072,10 @@ _GET_ROUTES = {
     "/api/ind/detail": do_ind_detail,
     "/api/ind/bpo-search": do_ind_bpo_search,
     "/api/auth/login": do_auth_login,
-    "/api/auth/status": do_auth_status,
-    "/api/auth/logout": do_auth_logout,
     "/api/auth/switch": do_auth_switch,
     "/api/char/data": do_char_data,
+    # /api/auth/status and /api/auth/logout are handled explicitly in do_GET so
+    # they can refresh / clear the session cookie.
 }
 
 # Uniform POST endpoints: take the merged query/body params, return a JSON dict.
@@ -2077,14 +2101,28 @@ def _cookie_header(sid):
             f"Max-Age={_SESSION_TTL}{secure}")
 
 
+def _expire_cookie_header():
+    """A Set-Cookie that clears the session cookie in the browser (logout)."""
+    secure = "; Secure" if _callback_url().startswith("https") else ""
+    return f"{_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0{secure}"
+
+
+# Cap concurrent scans so a burst / crawler on the public URL can't pile up
+# unbounded worker threads on the threaded http.server. Excess requests get 503.
+_MAX_CONCURRENT_SCANS = 8
+_SCAN_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT_SCANS)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def _send_json(self, obj, status=200):
+    def _send_json(self, obj, status=200, set_cookie=None):
         body = json.dumps(obj).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        if set_cookie:
+            self.send_header("Set-Cookie", set_cookie)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2201,25 +2239,32 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _handle_sse_scan(self, q, scan_fn, tag):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("X-Accel-Buffering", "no")
-        self.end_headers()
-        emit = self._sse_emit
+        if not _SCAN_SLOTS.acquire(blocking=False):
+            self._send_json({"error": "Server busy — too many scans in progress. "
+                             "Try again in a moment."}, 503)
+            return
         try:
-            result = scan_fn(q, emit=emit)
-            emit({"type": "result", **result})
-            if tag == "lp":
-                _save_last_scan(current_account(), "lp", result)
-            elif tag == "ind" and not result.get("favorites_only") and not result.get("owned_only"):
-                _save_last_scan(current_account(), "ind", result)
-        except LPError as e:
-            print(f"[{tag}] LPError: {e}", file=sys.stderr)
-            emit({"type": "error", "error": str(e)})
-        except Exception as e:  # noqa: BLE001
-            traceback.print_exc(file=sys.stderr)
-            emit({"type": "error", "error": f"{type(e).__name__}: {e}"})
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            emit = self._sse_emit
+            try:
+                result = scan_fn(q, emit=emit)
+                emit({"type": "result", **result})
+                if tag == "lp":
+                    _save_last_scan(current_account(), "lp", result)
+                elif tag == "ind" and not result.get("favorites_only") and not result.get("owned_only"):
+                    _save_last_scan(current_account(), "ind", result)
+            except LPError as e:
+                print(f"[{tag}] LPError: {e}", file=sys.stderr)
+                emit({"type": "error", "error": str(e)})
+            except Exception as e:  # noqa: BLE001
+                traceback.print_exc(file=sys.stderr)
+                emit({"type": "error", "error": f"{type(e).__name__}: {e}"})
+        finally:
+            _SCAN_SLOTS.release()
 
     def _handle_arb_scan(self, q):
         self._handle_sse_scan(q, do_arb_scan, "arb")
@@ -2269,6 +2314,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_sse_scan(q, do_ind_scan, "ind")
             elif parsed.path == "/callback":
                 self._handle_callback(q)
+            elif parsed.path == "/api/auth/status":
+                st = do_auth_status(q)
+                # Sliding expiration: re-issue the cookie with a fresh Max-Age on
+                # each app load so an actively-used session doesn't hit the hard
+                # 30-day cap. (last_seen is also refreshed server-side.)
+                cookie = None
+                if pg_store.enabled() and current_account() is not None:
+                    sid = self._cookies().get(_COOKIE_NAME)
+                    if sid:
+                        cookie = _cookie_header(sid)
+                self._send_json(st, set_cookie=cookie)
+            elif parsed.path == "/api/auth/logout":
+                result = do_auth_logout(q)
+                self._send_json(result,
+                                set_cookie=_expire_cookie_header() if pg_store.enabled() else None)
             elif parsed.path in _GET_ROUTES:
                 self._send_json(_GET_ROUTES[parsed.path](q))
             else:
@@ -2344,11 +2404,13 @@ def main():
 
     global _SERVER_PORT
     _SERVER_PORT = args.port
+    _warn_if_multi_replica()
     _startup_restore()
 
     url = f"http://{args.host if args.host != '0.0.0.0' else 'localhost'}:{args.port}"
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     threading.Thread(target=get_npc_corps, daemon=True).start()
+    threading.Thread(target=_sweep_loop, daemon=True).start()
     print(f"EVE Market Tools running at {url}", file=sys.stderr)
     print("Press Ctrl+C to stop.", file=sys.stderr)
     if not args.no_browser:

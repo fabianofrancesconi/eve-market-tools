@@ -1,0 +1,44 @@
+name: Tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    # Postgres for the live pg_store tests (tests/test_pg_store_live.py). Every
+    # other test runs without it; that module skips unless EMT_TEST_DATABASE_URL
+    # is set (below), so the suite stays green with or without a database.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: emt
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests (incl. live Postgres)
+        env:
+          EMT_TEST_DATABASE_URL: postgresql://postgres:test@127.0.0.1:5432/emt
+        run: pytest tests/ -q

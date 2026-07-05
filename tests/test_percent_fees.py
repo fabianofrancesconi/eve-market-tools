@@ -67,20 +67,20 @@ class TestPercentInputs:
 # ---------------------------------------------------------------------------
 
 class TestConversionWiring:
-    def test_helpers_defined(self, html):
-        assert b"function pctToFrac(" in html
-        assert b"function fracToPct(" in html
+    def test_helpers_defined(self):
+        assert "function pctToFrac(" in lp_web.FRONTEND_SOURCE
+        assert "function fracToPct(" in lp_web.FRONTEND_SOURCE
 
-    def test_savels_converts_to_fraction(self, html):
-        assert b'tax:pctToFrac($("#g-tax").value)' in html
-        assert b'broker:pctToFrac($("#g-broker").value)' in html
+    def test_savels_converts_to_fraction(self):
+        assert 'tax:pctToFrac($("#g-tax").value)' in lp_web.FRONTEND_SOURCE
+        assert 'broker:pctToFrac($("#g-broker").value)' in lp_web.FRONTEND_SOURCE
 
-    def test_scan_ctx_converts_to_fraction(self, html):
-        assert b'tax:pctToFrac($("#g-tax").value), broker:pctToFrac($("#g-broker").value)' in html
+    def test_scan_ctx_converts_to_fraction(self):
+        assert 'tax:pctToFrac($("#g-tax").value), broker:pctToFrac($("#g-broker").value)' in lp_web.FRONTEND_SOURCE
 
-    def test_restore_converts_to_percent(self, html):
-        assert b'$("#g-tax").value=fracToPct(s.tax)' in html
-        assert b'$("#g-broker").value=fracToPct(s.broker)' in html
+    def test_restore_converts_to_percent(self):
+        assert '$("#g-tax").value=fracToPct(s.tax)' in lp_web.FRONTEND_SOURCE
+        assert '$("#g-broker").value=fracToPct(s.broker)' in lp_web.FRONTEND_SOURCE
 
-    def test_arb_tax_uses_numeric_addition(self, html):
-        assert b'parseFloat(pctToFrac($("#g-tax").value)||0)+parseFloat(pctToFrac($("#g-broker").value)||0)' in html
+    def test_arb_tax_uses_numeric_addition(self):
+        assert 'parseFloat(pctToFrac($("#g-tax").value)||0)+parseFloat(pctToFrac($("#g-broker").value)||0)' in lp_web.FRONTEND_SOURCE

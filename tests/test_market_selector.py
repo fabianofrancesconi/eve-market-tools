@@ -245,10 +245,8 @@ class TestHtmlMarketDropdown:
 
     def test_market_in_savels(self, tmp_server):
         """saveLS() must snapshot the market field so it persists across reloads."""
-        body = self._get_html(tmp_server)
-        assert b'market:$("#market").value' in body
+        assert 'market:$("#market").value' in lp_web.FRONTEND_SOURCE
 
     def test_market_in_loadsettings(self, tmp_server):
         """loadSettings() must restore the market field on page load."""
-        body = self._get_html(tmp_server)
-        assert b'if(s.market)' in body
+        assert 'if(s.market)' in lp_web.FRONTEND_SOURCE

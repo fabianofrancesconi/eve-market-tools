@@ -653,10 +653,10 @@ class TestHttpRouting:
         for path in ("/arbitrage", "/industry", "/character", "/exploration"):
             assert path in lp_web.TAB_ROUTES
         # Front-end path<->tab maps are present and consistent.
-        assert 'const TAB_PATH = {' in lp_web.INDEX_HTML
-        assert 'const PATH_TAB = {' in lp_web.INDEX_HTML
-        assert 'history.pushState' in lp_web.INDEX_HTML
-        assert '"popstate"' in lp_web.INDEX_HTML
+        assert 'const TAB_PATH = {' in lp_web.FRONTEND_SOURCE
+        assert 'const PATH_TAB = {' in lp_web.FRONTEND_SOURCE
+        assert 'history.pushState' in lp_web.FRONTEND_SOURCE
+        assert '"popstate"' in lp_web.FRONTEND_SOURCE
 
 
 # ---------------------------------------------------------------------------
@@ -666,46 +666,46 @@ class TestHttpRouting:
 class TestTooltips:
     def test_tooltip_engine_present(self):
         # The themed tooltip element + mousemove engine must be wired up.
-        assert 'id="tooltip"' in lp_web.INDEX_HTML
-        assert "#tooltip.show" in lp_web.INDEX_HTML
-        assert "[data-tip]" in lp_web.INDEX_HTML
+        assert 'id="tooltip"' in lp_web.FRONTEND_SOURCE
+        assert "#tooltip.show" in lp_web.FRONTEND_SOURCE
+        assert "[data-tip]" in lp_web.FRONTEND_SOURCE
 
     def test_uses_data_tip_not_native_title(self):
         # Column headers and controls now use data-tip, not title=.
-        assert "data-tip=" in lp_web.INDEX_HTML
-        assert 'c.tip?` data-tip=' in lp_web.INDEX_HTML
+        assert "data-tip=" in lp_web.FRONTEND_SOURCE
+        assert 'c.tip?` data-tip=' in lp_web.FRONTEND_SOURCE
 
     def test_no_stale_native_title_on_controls(self):
         # The refresh/columns controls must not fall back to native title=.
-        assert 'title="Re-fetch' not in lp_web.INDEX_HTML
-        assert 'title="Choose visible columns"' not in lp_web.INDEX_HTML
+        assert 'title="Re-fetch' not in lp_web.FRONTEND_SOURCE
+        assert 'title="Choose visible columns"' not in lp_web.FRONTEND_SOURCE
 
     def test_sidebar_kpi_cards(self):
         # The detail-panel KPI grid lays out 3 per row and shows BOTH sell-mode
         # profits side by side instead of a single "Total profit" card.
-        assert "repeat(3,1fr)" in lp_web.INDEX_HTML
-        assert '<div class="l">List profit</div>' in lp_web.INDEX_HTML
-        assert '<div class="l">Instant-sell profit</div>' in lp_web.INDEX_HTML
+        assert "repeat(3,1fr)" in lp_web.FRONTEND_SOURCE
+        assert '<div class="l">List profit</div>' in lp_web.FRONTEND_SOURCE
+        assert '<div class="l">Instant-sell profit</div>' in lp_web.FRONTEND_SOURCE
         # The old single-mode card is gone.
-        assert '<div class="l">Total profit</div>' not in lp_web.INDEX_HTML
+        assert '<div class="l">Total profit</div>' not in lp_web.FRONTEND_SOURCE
         # Revenue is covered by the profit-breakdown comparison, not a KPI card.
-        assert '<div class="l">Revenue</div>' not in lp_web.INDEX_HTML
+        assert '<div class="l">Revenue</div>' not in lp_web.FRONTEND_SOURCE
         # Item cost and redemption ISK are combined into one card; the separate
         # "Item cost" / "Redemption ISK" cards are gone (they live in the cost
         # breakdown table). A suggested-list-price card takes the freed slot.
-        assert '<div class="l">Item + ISK cost</div>' in lp_web.INDEX_HTML
-        assert '<div class="l">Suggested list / unit</div>' in lp_web.INDEX_HTML
-        assert '<div class="l">Item cost</div>' not in lp_web.INDEX_HTML
-        assert '<div class="l">Redemption ISK</div>' not in lp_web.INDEX_HTML
+        assert '<div class="l">Item + ISK cost</div>' in lp_web.FRONTEND_SOURCE
+        assert '<div class="l">Suggested list / unit</div>' in lp_web.FRONTEND_SOURCE
+        assert '<div class="l">Item cost</div>' not in lp_web.FRONTEND_SOURCE
+        assert '<div class="l">Redemption ISK</div>' not in lp_web.FRONTEND_SOURCE
         # The store ISK charge is still labelled "Redemption ISK" (cost
         # breakdown / recipe), never the deprecated "ISK fee".
-        assert "Redemption ISK" in lp_web.INDEX_HTML
-        assert "ISK fee" not in lp_web.INDEX_HTML
+        assert "Redemption ISK" in lp_web.FRONTEND_SOURCE
+        assert "ISK fee" not in lp_web.FRONTEND_SOURCE
 
     def test_profit_breakdown_waterfall(self):
         # The Sale section is a profit waterfall: gross sell value, the fee
         # deductions, net revenue subtotal, and the final profit line.
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         assert "Profit breakdown" in html
         assert "Sell value (walking buy orders)" in html
         assert "Sell value (listed at ask)" in html
@@ -720,7 +720,7 @@ class TestTooltips:
     def test_detail_panel_uses_selected_hub_not_hardcoded_jita(self):
         # The detail panel must label prices with the chosen hub, not a
         # hardcoded "Jita" — the market is user-selectable.
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         assert "Jita ask / bid" not in html
         assert "Costs use the live ${hub} order book." in html
         assert "Reward (${fmtNum(d.output.quantity*n)}× ${d.output.name}) → ${hub}" in html
@@ -728,12 +728,12 @@ class TestTooltips:
     def test_chart_stat_chips_have_labels_and_tooltips(self):
         # The Current / ATH / vs 30d MA chips use labelled k/v markup and
         # carry data-tip tooltips.
-        assert '<span class="k">Current</span>' in lp_web.INDEX_HTML
-        assert '<span class="k">ATH</span>' in lp_web.INDEX_HTML
-        assert '<span class="k">vs 30d MA</span>' in lp_web.INDEX_HTML
-        assert "All-time high daily average" in lp_web.INDEX_HTML
-        assert "30-day moving average" in lp_web.INDEX_HTML
-        assert ".chart-stats .k" in lp_web.INDEX_HTML
+        assert '<span class="k">Current</span>' in lp_web.FRONTEND_SOURCE
+        assert '<span class="k">ATH</span>' in lp_web.FRONTEND_SOURCE
+        assert '<span class="k">vs 30d MA</span>' in lp_web.FRONTEND_SOURCE
+        assert "All-time high daily average" in lp_web.FRONTEND_SOURCE
+        assert "30-day moving average" in lp_web.FRONTEND_SOURCE
+        assert ".chart-stats .k" in lp_web.FRONTEND_SOURCE
 
 
 # ---------------------------------------------------------------------------
@@ -744,23 +744,23 @@ class TestTooltips:
 class TestDualModeComparison:
     def test_sell_mode_dropdown_removed(self):
         # The single-mode <select id="instant"> control is gone.
-        assert 'id="instant"' not in lp_web.INDEX_HTML
-        assert ">Sell mode<" not in lp_web.INDEX_HTML
+        assert 'id="instant"' not in lp_web.FRONTEND_SOURCE
+        assert ">Sell mode<" not in lp_web.FRONTEND_SOURCE
 
     def test_paired_isk_per_lp_columns(self):
         # The table exposes both sell-mode ISK/LP columns.
-        assert '{k:"isk_per_lp_patient"' in lp_web.INDEX_HTML
-        assert '{k:"isk_per_lp_instant"' in lp_web.INDEX_HTML
+        assert '{k:"isk_per_lp_patient"' in lp_web.FRONTEND_SOURCE
+        assert '{k:"isk_per_lp_instant"' in lp_web.FRONTEND_SOURCE
         # ...and the old single column is gone.
-        assert '{k:"isk_per_lp",' not in lp_web.INDEX_HTML
+        assert '{k:"isk_per_lp",' not in lp_web.FRONTEND_SOURCE
 
     def test_paired_total_profit_columns(self):
-        assert '{k:"total_profit_patient"' in lp_web.INDEX_HTML
-        assert '{k:"total_profit_instant"' in lp_web.INDEX_HTML
-        assert '{k:"total_profit",' not in lp_web.INDEX_HTML
+        assert '{k:"total_profit_patient"' in lp_web.FRONTEND_SOURCE
+        assert '{k:"total_profit_instant"' in lp_web.FRONTEND_SOURCE
+        assert '{k:"total_profit",' not in lp_web.FRONTEND_SOURCE
 
     def test_mode_labels_are_list_and_instant_sell(self):
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         # Column headers and KPI cards use "List" / "Instant-sell" wording.
         assert 't:"List ISK/LP"' in html
         assert 't:"Instant-sell ISK/LP"' in html
@@ -771,12 +771,12 @@ class TestDualModeComparison:
         assert "Profit · buy" not in html
 
     def test_default_sort_is_best_of_two(self):
-        assert 'sort:{key:"isk_per_lp_best", dir:-1}' in lp_web.INDEX_HTML
+        assert 'sort:{key:"isk_per_lp_best", dir:-1}' in lp_web.FRONTEND_SOURCE
 
     def test_winning_mode_highlight_styled(self):
         # The better of the two sell-mode cells gets a .win highlight.
-        assert "td.win" in lp_web.INDEX_HTML
-        assert 'cls+=" win"' in lp_web.INDEX_HTML
+        assert "td.win" in lp_web.FRONTEND_SOURCE
+        assert 'cls+=" win"' in lp_web.FRONTEND_SOURCE
 
     def test_scan_response_carries_both_modes(self, tmp_path):
         """do_scan rows expose patient/instant/best ISK-per-LP and total profit."""
@@ -842,10 +842,10 @@ class TestColumnReorder:
 
     def test_headers_are_draggable(self):
         # Each <th> opts into HTML5 drag-and-drop.
-        assert '<th draggable="true" data-k="${c.k}"' in lp_web.INDEX_HTML
+        assert '<th draggable="true" data-k="${c.k}"' in lp_web.FRONTEND_SOURCE
 
     def test_reorder_wiring_present(self):
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         # The drag helpers and per-header wiring must be hooked up.
         assert "function wireLPColDrag(" in html
         assert "function reorderLPCols(" in html
@@ -867,7 +867,7 @@ class TestColumnReorder:
 
 class TestColumnFormatterRowContext:
     def _cols_block(self):
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         start = html.index("const COLS = [")
         end = html.index("];", start)
         return html[start:end]
@@ -878,7 +878,7 @@ class TestColumnFormatterRowContext:
     def _row_ctx_named_formatters(self):
         """Named formatters declared `function fmtX(v, r)` read the row arg."""
         return set(re.findall(r"function\s+(fmt\w+)\s*\(\s*v\s*,\s*r\s*\)",
-                              lp_web.INDEX_HTML))
+                              lp_web.FRONTEND_SOURCE))
 
     def test_heuristics_find_the_expected_formatters(self):
         # Guard against the regexes silently matching nothing.
@@ -905,7 +905,7 @@ class TestColumnFormatterRowContext:
             f"columns read the row arg but lack rowCtx:true: {offenders}"
 
     def test_col_order_persisted_and_restored(self):
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         # Saved with the widths via POST...
         assert "col_order:JSON.stringify(STATE.colOrder)" in html
         # ...and restored on load, guarded by the layout version.
@@ -913,7 +913,7 @@ class TestColumnFormatterRowContext:
 
     def test_drag_does_not_trigger_sort(self):
         # A header click at the tail of a drag must not re-sort.
-        assert "if(LP_DRAG_KEY){ return; }" in lp_web.INDEX_HTML
+        assert "if(LP_DRAG_KEY){ return; }" in lp_web.FRONTEND_SOURCE
 
 
 # ---------------------------------------------------------------------------
@@ -1088,7 +1088,7 @@ class TestIndustryRoutes:
         assert saved["col_vis"] == vis
 
     def test_ind_columns_reorderable(self):
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         # Headers are draggable and the order is resolved through indOrderedCols().
         assert "function indOrderedCols(" in html
         assert "function reorderIndCols(" in html
@@ -1100,7 +1100,7 @@ class TestIndustryRoutes:
         assert "if(ind.col_order){ try{" in html
 
     def test_ind_columns_resizable_and_toggleable(self):
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         # Resize: colgroup + resizer handle + drag wiring, mirroring the LP store.
         assert '<table id="ind-tbl"><colgroup id="ind-cg">' in html
         assert "function startIndResize(" in html
@@ -1114,14 +1114,14 @@ class TestIndustryRoutes:
         assert "col_vis: JSON.stringify(IND.colVis)" in html
 
     def test_ind_search_has_clear_button(self):
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         assert 'id="ind-search-clear" class="search-clear hidden"' in html
         assert "function updateIndSearchClear(){" in html
         assert '$("#ind-search-clear").addEventListener("click"' in html
 
     def test_owned_only_includes_char_blueprints(self, monkeypatch):
         """owned_only=1 loads blueprints the character owns via ESI."""
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         assert "loadOwnedPreview" in html
         assert 'owned_only:"1"' in html or "owned_only" in html
 
@@ -1137,7 +1137,7 @@ class TestIndustryRoutes:
 
     def test_ind_section_chips_in_html(self):
         """The industry tab has collapsible section chips."""
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         assert 'id="ind-chips"' in html
         assert "ind-chip" in html
         assert "IND.sections" in html
@@ -1194,7 +1194,7 @@ class TestIndustryTradeabilityFill:
         assert 'r["liq_loaded"] = True' in src
 
     def test_frontend_background_fill_wired(self):
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         assert "function fillIndTradeability(" in html
         assert "/api/ind/liquidity?" in html
         assert "fillIndTradeability();" in html        # kicked off after a scan
@@ -1205,7 +1205,7 @@ class TestIndustryTradeabilityFill:
     def test_restore_resumes_fill_for_unscored_rows(self):
         """v1.66.8: restoring a cached scan with liq_loaded=false rows must
         trigger fillIndTradeability() so spinners don't persist forever."""
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         assert "if(IND.rows.some(r=>!r.liq_loaded)) fillIndTradeability()" in html
 
 
@@ -1322,7 +1322,7 @@ class TestCharDataOrdersIsolation:
 
     def test_orders_table_has_total_value_column(self):
         """Total value = remaining units x listed price, next to the Price column."""
-        html = lp_web.INDEX_HTML
+        html = lp_web.FRONTEND_SOURCE
         assert ">Total value</th>" in html
         assert "fmtISK((o.volume_remain??0)*o.price)" in html
 

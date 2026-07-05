@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.89.0"
+__version__ = "1.89.1"
 
 import argparse
 import base64
@@ -2427,6 +2427,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    _MIME = {".css": "text/css", ".js": "application/javascript",
+             ".json": "application/json", ".svg": "image/svg+xml",
+             ".png": "image/png", ".ico": "image/x-icon"}
+
+    def _serve_static(self, rel):
+        target = (_STATIC_DIR / rel).resolve()
+        if not str(target).startswith(str(_STATIC_DIR.resolve())):
+            self.send_error(403)
+            return
+        if not target.is_file():
+            self.send_error(404)
+            return
+        data = target.read_bytes()
+        ext = target.suffix.lower()
+        ct = self._MIME.get(ext, "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", ct)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(data)
+
     def _redirect(self, location, set_sid=None):
         self.send_response(302)
         self.send_header("Location", location)
@@ -2570,6 +2592,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/" or parsed.path in TAB_ROUTES:
                 self._send_html(INDEX_HTML)
+            elif parsed.path.startswith("/static/"):
+                self._serve_static(parsed.path[len("/static/"):])
             elif parsed.path == "/favicon.ico":
                 self.send_response(200)
                 self.send_header("Content-Type", "image/svg+xml")
@@ -2685,6 +2709,13 @@ class Handler(BaseHTTPRequestHandler):
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 INDEX_HTML = (_STATIC_DIR / "index.html").read_text().replace(
     "__VERSION__", __version__).replace("__FAVICON__", _FAVICON_B64)
+
+# Full concatenation of all frontend source for test assertions.
+_JS_DIR = _STATIC_DIR / "js"
+FRONTEND_SOURCE = INDEX_HTML + "\n" + (
+    (_STATIC_DIR / "style.css").read_text() + "\n" +
+    "\n".join((_JS_DIR / f).read_text() for f in sorted(_JS_DIR.iterdir()) if f.suffix == ".js")
+) if _JS_DIR.is_dir() else INDEX_HTML
 
 
 def main():

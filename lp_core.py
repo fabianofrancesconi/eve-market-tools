@@ -324,6 +324,8 @@ def resolve_station_names(station_ids, session, cache_dir, token=None):
             r.raise_for_status()
             cache[sid] = r.json()["name"]
             dirty = True
+        except requests.HTTPError:
+            pass
         except (requests.RequestException, KeyError, ValueError):
             pass
     if dirty:

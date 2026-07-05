@@ -1269,6 +1269,7 @@ class TestDeliveredRunsTracker:
 class TestCharDataOrdersIsolation:
     def _login(self, monkeypatch):
         import time as _time
+        lp_web._CHAR_DATA_CACHE.clear()
         acct = lp_web.Account(42)
         acct.characters[42] = {
             "character_id": 42, "name": "Test Char", "scopes": [],

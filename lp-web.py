@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.87.6"
+__version__ = "1.87.7"
 
 import argparse
 import base64
@@ -897,8 +897,23 @@ def _dismiss_order_event(acct, event_id):
     _acct_kv_save(acct, "order_events", ORDER_EVENTS_PATH, store)
 
 
+_CHAR_DATA_CACHE = {}  # {cid: (timestamp, result)}
+_CHAR_DATA_TTL = 120   # seconds
+
+
 def _fetch_one_char_data(acct, cid):
-    """Fetch all ESI data for a single character. Returns a dict bundle."""
+    """Fetch all ESI data for a single character. Returns a dict bundle.
+    Results are cached in-memory for _CHAR_DATA_TTL seconds."""
+    cached = _CHAR_DATA_CACHE.get(cid)
+    if cached and (time.time() - cached[0]) < _CHAR_DATA_TTL:
+        return cached[1]
+    result = _fetch_one_char_data_uncached(acct, cid)
+    _CHAR_DATA_CACHE[cid] = (time.time(), result)
+    return result
+
+
+def _fetch_one_char_data_uncached(acct, cid):
+    """Actually hit ESI for all character data."""
     token = _access_token(acct, cid)
     char_name = acct.characters[cid]["name"]
     _refresh_skill_profile(acct, cid)

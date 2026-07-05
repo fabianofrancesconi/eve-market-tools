@@ -109,7 +109,7 @@ function expRenderRecent(){
     const site = EXP_SITES.find(s=> s.name===name);
     if(!site) return "";
     const dangerCls = site.danger==="safe"?"exp-badge-safe":site.danger==="caution"?"exp-badge-caution":"exp-badge-dangerous";
-    return `<div class="exp-recent-item" data-idx="${i}"><span class="exp-result-badge ${dangerCls}">${esc(site.danger)}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(site.name)}</span><button class="exp-recent-rm" data-ri="${i}" title="Remove">×</button></div>`;
+    return `<div class="exp-recent-item" data-idx="${i}"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(site.name)}</span><span class="exp-result-badge ${dangerCls}">${esc(site.danger)}</span><button class="exp-recent-rm" data-ri="${i}" title="Remove">×</button></div>`;
   }).join("");
   list.querySelectorAll(".exp-recent-item").forEach(el=>{
     el.onclick = (e)=>{ if(e.target.classList.contains("exp-recent-rm")) return; const site = EXP_SITES.find(s=>s.name===EXP.recent[+el.dataset.idx]); if(site) expSelect(site); };

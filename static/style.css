@@ -843,51 +843,66 @@
     color:var(--dim); font-size:12px; text-align:center; padding:30px 0;
   }
   /* Exploration tab */
-  .exp-container { max-width:820px; margin:0 auto; padding:24px 16px; }
+  .exp-layout { display:grid; grid-template-columns:280px 1fr; height:calc(100vh - 110px); }
+  @media(max-width:800px){ .exp-layout { grid-template-columns:1fr; height:auto; } }
+  .exp-sidebar {
+    border-right:1px solid var(--line); padding:16px; overflow-y:auto;
+    display:flex; flex-direction:column; gap:8px;
+  }
   .exp-search-input {
-    width:100%; padding:12px 16px; font-size:15px; border-radius:6px;
+    width:100%; padding:10px 12px; font-size:13px; border-radius:6px;
     border:1px solid var(--line2); background:var(--panel2); color:var(--fg);
     outline:none; transition:border-color .15s;
   }
   .exp-search-input:focus { border-color:var(--cyan); }
   .exp-search-input::placeholder { color:var(--dim); }
   .exp-results {
-    margin-top:8px; max-height:260px; overflow-y:auto;
+    max-height:300px; overflow-y:auto;
     border:1px solid var(--line); border-radius:6px; background:var(--panel);
   }
   .exp-result-item {
-    padding:9px 14px; cursor:pointer; display:flex; align-items:center; gap:10px;
+    padding:8px 12px; cursor:pointer; display:flex; align-items:center; gap:8px;
     border-bottom:1px solid var(--line); transition:background .08s;
   }
   .exp-result-item:last-child { border-bottom:none; }
   .exp-result-item:hover, .exp-result-item.selected { background:var(--panel2); }
-  .exp-result-name { flex:1; color:var(--fg); font-size:13px; }
+  .exp-result-name { flex:1; color:var(--fg); font-size:12px; }
   .exp-result-badge {
-    display:inline-block; padding:1px 7px; border-radius:3px;
-    font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.3px;
+    display:inline-block; padding:1px 6px; border-radius:3px;
+    font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.3px;
   }
   .exp-badge-safe { background:var(--green); color:#000; }
   .exp-badge-caution { background:var(--yellow); color:#000; }
   .exp-badge-dangerous { background:var(--red); color:#fff; }
   .exp-type-badge {
-    display:inline-block; padding:1px 6px; border-radius:3px;
-    font-size:10px; background:var(--panel3); border:1px solid var(--line2); color:var(--dim);
+    display:inline-block; padding:1px 5px; border-radius:3px;
+    font-size:9px; background:var(--panel3); border:1px solid var(--line2); color:var(--dim);
   }
-  .exp-cards {
-    display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:20px;
+  .exp-recent { margin-top:8px; }
+  .exp-recent-header { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; margin-bottom:6px; }
+  .exp-recent-list {}
+  .exp-recent-item {
+    padding:6px 10px; cursor:pointer; border-radius:4px; font-size:12px; color:var(--fg);
+    transition:background .08s; display:flex; align-items:center; gap:6px;
   }
-  @media(max-width:700px){ .exp-cards { grid-template-columns:1fr; } }
+  .exp-recent-item:hover { background:var(--panel2); }
+  .exp-recent-item .exp-result-badge { font-size:8px; }
+  .exp-content { padding:24px; overflow-y:auto; }
+  .exp-empty { color:var(--dim); text-align:center; padding:60px 20px; font-size:14px; }
+  .exp-site-title { font-size:18px; color:var(--cyan); margin:0 0 16px; font-weight:700; }
+  .exp-cards-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px; }
   .exp-card {
     border:1px solid var(--line2); border-radius:8px;
     background:var(--panel); overflow:hidden;
   }
   .exp-card-header {
-    padding:10px 16px; font-size:12px; font-weight:700; letter-spacing:1px;
+    padding:9px 16px; font-size:11px; font-weight:700; letter-spacing:1px;
     background:var(--panel2); border-bottom:1px solid var(--line);
   }
-  .exp-danger-card .exp-card-header { color:var(--red); }
+  .exp-trigger-card .exp-card-header { color:var(--cyan); }
+  .exp-npc-card .exp-card-header { color:var(--red); }
   .exp-loot-card .exp-card-header { color:var(--gold); }
-  .exp-card-body { padding:14px 16px; font-size:13px; line-height:1.7; }
+  .exp-card-body { padding:12px 16px; font-size:13px; line-height:1.7; }
   .exp-card-body .exp-label { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.5px; margin-top:10px; }
   .exp-card-body .exp-label:first-child { margin-top:0; }
   .exp-card-body .exp-value { color:var(--fg); margin-top:2px; }

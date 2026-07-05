@@ -16,8 +16,8 @@
     <button class="tab active" data-tab="lp">LP Store</button>
     <button class="tab" data-tab="arb">Arbitrage</button>
     <button class="tab" data-tab="ind">Industry</button>
-    <button class="tab hidden" id="char-tab-btn" data-tab="char">Overview</button>
     <button class="tab" data-tab="exp">Exploration</button>
+    <button class="tab hidden" id="char-tab-btn" data-tab="char">Overview</button>
   </nav>
   <button class="tab tab-right" data-tab="notes">Notes</button>
   <div id="auth-region">
@@ -244,19 +244,35 @@
   </div>
   <!-- Exploration tab -->
   <div id="exp-tablewrap" class="tablewrap hidden">
-    <div class="exp-container">
-      <div class="exp-search-wrap">
-        <input id="exp-search" type="text" placeholder="Type a site name (e.g. &quot;forgotten&quot;, &quot;ghost&quot;, &quot;abando&quot;)..." class="exp-search-input">
-      </div>
-      <div id="exp-results" class="exp-results hidden"></div>
-      <div id="exp-cards" class="exp-cards hidden">
-        <div class="exp-card exp-danger-card" id="exp-danger-card">
-          <div class="exp-card-header">DANGER</div>
-          <div class="exp-card-body" id="exp-danger-body"></div>
+    <div class="exp-layout">
+      <div class="exp-sidebar">
+        <div class="exp-search-wrap">
+          <input id="exp-search" type="text" placeholder="Search site name..." class="exp-search-input">
         </div>
-        <div class="exp-card exp-loot-card" id="exp-loot-card">
-          <div class="exp-card-header">LOOT</div>
-          <div class="exp-card-body" id="exp-loot-body"></div>
+        <div id="exp-results" class="exp-results hidden"></div>
+        <div id="exp-recent" class="exp-recent">
+          <div class="exp-recent-header">Recent lookups</div>
+          <div id="exp-recent-list" class="exp-recent-list"></div>
+        </div>
+      </div>
+      <div class="exp-content" id="exp-content">
+        <div id="exp-empty" class="exp-empty">Search for a site name to see its details</div>
+        <div id="exp-cards" class="exp-cards hidden">
+          <h2 id="exp-site-title" class="exp-site-title"></h2>
+          <div class="exp-cards-grid">
+            <div class="exp-card exp-trigger-card" id="exp-trigger-card">
+              <div class="exp-card-header">WHAT TO EXPECT</div>
+              <div class="exp-card-body" id="exp-trigger-body"></div>
+            </div>
+            <div class="exp-card exp-npc-card" id="exp-npc-card">
+              <div class="exp-card-header">NPCs</div>
+              <div class="exp-card-body" id="exp-npc-body"></div>
+            </div>
+            <div class="exp-card exp-loot-card" id="exp-loot-card">
+              <div class="exp-card-header">LOOT</div>
+              <div class="exp-card-body" id="exp-loot-body"></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

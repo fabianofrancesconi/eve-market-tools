@@ -887,6 +887,12 @@
   }
   .exp-recent-item:hover { background:var(--panel2); }
   .exp-recent-item .exp-result-badge { font-size:8px; }
+  .exp-recent-rm {
+    background:none; border:none; color:var(--dim); cursor:pointer; font-size:14px;
+    padding:0 4px; line-height:1; opacity:0; transition:opacity .1s;
+  }
+  .exp-recent-item:hover .exp-recent-rm { opacity:1; }
+  .exp-recent-rm:hover { color:var(--red); }
   .exp-content { padding:24px; overflow-y:auto; }
   .exp-empty { color:var(--dim); text-align:center; padding:60px 20px; font-size:14px; }
   .exp-site-title { font-size:18px; color:var(--cyan); margin:0 0 16px; font-weight:700; }

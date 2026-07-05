@@ -785,11 +785,9 @@
   .notes-editor-hdr {
     padding:10px 14px; border-bottom:1px solid var(--line); flex-shrink:0;
   }
-  .notes-editor-hdr input {
-    width:100%; background:transparent; border:none; color:var(--fg);
-    font:inherit; font-size:16px; font-weight:600; outline:none;
+  .note-title-ro {
+    font-size:16px; font-weight:600; color:var(--fg);
   }
-  .notes-editor-hdr input::placeholder { color:var(--dim2); }
   .notes-editor-body {
     flex:1; padding:14px; overflow-y:auto;
   }
@@ -4293,9 +4291,8 @@ function _inlineEditLabel(item, n){
     n.title=inp.value;
     _persistNote(n);
     renderNotesTree();
-    // Also update the editor header if this note is active
-    const titleEl=$("#note-title");
-    if(titleEl && NOTES.active===n.id) titleEl.value=n.title;
+    const roEl=document.querySelector(".note-title-ro");
+    if(roEl && NOTES.active===n.id) roEl.textContent=n.title||"Untitled";
   };
   inp.addEventListener("keydown", e=>{
     if(e.key==="Enter"){ e.preventDefault(); commit(); }
@@ -4339,13 +4336,13 @@ function selectNote(id){
   const n=NOTES.items.find(x=>x.id===id);
   const ed=$("#notes-editor");
   if(!n){ ed.innerHTML=`<div class="notes-empty">Select or create a note</div>`; return; }
+  const title=_esc(n.title||((n.kind==="folder")?"Untitled folder":"Untitled"));
   if(n.kind==="folder"){
-    ed.innerHTML=`<div class="notes-editor-hdr"><input id="note-title" placeholder="Folder name…" value="${_esc(n.title)}"></div><div class="notes-empty">Folder — select a note inside, or drag items here</div>`;
+    ed.innerHTML=`<div class="notes-editor-hdr"><span class="note-title-ro">${title}</span></div><div class="notes-empty">Folder — select a note inside, or drag items here</div>`;
   } else {
-    ed.innerHTML=`<div class="notes-editor-hdr"><input id="note-title" placeholder="Note title…" value="${_esc(n.title)}"></div><div class="notes-editor-body"><textarea id="note-body" placeholder="Write here…">${_esc(n.body)}</textarea></div>`;
+    ed.innerHTML=`<div class="notes-editor-hdr"><span class="note-title-ro">${title}</span></div><div class="notes-editor-body"><textarea id="note-body" placeholder="Write here…">${_esc(n.body)}</textarea></div>`;
     $("#note-body").oninput=()=>_scheduleNoteSave(id);
   }
-  $("#note-title").oninput=()=>_scheduleNoteSave(id);
 }
 
 function _scheduleNoteSave(id){
@@ -4355,10 +4352,8 @@ function _scheduleNoteSave(id){
 
 function _saveActiveNote(id){
   const n=NOTES.items.find(x=>x.id===id); if(!n) return;
-  const titleEl=$("#note-title"), bodyEl=$("#note-body");
-  if(titleEl) n.title=titleEl.value;
+  const bodyEl=$("#note-body");
   if(bodyEl) n.body=bodyEl.value;
-  renderNotesTree();
   _persistNote(n);
 }
 
@@ -4392,10 +4387,16 @@ async function addNote(kind, parentId){
 }
 
 async function deleteNote(id){
+  const n=NOTES.items.find(x=>x.id===id); if(!n) return;
+  const children=NOTES.items.filter(x=>x.parent_id===id);
+  const msg=n.kind==="folder"&&children.length
+    ? `Delete folder "${n.title||"Untitled"}" and its ${children.length} item${children.length>1?"s":""}?`
+    : `Delete ${n.kind==="folder"?"folder":"note"} "${n.title||"Untitled"}"?`;
+  if(!confirm(msg)) return;
   const idsToRemove=new Set([id]);
   let queue=[id];
-  while(queue.length){ const pid=queue.shift(); NOTES.items.filter(n=>n.parent_id===pid).forEach(n=>{ idsToRemove.add(n.id); queue.push(n.id); }); }
-  NOTES.items=NOTES.items.filter(n=>!idsToRemove.has(n.id));
+  while(queue.length){ const pid=queue.shift(); NOTES.items.filter(x=>x.parent_id===pid).forEach(x=>{ idsToRemove.add(x.id); queue.push(x.id); }); }
+  NOTES.items=NOTES.items.filter(x=>!idsToRemove.has(x.id));
   if(idsToRemove.has(NOTES.active)){ NOTES.active=null; $("#notes-editor").innerHTML=`<div class="notes-empty">Select or create a note</div>`; }
   renderNotesTree();
   try{

@@ -29,7 +29,8 @@ if not _TEST_DSN:
 import pg_store
 
 _TABLES = ("mono_kv", "mono_user_settings", "mono_accounts",
-           "mono_char_account", "mono_sessions", "mono_account_settings")
+           "mono_char_account", "mono_sessions", "mono_account_settings",
+           "mono_delivered_jobs", "mono_order_state", "mono_order_events")
 
 
 @pytest.fixture(autouse=True)
@@ -142,6 +143,91 @@ class TestUserSettingsLegacyRead:
         # Written by the pre-multiuser code / read during migration.
         pg_store.user_settings_set(42, {"col_order": ["name"]}, time.time())
         assert pg_store.user_settings_get(42) == {"col_order": ["name"]}
+
+
+class TestDeliveredJobs:
+    def test_with_delivered_jobs_read_modify_write(self):
+        # First call: row is None, mutate writes an entry.
+        def mut1(data):
+            assert data is None
+            return {"total_runs": 3, "seen_job_ids": [1]}, "r1"
+        assert pg_store.with_delivered_jobs(10, 20, mut1) == "r1"
+
+        # Second call: sees the persisted row, updates it.
+        def mut2(data):
+            assert data == {"total_runs": 3, "seen_job_ids": [1]}
+            return {"total_runs": 8, "seen_job_ids": [1, 2]}, "r2"
+        assert pg_store.with_delivered_jobs(10, 20, mut2) == "r2"
+
+    def test_none_new_data_skips_write(self):
+        pg_store.delivered_jobs_set(10, 20, {"total_runs": 5})
+        assert pg_store.with_delivered_jobs(10, 20, lambda d: (None, "noop")) == "noop"
+        # unchanged
+        assert pg_store.with_delivered_jobs(10, 20, lambda d: (None, d))["total_runs"] == 5
+
+    def test_isolated_per_account_and_char(self):
+        pg_store.delivered_jobs_set(1, 100, {"total_runs": 1})
+        pg_store.delivered_jobs_set(1, 200, {"total_runs": 2})
+        pg_store.delivered_jobs_set(2, 100, {"total_runs": 3})
+        assert pg_store.with_delivered_jobs(1, 100, lambda d: (None, d))["total_runs"] == 1
+        assert pg_store.with_delivered_jobs(1, 200, lambda d: (None, d))["total_runs"] == 2
+        assert pg_store.with_delivered_jobs(2, 100, lambda d: (None, d))["total_runs"] == 3
+
+
+class TestOrderEventsLive:
+    def test_state_and_events_roundtrip(self):
+        ev = {"id": "1_1000", "ts": time.time(), "order_id": 1, "sold": 5}
+
+        def mutate(prev, sales):
+            assert prev == {} and sales == {}
+            return [ev], {"1": {"volume_remain": 95}}, {"1": {"sold": 5}}, "done"
+        assert pg_store.with_order_state(7, 300, mutate) == "done"
+
+        # event is active and readable
+        active = pg_store.order_events_active(7, 0)
+        assert len(active) == 1 and active[0]["id"] == "1_1000"
+
+        # state persisted → next diff sees prev
+        seen = {}
+        def mutate2(prev, sales):
+            seen["prev"], seen["sales"] = prev, sales
+            return [], prev, sales, None
+        pg_store.with_order_state(7, 300, mutate2)
+        assert seen["prev"] == {"1": {"volume_remain": 95}}
+        assert seen["sales"] == {"1": {"sold": 5}}
+
+    def test_duplicate_event_id_ignored(self):
+        ev = {"id": "dup", "ts": time.time(), "sold": 1}
+        pg_store.with_order_state(7, 1, lambda p, s: ([ev], {}, {}, None))
+        pg_store.with_order_state(7, 1, lambda p, s: ([ev], {}, {}, None))
+        assert len(pg_store.order_events_active(7, 0)) == 1
+
+    def test_expiry_cutoff_and_dismiss(self):
+        now = time.time()
+        old = {"id": "old", "ts": now - 10 * 86400, "sold": 1}
+        fresh = {"id": "fresh", "ts": now, "sold": 2}
+        pg_store.with_order_state(7, 1, lambda p, s: ([old, fresh], {}, {}, None))
+        # cutoff excludes the old one
+        active = pg_store.order_events_active(7, now - 7 * 86400)
+        assert [e["id"] for e in active] == ["fresh"]
+        # dismiss the fresh one → nothing active
+        pg_store.order_events_dismiss(7, "fresh")
+        assert pg_store.order_events_active(7, now - 7 * 86400) == []
+
+    def test_dismiss_all(self):
+        pg_store.with_order_state(7, 1, lambda p, s: (
+            [{"id": "a", "ts": time.time(), "sold": 1},
+             {"id": "b", "ts": time.time(), "sold": 2}], {}, {}, None))
+        pg_store.order_events_dismiss(7, "all")
+        assert pg_store.order_events_active(7, 0) == []
+
+    def test_events_isolated_per_account(self):
+        pg_store.with_order_state(1, 9, lambda p, s: (
+            [{"id": "x", "ts": time.time(), "sold": 1}], {}, {}, None))
+        pg_store.with_order_state(2, 9, lambda p, s: (
+            [{"id": "y", "ts": time.time(), "sold": 2}], {}, {}, None))
+        assert [e["id"] for e in pg_store.order_events_active(1, 0)] == ["x"]
+        assert [e["id"] for e in pg_store.order_events_active(2, 0)] == ["y"]
 
 
 # ── End-to-end through lp-web against the real DB ─────────────────────────────

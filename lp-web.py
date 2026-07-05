@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.81.0"
+__version__ = "1.82.0"
 
 import argparse
 import base64
@@ -446,12 +446,56 @@ def _migrate_legacy_auth():
     pg_store.kv_set("eve_auth_migrated", True)
 
 
+def _migrate_counters():
+    """One-time: move the delivered-runs counter from the old JSON kv blobs into
+    the per-(account,character) mono_delivered_jobs table. Sources: the bare
+    pre-multiuser ``ind_jobs_delivered`` blob and the v1.81.0 per-account
+    ``ind_jobs_delivered:<aid>`` blobs. Each character is mapped to its account
+    via the char→account index; the bare (historical) entry is preferred and the
+    per-account entry only unions in already-seen job ids so nothing recounts.
+    Order events are ephemeral (7-day) so they're not migrated — they simply
+    re-baseline on the next character fetch, producing no spurious events."""
+    if pg_store.kv_get("counters_migrated"):
+        return
+    merged = {}  # (account_id, character_id) -> entry
+
+    def _add(aid, cid, entry, historical):
+        key = (aid, cid)
+        if key not in merged:
+            merged[key] = entry
+        elif historical:
+            entry["seen_job_ids"] = list(
+                set(entry.get("seen_job_ids", [])) | set(merged[key].get("seen_job_ids", [])))
+            merged[key] = entry
+        else:
+            merged[key]["seen_job_ids"] = list(
+                set(merged[key].get("seen_job_ids", [])) | set(entry.get("seen_job_ids", [])))
+
+    bare = pg_store.kv_get("ind_jobs_delivered", {}) or {}
+    for cid_str, entry in bare.items():
+        aid = pg_store.char_account_get(int(cid_str))
+        if aid is not None:
+            _add(aid, int(cid_str), entry, historical=True)
+    for aid in pg_store.all_account_ids():
+        ns = pg_store.kv_get(f"ind_jobs_delivered:{aid}", {}) or {}
+        for cid_str, entry in ns.items():
+            _add(aid, int(cid_str), entry, historical=False)
+
+    for (aid, cid), entry in merged.items():
+        pg_store.delivered_jobs_set(aid, cid, entry)
+    if merged:
+        print(f"[counters] migrated delivered-jobs for {len(merged)} character(s)",
+              file=sys.stderr)
+    pg_store.kv_set("counters_migrated", True)
+
+
 def _startup_restore():
     """On boot: legacy mode loads the single file-backed account; multi-user mode
     runs the one-time legacy→account migration (sessions load lazily per cookie)."""
     if pg_store.enabled():
         try:
             _migrate_legacy_auth()
+            _migrate_counters()
         except Exception as e:  # noqa: BLE001
             print(f"[auth] legacy migration skipped: {type(e).__name__}: {e}",
                   file=sys.stderr)
@@ -643,80 +687,77 @@ def do_auth_logout(q):
 _JOBS_TRACK_LOCK = threading.Lock()
 
 
+ORDER_EVENT_EXPIRY = 7 * 24 * 3600  # auto-expire after 1 week
+
+
+def _delivered_jobs_apply(entry, jobs, names):
+    """Pure delivered-runs accumulator. Given a character's prior entry (or None
+    for first sight), fold in newly-delivered jobs. Returns
+    ``(new_entry_or_None, result)`` — new_entry is None when nothing changed."""
+    first_seen = entry is None
+    if entry is None:
+        entry = {"seen_job_ids": [], "total_runs": 0, "total_jobs": 0,
+                 "since": time.time(), "by_product": {}}
+    seen = set(entry["seen_job_ids"])
+    changed = first_seen
+    for j in jobs:
+        if j.get("status") != "delivered":
+            continue
+        jid = j.get("job_id")
+        if jid is None or jid in seen:
+            continue
+        seen.add(jid)
+        changed = True
+        if first_seen:
+            continue
+        runs = j.get("runs") or 0
+        entry["total_runs"] += runs
+        entry["total_jobs"] += 1
+        pid = str(j.get("product_type_id"))
+        prod = entry["by_product"].setdefault(
+            pid, {"name": names.get(j.get("product_type_id"), "?"), "runs": 0, "jobs": 0})
+        prod["runs"] += runs
+        prod["jobs"] += 1
+    entry["seen_job_ids"] = list(seen)
+    result = {"total_runs": entry["total_runs"], "total_jobs": entry["total_jobs"],
+              "since": entry["since"], "by_product": entry["by_product"]}
+    return (entry if changed else None), result
+
+
 def _track_delivered_jobs(acct, cid, jobs, names):
     """Cumulative counter of runs/jobs the character has *delivered*, persisted
     across restarts. Only counts jobs newly seen as "delivered" — the first time
     a character is observed, its already-delivered jobs (ESI's 90-day completed
     window) are recorded as a baseline but not counted, so the counter only grows
     from the moment this feature started watching, as advertised to the user."""
+    if pg_store.enabled():
+        return pg_store.with_delivered_jobs(
+            acct.account_id, cid,
+            lambda entry: _delivered_jobs_apply(entry, jobs, names))
     with _JOBS_TRACK_LOCK:
         store = _acct_kv_load(acct, "ind_jobs_delivered", JOBS_TRACK_PATH, {})
-        key = str(cid)
-        entry = store.get(key)
-        first_seen = entry is None
-        if entry is None:
-            entry = {"seen_job_ids": [], "total_runs": 0, "total_jobs": 0,
-                      "since": time.time(), "by_product": {}}
-        seen = set(entry["seen_job_ids"])
-        changed = first_seen
-        for j in jobs:
-            if j.get("status") != "delivered":
-                continue
-            jid = j.get("job_id")
-            if jid is None or jid in seen:
-                continue
-            seen.add(jid)
-            changed = True
-            if first_seen:
-                continue
-            runs = j.get("runs") or 0
-            entry["total_runs"] += runs
-            entry["total_jobs"] += 1
-            pid = str(j.get("product_type_id"))
-            prod = entry["by_product"].setdefault(pid, {"name": names.get(j.get("product_type_id"), "?"), "runs": 0, "jobs": 0})
-            prod["runs"] += runs
-            prod["jobs"] += 1
-        entry["seen_job_ids"] = list(seen)
-        if changed:
-            store[key] = entry
+        new_entry, result = _delivered_jobs_apply(store.get(str(cid)), jobs, names)
+        if new_entry is not None:
+            store[str(cid)] = new_entry
             _acct_kv_save(acct, "ind_jobs_delivered", JOBS_TRACK_PATH, store)
-        return {"total_runs": entry["total_runs"], "total_jobs": entry["total_jobs"],
-                "since": entry["since"], "by_product": entry["by_product"]}
+        return result
 
 
-ORDER_EVENT_EXPIRY = 7 * 24 * 3600  # auto-expire after 1 week
-
-
-def _track_order_changes(acct, cid, current_orders, names):
-    """Compare current market orders with previously seen ones. Record sale/fill
-    events when volume_remain decreases or an order disappears entirely.
-    Also maintains per-order last_sale metadata for active orders."""
-    store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
-    char_key = str(cid)
-    prev_key = f"_prev_{char_key}"
-    sales_key = f"_sales_{char_key}"
-    prev_orders = store.get(prev_key, {})
-    events = store.get(char_key, [])
-    last_sales = store.get(sales_key, {})
-
+def _compute_order_deltas(prev_orders, last_sales, current_orders, names, char_name):
+    """Pure diff of current vs previously-seen orders. Returns
+    ``(new_events, new_prev, new_sales)`` — new_events are freshly-detected
+    sale/fill events; new_prev/new_sales are the snapshots to persist."""
     now = time.time()
-    events = [e for e in events if now - e["ts"] < ORDER_EVENT_EXPIRY and not e.get("dismissed")]
+    last_sales = dict(last_sales)
+    current_by_id = {str(o["order_id"]): o for o in current_orders if o.get("order_id")}
 
-    current_by_id = {}
-    for o in current_orders:
-        oid = o.get("order_id")
-        if oid:
-            current_by_id[str(oid)] = o
-
+    new_events = []
     for oid_str, prev in prev_orders.items():
         cur = current_by_id.get(oid_str)
         prev_remain = prev.get("volume_remain", 0)
-        if cur is None:
-            sold = prev_remain
-        else:
-            sold = prev_remain - cur.get("volume_remain", 0)
+        sold = prev_remain if cur is None else prev_remain - cur.get("volume_remain", 0)
         if sold > 0:
-            events.append({
+            new_events.append({
                 "id": f"{oid_str}_{int(now)}",
                 "ts": now,
                 "order_id": int(oid_str),
@@ -725,41 +766,63 @@ def _track_order_changes(acct, cid, current_orders, names):
                 "price": prev.get("price", 0),
                 "is_buy_order": prev.get("is_buy_order", False),
                 "filled": cur is None,
-                "character_name": acct.characters.get(cid, {}).get("name", ""),
+                "character_name": char_name,
                 "dismissed": False,
             })
             if cur is not None:
                 last_sales[oid_str] = {"ts": now, "sold": sold}
 
-    # Clean up last_sales for orders that no longer exist
     last_sales = {k: v for k, v in last_sales.items() if k in current_by_id}
+    new_prev = {
+        str(o["order_id"]): {
+            "volume_remain": o.get("volume_remain"),
+            "type_id": o.get("type_id"),
+            "type_name": o.get("type_name"),
+            "price": o.get("price"),
+            "is_buy_order": o.get("is_buy_order"),
+        }
+        for o in current_orders if o.get("order_id")
+    }
+    return new_events, new_prev, last_sales
 
-    new_prev = {}
-    for o in current_orders:
-        oid = o.get("order_id")
-        if oid:
-            new_prev[str(oid)] = {
-                "volume_remain": o.get("volume_remain"),
-                "type_id": o.get("type_id"),
-                "type_name": o.get("type_name"),
-                "price": o.get("price"),
-                "is_buy_order": o.get("is_buy_order"),
-            }
 
+def _track_order_changes(acct, cid, current_orders, names):
+    """Compare current market orders with previously seen ones, recording sale/
+    fill events. Returns ``(events, last_sales)``; callers use last_sales for the
+    per-order "last sale" annotation (the events are read back via
+    _get_order_events)."""
+    char_name = acct.characters.get(cid, {}).get("name", "")
+    if pg_store.enabled():
+        def mutate(prev, sales):
+            events, new_prev, new_sales = _compute_order_deltas(
+                prev, sales, current_orders, names, char_name)
+            return events, new_prev, new_sales, (events, new_sales)
+        return pg_store.with_order_state(acct.account_id, cid, mutate)
+
+    store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
+    char_key, prev_key, sales_key = str(cid), f"_prev_{cid}", f"_sales_{cid}"
+    now = time.time()
+    events = [e for e in store.get(char_key, [])
+              if now - e["ts"] < ORDER_EVENT_EXPIRY and not e.get("dismissed")]
+    new_events, new_prev, new_sales = _compute_order_deltas(
+        store.get(prev_key, {}), store.get(sales_key, {}), current_orders, names, char_name)
+    events.extend(new_events)
     store[prev_key] = new_prev
     store[char_key] = events
-    store[sales_key] = last_sales
+    store[sales_key] = new_sales
     _acct_kv_save(acct, "order_events", ORDER_EVENTS_PATH, store)
-    return events, last_sales
+    return events, new_sales
 
 
 def _get_order_events(acct):
     """Return all non-dismissed, non-expired events across the account's chars."""
-    store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
     now = time.time()
+    if pg_store.enabled():
+        return pg_store.order_events_active(acct.account_id, now - ORDER_EVENT_EXPIRY)
+    store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
     all_events = []
     for key, val in store.items():
-        if key.startswith("_prev_"):
+        if key.startswith("_prev_") or key.startswith("_sales_"):
             continue
         if isinstance(val, list):
             all_events.extend(
@@ -772,9 +835,12 @@ def _get_order_events(acct):
 
 def _dismiss_order_event(acct, event_id):
     """Mark a single event as dismissed, or dismiss all if event_id is 'all'."""
+    if pg_store.enabled():
+        pg_store.order_events_dismiss(acct.account_id, event_id)
+        return
     store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
     for key, val in store.items():
-        if key.startswith("_prev_"):
+        if key.startswith("_prev_") or key.startswith("_sales_"):
             continue
         if isinstance(val, list):
             for e in val:

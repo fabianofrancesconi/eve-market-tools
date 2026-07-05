@@ -28,6 +28,9 @@ class FakePG:
         self.sessions = {}
         self.account_settings = {}
         self.user_settings = {}
+        self.delivered_jobs = {}   # (aid, cid) -> data
+        self.order_state = {}      # (aid, cid) -> (prev, sales)
+        self.order_events = {}     # (aid, event_id) -> {ts, dismissed, data}
 
     def enabled(self):
         return True
@@ -86,6 +89,42 @@ class FakePG:
     # legacy per-char settings (read during migration)
     def user_settings_get(self, cid):
         return self.user_settings.get(cid)
+
+    def all_account_ids(self):
+        return list(self.accounts)
+
+    # replica-safe counters
+    def with_delivered_jobs(self, aid, cid, mutate):
+        new_data, result = mutate(self.delivered_jobs.get((aid, cid)))
+        if new_data is not None:
+            self.delivered_jobs[(aid, cid)] = new_data
+        return result
+
+    def delivered_jobs_set(self, aid, cid, data):
+        self.delivered_jobs[(aid, cid)] = data
+
+    def with_order_state(self, aid, cid, mutate):
+        prev, sales = self.order_state.get((aid, cid), ({}, {}))
+        events, new_prev, new_sales, result = mutate(prev, sales)
+        for ev in events:
+            self.order_events.setdefault((aid, ev["id"]),
+                {"ts": ev["ts"], "dismissed": False, "data": ev})
+        self.order_state[(aid, cid)] = (new_prev, new_sales)
+        return result
+
+    def order_state_set(self, aid, cid, prev, sales):
+        self.order_state[(aid, cid)] = (prev, sales)
+
+    def order_events_active(self, aid, cutoff_ts):
+        rows = [r for (a, _eid), r in self.order_events.items()
+                if a == aid and not r["dismissed"] and r["ts"] >= cutoff_ts]
+        rows.sort(key=lambda r: r["ts"], reverse=True)
+        return [r["data"] for r in rows]
+
+    def order_events_dismiss(self, aid, event_id):
+        for (a, eid), r in self.order_events.items():
+            if a == aid and (event_id == "all" or eid == event_id):
+                r["dismissed"] = True
 
 
 @pytest.fixture
@@ -160,11 +199,13 @@ class TestIsolation:
         lp_web._track_delivered_jobs(a1, 1, [job, {"job_id": 8, "status": "delivered",
                                                    "runs": 5, "product_type_id": 9}], {})
         rt2 = lp_web._track_delivered_jobs(a2, 2, [job], {})
-        # a2 has only ever seen its baseline → zero counted; the stores are separate keys.
+        # a2 has only ever seen its baseline → zero counted; separate table rows.
         assert rt2["total_runs"] == 0
-        assert "ind_jobs_delivered:1" in pg.kv
-        assert "ind_jobs_delivered:2" in pg.kv
-        assert pg.kv["ind_jobs_delivered:1"] != pg.kv["ind_jobs_delivered:2"]
+        assert (1, 1) in pg.delivered_jobs
+        assert (2, 2) in pg.delivered_jobs
+        # a1 counted the second delivery (job 8); a2 never counted anything.
+        assert pg.delivered_jobs[(1, 1)]["total_runs"] == 5
+        assert pg.delivered_jobs[(2, 2)]["total_runs"] == 0
 
     def test_last_scan_isolated_per_account(self, pg):
         a1 = _acct(pg, 1, "A")
@@ -271,6 +312,40 @@ class TestMigration:
         lp_web._migrate_legacy_auth()
         assert pg.kv.get("eve_auth_migrated") is True
         assert pg.accounts == {}
+
+
+class TestCounterMigration:
+    def test_delivered_jobs_from_bare_and_namespaced(self, pg):
+        _acct(pg, 100, "Main")          # account 100, char_account[100]=100
+        pg.char_account[200] = 100      # alt also on account 100
+        # bare (pre-1.81.0) historical counts
+        pg.kv["ind_jobs_delivered"] = {
+            "100": {"seen_job_ids": [1, 2], "total_runs": 50, "total_jobs": 5,
+                    "since": 1.0, "by_product": {}},
+        }
+        # namespaced (post-1.81.0) re-baselined entry — should only union seen ids
+        pg.kv["ind_jobs_delivered:100"] = {
+            "100": {"seen_job_ids": [2, 3], "total_runs": 0, "total_jobs": 0,
+                    "since": 2.0, "by_product": {}},
+            "200": {"seen_job_ids": [9], "total_runs": 7, "total_jobs": 1,
+                    "since": 3.0, "by_product": {}},
+        }
+        lp_web._migrate_counters()
+        e100 = pg.delivered_jobs[(100, 100)]
+        assert e100["total_runs"] == 50                       # historical kept
+        assert set(e100["seen_job_ids"]) == {1, 2, 3}         # ids unioned
+        assert pg.delivered_jobs[(100, 200)]["total_runs"] == 7
+        assert pg.kv["counters_migrated"] is True
+
+    def test_idempotent(self, pg):
+        _acct(pg, 5, "X")
+        pg.kv["ind_jobs_delivered:5"] = {
+            "5": {"seen_job_ids": [], "total_runs": 3, "total_jobs": 1,
+                  "since": 1.0, "by_product": {}}}
+        lp_web._migrate_counters()
+        pg.delivered_jobs.clear()
+        lp_web._migrate_counters()      # flag set → no re-migration
+        assert pg.delivered_jobs == {}
 
 
 # ── Re-login resolves to the existing account (via the char index) ────────────

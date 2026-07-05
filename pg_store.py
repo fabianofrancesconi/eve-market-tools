@@ -106,6 +106,33 @@ def _ensure_schema(pool):
             "account_id BIGINT PRIMARY KEY, "
             "settings_json JSONB NOT NULL, "
             "updated_at DOUBLE PRECISION NOT NULL)")
+        # ── replica-safe counters (v1.82+) ─────────────────────────────────
+        # One row per (account, character) instead of a single read-modify-write
+        # JSON blob, so concurrent writers (e.g. >1 replica) don't clobber each
+        # other. Updates take a row lock (SELECT … FOR UPDATE) via with_*().
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mono_delivered_jobs ("
+            "account_id BIGINT NOT NULL, "
+            "character_id BIGINT NOT NULL, "
+            "data JSONB NOT NULL, "
+            "updated_at DOUBLE PRECISION NOT NULL, "
+            "PRIMARY KEY (account_id, character_id))")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mono_order_state ("
+            "account_id BIGINT NOT NULL, "
+            "character_id BIGINT NOT NULL, "
+            "prev JSONB NOT NULL, "
+            "sales JSONB NOT NULL, "
+            "PRIMARY KEY (account_id, character_id))")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mono_order_events ("
+            "account_id BIGINT NOT NULL, "
+            "event_id TEXT NOT NULL, "
+            "character_id BIGINT NOT NULL, "
+            "ts DOUBLE PRECISION NOT NULL, "
+            "dismissed BOOLEAN NOT NULL DEFAULT FALSE, "
+            "data JSONB NOT NULL, "
+            "PRIMARY KEY (account_id, event_id))")
     _schema_ready = True
 
 
@@ -250,3 +277,100 @@ def account_settings_set(account_id, data, updated_at):
             "VALUES (%s, %s, %s) ON CONFLICT (account_id) DO UPDATE SET "
             "settings_json = EXCLUDED.settings_json, updated_at = EXCLUDED.updated_at",
             (account_id, Jsonb(data), updated_at))
+
+
+def all_account_ids():
+    with _get_pool().connection() as conn:
+        return [r[0] for r in conn.execute("SELECT account_id FROM mono_accounts").fetchall()]
+
+
+# ── replica-safe counters: delivered jobs + order events ─────────────────────
+# The read-modify-write is done inside one transaction holding a row lock, so
+# two concurrent workers (even on separate replicas) can't lose an update.
+
+def with_delivered_jobs(account_id, character_id, mutate):
+    """Atomically update one character's delivered-jobs row. ``mutate(data|None)``
+    returns ``(new_data|None, result)``; ``None`` new_data means no write."""
+    from psycopg.types.json import Jsonb
+    with _get_pool().connection() as conn, conn.transaction():
+        row = conn.execute(
+            "SELECT data FROM mono_delivered_jobs WHERE account_id=%s AND "
+            "character_id=%s FOR UPDATE", (account_id, character_id)).fetchone()
+        new_data, result = mutate(row[0] if row else None)
+        if new_data is not None:
+            conn.execute(
+                "INSERT INTO mono_delivered_jobs (account_id, character_id, data, "
+                "updated_at) VALUES (%s,%s,%s,%s) ON CONFLICT (account_id, "
+                "character_id) DO UPDATE SET data=EXCLUDED.data, "
+                "updated_at=EXCLUDED.updated_at",
+                (account_id, character_id, Jsonb(new_data), time.time()))
+    return result
+
+
+def delivered_jobs_set(account_id, character_id, data):
+    """Unconditional upsert (used by the one-time counter migration)."""
+    from psycopg.types.json import Jsonb
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_delivered_jobs (account_id, character_id, data, "
+            "updated_at) VALUES (%s,%s,%s,%s) ON CONFLICT (account_id, "
+            "character_id) DO UPDATE SET data=EXCLUDED.data, updated_at=EXCLUDED.updated_at",
+            (account_id, character_id, Jsonb(data), time.time()))
+
+
+def with_order_state(account_id, character_id, mutate):
+    """Atomically diff one character's orders. ``mutate(prev, sales)`` returns
+    ``(new_event_dicts, new_prev, new_sales, result)``; new events are inserted
+    (dedup by id), the per-char prev/sales snapshot is upserted, result returned."""
+    from psycopg.types.json import Jsonb
+    with _get_pool().connection() as conn, conn.transaction():
+        row = conn.execute(
+            "SELECT prev, sales FROM mono_order_state WHERE account_id=%s AND "
+            "character_id=%s FOR UPDATE", (account_id, character_id)).fetchone()
+        prev = row[0] if row else {}
+        sales = row[1] if row else {}
+        events, new_prev, new_sales, result = mutate(prev, sales)
+        for ev in events:
+            conn.execute(
+                "INSERT INTO mono_order_events (account_id, event_id, character_id, "
+                "ts, dismissed, data) VALUES (%s,%s,%s,%s,FALSE,%s) "
+                "ON CONFLICT (account_id, event_id) DO NOTHING",
+                (account_id, ev["id"], character_id, ev["ts"], Jsonb(ev)))
+        conn.execute(
+            "INSERT INTO mono_order_state (account_id, character_id, prev, sales) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT (account_id, character_id) DO UPDATE "
+            "SET prev=EXCLUDED.prev, sales=EXCLUDED.sales",
+            (account_id, character_id, Jsonb(new_prev), Jsonb(new_sales)))
+    return result
+
+
+def order_state_set(account_id, character_id, prev, sales):
+    """Unconditional prev/sales upsert (used by the one-time counter migration)."""
+    from psycopg.types.json import Jsonb
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_order_state (account_id, character_id, prev, sales) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT (account_id, character_id) DO UPDATE "
+            "SET prev=EXCLUDED.prev, sales=EXCLUDED.sales",
+            (account_id, character_id, Jsonb(prev), Jsonb(sales)))
+
+
+def order_events_active(account_id, cutoff_ts):
+    """Non-dismissed events newer than cutoff_ts, most-recent first."""
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT data FROM mono_order_events WHERE account_id=%s AND "
+            "dismissed=FALSE AND ts>=%s ORDER BY ts DESC",
+            (account_id, cutoff_ts)).fetchall()
+    return [r[0] for r in rows]
+
+
+def order_events_dismiss(account_id, event_id):
+    """Dismiss one event, or all of the account's events when event_id=='all'."""
+    with _get_pool().connection() as conn:
+        if event_id == "all":
+            conn.execute("UPDATE mono_order_events SET dismissed=TRUE WHERE "
+                         "account_id=%s", (account_id,))
+        else:
+            conn.execute("UPDATE mono_order_events SET dismissed=TRUE WHERE "
+                         "account_id=%s AND event_id=%s", (account_id, event_id))

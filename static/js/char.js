@@ -559,9 +559,10 @@ function renderCharData(){
     };
   });
 
-  // Wallet chart
+  // Wallet chart — only render when the tab is visible; ApexCharts computes
+  // NaN dimensions in a hidden (zero-width) container.
   const activeCharId=(!multiChar||_charTabIdx===0)?null:String(chars[_charTabIdx-1]?.character_id||'');
-  renderWalletChart(activeCharId||null);
+  if(ACTIVE_TAB==="char") renderWalletChart(activeCharId||null);
 
   // Wire range buttons
   document.querySelectorAll('.wcr-btn').forEach(btn=>{

@@ -1126,6 +1126,8 @@
   .aby-fh-glyph { font-size:22px; }
   .aby-fh-line { margin-top:8px; font-size:13px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .aby-fh-sep { color:var(--dim2); }
+  .aby-fh-missile { margin-top:11px; font-size:13px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .aby-fh-missile b { color:var(--fg); }
   .aby-fh-strategy { margin-top:12px; font-size:13.5px; line-height:1.6; color:var(--fg); }
   .aby-fh-note { margin-top:10px; font-size:12px; line-height:1.55; color:var(--dim); font-style:italic;
     border-top:1px solid var(--line); padding-top:10px; }
@@ -1188,6 +1190,14 @@
     font-size:11px; font-weight:700; padding:2px 9px; line-height:1.5;
   }
   .aby-pip-lg { font-size:12.5px; padding:3px 11px; box-shadow:0 0 8px -2px var(--pip); }
+  /* Missile recommendation chip */
+  .aby-missile {
+    display:inline-flex; align-items:center; gap:4px;
+    font-size:11px; font-weight:700; color:var(--cyan);
+    background:color-mix(in srgb, var(--cyan) 14%, transparent);
+    border:1px solid color-mix(in srgb, var(--cyan) 45%, transparent);
+    border-radius:4px; padding:2px 9px; cursor:help; white-space:nowrap;
+  }
   /* EWAR chips */
   .aby-ewar {
     background:var(--panel3); border:1px solid var(--line2); color:var(--fg);

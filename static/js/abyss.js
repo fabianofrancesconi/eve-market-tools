@@ -11,11 +11,17 @@
 
 // ── Damage types ───────────────────────────────────────────────────────────
 const ABY_DMG = {
-  em:    {label:"EM",        short:"EM",  color:"#4a9eff"},
-  therm: {label:"Thermal",   short:"Th",  color:"#e05555"},
-  kin:   {label:"Kinetic",   short:"Kin", color:"#9aa7b5"},
-  exp:   {label:"Explosive", short:"Exp", color:"#c8a040"},
+  em:    {label:"EM",        short:"EM",  color:"#4a9eff", missile:"Mjolnir"},
+  therm: {label:"Thermal",   short:"Th",  color:"#e05555", missile:"Inferno"},
+  kin:   {label:"Kinetic",   short:"Kin", color:"#9aa7b5", missile:"Scourge"},
+  exp:   {label:"Explosive", short:"Exp", color:"#c8a040", missile:"Nova"},
 };
+// EVE missiles come in four flavours, one per damage type — so the best missile
+// against an enemy is simply the one matching its weakness.
+function abyMissileTag(type){
+  const d = ABY_DMG[type]; if(!d) return "";
+  return `<span class="aby-missile" data-tip="${abyEsc(d.missile)} missiles deal ${abyEsc(d.label)} damage">🚀 ${abyEsc(d.missile)}</span>`;
+}
 
 // ── EWAR module chips ────────────────────────────────────────────────────────
 const ABY_EWAR = {
@@ -297,7 +303,7 @@ function abyRenderConditions(){
   const w = ABY_WEATHER.find(x=>x.key===ABY.weather);
   const penaltyBand = ABY.tier<=3 ? "−30% / −50%" : "−50% / −70%";
   const exploit = w.exploit
-    ? `<span class="aby-pip aby-pip-lg" style="--pip:${ABY_DMG[w.exploit].color}">${abyEsc(ABY_DMG[w.exploit].short)}</span> ${abyEsc(ABY_DMG[w.exploit].label)}`
+    ? `<span class="aby-pip aby-pip-lg" style="--pip:${ABY_DMG[w.exploit].color}">${abyEsc(ABY_DMG[w.exploit].short)}</span> ${abyEsc(ABY_DMG[w.exploit].label)} ${abyMissileTag(w.exploit)}`
     : `<span class="aby-dim">No resistance hole — bring raw DPS</span>`;
   $("#aby-conditions").innerHTML = `
     <div class="aby-cond-row">
@@ -391,8 +397,8 @@ function abyEnemyCard(e, faction, highlight){
   const gated = ABY_CLASS_MINTIER[e.cls] && ABY.tier < ABY_CLASS_MINTIER[e.cls];
   const prio = ABY_PRIO[e.priority] || ABY_PRIO.normal;
   const deals = e.deals.length ? e.deals.map(t=>abyDmgPip(t)).join("") : `<span class="aby-dim">EWAR / support</span>`;
-  const weakPips = e.weak ? abyDmgPip(e.weak,{big:true}) + (e.weak2?" "+abyDmgPip(e.weak2):"")
-                          : `<span class="aby-dim">omni — use strongest</span>`;
+  const weakPips = e.weak ? abyDmgPip(e.weak,{big:true}) + (e.weak2?" "+abyDmgPip(e.weak2):"") + " " + abyMissileTag(e.weak)
+                          : `<span class="aby-dim">omni — use your strongest (match your hull's bonus)</span>`;
   const ewar = e.ewar.length ? e.ewar.map(k=>abyEwarChip(k)).join("") : `<span class="aby-dim">none</span>`;
   return `<div class="aby-card${highlight&&highlight===e.name?" aby-card-hl":""}" style="--fc:${faction.color}">
     ${prio.label?`<div class="aby-ribbon ${prio.cls}">${prio.label}</div>`:""}
@@ -422,6 +428,9 @@ function abyRenderCards(highlight){
     <div class="aby-fh-line"><span class="aby-stat-k">They deal</span> <span class="aby-stat-v">${facDeals||'<span class="aby-dim">mixed</span>'}</span>
       <span class="aby-fh-sep">·</span> <span class="aby-stat-v">${facWeak}</span></div>
     ${f.spot?`<div class="aby-spot"><b>Spot the room:</b> ${abyEsc(f.spot)}</div>`:""}
+    <div class="aby-fh-missile">${f.weak
+      ? `<b>Best missile:</b> ${abyMissileTag(f.weak)} <span class="aby-dim">— load ${abyEsc(ABY_DMG[f.weak].label)}${f.key==="sansha"?"; switch to Nova on the Devoted Knight":""}</span>`
+      : `<b>Best missile:</b> <span class="aby-dim">omni-resist — no damage hole, so load whatever your hull is bonused for (e.g. a Gila/Cerberus runs Scourge/Kinetic)</span>`}</div>
     <div class="aby-fh-prob" data-tip="${abyEsc(abyProbTip(f))}">
       <span class="aby-stat-k">Likelihood</span> ${abyProbBar(f)}
       <span>~${pct}% of T${ABY.tier} rooms · ${abyProbLabel(pct)}</span>

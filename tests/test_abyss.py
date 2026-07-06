@@ -88,3 +88,14 @@ def test_abyss_cites_spawn_sources():
     assert "qsna.eu" in html
     assert "abyssal.space" in html
     assert "caldarijoans.streamlit.app" in html
+
+
+def test_abyss_missile_mapping():
+    # Each damage type maps to its EVE missile flavour, and the mapping +
+    # YouTube reference are surfaced in the UI.
+    src = (_ROOT / "static" / "js" / "abyss.js").read_text()
+    for missile in ("Mjolnir", "Inferno", "Scourge", "Nova"):
+        assert f'missile:"{missile}"' in src, missile
+    html = lp_web.INDEX_HTML
+    assert "Mjolnir = EM" in html
+    assert "youtube.com/watch?v=VlOPCOzKPWY" in html

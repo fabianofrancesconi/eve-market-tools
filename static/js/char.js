@@ -146,10 +146,12 @@ async function _doRefreshCharData(){
   charRefreshDeadline=Date.now()+refreshMs; tickCharRefreshTimer();
   const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge();
-  // If the character LP just changed the locked budget for the corp on screen,
-  // re-run the LP scan so results reflect the real budget (e.g. on first load,
-  // when char data arrives after the initial scan).
-  if($("#lp").value!==prevLp && ACTIVE_TAB==="lp" && ($("#corp").value||"").trim()){
+  // Re-run the LP scan when the budget changed OR when this is the first char
+  // data load and no scan has run yet (we skip auto-scan at boot until char
+  // data arrives so the budget is fresh).
+  const lpChanged=$("#lp").value!==prevLp;
+  const needsInitialScan=!STATE.rows.length && !STATE.lastScanData;
+  if((lpChanged||needsInitialScan) && ACTIVE_TAB==="lp" && ($("#corp").value||"").trim()){
     clearTimeout(lpScanTimer); scan(false);
   }
 }

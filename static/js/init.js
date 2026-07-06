@@ -45,7 +45,7 @@ async function loadSettings(){
   }
   if(s && Object.keys(s).length){
       if(s.corp) $("#corp").value=s.corp;
-      if(s.lp)   $("#lp").value=s.lp;
+      if(s.lp && !AUTH.loggedIn) $("#lp").value=s.lp;
       if(s.market) $("#market").value=s.market;
       const _ms=s.maxspread??s.max_spread; if(_ms!=null) $("#maxspread").value=_ms;
       if(s.tax)   $("#g-tax").value=fracToPct(s.tax);
@@ -144,10 +144,16 @@ async function loadSettings(){
   const urlTab = location.pathname==="/" ? null : PATH_TAB[location.pathname];
   if(urlTab && urlTab!==ACTIVE_TAB && (urlTab!=="char" || AUTH.loggedIn))
     switchTab(urlTab, {url:false});
+  // When logged in, the LP budget comes from character data (refreshCharData),
+  // not the settings blob.  If char data is already loaded, apply it now;
+  // otherwise _doRefreshCharData() will call updateMyLpBadge() + scan when it
+  // arrives, so we skip the auto-scan here to avoid using a stale budget.
+  if(typeof updateMyLpBadge==="function" && AUTH.data) updateMyLpBadge();
+  const _skipLpScan = AUTH.loggedIn && !AUTH.data;
   // Restore last scan results from server cache, then auto-scan if the LP tab
   // is active and a corp is set.
   restoreLastScans().then(restored=>{
-    if(ACTIVE_TAB==="lp" && $("#corp").value.trim() && !restored.lp) scan(false);
+    if(ACTIVE_TAB==="lp" && $("#corp").value.trim() && !restored.lp && !_skipLpScan) scan(false);
     if(!restored.ind) loadOwnedPreview();
   });
 }

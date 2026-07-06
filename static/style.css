@@ -1212,8 +1212,8 @@
     font-size:11px; font-weight:700; padding:2px 9px; border-radius:20px;
     border:1px solid var(--line2); background:var(--panel3);
   }
-  .aby-prob-bar { width:34px; height:5px; border-radius:3px; background:var(--line2); overflow:hidden; }
-  .aby-prob-fill { height:100%; background:var(--fc); }
+  .aby-prob-bar { display:inline-block; width:34px; height:5px; border-radius:3px; background:var(--line2); overflow:hidden; flex-shrink:0; }
+  .aby-prob-fill { display:block; height:100%; background:var(--fc); }
   .aby-fh-prob { margin-top:12px; display:flex; align-items:center; gap:9px; font-size:12.5px; color:var(--dim); flex-wrap:wrap; }
   .aby-sources {
     margin:28px 0 8px; padding-top:14px; border-top:1px solid var(--line);

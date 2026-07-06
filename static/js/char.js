@@ -351,6 +351,7 @@ function _renderAllPanel(chars){
 let _walletChart=null;
 let _walletHistoryCache=null;
 let _walletChartDays=30;
+let _walletChartCharId=null;
 
 async function _loadWalletHistory(days){
   try{
@@ -378,12 +379,17 @@ function _combinedWalletSeries(series){
   return combined;
 }
 
-function _walletChartStats(series, charId){
+function _walletChartStats(series, charId, minTs, maxTs){
   let points;
   if(charId){
     points=(series[charId]&&series[charId].data)||[];
   } else {
     points=_combinedWalletSeries(series);
+  }
+  if(minTs!=null || maxTs!=null){
+    const lo=(minTs!=null)?minTs/1000:-Infinity;
+    const hi=(maxTs!=null)?maxTs/1000:Infinity;
+    points=points.filter(p=>p[0]>=lo && p[0]<=hi);
   }
   if(!points.length) return '';
   const vals=points.map(p=>p[1]);
@@ -431,6 +437,12 @@ async function renderWalletChart(charId){
 
   if(_walletChart){_walletChart.destroy();_walletChart=null;}
   container.innerHTML='';
+  _walletChartCharId=charId;
+
+  function _updateStatsForRange(minTs, maxTs){
+    const statsEl=document.getElementById('walletChartStats');
+    if(statsEl) statsEl.innerHTML=_walletChartStats(_walletHistoryCache,_walletChartCharId,minTs,maxTs);
+  }
 
   const opts={
     chart:{
@@ -440,6 +452,11 @@ async function renderWalletChart(charId){
       zoom:{enabled:true,type:'x'},
       animations:{enabled:true,easing:'easeinout',speed:400},
       fontFamily:'inherit',
+      events:{
+        zoomed:function(_ctx,{xaxis}){ _updateStatsForRange(xaxis.min,xaxis.max); },
+        scrolled:function(_ctx,{xaxis}){ _updateStatsForRange(xaxis.min,xaxis.max); },
+        beforeResetZoom:function(){ _updateStatsForRange(null,null); },
+      },
     },
     theme:{mode:'dark'},
     colors:charId?['#4fc3f7']:['#4fc3f7','#66bb6a','#f0c040','#e05555','#ab47bc'],

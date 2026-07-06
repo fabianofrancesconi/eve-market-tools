@@ -650,7 +650,7 @@ _corpInput.addEventListener("keydown",e=>{
   else if(e.key==="ArrowUp"){ e.preventDefault(); _corpHighlight(_corpHi-1); }
   else if(e.key==="Enter"){
     if(_corpHi>=0&&items[_corpHi]){ _corpSelect(items[_corpHi].textContent); }
-    else{ clearTimeout(lpScanTimer); scan(false); }
+    else{ _corpClose(); if(typeof updateMyLpBadge==="function") updateMyLpBadge(); saveLS(); clearTimeout(lpScanTimer); scan(false); }
   }
   else if(e.key==="Escape"){ _corpClose(); }
 });

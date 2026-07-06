@@ -11,7 +11,10 @@ function tickCharRefreshTimer(){
   el.classList.remove("hidden");
   const remaining=charRefreshDeadline-Date.now();
   $("#char-refresh-secs").textContent=remaining>0?fmtCountdownShort(remaining):"0:00";
-  if(remaining<=0) refreshCharData();
+  if(remaining<=0 && !_charDataInFlight){
+    charRefreshDeadline=0;
+    refreshCharData(true);
+  }
 }
 setInterval(tickCharRefreshTimer, 1000);
 const ROMAN=["0","I","II","III","IV","V"];

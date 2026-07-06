@@ -643,6 +643,10 @@ function _corpHighlight(idx){
 }
 
 _corpInput.addEventListener("input",e=>_corpOpen(e.target.value));
+_corpInput.addEventListener("change",()=>{
+  if(typeof updateMyLpBadge==="function") updateMyLpBadge();
+  saveLS(); clearTimeout(lpScanTimer); scan(false);
+});
 _corpInput.addEventListener("blur",()=>setTimeout(_corpClose,150));
 _corpInput.addEventListener("keydown",e=>{
   const items=_corpItems();

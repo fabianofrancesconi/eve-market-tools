@@ -137,6 +137,7 @@ async function loadSettings(){
       else if(s.active_tab==="ind") switchTab("ind", {url:false});
       else if(s.active_tab==="notes") switchTab("notes", {url:false});
       else if(s.active_tab==="exp") switchTab("exp", {url:false});
+      else if(s.active_tab==="aby") switchTab("aby", {url:false});
   }
   // A deep link / refresh on a tab URL wins over the saved pref. "/" is not an
   // explicit choice, so it defers to the pref restored above.

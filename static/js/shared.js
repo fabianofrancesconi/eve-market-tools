@@ -203,10 +203,11 @@ function saveLS(){
 // ── Tab switching ─────────────────────────────────────────────────────────
 let ACTIVE_TAB = "lp";
 // Each tab has a clean URL so a refresh/bookmark reopens the same module.
-const TAB_PATH = { lp:"/", arb:"/arbitrage", ind:"/industry", char:"/character", notes:"/notes", exp:"/exploration" };
+const TAB_PATH = { lp:"/", arb:"/arbitrage", ind:"/industry", char:"/character", notes:"/notes", exp:"/exploration", aby:"/abyss" };
 const PATH_TAB = { "/":"lp", "/lp":"lp", "/arbitrage":"arb", "/arb":"arb",
                    "/industry":"ind", "/ind":"ind", "/character":"char", "/char":"char",
-                   "/notes":"notes", "/exploration":"exp", "/exp":"exp" };
+                   "/notes":"notes", "/exploration":"exp", "/exp":"exp",
+                   "/abyss":"aby", "/aby":"aby" };
 function switchTab(tab, opts){
   opts = opts || {};
   ACTIVE_TAB = tab;
@@ -217,7 +218,7 @@ function switchTab(tab, opts){
     if(location.pathname !== p) history.pushState({tab}, "", p);
   }
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===tab));
-  $("#global-costs").classList.toggle("hidden", tab==="notes"||tab==="char"||tab==="exp");
+  $("#global-costs").classList.toggle("hidden", tab==="notes"||tab==="char"||tab==="exp"||tab==="aby");
   $("#lp-controls").classList.toggle("hidden", tab!=="lp");
   $("#arb-controls").classList.toggle("hidden", tab!=="arb");
   $("#lp-tablewrap").classList.toggle("hidden", tab!=="lp");
@@ -225,6 +226,7 @@ function switchTab(tab, opts){
   $("#char-tablewrap").classList.toggle("hidden", tab!=="char");
   $("#notes-tablewrap").classList.toggle("hidden", tab!=="notes");
   $("#exp-tablewrap").classList.toggle("hidden", tab!=="exp");
+  $("#aby-tablewrap").classList.toggle("hidden", tab!=="aby");
   updateIndGate();
   if(tab!=="lp") closeDetail();
   setStatus("");
@@ -232,8 +234,10 @@ function switchTab(tab, opts){
                 : tab==="arb" ? "EVE Arbitrage Scanner"
                 : tab==="char" ? "EVE Character Overview"
                 : tab==="notes" ? "EVE Notes"
-                : tab==="exp" ? "EVE Exploration Guide" : "EVE Industry Planner";
+                : tab==="exp" ? "EVE Exploration Guide"
+                : tab==="aby" ? "EVE Abyssal Deadspace Guide" : "EVE Industry Planner";
   postPrefs('/api/prefs',{active_tab:tab}); saveLS();
+  if(tab==="aby" && typeof abyInit==="function") abyInit();
   if(tab==="ind" && AUTH.loggedIn){
     if(!IND.groupsLoaded) loadIndGroups();
     renderIndTable(); renderIndStatus();

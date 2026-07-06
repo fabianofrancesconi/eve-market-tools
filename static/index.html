@@ -35,6 +35,7 @@
     <button class="tab" data-tab="arb">Arbitrage</button>
     <button class="tab" data-tab="ind">Industry</button>
     <button class="tab" data-tab="exp">Exploration</button>
+    <button class="tab" data-tab="aby">Abyss</button>
     <button class="tab hidden" id="char-tab-btn" data-tab="char">Overview</button>
   </nav>
   <button class="tab tab-right" data-tab="notes">Notes</button>
@@ -297,6 +298,38 @@
       </div>
     </div>
   </div>
+  <!-- Abyss tab -->
+  <div id="aby-tablewrap" class="tablewrap hidden">
+    <div class="aby-selectors">
+      <div class="aby-sel-group">
+        <span class="aby-sel-label">Tier</span>
+        <div id="aby-tier-sel" class="aby-tier-sel"></div>
+      </div>
+      <div class="aby-sel-group">
+        <span class="aby-sel-label">Weather</span>
+        <div id="aby-weather-sel" class="aby-weather-sel"></div>
+      </div>
+    </div>
+    <div id="aby-conditions" class="aby-conditions"></div>
+    <div class="aby-layout">
+      <div class="aby-sidebar">
+        <div class="aby-search-wrap">
+          <input id="aby-search" type="text" placeholder="Search enemy name..." class="aby-search-input">
+          <div id="aby-results" class="aby-results hidden"></div>
+        </div>
+        <div class="aby-faction-hdr">Room / faction</div>
+        <div id="aby-faction-list" class="aby-faction-list"></div>
+      </div>
+      <div class="aby-resize-handle" id="aby-resize-handle"></div>
+      <div class="aby-content" id="aby-content">
+        <div id="aby-empty" class="aby-empty">Pick a tier, weather and faction to see the enemies you'll face.</div>
+        <div id="aby-cards" class="aby-cards hidden">
+          <div id="aby-faction-hero" class="aby-faction-hero"></div>
+          <div id="aby-card-grid" class="aby-card-grid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
   <!-- Notes tab -->
   <div id="notes-tablewrap" class="tablewrap hidden">
     <div class="notes-sidebar">
@@ -380,6 +413,7 @@
 <script src="/static/js/init.js?v=__VERSION__"></script>
 <script src="/static/js/notes.js?v=__VERSION__"></script>
 <script src="/static/js/exploration.js?v=__VERSION__"></script>
+<script src="/static/js/abyss.js?v=__VERSION__"></script>
 <script src="/static/js/boot.js?v=__VERSION__"></script>
 </body>
 </html>

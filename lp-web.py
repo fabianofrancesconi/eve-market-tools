@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.89.11"
+__version__ = "1.89.12"
 
 import argparse
 import base64
@@ -681,14 +681,20 @@ def do_auth_login(q):
 def do_auth_status(q):
     acct = current_account()
     if acct is None:
-        return {"logged_in": False, "characters": [], "active_char_id": None,
-                "character_id": None, "name": None, "scopes": []}
+        # acct is None only in multi-user mode with no valid session — the
+        # visitor must log in before the app is usable at all. (Legacy mode
+        # always resolves to _LEGACY_ACCOUNT, so needs_login stays False there
+        # and the app works without any EVE login.)
+        return {"logged_in": False, "needs_login": True, "characters": [],
+                "active_char_id": None, "character_id": None, "name": None,
+                "scopes": []}
     with acct.lock:
         chars = [{"character_id": c["character_id"], "name": c["name"]}
                  for c in acct.characters.values()]
         active = acct.characters.get(acct.active_char_id)
         return {
             "logged_in": bool(acct.characters),
+            "needs_login": False,
             "characters": chars,
             "active_char_id": acct.active_char_id,
             "character_id": acct.active_char_id,

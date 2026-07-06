@@ -68,7 +68,7 @@ async function switchActiveChar(cid){
 }
 
 async function checkAuth(){
-  let st; try{ st=await (await fetch("/api/auth/status")).json(); }catch(e){ return; }
+  let st; try{ st=await (await fetch("/api/auth/status")).json(); }catch(e){ return null; }
   AUTH.loggedIn=!!st.logged_in; AUTH.name=st.name; AUTH.charId=st.character_id;
   AUTH.characters=st.characters||[];
   AUTH.activeCharId=st.active_char_id||null;
@@ -78,6 +78,7 @@ async function checkAuth(){
     if(location.pathname==="/character" || location.pathname==="/char") switchTab("char", {url:false});
     if(!NOTES.loaded || !NOTES.items.length) loadNotes();
   }
+  return st;
 }
 
 async function doLogin(){
@@ -589,6 +590,15 @@ function updateMyLpBadge(){
 $("#login-eve").onclick=doLogin;
 $("#char-login-btn").onclick=doLogin;
 $("#ind-login-btn").onclick=doLogin;
+$("#landing-login").onclick=doLogin;
+
+// Full-page login gate for unauthenticated visitors on a multi-user deploy.
+// Hides the app chrome (see .landing-active in CSS) so no half-broken UI shows,
+// and — because boot.js returns early — no settings/scan API calls fire and 401.
+function showLoginLanding(){
+  document.body.classList.add("landing-active");
+  $("#login-landing").classList.remove("hidden");
+}
 $("#chip-dd-toggle").onclick=e=>{
   e.stopPropagation();
   const dd=$("#char-dropdown");

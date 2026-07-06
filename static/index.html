@@ -13,6 +13,21 @@
 </head>
 <body>
 
+<!-- Login landing (multi-user deploy, unauthenticated visitors). Hidden by
+     default; boot.js reveals it and hides the app chrome when the server
+     reports needs_login. Kept out of the DOM flow so no API calls fire. -->
+<div id="login-landing" class="hidden">
+  <div class="landing-card">
+    <div class="landing-logo">EVE <span>MARKET TOOLS</span></div>
+    <p class="landing-tagline">LP store deals, cross-station arbitrage, industry
+      profit planning and exploration intel — all driven by your EVE data.</p>
+    <button id="landing-login" class="auth-btn primary-btn landing-btn">Log in with EVE</button>
+    <p class="landing-note">Sign in with your EVE Online account to get started.
+      We only read what the app needs — skills, wallet, loyalty points, orders
+      and jobs.</p>
+  </div>
+</div>
+
 <header>
   <div class="logo">EVE <span>MARKET TOOLS</span><span class="ver">v__VERSION__</span></div>
   <nav class="tabs">

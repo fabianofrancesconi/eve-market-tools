@@ -288,6 +288,29 @@ class TestGate:
         assert h._gate("/api/scan") is True
 
 
+class TestAuthStatus:
+    def test_unauthenticated_needs_login(self, pg):
+        # Multi-user, no session → the client must show the login landing.
+        lp_web._REQUEST.account = None
+        st = lp_web.do_auth_status({})
+        assert st["needs_login"] is True
+        assert st["logged_in"] is False
+
+    def test_authenticated_does_not_need_login(self, pg):
+        a = _acct(pg, 100, "Main")
+        lp_web._REQUEST.account = a
+        st = lp_web.do_auth_status({})
+        assert st["needs_login"] is False
+        assert st["logged_in"] is True
+
+    def test_legacy_mode_does_not_need_login(self, monkeypatch):
+        # Single-user deploy works with no EVE login — never gate the whole app.
+        monkeypatch.setattr(lp_web.pg_store, "enabled", lambda: False)
+        lp_web._REQUEST.account = lp_web._LEGACY_ACCOUNT
+        st = lp_web.do_auth_status({})
+        assert st["needs_login"] is False
+
+
 class TestCookiesAndLogout:
     def test_expire_cookie_header_clears(self, pg):
         h = lp_web._expire_cookie_header()

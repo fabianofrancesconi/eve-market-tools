@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.89.10"
+__version__ = "1.89.11"
 
 import argparse
 import base64
@@ -2478,7 +2478,14 @@ class Handler(BaseHTTPRequestHandler):
             _REQUEST.account = None
 
     def _gate(self, path):
-        """In multi-user mode, reject non-public requests without a session."""
+        """In multi-user mode, reject non-public requests without a session.
+
+        Static assets stay public: the app shell served at "/" pulls its own
+        CSS/JS from /static/, and without them the login screen can't even
+        render (every asset would 401). Path traversal is blocked in
+        _serve_static, so exposing the static tree carries no extra risk."""
+        if path.startswith("/static/"):
+            return True
         if pg_store.enabled() and path not in _PUBLIC_PATHS and current_account() is None:
             self._send_json({"error": "Log in with EVE to continue.",
                              "login_required": True}, 401)

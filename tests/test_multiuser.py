@@ -260,6 +260,17 @@ class TestGate:
                   "/callback", "/favicon.ico"):
             assert h._gate(p) is True
 
+    def test_static_assets_public_without_session(self, pg):
+        # The app shell at "/" loads its own CSS/JS from /static/; those must
+        # never 401 or the login screen can't render.
+        h = _FakeHandler("")
+        h._setup_request()
+        assert lp_web.current_account() is None
+        for p in ("/static/css/style.css", "/static/js/lp.js",
+                  "/static/js/boot.js"):
+            assert h._gate(p) is True
+        assert h.sent is None               # nothing was 401'd
+
     def test_valid_session_passes_gate(self, pg):
         a = _acct(pg, 100, "Main")
         sid = lp_web._new_session(a)

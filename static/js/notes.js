@@ -1,8 +1,16 @@
 // ══════════════════════════════════════════════════════════════════════════
 // NOTES TAB
 // ══════════════════════════════════════════════════════════════════════════
-const NOTES = { items:[], loaded:false, active:null, saveTimer:null, dragId:null };
+const NOTES = { items:[], loaded:false, active:null, saveTimer:null, dragId:null, fontSize:14 };
 const NOTES_MAX_DEPTH = 3;
+const NOTES_FONT_MIN = 10, NOTES_FONT_MAX = 28;
+try{ const f=parseInt(localStorage.getItem("notes-font-size"),10); if(f>=NOTES_FONT_MIN && f<=NOTES_FONT_MAX) NOTES.fontSize=f; }catch(e){}
+
+function _setNoteFont(px){
+  NOTES.fontSize=Math.max(NOTES_FONT_MIN, Math.min(NOTES_FONT_MAX, px));
+  try{ localStorage.setItem("notes-font-size", String(NOTES.fontSize)); }catch(e){}
+  const ta=$("#note-body"); if(ta) ta.style.fontSize=NOTES.fontSize+"px";
+}
 
 function _uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 
@@ -148,8 +156,12 @@ function selectNote(id){
   if(n.kind==="folder"){
     ed.innerHTML=`<div class="notes-editor-hdr"><span class="note-title-ro">${title}</span></div><div class="notes-empty">Folder — select a note inside, or drag items here</div>`;
   } else {
-    ed.innerHTML=`<div class="notes-editor-hdr"><span class="note-title-ro">${title}</span></div><div class="notes-editor-body"><textarea id="note-body" placeholder="Write here…">${_esc(n.body)}</textarea></div>`;
-    $("#note-body").oninput=()=>_scheduleNoteSave(id);
+    ed.innerHTML=`<div class="notes-editor-hdr"><span class="note-title-ro">${title}</span><span class="notes-font-ctl"><button class="nf-btn" id="note-font-dec" data-tip="Smaller text">A−</button><button class="nf-btn" id="note-font-inc" data-tip="Larger text">A+</button></span></div><div class="notes-editor-body"><textarea id="note-body" placeholder="Write here…">${_esc(n.body)}</textarea></div>`;
+    const ta=$("#note-body");
+    ta.style.fontSize=NOTES.fontSize+"px";
+    ta.oninput=()=>_scheduleNoteSave(id);
+    $("#note-font-dec").onclick=()=>_setNoteFont(NOTES.fontSize-1);
+    $("#note-font-inc").onclick=()=>_setNoteFont(NOTES.fontSize+1);
   }
 }
 

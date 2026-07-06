@@ -100,6 +100,9 @@ try { EXP.recent = JSON.parse(localStorage.getItem("exp-recent")) || []; } catch
 
 function expSaveRecent(){
   try { localStorage.setItem("exp-recent", JSON.stringify(EXP.recent.slice(0,10))); } catch(e){}
+  // Also push into the server-synced settings blob so recents follow the
+  // logged-in character across browsers/devices (loadSettings restores them).
+  if(typeof saveLS==="function") saveLS();
 }
 
 function expRenderRecent(){

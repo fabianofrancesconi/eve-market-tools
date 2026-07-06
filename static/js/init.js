@@ -122,6 +122,15 @@ async function loadSettings(){
         const sec=typeof ind.sections==="string"?JSON.parse(ind.sections):ind.sections;
         if(sec&&typeof sec==="object") Object.assign(IND.sections, sec);
       }catch(e){} }
+      // Exploration recent lookups — server-synced so every device converges.
+      if(s.exp_recent!==undefined && typeof EXP!=="undefined"){ try{
+        const er=typeof s.exp_recent==="string"?JSON.parse(s.exp_recent):s.exp_recent;
+        if(Array.isArray(er)){
+          EXP.recent=er.slice(0,10);
+          try{ localStorage.setItem("exp-recent", JSON.stringify(EXP.recent)); }catch(e){}
+          expRenderRecent();
+        }
+      }catch(e){} }
       // Restore the last-used tab saved server-side. A tab URL overrides this
       // just below; don't re-push history for either.
       if(s.active_tab==="arb") switchTab("arb", {url:false});

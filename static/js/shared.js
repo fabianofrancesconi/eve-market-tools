@@ -143,6 +143,7 @@ function settingsBlob(){
     hide_unaffordable:STATE.hideUnaffordable?'1':'0',
     trade_weight:STATE.tradeWeight,
     active_tab:ACTIVE_TAB,
+    exp_recent:(typeof EXP!=="undefined"&&EXP.recent)?EXP.recent:[],
     arb:{region:$("#arb-region").value,cross_station:$("#arb-cross").value,
       sales_tax:pctToFrac($("#g-tax").value),min_isk:$("#arb-minisk").value,
       max_jumps:$("#arb-maxjumps").value,route_flag:$("#arb-route").value,

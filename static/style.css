@@ -782,10 +782,21 @@
   }
   .notes-editor-hdr {
     padding:10px 14px; border-bottom:1px solid var(--line); flex-shrink:0;
+    display:flex; align-items:center; gap:10px;
   }
   .note-title-ro {
     font-size:16px; font-weight:600; color:var(--fg);
+    flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   }
+  .notes-font-ctl { display:flex; gap:4px; flex-shrink:0; }
+  .notes-font-ctl .nf-btn {
+    background:var(--panel3); border:1px solid var(--line2); color:var(--fg);
+    border-radius:4px; padding:2px 8px; cursor:pointer; line-height:1.3;
+    font-family:inherit;
+  }
+  .notes-font-ctl .nf-btn#note-font-dec { font-size:11px; }
+  .notes-font-ctl .nf-btn#note-font-inc { font-size:15px; }
+  .notes-font-ctl .nf-btn:hover { border-color:var(--cyan2); color:var(--cyan); }
   .notes-editor-body {
     flex:1; padding:14px; overflow-y:auto;
   }

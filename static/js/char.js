@@ -9,8 +9,11 @@ function tickCharRefreshTimer(){
   const el=$("#char-refresh-timer");
   if(!AUTH.loggedIn || !charRefreshDeadline){ el.classList.add("hidden"); return; }
   el.classList.remove("hidden");
-  $("#char-refresh-secs").textContent=fmtCountdownShort(charRefreshDeadline-Date.now());
+  const remaining=charRefreshDeadline-Date.now();
+  $("#char-refresh-secs").textContent=remaining>0?fmtCountdownShort(remaining):"0:00";
+  if(remaining<=0) refreshCharData();
 }
+setInterval(tickCharRefreshTimer, 1000);
 const ROMAN=["0","I","II","III","IV","V"];
 function authEsc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
@@ -115,17 +118,18 @@ function _retryCharDataSoon(){
   charRefreshDeadline=Date.now()+delay; tickCharRefreshTimer();
 }
 let _charDataInFlight=null;
-async function refreshCharData(){
+async function refreshCharData(force){
   if(_charDataInFlight) return _charDataInFlight;
-  _charDataInFlight=_doRefreshCharData().finally(()=>{ _charDataInFlight=null; });
+  _charDataInFlight=_doRefreshCharData(force).finally(()=>{ _charDataInFlight=null; });
   return _charDataInFlight;
 }
-async function _doRefreshCharData(){
+async function _doRefreshCharData(force){
   if(!AUTH.data){
     $("#char-body").innerHTML=`<div class="init-loading"><div class="init-spinner"></div>Loading…</div>`;
   }
   let d;
-  try{ d=await (await fetch("/api/char/data")).json(); }
+  const url=force?"/api/char/data?refresh=1":"/api/char/data";
+  try{ d=await (await fetch(url)).json(); }
   catch(e){ _retryCharDataSoon(); return; }
   if(d.error){ setStatus(authEsc(d.error), true); _retryCharDataSoon(); return; }
   charRetryCount = 0;
@@ -632,6 +636,10 @@ $("#char-chip").onclick=e=>{
   if(e.target.closest("#chip-dd-toggle")||e.target.closest("#char-dropdown")) return;
   switchTab("char");
 };
+
+// Clicking the countdown forces an immediate cache-busting refresh.
+$("#char-refresh-timer").onclick=()=>{ if(AUTH.loggedIn) refreshCharData(true); };
+$("#char-refresh-timer").style.cursor="pointer";
 
 // Re-pull character data (wallet, jobs, skill queue, LP) on EVE's cache cadence
 // so the job timers stay current. The per-second ticker handles the countdown

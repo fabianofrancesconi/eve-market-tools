@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.90.5"
+__version__ = "1.90.6"
 
 import argparse
 import base64
@@ -1202,6 +1202,10 @@ def _fetch_one_char_data_uncached(acct, cid):
 def do_char_data(q):
     """Fetch data for all linked characters and return a combined bundle."""
     acct = require_account()
+    if q.get("refresh"):
+        with acct.lock:
+            for cid in list(acct.characters.keys()):
+                _CHAR_DATA_CACHE.pop(cid, None)
     with acct.lock:
         char_ids = list(acct.characters.keys())
         active_char_id = acct.active_char_id

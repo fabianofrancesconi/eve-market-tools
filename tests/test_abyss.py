@@ -67,3 +67,24 @@ def test_abyss_faction_and_weather_counts():
     # Tiers T0..T6.
     for n in range(7):
         assert f"n:{n}," in src, n
+
+
+def test_abyss_every_faction_has_prob_and_spot():
+    # Each faction needs a 7-element per-tier probability array and a
+    # "spot the room" identification cue.
+    import re
+    src = (_ROOT / "static" / "js" / "abyss.js").read_text()
+    # 7 prob arrays, each with 7 comma-separated numbers.
+    prob_arrays = re.findall(r"prob:\[([0-9,\s]+)\]", src)
+    assert len(prob_arrays) == 7, prob_arrays
+    for arr in prob_arrays:
+        assert len([x for x in arr.split(",") if x.strip() != ""]) == 7, arr
+    assert src.count("spot:") == 7
+
+
+def test_abyss_cites_spawn_sources():
+    # Spawn-likelihood provenance and the corrected fit link must be present.
+    html = lp_web.INDEX_HTML
+    assert "qsna.eu" in html
+    assert "abyssal.space" in html
+    assert "caldarijoans.streamlit.app" in html

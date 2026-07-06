@@ -1107,13 +1107,17 @@
   }
   .aby-faction-row:hover { background:var(--panel3); }
   .aby-faction-row.active { background:var(--panel3); border-color:var(--fc); box-shadow:0 0 0 1px var(--fc) inset; }
-  .aby-faction-glyph { font-size:16px; color:var(--fc); width:18px; text-align:center; }
-  .aby-faction-name { flex:1; font-size:13px; color:var(--fg); font-weight:600; }
-  .aby-faction-weak { font-size:10px; color:var(--dim); }
+  .aby-faction-glyph { font-size:16px; color:var(--fc); width:18px; text-align:center; flex-shrink:0; }
+  .aby-faction-mid { flex:1; min-width:0; }
+  .aby-faction-name { font-size:13px; color:var(--fg); font-weight:600; }
+  .aby-faction-prob { display:flex; align-items:center; gap:6px; margin-top:4px; font-size:10.5px; color:var(--dim); cursor:help; }
+  .aby-faction-weak { font-size:10px; color:var(--dim); flex-shrink:0; }
 
   /* Content */
   .aby-content { padding:20px 24px; overflow-y:auto; }
-  .aby-empty { color:var(--dim); text-align:center; padding:60px 20px; font-size:14px; }
+  .aby-empty { color:var(--dim); max-width:620px; margin:40px auto; padding:0 20px; font-size:14px; line-height:1.7; }
+  .aby-empty p { margin:0 0 16px; }
+  .aby-empty b { color:var(--fg); }
   .aby-faction-hero {
     background:linear-gradient(180deg, var(--panel2) 0%, var(--panel) 100%);
     border:1px solid var(--line2); border-radius:10px; padding:16px 20px; margin-bottom:18px;
@@ -1126,49 +1130,85 @@
   .aby-fh-note { margin-top:10px; font-size:12px; line-height:1.55; color:var(--dim); font-style:italic;
     border-top:1px solid var(--line); padding-top:10px; }
 
-  /* Enemy cards */
-  .aby-card-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:14px; }
+  /* Spot-the-room cue (fast in-game identification) */
+  .aby-spot {
+    margin-top:12px; padding:10px 13px; border-radius:8px;
+    background:color-mix(in srgb, var(--fc) 12%, var(--panel2));
+    border:1px solid color-mix(in srgb, var(--fc) 40%, var(--line2));
+    font-size:13px; line-height:1.55; color:var(--fg);
+  }
+  .aby-spot b { color:var(--fc); }
+
+  /* Legend */
+  .aby-legend {
+    display:flex; flex-wrap:wrap; gap:8px 20px; align-items:center;
+    margin:0 0 16px; padding:11px 15px; font-size:12px; color:var(--dim);
+    background:var(--panel2); border:1px solid var(--line2); border-radius:8px;
+  }
+  .aby-legend-item { display:inline-flex; align-items:center; gap:7px; }
+  .aby-legend-item b { color:var(--fg); font-weight:700; }
+  .aby-legend-tag { font-size:9px; font-weight:800; letter-spacing:.5px; color:#fff; padding:2px 8px; border-radius:3px; }
+
+  /* Enemy cards — larger, spelled out */
+  .aby-card-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:18px; }
   .aby-card {
     position:relative; background:var(--panel); border:1px solid var(--line2);
-    border-top:3px solid var(--fc); border-radius:9px; padding:14px 15px 13px; overflow:hidden;
+    border-top:3px solid var(--fc); border-radius:11px; padding:20px 22px 18px; overflow:hidden;
     transition:transform .1s, box-shadow .12s;
   }
-  .aby-card:hover { transform:translateY(-2px); box-shadow:0 10px 26px -8px rgba(0,0,0,.6); }
-  .aby-card-hl { box-shadow:0 0 0 2px var(--cyan), 0 10px 26px -8px rgba(0,0,0,.7); }
+  .aby-card:hover { transform:translateY(-2px); box-shadow:0 12px 30px -8px rgba(0,0,0,.6); }
+  .aby-card-hl { box-shadow:0 0 0 2px var(--cyan), 0 12px 30px -8px rgba(0,0,0,.7); }
   .aby-ribbon {
-    position:absolute; top:9px; right:-30px; transform:rotate(38deg);
-    padding:2px 34px; font-size:9px; font-weight:800; letter-spacing:.6px; color:#fff;
+    position:absolute; top:14px; right:-34px; transform:rotate(38deg);
+    padding:3px 40px; font-size:10px; font-weight:800; letter-spacing:.6px; color:#fff;
   }
   .aby-prio-high { background:var(--red); }
   .aby-prio-tackle { background:var(--gold); color:#08121a; }
-  .aby-card-top { display:flex; align-items:center; gap:11px; margin-bottom:12px; }
-  .aby-hull { width:34px; height:34px; flex-shrink:0; filter:drop-shadow(0 0 6px rgba(0,0,0,.4)); }
+  .aby-card-top { display:flex; align-items:center; gap:14px; margin-bottom:15px; }
+  .aby-hull { width:44px; height:44px; flex-shrink:0; filter:drop-shadow(0 0 6px rgba(0,0,0,.4)); }
   .aby-card-id { min-width:0; }
-  .aby-card-name { font-size:14.5px; font-weight:700; color:var(--fg); line-height:1.2; }
-  .aby-card-cls { font-size:10.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--dim); margin-top:2px; }
+  .aby-card-name { font-size:18px; font-weight:700; color:var(--fg); line-height:1.2; }
+  .aby-card-cls { font-size:11.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--dim); margin-top:3px; }
   .aby-gate { color:var(--yellow); font-weight:700; }
-  .aby-card-stat { display:flex; align-items:center; gap:8px; margin-top:7px; }
-  .aby-stat-k { font-size:9.5px; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); font-weight:700; width:52px; flex-shrink:0; }
-  .aby-stat-v { display:flex; align-items:center; gap:5px; flex-wrap:wrap; font-size:12px; color:var(--fg); }
-  .aby-ewar-row { gap:4px; }
+  .aby-card-stat { display:flex; align-items:flex-start; gap:10px; margin-top:10px; }
+  .aby-stat-k { font-size:10.5px; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); font-weight:700; width:66px; flex-shrink:0; padding-top:3px; }
+  .aby-stat-v { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:13px; color:var(--fg); }
+  .aby-ewar-row { gap:6px; }
   .aby-card-tip {
-    margin-top:11px; padding-top:10px; border-top:1px solid var(--line);
-    font-size:12px; line-height:1.5; color:var(--fg);
+    margin-top:14px; padding-top:12px; border-top:1px solid var(--line);
+    font-size:13px; line-height:1.55; color:var(--fg);
   }
-  .aby-dim { color:var(--dim); font-size:11.5px; font-style:italic; }
+  .aby-dim { color:var(--dim); font-size:12.5px; font-style:italic; }
 
   /* Damage pips */
   .aby-pip {
     display:inline-flex; align-items:center; justify-content:center;
-    background:color-mix(in srgb, var(--pip) 22%, transparent);
+    background:color-mix(in srgb, var(--pip) 20%, transparent);
     color:var(--pip); border:1px solid var(--pip); border-radius:4px;
-    font-size:10px; font-weight:700; padding:1px 6px; line-height:1.4;
+    font-size:11px; font-weight:700; padding:2px 9px; line-height:1.5;
   }
-  .aby-pip-lg { font-size:11.5px; padding:2px 8px; box-shadow:0 0 8px -2px var(--pip); }
+  .aby-pip-lg { font-size:12.5px; padding:3px 11px; box-shadow:0 0 8px -2px var(--pip); }
   /* EWAR chips */
   .aby-ewar {
-    background:var(--panel3); border:1px solid var(--line2); color:var(--dim);
-    border-radius:4px; font-size:9.5px; font-weight:700; letter-spacing:.4px;
-    padding:2px 6px; cursor:default;
+    background:var(--panel3); border:1px solid var(--line2); color:var(--fg);
+    border-radius:4px; font-size:11px; font-weight:600; letter-spacing:.2px;
+    padding:2px 9px; cursor:default;
   }
   .aby-ewar:hover { color:var(--cyan); border-color:var(--cyan2); }
+
+  /* Spawn-probability badge + sources */
+  .aby-prob {
+    display:inline-flex; align-items:center; gap:5px; cursor:help;
+    font-size:11px; font-weight:700; padding:2px 9px; border-radius:20px;
+    border:1px solid var(--line2); background:var(--panel3);
+  }
+  .aby-prob-bar { width:34px; height:5px; border-radius:3px; background:var(--line2); overflow:hidden; }
+  .aby-prob-fill { height:100%; background:var(--fc); }
+  .aby-fh-prob { margin-top:12px; display:flex; align-items:center; gap:9px; font-size:12.5px; color:var(--dim); flex-wrap:wrap; }
+  .aby-sources {
+    margin:28px 0 8px; padding-top:14px; border-top:1px solid var(--line);
+    font-size:11px; line-height:1.7; color:var(--dim2);
+  }
+  .aby-sources b { color:var(--dim); font-weight:700; }
+  .aby-sources a { color:var(--dim); }
+  .aby-sources a:hover { color:var(--cyan); }

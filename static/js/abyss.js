@@ -19,13 +19,13 @@ const ABY_DMG = {
 
 // ── EWAR module chips ────────────────────────────────────────────────────────
 const ABY_EWAR = {
-  web:   {label:"WEB",     tip:"Stasis Webifier — slows you, kills your kite"},
-  scram: {label:"SCRAM",   tip:"Warp Scrambler — stops you warping out / shuts off MWD"},
-  neut:  {label:"NEUT",    tip:"Energy Neutralizer — drains your capacitor"},
-  damp:  {label:"DAMP",    tip:"Sensor Dampener — cuts your lock range / scan res"},
-  paint: {label:"PAINT",   tip:"Target Painter — bloats your signature, more incoming damage"},
-  td:    {label:"TRACK-D", tip:"Tracking / Guidance Disruptor — wrecks your application"},
-  rr:    {label:"REP",     tip:"Remote repair — heals the rest of the room"},
+  web:   {label:"Stasis Web",      tip:"Stasis Webifier — slows you, kills your kite"},
+  scram: {label:"Warp Scram",      tip:"Warp Scrambler — stops you warping out / shuts off your MWD"},
+  neut:  {label:"Energy Neut",     tip:"Energy Neutralizer — drains your capacitor"},
+  damp:  {label:"Sensor Damp",     tip:"Sensor Dampener — cuts your lock range / scan resolution"},
+  paint: {label:"Target Paint",    tip:"Target Painter — bloats your signature, so you take more damage"},
+  td:    {label:"Tracking Disrupt",tip:"Tracking / Guidance Disruptor — wrecks your weapon application"},
+  rr:    {label:"Remote Reps",     tip:"Remote repair — heals the rest of the room"},
 };
 
 // ── Priority ribbons ─────────────────────────────────────────────────────────
@@ -87,6 +87,8 @@ const ABY_WEATHER = [
 const ABY_FACTIONS = [
   {
     key:"triglavian", name:"Triglavian Collective", glyph:"◈", color:"#e0863a",
+    prob:[25,23,21,20,20,20,20],
+    spot:"Rust-red, angular hulls named Damavik, Kikimora, Vedmak, Drekavac, Leshak. Their beams glow brighter the longer they keep firing on you.",
     deals:["therm","exp"], weak:"exp",
     strategy:"Deal Explosive (Thermal second). Disintegrators have no falloff — kite past ~22 km to switch them off and reset their ramping damage; orbit close on slow Leshaks. Kill remote-rep support first.",
     note:"EWAR is set by the ship's prefix: Tangling=web · Anchoring=scram · Starving=neut · Renewing=remote-rep · Blinding=damp · Ghosting=tracking-disrupt · Harrowing/Shining=painter.",
@@ -107,6 +109,8 @@ const ABY_FACTIONS = [
   },
   {
     key:"roguedrones", name:"Rogue Drones", glyph:"⬡", color:"#4caf76",
+    prob:[38,32,28,25,25,26,26],
+    spot:"Insectoid drone hulls — 'Tessella' frigates, the '…grip' battlecruisers, and the huge Abyssal Overmind. Often a Deviant Automata Suppressor structure floating nearby.",
     deals:["therm","kin"], weak:"em",
     strategy:"Deal EM (Thermal second). Kill the remote-rep weaver drones first. You can lure pirate drones into a Deviant Automata Suppressor structure to help kill them.",
     note:"The 'Grip' battlecruisers are named for the damage they deal: Sparkgrip=EM · Strikegrip=Kinetic · Embergrip=Thermal · Blastgrip=Explosive.",
@@ -129,6 +133,8 @@ const ABY_FACTIONS = [
   },
   {
     key:"drifters", name:"Drifters & Seekers", glyph:"✧", color:"#8a7fd0",
+    prob:[1,6,9,11,12,13,13],
+    spot:"Big black Jove-style ships named '…Tyrannos' (Karybdis, Scylla) and Ephialtes, with small Seeker drones. Heavily omni-tanked. Barely appear below T1.",
     deals:["em","therm","kin","exp"], weak:null,
     strategy:"Omni damage incoming — apply your single strongest damage type. Drifters carry heavy (~50%) omni resists; Seekers are lightly tanked (~10%). The Karybdis boss kites away with poor tracking — chase it and orbit close.",
     note:"Drifter role ships by suffix: Dissipator=neut · Entangler=web · Spearfisher=scram · Illuminator=painter · Obfuscator=damp · Confuser=tracking-disrupt.",
@@ -145,6 +151,8 @@ const ABY_FACTIONS = [
   },
   {
     key:"sleepers", name:"Sleepers", glyph:"◉", color:"#29b6f6",
+    prob:[14,11,9,8,9,9,9],
+    spot:"Every ship is prefixed 'Lucid …' (Aegis, Warden, Firewatcher, Preserver). Sleeper-drone look, omni damage.",
     deals:["em","therm","kin","exp"], weak:null,
     strategy:"Omni damage — use your strongest type. Kill the Preserver logi first (it reps ~3× a normal logi). Clear web/neut support before the DPS ships.",
     note:"'Lucid' prefix ships. Preserver = logistics; Warden = web; Firewatcher = neut.",
@@ -161,6 +169,8 @@ const ABY_FACTIONS = [
   },
   {
     key:"sansha", name:"Sansha's Nation", glyph:"✦", color:"#e05555",
+    prob:[6,5,5,5,4,4,4],
+    spot:"Every ship is prefixed 'Devoted …' (Hunter, Trapper, Knight). Dark Sansha hulls, slow, long-range lasers. Rare overall.",
     deals:["em","therm"], weak:"em",
     strategy:"Deal EM (Thermal second). Sansha are slow and fight at long range — control the distance. Kill the Devoted Knight first. Hardest room under Dark weather (their range isn't hurt by it).",
     note:"'Devoted' prefix. The Devoted Knight is the exception to the EM weakness — it's weak to EM then Explosive, and strong vs Thermal/Kinetic.",
@@ -175,6 +185,8 @@ const ABY_FACTIONS = [
   },
   {
     key:"angel", name:"Angel Cartel", glyph:"⟁", color:"#f0c040",
+    prob:[8,6,5,5,5,5,5],
+    spot:"Real Angel hulls — Dramiel, Cynabal, Ixion — plus 'Lucifer …' support ships. Very fast, red/brown hulls. Rare overall.",
     deals:["exp","em"], weak:"exp",
     strategy:"Deal Explosive (Kinetic second). Angels are FAST and web you — brawl at close range, don't try to kite. Kill the neut (Fury) and logi (Burst) ships first; hit normal Cynabals before Elite ones.",
     note:"'Lucifer' prefix role ships plus real Angel hulls (Dramiel, Cynabal, Ixion).",
@@ -193,6 +205,8 @@ const ABY_FACTIONS = [
   },
   {
     key:"edencom", name:"CONCORD / EDENCOM", glyph:"✚", color:"#4fc3f7",
+    prob:[9,7,6,5,5,5,5],
+    spot:"CONCORD hulls (Marshal, Enforcer, Pacifier) firing missiles, or EDENCOM (Thunderchild, Skybreaker, Stormbringer) firing blue arcing Vorton weapons. Rare overall.",
     deals:["therm","exp","em","kin"], weak:null,
     strategy:"CONCORD hulls (Marshal/Enforcer/Pacifier): flat resists, Therm/Exp missiles — keep velocity/transversal high to spoil application. EDENCOM hulls (Thunderchild/Skybreaker/Stormbringer): weak to Thermal & EM, fire chaining EM/Kin Vorton arcs. Both bring heavy neuts.",
     note:"Two sub-factions on one filament type. CONCORD = flat resists (use any type); EDENCOM = weak to Thermal, then EM.",
@@ -228,9 +242,9 @@ function abySave(){ try { localStorage.setItem("aby-state", JSON.stringify(ABY))
 function abyEsc(s){ return s==null?"":String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 
 // ── Small render helpers ───────────────────────────────────────────────────────
-function abyDmgPip(type, {big=false}={}){
+function abyDmgPip(type, {big=false, short=false}={}){
   const d = ABY_DMG[type]; if(!d) return "";
-  return `<span class="aby-pip${big?" aby-pip-lg":""}" style="--pip:${d.color}" data-tip="${abyEsc(d.label)} damage">${abyEsc(d.short)}</span>`;
+  return `<span class="aby-pip${big?" aby-pip-lg":""}" style="--pip:${d.color}" data-tip="${abyEsc(d.label)} damage">${abyEsc(short?d.short:d.label)}</span>`;
 }
 function abyEwarChip(key){
   const e = ABY_EWAR[key]; if(!e) return "";
@@ -239,6 +253,19 @@ function abyEwarChip(key){
 function abyClassGlyphSvg(cls, color){
   const path = ABY_CLASS_GLYPH[cls] || ABY_CLASS_GLYPH["Cruiser"];
   return `<svg viewBox="0 0 24 24" class="aby-hull" aria-hidden="true"><path d="${path}" fill="${color}"/></svg>`;
+}
+
+// Spawn likelihood (per TIER, not weather — from logged-run telemetry).
+function abyProbLabel(pct){ return pct>=20?"Very common":pct>=10?"Common":pct>=5?"Uncommon":"Rare"; }
+function abyProbTip(f){
+  const t = ABY.tier;
+  return `Best-effort estimate: ~${f.prob[t]}% of logged T${t} rooms are ${f.name}. `
+    + `Source: Abyssal.Space telemetry via qsna.eu. Spawns depend on the tier, not the weather.`;
+}
+function abyProbBar(f){
+  const pct = f.prob[ABY.tier];
+  const w = Math.min(100, pct*2.6);
+  return `<span class="aby-prob-bar"><span class="aby-prob-fill" style="width:${w}%"></span></span>`;
 }
 
 // ── Tier + weather selectors ────────────────────────────────────────────────────
@@ -250,7 +277,7 @@ function abyRenderTiers(){
        <span class="aby-tier-n">T${t.n}</span><span class="aby-tier-name">${abyEsc(t.name)}</span></button>`
   ).join("");
   wrap.querySelectorAll(".aby-tier-btn").forEach(b=>{
-    b.onclick = ()=>{ ABY.tier = +b.dataset.tier; abySave(); abyRenderTiers(); abyRenderConditions(); abyRenderCards(); };
+    b.onclick = ()=>{ ABY.tier = +b.dataset.tier; abySave(); abyRenderTiers(); abyRenderConditions(); abyRenderFactionList(); abyRenderCards(); };
   });
 }
 function abyRenderWeather(){
@@ -304,20 +331,26 @@ function abyRenderConditions(){
       <span data-tip="After 20 minutes your ship AND pod are destroyed on the spot.">⏱ 20-min hard timer</span>
       <span data-tip="1 filament = 1 cruiser · 2 filaments = up to 2 destroyers · 3 filaments = up to 3 frigates.">🚀 1 cruiser / 2 destroyers / 3 frigates</span>
       <span data-tip="Strategic (T3) cruisers cannot enter.">⛔ No T3 cruisers</span>
-      <a href="https://caldarijones.tech/" target="_blank" rel="noopener" class="aby-fit-link" data-tip="Ship fits live on Caldari Jones — this guide focuses on the enemies.">Need a fit? → Caldari Jones ↗</a>
+      <a href="https://caldarijoans.streamlit.app/" target="_blank" rel="noopener" class="aby-fit-link" data-tip="Ship fits live on Caldari Joans — this guide focuses on the enemies.">Need a fit? → Caldari Joans ↗</a>
     </div>`;
 }
 
 // ── Faction sidebar + search ────────────────────────────────────────────────────
 function abyRenderFactionList(){
   const list = $("#aby-faction-list");
-  list.innerHTML = ABY_FACTIONS.map(f=>
-    `<div class="aby-faction-row${f.key===ABY.faction?" active":""}" data-f="${f.key}" style="--fc:${f.color}">
+  list.innerHTML = ABY_FACTIONS.map(f=>{
+    const pct = f.prob[ABY.tier];
+    return `<div class="aby-faction-row${f.key===ABY.faction?" active":""}" data-f="${f.key}" style="--fc:${f.color}">
        <span class="aby-faction-glyph">${abyEsc(f.glyph)}</span>
-       <span class="aby-faction-name">${abyEsc(f.name)}</span>
-       <span class="aby-faction-weak">${f.weak?abyDmgPip(f.weak):"omni"}</span>
-     </div>`
-  ).join("");
+       <div class="aby-faction-mid">
+         <div class="aby-faction-name">${abyEsc(f.name)}</div>
+         <div class="aby-faction-prob" data-tip="${abyEsc(abyProbTip(f))}">
+           ${abyProbBar(f)}<span>~${pct}% ${abyProbLabel(pct)}</span>
+         </div>
+       </div>
+       <span class="aby-faction-weak">${f.weak?abyDmgPip(f.weak,{short:true}):"omni"}</span>
+     </div>`;
+  }).join("");
   list.querySelectorAll(".aby-faction-row").forEach(el=>{
     el.onclick = ()=> abySelectFaction(el.dataset.f);
   });
@@ -383,10 +416,16 @@ function abyRenderCards(highlight){
   // Faction header
   const facWeak = f.weak ? `Weak to ${abyDmgPip(f.weak,{big:true})}` : `Omni-resist — use your strongest type`;
   const facDeals = f.deals.length ? f.deals.map(t=>abyDmgPip(t)).join("") : "";
+  const pct = f.prob[ABY.tier];
   $("#aby-faction-hero").innerHTML = `
     <div class="aby-fh-title" style="color:${f.color}"><span class="aby-fh-glyph">${abyEsc(f.glyph)}</span>${abyEsc(f.name)}</div>
     <div class="aby-fh-line"><span class="aby-stat-k">They deal</span> <span class="aby-stat-v">${facDeals||'<span class="aby-dim">mixed</span>'}</span>
       <span class="aby-fh-sep">·</span> <span class="aby-stat-v">${facWeak}</span></div>
+    ${f.spot?`<div class="aby-spot"><b>Spot the room:</b> ${abyEsc(f.spot)}</div>`:""}
+    <div class="aby-fh-prob" data-tip="${abyEsc(abyProbTip(f))}">
+      <span class="aby-stat-k">Likelihood</span> ${abyProbBar(f)}
+      <span>~${pct}% of T${ABY.tier} rooms · ${abyProbLabel(pct)}</span>
+      <span class="aby-dim">— varies by tier, not weather</span></div>
     <div class="aby-fh-strategy">${abyEsc(f.strategy)}</div>
     ${f.note?`<div class="aby-fh-note">${abyEsc(f.note)}</div>`:""}`;
   // Cards, small→large by class

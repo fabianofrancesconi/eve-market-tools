@@ -311,7 +311,19 @@ class TestAuthStatus:
         assert st["needs_login"] is False
 
 
-class TestCookiesAndLogout:
+class TestStaticCacheBusting:
+    def test_assets_carry_version_query(self):
+        # Static assets are served Cache-Control: immutable, so their URLs must
+        # change each release or returning users keep stale JS/CSS after a
+        # deploy. The version query on every /static/ ref is what busts it.
+        html = lp_web.INDEX_HTML
+        v = lp_web.__version__
+        for asset in ("style.css", "shared.js", "boot.js", "char.js"):
+            assert f"{asset}?v={v}" in html, asset
+        # No un-versioned /static/ asset refs slipped through.
+        import re
+        bare = re.findall(r'/static/[^"?]+\.(?:css|js)"', html)
+        assert bare == [], bare
     def test_expire_cookie_header_clears(self, pg):
         h = lp_web._expire_cookie_header()
         assert h.startswith("emt_sid=;")

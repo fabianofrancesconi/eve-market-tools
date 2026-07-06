@@ -952,7 +952,16 @@
   .exp-hero-value .exp-loot-tier { font-size:14px; padding:3px 14px; }
 
   /* ── Login landing (unauthenticated, multi-user deploy) ─────────────── */
-  /* When shown, boot.js adds .landing-active to <body> to hide app chrome. */
+  /* .pre-auth hides the app chrome from first paint until boot.js resolves
+     auth — otherwise the shell flashes on screen before the landing appears.
+     boot.js then either reveals the app (removes .pre-auth) or shows the
+     landing (.landing-active keeps the chrome hidden). */
+  body.pre-auth > header,
+  body.pre-auth > .ctrlbar,
+  body.pre-auth > #global-costs,
+  body.pre-auth > #statusbar,
+  body.pre-auth > main,
+  body.pre-auth > .col-picker,
   body.landing-active > header,
   body.landing-active > .ctrlbar,
   body.landing-active > #global-costs,

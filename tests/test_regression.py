@@ -1292,7 +1292,7 @@ class TestCharDataOrdersIsolation:
         monkeypatch.setattr(lp_web.sso_core, "fetch_skills",
                             lambda *a, **k: {"total_sp": 5_000_000, "skills": []})
         monkeypatch.setattr(lp_web.sso_core, "fetch_skillqueue", lambda *a, **k: [])
-        monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points", lambda *a, **k: ([], {}))
         monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: [])
 
         def _raise_403(*a, **k):
@@ -1312,7 +1312,7 @@ class TestCharDataOrdersIsolation:
         monkeypatch.setattr(lp_web.sso_core, "fetch_skills",
                             lambda *a, **k: {"total_sp": 0, "skills": []})
         monkeypatch.setattr(lp_web.sso_core, "fetch_skillqueue", lambda *a, **k: [])
-        monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points", lambda *a, **k: ([], {}))
         monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: [])
         monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: [])
 

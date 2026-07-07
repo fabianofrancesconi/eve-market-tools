@@ -13,7 +13,7 @@ function tickCharRefreshTimer(){
   $("#char-refresh-secs").textContent=remaining>0?fmtCountdownShort(remaining):"0:00";
   if(remaining<=0 && !_charDataInFlight){
     charRefreshDeadline=0;
-    refreshCharData(true);
+    refreshCharData();   // fallback poll; the SSE stream drives live updates
   }
 }
 setInterval(tickCharRefreshTimer, 1000);
@@ -81,10 +81,37 @@ async function checkAuth(){
   renderAuthChip();
   if(AUTH.loggedIn){
     refreshCharData();
+    openCharStream();
     if(location.pathname==="/character" || location.pathname==="/char") switchTab("char", {url:false});
     if(!NOTES.loaded || !NOTES.items.length) loadNotes();
+  } else {
+    closeCharStream();
   }
   return st;
+}
+
+// ── Live sync: the backend pushes a "changed" event on /api/char/stream the
+// moment it detects new character data (wallet, LP, orders, jobs), so an open
+// browser updates without waiting for the fallback poll. EventSource reconnects
+// on its own, so a dropped stream self-heals; the 5-min countdown covers any
+// gap. Comments (heartbeats) don't fire onmessage, so only real pushes refresh.
+let _charStream=null;
+function openCharStream(){
+  if(_charStream || !AUTH.loggedIn || typeof EventSource==="undefined") return;
+  try{
+    const es=new EventSource("/api/char/stream");
+    _charStream=es;
+    es.onmessage=(ev)=>{
+      let m; try{ m=JSON.parse(ev.data); }catch(_){ return; }
+      // "hello" fires on (re)connect — pull once to catch any change missed while
+      // disconnected; "changed" is a live nudge. The in-flight guard dedupes.
+      if(m && (m.type==="changed" || m.type==="hello")) refreshCharData();
+    };
+    es.onerror=()=>{ /* EventSource auto-reconnects; nothing to do */ };
+  }catch(_){ _charStream=null; }
+}
+function closeCharStream(){
+  if(_charStream){ try{ _charStream.close(); }catch(_){} _charStream=null; }
 }
 
 async function doLogin(){
@@ -149,8 +176,11 @@ async function _doRefreshCharData(force){
     $("#g-broker").value=fee.toFixed(2);
   }
   saveLS(); recalcIndProfits();
-  const refreshMs=d.next_refresh_in!=null?d.next_refresh_in*1000:CHAR_REFRESH_MS;
-  charRefreshDeadline=Date.now()+refreshMs; tickCharRefreshTimer();
+  // The SSE stream (/api/char/stream) pushes updates the instant the backend
+  // detects new data; this countdown is only the fallback poll cadence for when
+  // the stream is unavailable or a push was missed, so keep it at the 5-min
+  // backend refresh interval rather than the short cache-TTL window.
+  charRefreshDeadline=Date.now()+CHAR_REFRESH_MS; tickCharRefreshTimer();
   const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge();
   // Re-run the LP scan when the budget changed OR when this is the first char
@@ -166,6 +196,15 @@ async function _doRefreshCharData(force){
 let _charTabIdx=0;
 function _evPortrait(cid,sz){ return `https://images.evetech.net/characters/${cid}/portrait?size=${sz||64}`; }
 function _fmtAgo(ts){ const s=Math.floor((Date.now()/1000)-ts); if(s<60) return "just now"; if(s<3600) return Math.floor(s/60)+"m ago"; if(s<86400) return Math.floor(s/3600)+"h ago"; return Math.floor(s/86400)+"d ago"; }
+// EVE only publishes loyalty points to ESI about once an hour, so the LP value
+// can look "stuck" between updates even though sync is working. Format ESI's
+// Last-Modified into a short local clock time so the number is visibly "as of X".
+function _fmtLpAsOf(httpDate){
+  if(!httpDate) return "";
+  const d=new Date(httpDate);
+  if(isNaN(d)) return "";
+  return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+}
 
 function _renderCharPanel(c){
   const cJobs=c.jobs||[], cQueue=c.skillqueue||[], cLp=c.loyalty||[], cOrders=c.market_orders||[];
@@ -218,7 +257,10 @@ function _renderCharPanel(c){
   h+=`</div></section>`;
 
   // Loyalty points
-  h+=`<section class="char-card"><div class="char-card-header"><h3>Loyalty points</h3></div><div class="char-card-body">`;
+  const lpAsOf=_fmtLpAsOf(c.loyalty_last_modified);
+  h+=`<section class="char-card"><div class="char-card-header"><h3>Loyalty points</h3>`
+    +(lpAsOf?`<span class="char-card-note" title="EVE publishes loyalty points to ESI roughly once an hour.">as of ${lpAsOf}</span>`:"")
+    +`</div><div class="char-card-body">`;
   if(cLp.length){
     h+=`<div class="char-card-scroll"><table class="mini"><thead><tr><th>Corporation</th><th style="text-align:right">LP</th></tr></thead><tbody>`;
     for(const l of cLp) h+=`<tr><td>${authEsc(l.corp_name)}</td><td style="text-align:right">${(l.loyalty_points||0).toLocaleString()}</td></tr>`;
@@ -604,8 +646,11 @@ function updateMyLpBadge(){
   if(AUTH.loggedIn){
     inp.value=m?m.loyalty_points||0:0;
     inp.readOnly=true; inp.classList.add("locked");
-    inp.title="Read from your character's loyalty points.";
-    badge.textContent=m?"🔒 from character":"🔒 0 LP with this corp";
+    const asOf=_fmtLpAsOf(AUTH.data&&AUTH.data.loyalty_last_modified);
+    inp.title="Read from your character's loyalty points."
+      +(asOf?` EVE updates LP roughly hourly; as of ${asOf}.`:"");
+    badge.textContent=m?(asOf?`🔒 from character · as of ${asOf}`:"🔒 from character")
+                       :"🔒 0 LP with this corp";
     badge.classList.remove("hidden");
   } else {
     inp.readOnly=false; inp.classList.remove("locked");
@@ -645,13 +690,12 @@ $("#char-chip").onclick=e=>{
 $("#char-refresh-timer").onclick=()=>{ if(AUTH.loggedIn) refreshCharData(true); };
 $("#char-refresh-timer").style.cursor="pointer";
 
-// Re-pull character data (wallet, jobs, skill queue, LP) on EVE's cache cadence
-// so the job timers stay current. The per-second ticker handles the countdown
-// itself; this just refreshes the underlying job list every 5 minutes.
-setInterval(()=>{ if(AUTH.loggedIn) refreshCharData(); }, CHAR_REFRESH_MS);
+// Live updates arrive via the SSE stream; the per-second countdown ticker
+// (tickCharRefreshTimer) fires a fallback re-pull when its 5-min deadline
+// elapses with no push, so no separate polling interval is needed here.
 
 // When the tab returns from background (sleep, alt-tab, phone lock), the
-// setInterval may have drifted far past the deadline. Refresh immediately.
+// countdown may have drifted far past the deadline. Refresh immediately.
 document.addEventListener("visibilitychange", ()=>{
   if(document.hidden || !AUTH.loggedIn) return;
   if(Date.now() >= charRefreshDeadline) refreshCharData();

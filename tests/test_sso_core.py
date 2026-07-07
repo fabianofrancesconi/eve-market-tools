@@ -188,8 +188,12 @@ def test_fetch_market_orders_url_and_headers():
 
 def test_fetch_loyalty_points_authorized():
     sess = _get_session([{"corporation_id": 1000035, "loyalty_points": 50000}])
-    out = sso_core.fetch_loyalty_points("TOKEN", 42, sess)
-    assert out[0]["loyalty_points"] == 50000
+    sess.get.return_value.headers = {"Last-Modified": "Tue, 07 Jul 2026 10:00:00 GMT",
+                                     "Expires": "Tue, 07 Jul 2026 11:00:00 GMT"}
+    points, meta = sso_core.fetch_loyalty_points("TOKEN", 42, sess)
+    assert points[0]["loyalty_points"] == 50000
+    assert meta["last_modified"] == "Tue, 07 Jul 2026 10:00:00 GMT"
+    assert meta["expires"] == "Tue, 07 Jul 2026 11:00:00 GMT"
     assert sess.get.call_args[1]["headers"]["Authorization"] == "Bearer TOKEN"
     assert sess.get.call_args[0][0].endswith("/characters/42/loyalty/points/")
 

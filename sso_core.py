@@ -198,11 +198,16 @@ def fetch_wallet(token, character_id, session):
 
 
 def fetch_loyalty_points(token, character_id, session):
-    """[{corporation_id, loyalty_points}, …]."""
+    """([{corporation_id, loyalty_points}, …], meta) where meta carries ESI's
+    cache headers — {last_modified, expires}. ESI caches loyalty points for ~1h,
+    so the value only changes hourly no matter how often we poll; surfacing
+    Last-Modified/Expires lets the UI show an honest "LP as of …" timestamp."""
     r = session.get(f"{ESI}/characters/{character_id}/loyalty/points/",
                     headers=_auth_headers(token), timeout=30)
     r.raise_for_status()
-    return r.json()
+    meta = {"last_modified": r.headers.get("Last-Modified"),
+            "expires": r.headers.get("Expires")}
+    return r.json(), meta
 
 
 def fetch_market_orders(token, character_id, session):

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.90.8"
+__version__ = "1.91.0"
 
 import argparse
 import base64
@@ -507,6 +507,14 @@ def _startup_restore():
     acct = _hydrate_account(None, saved)
     _LEGACY_ACCOUNT.characters = acct.characters
     _LEGACY_ACCOUNT.active_char_id = acct.active_char_id
+    if _LEGACY_ACCOUNT.characters:
+        # Register the implicit account so the 5-min background refresh loop
+        # (which iterates _ACCOUNTS) keeps its ESI data — and wallet history —
+        # current after a restart, not just after an in-session login.
+        _LEGACY_ACCOUNT.account_id = (_LEGACY_ACCOUNT.active_char_id
+                                      or next(iter(_LEGACY_ACCOUNT.characters)))
+        with _REGISTRY_LOCK:
+            _ACCOUNTS[_LEGACY_ACCOUNT.account_id] = _LEGACY_ACCOUNT
     if saved.get("version") != 2 and _LEGACY_ACCOUNT.characters:
         _persist_account(_LEGACY_ACCOUNT)  # upgrade v1 file to v2
 
@@ -724,6 +732,7 @@ def do_auth_switch(q):
 
 def _forget_account(acct):
     """Drop an account and all its sessions from the caches + store."""
+    _CHAR_PUBSUB.forget(id(acct))
     with _REGISTRY_LOCK:
         _ACCOUNTS.pop(acct.account_id, None)
         for sid in [s for s, a in _SESSIONS.items() if a is acct]:
@@ -1026,17 +1035,89 @@ def _dismiss_order_event(acct, event_id):
 
 _CHAR_DATA_CACHE = {}  # {cid: (timestamp, result)}
 _CHAR_DATA_TTL = 120   # seconds
+_CHAR_DATA_SIG = {}    # {cid: signature of the last-seen character-owned state}
+
+
+class _CharPubSub:
+    """Per-account change notifier backing the /api/char/stream SSE push.
+
+    Every account carries a monotonic version integer. Whenever a freshly-fetched
+    character bundle differs from the last one we saw (wallet / LP / SP / skill
+    queue / jobs / own orders), we bump that account's version and wake every
+    waiter on the shared Condition. SSE handlers block in ``wait_for_change`` and,
+    on a bump, nudge the browser to re-pull /api/char/data. Keyed by the Account
+    object's identity so it works in both legacy (single implicit account) and
+    multi-user mode without depending on account_id being populated."""
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._versions = {}   # id(acct) -> int
+
+    def version(self, key):
+        with self._cond:
+            return self._versions.get(key, 0)
+
+    def bump(self, key):
+        with self._cond:
+            self._versions[key] = self._versions.get(key, 0) + 1
+            self._cond.notify_all()
+
+    def forget(self, key):
+        with self._cond:
+            self._versions.pop(key, None)
+
+    def wait_for_change(self, key, last_version, timeout):
+        """Block until this key's version differs from ``last_version`` or the
+        timeout elapses. Returns the current version either way."""
+        deadline = time.time() + timeout
+        with self._cond:
+            while True:
+                cur = self._versions.get(key, 0)
+                if cur != last_version:
+                    return cur
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return cur
+                self._cond.wait(remaining)
+
+
+_CHAR_PUBSUB = _CharPubSub()
+
+
+def _char_data_signature(result):
+    """Stable signature of the character-*owned* state that should nudge the UI.
+
+    Deliberately excludes market prices / order ranks so ordinary market movement
+    (which changes on every fetch) doesn't spam pushes — only the capsuleer's own
+    wallet, loyalty, SP, skill queue, industry jobs and open-order state count."""
+    loyalty = sorted((l.get("corp_id"), l.get("loyalty_points"))
+                     for l in (result.get("loyalty") or []))
+    queue = [(q.get("skill_id"), q.get("finished_level"), q.get("finish_date"))
+             for q in (result.get("skillqueue") or [])]
+    jobs = sorted((j.get("job_id"), j.get("status"), j.get("end"))
+                  for j in (result.get("jobs") or []))
+    orders = sorted((o.get("order_id"), o.get("price"), o.get("volume_remain"))
+                    for o in (result.get("market_orders") or []))
+    return json.dumps([result.get("wallet"), result.get("total_sp"),
+                       result.get("unallocated_sp"), loyalty, queue, jobs, orders],
+                      sort_keys=True, default=str)
 
 
 def _fetch_one_char_data(acct, cid):
     """Fetch all ESI data for a single character. Returns a dict bundle.
-    Results are cached in-memory for _CHAR_DATA_TTL seconds."""
+    Results are cached in-memory for _CHAR_DATA_TTL seconds. When the fetched
+    state differs from what we last saw, the account's SSE version is bumped so
+    open browsers get nudged to re-pull."""
     cached = _CHAR_DATA_CACHE.get(cid)
     if cached and (time.time() - cached[0]) < _CHAR_DATA_TTL:
         return cached[1]
     result = _fetch_one_char_data_uncached(acct, cid)
     _CHAR_DATA_CACHE[cid] = (time.time(), result)
     _record_wallet_snapshot(acct, cid, result.get("wallet"))
+    sig = _char_data_signature(result)
+    if _CHAR_DATA_SIG.get(cid) != sig:
+        _CHAR_DATA_SIG[cid] = sig
+        _CHAR_PUBSUB.bump(id(acct))
     return result
 
 
@@ -1050,7 +1131,7 @@ def _fetch_one_char_data_uncached(acct, cid):
     wallet = sso_core.fetch_wallet(token, cid, SESSION)
     skills = sso_core.fetch_skills(token, cid, SESSION)
     queue = sso_core.fetch_skillqueue(token, cid, SESSION)
-    loyalty = sso_core.fetch_loyalty_points(token, cid, SESSION)
+    loyalty, loyalty_meta = sso_core.fetch_loyalty_points(token, cid, SESSION)
     jobs = sso_core.fetch_industry_jobs(token, cid, SESSION, include_completed=True)
     orders, orders_error = [], None
     try:
@@ -1190,6 +1271,8 @@ def _fetch_one_char_data_uncached(acct, cid):
         "unallocated_sp": skills.get("unallocated_sp"),
         "skillqueue": queue_out,
         "loyalty": loyalty_out,
+        "loyalty_last_modified": loyalty_meta.get("last_modified"),
+        "loyalty_expires": loyalty_meta.get("expires"),
         "jobs": out_jobs,
         "runs_tracked": runs_tracked,
         "market_orders": orders_out,
@@ -1261,6 +1344,8 @@ def do_char_data(q):
         "unallocated_sp": active_data.get("unallocated_sp"),
         "skillqueue": active_data.get("skillqueue", []),
         "loyalty": active_data.get("loyalty", []),
+        "loyalty_last_modified": active_data.get("loyalty_last_modified"),
+        "loyalty_expires": active_data.get("loyalty_expires"),
         "jobs": combined_jobs,
         "runs_tracked": combined_runs,
         "market_orders": combined_orders,
@@ -2415,6 +2500,12 @@ def _expire_cookie_header():
 _MAX_CONCURRENT_SCANS = 8
 _SCAN_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT_SCANS)
 
+# Long-lived SSE nudge streams each hold a worker thread; cap them independently
+# of scans so a burst of tabs can't exhaust the thread pool.
+_MAX_CHAR_STREAMS = 64
+_STREAM_SLOTS = threading.BoundedSemaphore(_MAX_CHAR_STREAMS)
+_CHAR_STREAM_HEARTBEAT = 25  # seconds between keep-alive comments
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -2564,11 +2655,24 @@ class Handler(BaseHTTPRequestHandler):
         self._redirect("/", set_sid)
 
     def _sse_emit(self, data):
+        """Write one SSE ``data:`` frame. Returns False once the socket is gone
+        (so streaming loops can stop); scan callers ignore the return value."""
         try:
             self.wfile.write(f"data: {json.dumps(data)}\n\n".encode())
             self.wfile.flush()
+            return True
         except (BrokenPipeError, ConnectionResetError, OSError):
-            pass
+            return False
+
+    def _sse_comment(self, text=""):
+        """Write an SSE comment line (``: ...``) — used as a keep-alive heartbeat
+        and the earliest detection of a browser that has closed the stream."""
+        try:
+            self.wfile.write(f": {text}\n\n".encode())
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return False
 
     def _handle_sse_scan(self, q, scan_fn, tag):
         if not _SCAN_SLOTS.acquire(blocking=False):
@@ -2600,6 +2704,41 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_arb_scan(self, q):
         self._handle_sse_scan(q, do_arb_scan, "arb")
+
+    def _handle_char_stream(self):
+        """SSE nudge stream. Holds the connection open and pushes a ``changed``
+        event whenever the background refresh (or any on-demand fetch) detects new
+        character data for this account, so the browser re-pulls /api/char/data
+        instead of blind-polling. Falls back to a heartbeat comment every
+        _CHAR_STREAM_HEARTBEAT seconds to keep the socket alive and notice drops."""
+        acct = current_account()
+        if acct is None or not acct.characters:
+            self._send_json({"error": "Not logged in."}, 401)
+            return
+        if not _STREAM_SLOTS.acquire(blocking=False):
+            self._send_json({"error": "Too many open streams — try again shortly."}, 503)
+            return
+        key = id(acct)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            last = _CHAR_PUBSUB.version(key)
+            if not self._sse_emit({"type": "hello", "version": last}):
+                return
+            while True:
+                cur = _CHAR_PUBSUB.wait_for_change(key, last, _CHAR_STREAM_HEARTBEAT)
+                if cur != last:
+                    last = cur
+                    if not self._sse_emit({"type": "changed", "version": cur}):
+                        return
+                elif not self._sse_comment("ping"):
+                    return
+        finally:
+            _STREAM_SLOTS.release()
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -2642,6 +2781,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = do_scan(q)
                 _save_last_scan(current_account(), "lp", result)
                 self._send_json(result)
+            elif parsed.path == "/api/char/stream":
+                self._handle_char_stream()
             elif parsed.path == "/api/arb/scan":
                 self._handle_arb_scan(q)
             elif parsed.path == "/api/ind/scan":

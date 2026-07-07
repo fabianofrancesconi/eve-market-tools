@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.91.2"
+__version__ = "1.91.3"
 
 import argparse
 import base64
@@ -572,6 +572,9 @@ def _bg_char_refresh_loop():
                         pass
         except Exception:
             pass
+        # Tell every open stream the sweep is done so they re-publish the shared
+        # countdown in lockstep (data-change nudges already fired per account).
+        _CHAR_PUBSUB.announce_sweep()
         time.sleep(max(0, _BG_NEXT_SYNC_TS - time.time()))
 
 
@@ -1047,49 +1050,76 @@ _CHAR_DATA_SIG = {}    # {cid: signature of the last-seen character-owned state}
 
 
 class _CharPubSub:
-    """Per-account change notifier backing the /api/char/stream SSE push.
+    """Change + schedule notifier backing the /api/char/stream SSE push.
 
-    Every account carries a monotonic version integer. Whenever a freshly-fetched
-    character bundle differs from the last one we saw (wallet / LP / SP / skill
-    queue / jobs / own orders), we bump that account's version and wake every
-    waiter on the shared Condition. SSE handlers block in ``wait_for_change`` and,
-    on a bump, nudge the browser to re-pull /api/char/data. Keyed by the Account
-    object's identity so it works in both legacy (single implicit account) and
-    multi-user mode without depending on account_id being populated."""
+    Two signals share one Condition:
+
+    * A per-account monotonic version. Whenever a freshly-fetched character bundle
+      differs from the last one we saw (wallet / LP / SP / skill queue / jobs /
+      own orders), we bump that account's version so the account's browsers re-pull
+      /api/char/data. Keyed by the Account object's identity so it works in both
+      legacy and multi-user mode without depending on account_id.
+    * A global sweep counter, bumped once per background-refresh sweep. Every
+      stream wakes on it and re-publishes the (server-defined, shared) next-sync
+      time, so all connected clients' countdowns stay in lockstep — the UI only
+      ever displays the schedule the server hands it."""
 
     def __init__(self):
         self._cond = threading.Condition()
         self._versions = {}   # id(acct) -> int
+        self._sweep = 0       # global background-sweep counter
 
     def version(self, key):
         with self._cond:
             return self._versions.get(key, 0)
+
+    def state(self, key):
+        """(account version, global sweep counter) — the pair a stream waits on."""
+        with self._cond:
+            return self._versions.get(key, 0), self._sweep
 
     def bump(self, key):
         with self._cond:
             self._versions[key] = self._versions.get(key, 0) + 1
             self._cond.notify_all()
 
+    def announce_sweep(self):
+        """Signal that a background sweep finished; wake every stream so they
+        re-publish the next-sync countdown together."""
+        with self._cond:
+            self._sweep += 1
+            self._cond.notify_all()
+
     def forget(self, key):
         with self._cond:
             self._versions.pop(key, None)
 
-    def wait_for_change(self, key, last_version, timeout):
-        """Block until this key's version differs from ``last_version`` or the
-        timeout elapses. Returns the current version either way."""
+    def wait(self, key, last_version, last_sweep, timeout):
+        """Block until this account's version or the global sweep counter differs
+        from what the caller last saw, or the timeout elapses. Returns the current
+        ``(version, sweep)`` either way."""
         deadline = time.time() + timeout
         with self._cond:
             while True:
-                cur = self._versions.get(key, 0)
-                if cur != last_version:
-                    return cur
+                ver = self._versions.get(key, 0)
+                sweep = self._sweep
+                if ver != last_version or sweep != last_sweep:
+                    return ver, sweep
                 remaining = deadline - time.time()
                 if remaining <= 0:
-                    return cur
+                    return ver, sweep
                 self._cond.wait(remaining)
 
 
 _CHAR_PUBSUB = _CharPubSub()
+
+
+def _next_sync_in():
+    """Seconds until the next scheduled background refresh — the single, server-
+    defined sync cadence every client displays. Falls back to the interval before
+    the loop has established a schedule (first 30s after boot)."""
+    now = time.time()
+    return (_BG_NEXT_SYNC_TS - now if _BG_NEXT_SYNC_TS > now else _BG_REFRESH_INTERVAL)
 
 
 def _char_data_signature(result):
@@ -1334,11 +1364,8 @@ def do_char_data(q):
 
     # Time until the next server-side background refresh — the authoritative sync
     # cadence, so every browser's countdown agrees and a page reload shows the
-    # real remaining time instead of a fresh 5:00. Falls back to the interval
-    # before the loop has established its schedule (first 30s after boot).
-    now = time.time()
-    next_sync_in = (_BG_NEXT_SYNC_TS - now if _BG_NEXT_SYNC_TS > now
-                    else _BG_REFRESH_INTERVAL)
+    # real remaining time instead of a fresh 5:00.
+    next_sync_in = _next_sync_in()
 
     return {
         "characters": [results[cid] for cid in char_ids if cid in results],
@@ -2717,11 +2744,12 @@ class Handler(BaseHTTPRequestHandler):
         self._handle_sse_scan(q, do_arb_scan, "arb")
 
     def _handle_char_stream(self):
-        """SSE nudge stream. Holds the connection open and pushes a ``changed``
-        event whenever the background refresh (or any on-demand fetch) detects new
-        character data for this account, so the browser re-pulls /api/char/data
-        instead of blind-polling. Falls back to a heartbeat comment every
-        _CHAR_STREAM_HEARTBEAT seconds to keep the socket alive and notice drops."""
+        """SSE stream. Pushes a ``sync`` event to the browser (a) whenever the
+        background refresh detects new data for this account (``changed:true`` →
+        the browser re-pulls /api/char/data) and (b) once per background sweep so
+        every client re-publishes the shared, server-defined ``next_sync_in``
+        countdown in lockstep. A heartbeat comment every _CHAR_STREAM_HEARTBEAT
+        seconds keeps the socket alive and reveals a closed browser."""
         acct = current_account()
         if acct is None or not acct.characters:
             self._send_json({"error": "Not logged in."}, 401)
@@ -2737,14 +2765,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
-            last = _CHAR_PUBSUB.version(key)
-            if not self._sse_emit({"type": "hello", "version": last}):
+            last_ver, last_sweep = _CHAR_PUBSUB.state(key)
+            if not self._sse_emit({"type": "hello",
+                                   "next_sync_in": round(_next_sync_in())}):
                 return
             while True:
-                cur = _CHAR_PUBSUB.wait_for_change(key, last, _CHAR_STREAM_HEARTBEAT)
-                if cur != last:
-                    last = cur
-                    if not self._sse_emit({"type": "changed", "version": cur}):
+                ver, sweep = _CHAR_PUBSUB.wait(key, last_ver, last_sweep,
+                                               _CHAR_STREAM_HEARTBEAT)
+                if ver != last_ver or sweep != last_sweep:
+                    changed = ver != last_ver
+                    last_ver, last_sweep = ver, sweep
+                    if not self._sse_emit({"type": "sync", "changed": changed,
+                                           "next_sync_in": round(_next_sync_in())}):
                         return
                 elif not self._sse_comment("ping"):
                     return

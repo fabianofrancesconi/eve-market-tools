@@ -11,12 +11,20 @@ function tickCharRefreshTimer(){
   el.classList.remove("hidden");
   const remaining=charRefreshDeadline-Date.now();
   $("#char-refresh-secs").textContent=remaining>0?fmtCountdownShort(remaining):"0:00";
-  if(remaining<=0 && !_charDataInFlight){
+  // The server pushes a "sync" event each background sweep to reset this in
+  // lockstep with every other client. Only if none has arrived well past the
+  // deadline (stream down) do we fall back to a single self-driven re-pull.
+  if(remaining<=-30000 && !_charDataInFlight){
     charRefreshDeadline=0;
-    refreshCharData();   // fallback poll; the SSE stream drives live updates
+    refreshCharData();
   }
 }
 setInterval(tickCharRefreshTimer, 1000);
+// The countdown only ever displays the schedule the server hands us.
+function setSyncCountdown(secs){
+  if(secs==null) return;
+  charRefreshDeadline=Date.now()+secs*1000; tickCharRefreshTimer();
+}
 const ROMAN=["0","I","II","III","IV","V"];
 function authEsc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
@@ -103,9 +111,13 @@ function openCharStream(){
     _charStream=es;
     es.onmessage=(ev)=>{
       let m; try{ m=JSON.parse(ev.data); }catch(_){ return; }
-      // "hello" fires on (re)connect — pull once to catch any change missed while
-      // disconnected; "changed" is a live nudge. The in-flight guard dedupes.
-      if(m && (m.type==="changed" || m.type==="hello")) refreshCharData();
+      if(!m) return;
+      // Every event carries the shared, server-defined countdown — just display it.
+      setSyncCountdown(m.next_sync_in);
+      // "hello" (re)connect → catch up on anything missed while disconnected;
+      // a "sync" with changed=true means this account's data actually changed, so
+      // re-pull. A plain sweep tick (changed=false) only moves the countdown.
+      if(m.type==="hello" || (m.type==="sync" && m.changed)) refreshCharData();
     };
     es.onerror=()=>{ /* EventSource auto-reconnects; nothing to do */ };
   }catch(_){ _charStream=null; }
@@ -176,14 +188,8 @@ async function _doRefreshCharData(force){
     $("#g-broker").value=fee.toFixed(2);
   }
   saveLS(); recalcIndProfits();
-  // The countdown mirrors the server's own background-refresh schedule
-  // (next_sync_in), so it shows the real time until the next sync — a page
-  // reload reflects the true remaining time, not a client-invented 5:00. Live
-  // updates still arrive instantly via the SSE stream; when the countdown
-  // elapses we re-pull as a fallback (and to fetch the next schedule). Floored
-  // so a pull landing right before a sync can't hot-loop the fallback.
-  const syncSecs=d.next_sync_in!=null?d.next_sync_in:CHAR_REFRESH_MS/1000;
-  charRefreshDeadline=Date.now()+Math.max(20,syncSecs)*1000; tickCharRefreshTimer();
+  // Display the server-defined countdown that came with this data.
+  setSyncCountdown(d.next_sync_in);
   const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge();
   // Re-run the LP scan when the budget changed OR when this is the first char

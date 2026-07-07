@@ -93,22 +93,30 @@ class TestCharPubSub:
         ps = lp_web._CharPubSub()
         ps.bump("k")  # now version 1
         t0 = time.time()
-        cur = ps.wait_for_change("k", last_version=0, timeout=5)
-        assert cur == 1
+        ver, sweep = ps.wait("k", last_version=0, last_sweep=0, timeout=5)
+        assert ver == 1 and sweep == 0
         assert time.time() - t0 < 1  # did not block
 
-    def test_wait_times_out_when_no_change(self):
+    def test_wait_times_out_when_nothing_changes(self):
         ps = lp_web._CharPubSub()
         t0 = time.time()
-        cur = ps.wait_for_change("k", last_version=0, timeout=0.2)
-        assert cur == 0
+        ver, sweep = ps.wait("k", last_version=0, last_sweep=0, timeout=0.2)
+        assert ver == 0 and sweep == 0
         assert time.time() - t0 >= 0.2
 
     def test_wait_wakes_on_bump_from_another_thread(self):
         ps = lp_web._CharPubSub()
         threading.Timer(0.1, lambda: ps.bump("k")).start()
-        cur = ps.wait_for_change("k", last_version=0, timeout=5)
-        assert cur == 1
+        ver, _ = ps.wait("k", last_version=0, last_sweep=0, timeout=5)
+        assert ver == 1
+
+    def test_wait_wakes_on_sweep_even_without_data_change(self):
+        """A background sweep wakes every waiter so all clients re-publish the
+        shared countdown, even accounts whose data didn't change."""
+        ps = lp_web._CharPubSub()
+        threading.Timer(0.1, ps.announce_sweep).start()
+        ver, sweep = ps.wait("k", last_version=0, last_sweep=0, timeout=5)
+        assert ver == 0 and sweep == 1  # data unchanged, sweep advanced
 
     def test_forget_clears_version(self):
         ps = lp_web._CharPubSub()

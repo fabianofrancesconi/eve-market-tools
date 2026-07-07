@@ -122,7 +122,7 @@
     font-size:11px; color:var(--dim2); font-variant-numeric:tabular-nums; white-space:nowrap; }
   .lp-mylp { text-transform:none; letter-spacing:0; font-weight:600; color:var(--gold);
     font-size:10px; margin-left:6px; }
-  #lp.locked { color:var(--gold); border-color:var(--line2); opacity:.85; cursor:not-allowed; }
+  #lp.locked, #corp.locked { color:var(--gold); border-color:var(--line2); opacity:.85; cursor:not-allowed; }
   .char-jobs-tbl .timer-cell { color:var(--cyan); font-weight:600; font-variant-numeric:tabular-nums; }
   .char-jobs-tbl .timer-cell.done { color:var(--green2); }
 

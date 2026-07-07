@@ -88,6 +88,11 @@ async function checkAuth(){
   AUTH.activeCharId=st.active_char_id||null;
   renderAuthChip();
   if(AUTH.loggedIn){
+    // Lock LP + corp fields until char data arrives so the UI doesn't show
+    // stale/default values that get overwritten moments later.
+    const _lp=$("#lp"), _corp=$("#corp");
+    _lp.readOnly=true; _lp.classList.add("locked");
+    _corp.readOnly=true; _corp.classList.add("locked");
     refreshCharData();
     openCharStream();
     if(location.pathname==="/character" || location.pathname==="/char") switchTab("char", {url:false});
@@ -192,6 +197,8 @@ async function _doRefreshCharData(force){
   setSyncCountdown(d.next_sync_in);
   const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge();
+  // Corp field was locked during the char-data fetch; unlock now that data arrived.
+  $("#corp").readOnly=false; $("#corp").classList.remove("locked");
   // Re-run the LP scan when the budget changed OR when this is the first char
   // data load and no scan has run yet (we skip auto-scan at boot until char
   // data arrives so the budget is fresh).
@@ -652,14 +659,19 @@ function updateMyLpBadge(){
   const corp=($("#corp").value||"").trim().toLowerCase();
   const lp=(AUTH.data&&AUTH.data.loyalty)||[];
   const m=(AUTH.loggedIn&&corp)?lp.find(l=>(l.corp_name||"").toLowerCase()===corp):null;
-  if(AUTH.loggedIn){
-    inp.value=m?m.loyalty_points||0:0;
+  if(AUTH.loggedIn && m){
+    inp.value=m.loyalty_points||0;
     inp.readOnly=true; inp.classList.add("locked");
     const asOf=_fmtLpAsOf(AUTH.data&&AUTH.data.loyalty_last_modified);
     inp.title="Read from your character's loyalty points."
       +(asOf?` EVE updates LP roughly hourly; as of ${asOf}.`:"");
-    badge.textContent=m?(asOf?`🔒 from character · as of ${asOf}`:"🔒 from character")
-                       :"🔒 0 LP with this corp";
+    badge.textContent=asOf?`🔒 from character · as of ${asOf}`:"🔒 from character";
+    badge.classList.remove("hidden");
+  } else if(AUTH.loggedIn){
+    // No LP with this corp — let the user type a manual budget.
+    inp.readOnly=false; inp.classList.remove("locked");
+    inp.title="No LP found for this corp — enter a manual budget.";
+    badge.textContent="0 LP with this corp";
     badge.classList.remove("hidden");
   } else {
     inp.readOnly=false; inp.classList.remove("locked");

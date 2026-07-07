@@ -1400,3 +1400,40 @@ class TestSSOCallbackXSS:
         r = requests.get(f"{base}/callback?error={xss_payload}")
         assert "&lt;script&gt;" in r.text
         assert "<script>alert(1)</script>" not in r.text
+
+
+# ---------------------------------------------------------------------------
+# Settings persistence: don't clobber the saved corp with a blank field
+# ---------------------------------------------------------------------------
+
+class TestSettingsPersistenceGate:
+    """v1.91.1: saveLS() snapshots DOM fields; if it runs before loadSettings()
+    has applied stored values (e.g. a warm-cache character-data refresh firing
+    during boot), it must NOT persist — otherwise the account's saved corp gets
+    overwritten with an empty string, and the LP search field opens blank."""
+
+    def test_savels_is_gated_until_settings_applied(self):
+        src = lp_web.FRONTEND_SOURCE
+        assert "let _settingsApplied=false;" in src
+        # saveLS bails out early while settings haven't been applied yet.
+        assert "if(!_settingsApplied) return;" in src
+        # loadSettings flips the gate once the DOM reflects stored settings.
+        assert "markSettingsApplied()" in src
+
+
+# ---------------------------------------------------------------------------
+# Live character sync: SSE push wiring on the client
+# ---------------------------------------------------------------------------
+
+class TestCharStreamClient:
+    """v1.91.0: the browser opens an SSE stream so the backend can nudge it to
+    re-pull character data the instant new data is detected."""
+
+    def test_char_stream_client_wired(self):
+        src = lp_web.FRONTEND_SOURCE
+        assert 'new EventSource("/api/char/stream")' in src
+        assert "function openCharStream" in src
+        assert "function closeCharStream" in src
+
+    def test_char_stream_route_registered(self):
+        assert '/api/char/stream' in lp_web.FRONTEND_SOURCE

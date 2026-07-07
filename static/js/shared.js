@@ -194,7 +194,16 @@ window.addEventListener('pagehide',flushSettings);
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='hidden') flushSettings();
 });
+// Guard against persisting a half-initialised view. saveLS snapshots the current
+// DOM fields (corp, LP, filters, …); if it runs before loadSettings() has applied
+// the stored values — e.g. a warm-cache character-data refresh firing during boot
+// calls saveLS() while #corp is still blank — it would clobber the account's saved
+// corp with an empty string. loadSettings() flips this true once the DOM reflects
+// stored state, so early boot-time saves are dropped instead of overwriting.
+let _settingsApplied=false;
+function markSettingsApplied(){ _settingsApplied=true; }
 function saveLS(){
+  if(!_settingsApplied) return;
   const blob=settingsBlob();
   try{ localStorage.setItem(LS_KEY,JSON.stringify(blob)); }catch(e){}
   syncSettingsToServer(blob);

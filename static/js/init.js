@@ -150,6 +150,10 @@ async function loadSettings(){
   // arrives, so we skip the auto-scan here to avoid using a stale budget.
   if(typeof updateMyLpBadge==="function" && AUTH.data) updateMyLpBadge();
   const _skipLpScan = AUTH.loggedIn && !AUTH.data;
+  // The DOM now reflects the stored settings, so it's safe to let saveLS()
+  // persist again — any earlier boot-time save (e.g. from a character-data
+  // refresh) was dropped to avoid clobbering the saved corp with a blank field.
+  markSettingsApplied();
   // Restore last scan results from server cache, then auto-scan if the LP tab
   // is active and a corp is set.
   restoreLastScans().then(restored=>{

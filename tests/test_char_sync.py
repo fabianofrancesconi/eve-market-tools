@@ -243,3 +243,67 @@ class TestNextSyncSchedule:
         monkeypatch.setattr(lp_web, "_BG_NEXT_SYNC_TS", 0.0)
         out = lp_web.do_char_data({})
         assert out["next_sync_in"] == lp_web._BG_REFRESH_INTERVAL
+
+
+# ── New data from a sweep reaches connected clients ───────────────────────────
+
+class TestNewDataReachesClients:
+    """The full requirement: a server-side sweep that picks up a new LP budget
+    must (a) bump the account version — every open /api/char/stream waits on it,
+    so all connected clients get told to refresh — and (b) make the next
+    do_char_data serve the new value, so a re-pulling client actually receives it
+    (regardless of which page it's on)."""
+
+    def _mock(self, monkeypatch, tmp_path, loyalty):
+        cache = tmp_path / "cache"; cache.mkdir(exist_ok=True)
+        monkeypatch.setattr(lp_web, "CACHE_DIR", cache)
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", cache / "jobs.json")
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", cache / "order_events.json")
+        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda a, cid: None)
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda a, cid: None)
+        monkeypatch.setattr(lp_web, "resolve_corp_name", lambda cid, sess: "Sisters of EVE")
+        monkeypatch.setattr(lp_web.sso_core, "fetch_wallet", lambda *a, **k: 0.0)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skills",
+                            lambda *a, **k: {"total_sp": 0, "skills": []})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skillqueue", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points",
+                            lambda *a, _lp=loyalty, **k: (_lp, {}))
+        monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: [])
+
+    def test_new_lp_bumps_version_and_is_served(self, monkeypatch, tmp_path):
+        acct = _acct({1: {"name": "Main", "access_token": "tok",
+                          "expires_at": time.time() + 3600}})
+        lp_web._REQUEST.account = acct
+        lp_web._CHAR_DATA_CACHE.pop(1, None)
+        lp_web._CHAR_DATA_SIG.pop(1, None)
+
+        # Sweep #1 — baseline LP.
+        self._mock(monkeypatch, tmp_path, [{"corporation_id": 1000179, "loyalty_points": 500000}])
+        lp_web._fetch_one_char_data(acct, 1)
+        v0 = lp_web._CHAR_PUBSUB.version(id(acct))
+
+        # Sweep #2 — LP grew. The version must bump (all streams get nudged) and a
+        # client re-pull must see the new budget.
+        lp_web._CHAR_DATA_CACHE.pop(1, None)
+        self._mock(monkeypatch, tmp_path, [{"corporation_id": 1000179, "loyalty_points": 987654}])
+        lp_web._fetch_one_char_data(acct, 1)
+        assert lp_web._CHAR_PUBSUB.version(id(acct)) == v0 + 1
+
+        out = lp_web.do_char_data({})
+        assert any(l["loyalty_points"] == 987654 for l in out["loyalty"]), out["loyalty"]
+
+    def test_unchanged_lp_does_not_renudge(self, monkeypatch, tmp_path):
+        acct = _acct({1: {"name": "Main", "access_token": "tok",
+                          "expires_at": time.time() + 3600}})
+        lp_web._REQUEST.account = acct
+        lp_web._CHAR_DATA_CACHE.pop(1, None)
+        lp_web._CHAR_DATA_SIG.pop(1, None)
+        self._mock(monkeypatch, tmp_path, [{"corporation_id": 1000179, "loyalty_points": 500000}])
+        lp_web._fetch_one_char_data(acct, 1)
+        v = lp_web._CHAR_PUBSUB.version(id(acct))
+        # A later sweep returning the SAME LP (ESI's ~1h cache is unchanged) must
+        # not bump — clients aren't told to refresh when nothing actually changed.
+        lp_web._CHAR_DATA_CACHE.pop(1, None)
+        lp_web._fetch_one_char_data(acct, 1)
+        assert lp_web._CHAR_PUBSUB.version(id(acct)) == v

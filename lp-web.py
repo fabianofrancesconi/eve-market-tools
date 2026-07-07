@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.91.1"
+__version__ = "1.91.2"
 
 import argparse
 import base64
@@ -543,13 +543,21 @@ def _sweep_loop(interval=3600):
 
 
 _BG_REFRESH_INTERVAL = 300  # 5 minutes
+# Epoch of the next scheduled background refresh, so do_char_data can report an
+# authoritative "next sync in …" that reflects the real server schedule rather
+# than a value each browser invents on load. 0 until the loop establishes it.
+_BG_NEXT_SYNC_TS = 0.0
 
 
 def _bg_char_refresh_loop():
     """Background loop: periodically refresh all active accounts' ESI data
-    so wallet history accumulates even when no browser is open."""
+    so wallet history accumulates even when no browser is open. Runs on a fixed
+    _BG_REFRESH_INTERVAL cadence (the sweep's own duration is absorbed into the
+    interval) so the published next-sync time stays accurate."""
+    global _BG_NEXT_SYNC_TS
     time.sleep(30)
     while True:
+        _BG_NEXT_SYNC_TS = time.time() + _BG_REFRESH_INTERVAL
         try:
             accounts = list(_ACCOUNTS.values())
             for acct in accounts:
@@ -564,7 +572,7 @@ def _bg_char_refresh_loop():
                         pass
         except Exception:
             pass
-        time.sleep(_BG_REFRESH_INTERVAL)
+        time.sleep(max(0, _BG_NEXT_SYNC_TS - time.time()))
 
 
 def _warn_if_multi_replica():
@@ -1324,10 +1332,13 @@ def do_char_data(q):
 
     active_data = results.get(active_char_id) or next(iter(results.values()), {})
 
+    # Time until the next server-side background refresh — the authoritative sync
+    # cadence, so every browser's countdown agrees and a page reload shows the
+    # real remaining time instead of a fresh 5:00. Falls back to the interval
+    # before the loop has established its schedule (first 30s after boot).
     now = time.time()
-    oldest_cache_ts = min(
-        (_CHAR_DATA_CACHE.get(cid, (now,))[0] for cid in char_ids), default=now)
-    next_refresh_in = max(0, _CHAR_DATA_TTL - (now - oldest_cache_ts))
+    next_sync_in = (_BG_NEXT_SYNC_TS - now if _BG_NEXT_SYNC_TS > now
+                    else _BG_REFRESH_INTERVAL)
 
     return {
         "characters": [results[cid] for cid in char_ids if cid in results],
@@ -1353,7 +1364,7 @@ def do_char_data(q):
         "accounting_level": active_data.get("accounting_level", 0),
         "broker_relations_level": active_data.get("broker_relations_level", 0),
         "order_events": _get_order_events(acct),
-        "next_refresh_in": next_refresh_in,
+        "next_sync_in": next_sync_in,
     }
 
 

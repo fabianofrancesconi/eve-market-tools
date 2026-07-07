@@ -176,11 +176,14 @@ async function _doRefreshCharData(force){
     $("#g-broker").value=fee.toFixed(2);
   }
   saveLS(); recalcIndProfits();
-  // The SSE stream (/api/char/stream) pushes updates the instant the backend
-  // detects new data; this countdown is only the fallback poll cadence for when
-  // the stream is unavailable or a push was missed, so keep it at the 5-min
-  // backend refresh interval rather than the short cache-TTL window.
-  charRefreshDeadline=Date.now()+CHAR_REFRESH_MS; tickCharRefreshTimer();
+  // The countdown mirrors the server's own background-refresh schedule
+  // (next_sync_in), so it shows the real time until the next sync — a page
+  // reload reflects the true remaining time, not a client-invented 5:00. Live
+  // updates still arrive instantly via the SSE stream; when the countdown
+  // elapses we re-pull as a fallback (and to fetch the next schedule). Floored
+  // so a pull landing right before a sync can't hot-loop the fallback.
+  const syncSecs=d.next_sync_in!=null?d.next_sync_in:CHAR_REFRESH_MS/1000;
+  charRefreshDeadline=Date.now()+Math.max(20,syncSecs)*1000; tickCharRefreshTimer();
   const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge();
   // Re-run the LP scan when the budget changed OR when this is the first char

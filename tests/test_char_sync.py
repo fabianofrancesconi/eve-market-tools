@@ -197,3 +197,41 @@ class TestLoyaltyAsOf:
         out = lp_web.do_char_data({})
         assert out["loyalty_last_modified"] == "Tue, 07 Jul 2026 10:00:00 GMT"
         assert out["loyalty_expires"] == "Tue, 07 Jul 2026 11:00:00 GMT"
+
+
+# ── next_sync_in reflects the server's background-refresh schedule ─────────────
+
+class TestNextSyncSchedule:
+    def _setup(self, monkeypatch, tmp_path):
+        cache = tmp_path / "cache"; cache.mkdir()
+        monkeypatch.setattr(lp_web, "CACHE_DIR", cache)
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", cache / "jobs.json")
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", cache / "order_events.json")
+        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda a, cid: None)
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda a, cid: None)
+        for fn, val in (("fetch_wallet", 0.0), ("fetch_skillqueue", []),
+                        ("fetch_industry_jobs", []), ("fetch_market_orders", [])):
+            monkeypatch.setattr(lp_web.sso_core, fn, lambda *a, _v=val, **k: _v)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skills",
+                            lambda *a, **k: {"total_sp": 0, "skills": []})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points", lambda *a, **k: ([], {}))
+        acct = _acct({1: {"name": "Main", "access_token": "tok",
+                          "expires_at": time.time() + 3600}})
+        lp_web._REQUEST.account = acct
+        lp_web._CHAR_DATA_CACHE.pop(1, None)
+        lp_web._CHAR_DATA_SIG.pop(1, None)
+
+    def test_next_sync_counts_down_to_scheduled_sweep(self, monkeypatch, tmp_path):
+        self._setup(monkeypatch, tmp_path)
+        # Next background sweep is ~200s away → the reported countdown matches it
+        # (not a fixed 5:00), so a page reload shows the real remaining time.
+        monkeypatch.setattr(lp_web, "_BG_NEXT_SYNC_TS", time.time() + 200)
+        out = lp_web.do_char_data({})
+        assert 195 <= out["next_sync_in"] <= 200
+
+    def test_next_sync_falls_back_to_interval_before_loop_starts(self, monkeypatch, tmp_path):
+        self._setup(monkeypatch, tmp_path)
+        # Loop hasn't established a schedule yet (or it's overdue) → interval.
+        monkeypatch.setattr(lp_web, "_BG_NEXT_SYNC_TS", 0.0)
+        out = lp_web.do_char_data({})
+        assert out["next_sync_in"] == lp_web._BG_REFRESH_INTERVAL

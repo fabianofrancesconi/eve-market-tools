@@ -415,7 +415,7 @@ class TestCombinedCharData:
         monkeypatch.setattr(lp_web.sso_core, "fetch_skillqueue", lambda *a, **k: [])
         monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points", lambda *a, **k: ([], {}))
         monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: [])
-        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: ([], {}))
         monkeypatch.setattr(lp_web.sso_core, "fetch_character_blueprints", lambda *a, **k: [])
 
         out = lp_web.do_char_data({})

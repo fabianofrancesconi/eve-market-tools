@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.91.4"
+__version__ = "1.91.5"
 
 import argparse
 import base64
@@ -1171,9 +1171,9 @@ def _fetch_one_char_data_uncached(acct, cid):
     queue = sso_core.fetch_skillqueue(token, cid, SESSION)
     loyalty, loyalty_meta = sso_core.fetch_loyalty_points(token, cid, SESSION)
     jobs = sso_core.fetch_industry_jobs(token, cid, SESSION, include_completed=True)
-    orders, orders_error = [], None
+    orders, orders_error, orders_meta = [], None, {}
     try:
-        orders = sso_core.fetch_market_orders(token, cid, SESSION)
+        orders, orders_meta = sso_core.fetch_market_orders(token, cid, SESSION)
         orders.sort(key=lambda o: o.get("issued") or "", reverse=True)
     except requests.HTTPError as e:
         status = e.response.status_code if e.response is not None else "?"
@@ -1315,6 +1315,7 @@ def _fetch_one_char_data_uncached(acct, cid):
         "runs_tracked": runs_tracked,
         "market_orders": orders_out,
         "market_orders_error": orders_error,
+        "market_orders_expires": orders_meta.get("expires"),
         "accounting_level": accounting_lvl,
         "broker_relations_level": broker_rel_lvl,
     }
@@ -1350,6 +1351,7 @@ def do_char_data(q):
     combined_orders = []
     combined_queue = []
     combined_runs = {"total_runs": 0, "total_jobs": 0, "by_product": {}}
+    combined_orders_expires = None
     for r in results.values():
         combined_jobs.extend(r.get("jobs", []))
         combined_orders.extend(r.get("market_orders", []))
@@ -1357,6 +1359,9 @@ def do_char_data(q):
         rt = r.get("runs_tracked") or {}
         combined_runs["total_runs"] += rt.get("total_runs", 0)
         combined_runs["total_jobs"] += rt.get("total_jobs", 0)
+        exp = r.get("market_orders_expires")
+        if exp and (combined_orders_expires is None or exp > combined_orders_expires):
+            combined_orders_expires = exp
     combined_jobs.sort(key=lambda x: x.get("end") or "")
     combined_orders.sort(key=lambda o: o.get("issued") or "", reverse=True)
 
@@ -1388,6 +1393,7 @@ def do_char_data(q):
         "runs_tracked": combined_runs,
         "market_orders": combined_orders,
         "market_orders_error": active_data.get("market_orders_error"),
+        "market_orders_expires": combined_orders_expires,
         "accounting_level": active_data.get("accounting_level", 0),
         "broker_relations_level": active_data.get("broker_relations_level", 0),
         "order_events": _get_order_events(acct),

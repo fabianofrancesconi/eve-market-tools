@@ -211,13 +211,15 @@ def fetch_loyalty_points(token, character_id, session):
 
 
 def fetch_market_orders(token, character_id, session):
-    """[{order_id, type_id, is_buy_order, price, volume_remain, volume_total,
-    issued, duration, location_id, …}, …] — the character's currently open
-    sell/buy orders. Requires esi-markets.read_character_orders.v1."""
+    """([{order_id, type_id, is_buy_order, price, volume_remain, volume_total,
+    issued, duration, location_id, …}, …], meta) — the character's currently open
+    sell/buy orders plus ESI cache headers. Requires esi-markets.read_character_orders.v1."""
     r = session.get(f"{ESI}/characters/{character_id}/orders/",
                     headers=_auth_headers(token), timeout=30)
     r.raise_for_status()
-    return r.json()
+    meta = {"last_modified": r.headers.get("Last-Modified"),
+            "expires": r.headers.get("Expires")}
+    return r.json(), meta
 
 
 def fetch_industry_jobs(token, character_id, session, include_completed=False):

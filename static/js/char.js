@@ -221,6 +221,12 @@ function _fmtLpAsOf(httpDate){
   if(isNaN(d)) return "";
   return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
 }
+function _fmtOrdersExpires(httpDate){
+  if(!httpDate) return "";
+  const d=new Date(httpDate);
+  if(isNaN(d)) return "";
+  return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+}
 
 function _renderCharPanel(c){
   const cJobs=c.jobs||[], cQueue=c.skillqueue||[], cLp=c.loyalty||[], cOrders=c.market_orders||[];
@@ -285,9 +291,10 @@ function _renderCharPanel(c){
   h+=`</div></section>`;
 
   // Market orders
+  const ordersExp=_fmtOrdersExpires(c.market_orders_expires);
   h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Market orders`;
   if(cOrders.length) h+=` <span class="char-card-sub">(${cOrders.length} · ${fmtISK(ordersVal)} ISK)</span>`;
-  h+=`</h3></div><div class="char-card-body">`;
+  h+=`</h3>`+(ordersExp?`<span class="char-card-note" title="ESI caches market orders ~20 min. New/changed orders won't appear until this time.">updates at ${ordersExp}</span>`:"")+`</div><div class="char-card-body">`;
   if(cOrders.length){
     h+=`<div class="char-card-scroll"><table class="mini char-orders-tbl"><thead><tr>`;
     h+=`<th>Item</th><th>Side</th><th style="text-align:right">Remaining</th><th style="text-align:right">Price</th>`;
@@ -374,9 +381,12 @@ function _renderAllPanel(chars){
   h+=`</div></section>`;
 
   // Market orders — unified with totals
+  const allOrdersExp=_fmtOrdersExpires(chars.reduce((latest,c)=>{
+    const e=c.market_orders_expires; return e&&(!latest||e>latest)?e:latest;
+  },null));
   h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Market orders`;
   if(allOrders.length) h+=` <span class="char-card-sub">(${allOrders.length} · ${fmtISK(ordersVal)} ISK)</span>`;
-  h+=`</h3></div><div class="char-card-body">`;
+  h+=`</h3>`+(allOrdersExp?`<span class="char-card-note" title="ESI caches market orders ~20 min. New/changed orders won't appear until this time.">updates at ${allOrdersExp}</span>`:"")+`</div><div class="char-card-body">`;
   if(allOrders.length){
     const sellOrders=allOrders.filter(o=>!o.is_buy_order);
     const buyOrders=allOrders.filter(o=>o.is_buy_order);

@@ -142,7 +142,7 @@ class TestFetchBumpsOnChange:
         monkeypatch.setattr(lp_web.sso_core, "fetch_skillqueue", lambda *a, **k: [])
         monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points", lambda *a, **k: ([], {}))
         monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: [])
-        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: ([], {}))
 
     def _acct(self):
         return _acct({1: {"name": "Main", "access_token": "tok",
@@ -200,7 +200,7 @@ class TestLoyaltyAsOf:
                             lambda *a, **k: ([], {"last_modified": "Tue, 07 Jul 2026 10:00:00 GMT",
                                                   "expires": "Tue, 07 Jul 2026 11:00:00 GMT"}))
         monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: [])
-        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: ([], {}))
 
         out = lp_web.do_char_data({})
         assert out["loyalty_last_modified"] == "Tue, 07 Jul 2026 10:00:00 GMT"
@@ -218,7 +218,7 @@ class TestNextSyncSchedule:
         monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda a, cid: None)
         monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda a, cid: None)
         for fn, val in (("fetch_wallet", 0.0), ("fetch_skillqueue", []),
-                        ("fetch_industry_jobs", []), ("fetch_market_orders", [])):
+                        ("fetch_industry_jobs", []), ("fetch_market_orders", ([], {}))):
             monkeypatch.setattr(lp_web.sso_core, fn, lambda *a, _v=val, **k: _v)
         monkeypatch.setattr(lp_web.sso_core, "fetch_skills",
                             lambda *a, **k: {"total_sp": 0, "skills": []})
@@ -269,7 +269,7 @@ class TestNewDataReachesClients:
         monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points",
                             lambda *a, _lp=loyalty, **k: (_lp, {}))
         monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: [])
-        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: ([], {}))
 
     def test_new_lp_bumps_version_and_is_served(self, monkeypatch, tmp_path):
         acct = _acct({1: {"name": "Main", "access_token": "tok",

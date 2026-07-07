@@ -178,8 +178,11 @@ def test_fetch_market_orders_url_and_headers():
                "volume_remain": 3, "volume_total": 5, "issued": "2026-06-30T12:00:00Z",
                "duration": 90, "location_id": 60003760}]
     sess = _get_session(orders)
-    out = sso_core.fetch_market_orders("TOKEN", 42, sess)
+    sess.get.return_value.headers = {"Last-Modified": "Mon, 07 Jul 2026 12:00:00 GMT",
+                                     "Expires": "Mon, 07 Jul 2026 12:20:00 GMT"}
+    out, meta = sso_core.fetch_market_orders("TOKEN", 42, sess)
     assert out == orders
+    assert meta["expires"] == "Mon, 07 Jul 2026 12:20:00 GMT"
     url = sess.get.call_args[0][0]
     headers = sess.get.call_args[1]["headers"]
     assert url.endswith("/characters/42/orders/")

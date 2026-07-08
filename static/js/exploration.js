@@ -370,6 +370,16 @@ function expSaveRecent(){
   if(typeof saveLS==="function") saveLS();
 }
 
+// A glyph + label per site type — gives every "card" a game-y suit icon.
+const EXP_TYPE = {
+  data:          {icon:"🖥️", label:"Data"},
+  relic:         {icon:"🏺", label:"Relic"},
+  ghost:         {icon:"👻", label:"Ghost"},
+  sleeper_cache: {icon:"🛸", label:"Sleeper Cache"},
+  gas:           {icon:"☁️", label:"Gas"},
+};
+function expType(site){ return EXP_TYPE[site.type] || {icon:"❔", label:site.type}; }
+
 // Collapse a site's danger / loot into a shared low·med·high scale so recent
 // cards read at a glance. Returns {lvl:1-3, label, cls}.
 function expRisk(site){
@@ -383,11 +393,6 @@ function expLoot(site){
        : t==="medium" ? {lvl:2, label:"Med",  cls:"exp-lvl-md"}
        :                {lvl:3, label:"High", cls:"exp-lvl-hi"};  // high + jackpot
 }
-// A 3-segment meter, `lvl` of them filled in the level's colour.
-function expMeter(m){
-  const seg = i => `<span class="exp-seg${i<m.lvl?" "+m.cls:""}"></span>`;
-  return `<span class="exp-meter">${seg(0)}${seg(1)}${seg(2)}</span>`;
-}
 
 function expRenderRecent(){
   const list = $("#exp-recent-list");
@@ -400,8 +405,8 @@ function expRenderRecent(){
       <button class="exp-recent-rm" data-ri="${i}" title="Remove">×</button>
       <div class="exp-recent-name">${esc(site.name)}</div>
       <div class="exp-recent-stats">
-        <span class="exp-stat"><span class="exp-stat-k">Risk</span>${expMeter(risk)}<span class="exp-stat-v ${risk.cls}">${risk.label}</span></span>
-        <span class="exp-stat"><span class="exp-stat-k">Loot</span>${expMeter(loot)}<span class="exp-stat-v ${loot.cls}">${loot.label}</span></span>
+        <span class="exp-stat"><span class="exp-stat-k">Risk</span><span class="exp-stat-v ${risk.cls}">${risk.label}</span></span>
+        <span class="exp-stat"><span class="exp-stat-k">Loot</span><span class="exp-stat-v ${loot.cls}">${loot.label}</span></span>
       </div>
     </div>`;
   }).join("");
@@ -456,16 +461,26 @@ function expSelect(site){
   }
   expRenderRecent();
 
-  $("#exp-site-title").textContent = site.name;
+  // Hide the plain title — the game-card banner below carries the name.
+  $("#exp-site-title").textContent = "";
 
-  // Hero strip — key metrics at a glance
-  const heroDangerCls = site.danger==="safe"?"exp-badge-safe":site.danger==="caution"?"exp-badge-caution":"exp-badge-dangerous";
-  const heroTierCls = "exp-tier-"+(site.lootTier||"low");
+  // Hero = a trading-card banner: suit icon + name, then bold stat pills.
+  const ty = expType(site), risk = expRisk(site), loot = expLoot(site);
+  const space = esc(site.space.join(", ")) + (site.whClass ? " <span class='exp-hero-wh'>C"+site.whClass.join(",")+"</span>" : "");
   $("#exp-hero").innerHTML = `
-    <div class="exp-hero-chip"><span class="exp-hero-label">Danger</span><span class="exp-hero-value"><span class="exp-danger-badge ${heroDangerCls}">${esc(site.danger)}</span></span></div>
-    <div class="exp-hero-chip"><span class="exp-hero-label">Loot Tier</span><span class="exp-hero-value"><span class="exp-loot-tier ${heroTierCls}">${esc(site.lootTier||"low")}</span></span></div>
-    <div class="exp-hero-chip"><span class="exp-hero-label">Est. Value</span><span class="exp-hero-value" style="color:var(--gold)">${esc(site.estimatedValue)}</span></div>
-    <div class="exp-hero-chip"><span class="exp-hero-label">Space</span><span class="exp-hero-value">${esc(site.space.join(", "))}${site.whClass?" <span style='font-size:13px;color:var(--dim);font-weight:400'>C"+site.whClass.join(",")+"</span>":""}</span></div>`;
+    <div class="exp-hero-banner exp-danger-${site.danger}">
+      <div class="exp-hero-crest">${ty.icon}</div>
+      <div class="exp-hero-id">
+        <div class="exp-hero-type">${esc(ty.label)} site</div>
+        <div class="exp-hero-name">${esc(site.name)}</div>
+      </div>
+    </div>
+    <div class="exp-hero-stats">
+      <div class="exp-stat-pill ${risk.cls}"><span class="exp-pill-k">Risk</span><span class="exp-pill-v">${risk.label}</span></div>
+      <div class="exp-stat-pill ${loot.cls}"><span class="exp-pill-k">Loot</span><span class="exp-pill-v">${loot.label}</span></div>
+      <div class="exp-stat-pill exp-pill-gold"><span class="exp-pill-k">Value</span><span class="exp-pill-v">${esc(site.estimatedValue)}</span></div>
+      <div class="exp-stat-pill exp-pill-plain"><span class="exp-pill-k">Space</span><span class="exp-pill-v">${space}</span></div>
+    </div>`;
 
   // WHAT TO EXPECT card
   const dangerCls = site.danger==="safe"?"exp-badge-safe":site.danger==="caution"?"exp-badge-caution":"exp-badge-dangerous";

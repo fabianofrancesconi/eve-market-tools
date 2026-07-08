@@ -173,12 +173,21 @@ def test_myko_gas_is_flagged_safe(tackle):
 
 
 def test_recent_cards_show_risk_and_loot_levels():
-    # Recent lookups render name + low/med/high Risk & Loot meters.
+    # Recent lookups render name + low/med/high Risk & Loot values.
     src = _EXP_JS.read_text()
     assert "function expRisk" in src
     assert "function expLoot" in src
-    assert "function expMeter" in src
     assert "exp-recent-stats" in src
+
+
+def test_hero_is_a_gamified_card_banner():
+    # The main content leads with a trading-card banner (suit icon + name) and
+    # bold stat pills rather than the old plain chip strip.
+    src = _EXP_JS.read_text()
+    assert "function expType" in src
+    assert "exp-hero-banner" in src
+    assert "exp-hero-name" in src
+    assert "exp-stat-pill" in src
 
 
 def test_reopening_a_recent_keeps_list_order():

@@ -894,22 +894,22 @@
     border:1px solid var(--line); border-radius:6px; background:var(--panel);
   }
   .exp-result-item {
-    padding:8px 12px; cursor:pointer; display:flex; align-items:center; gap:8px;
+    padding:10px 13px; cursor:pointer; display:flex; align-items:center; gap:8px;
     border-bottom:1px solid var(--line); transition:background .08s;
   }
   .exp-result-item:last-child { border-bottom:none; }
   .exp-result-item:hover, .exp-result-item.selected { background:var(--panel2); }
-  .exp-result-name { flex:1; color:var(--fg); font-size:12px; }
+  .exp-result-name { flex:1; color:var(--fg); font-size:13.5px; font-weight:500; }
   .exp-result-badge {
-    display:inline-block; padding:1px 6px; border-radius:3px;
-    font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.3px;
+    display:inline-block; padding:2px 7px; border-radius:3px;
+    font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.3px;
   }
   .exp-badge-safe { background:var(--green); color:#000; }
   .exp-badge-caution { background:var(--yellow); color:#000; }
   .exp-badge-dangerous { background:var(--red); color:#fff; }
   .exp-type-badge {
-    display:inline-block; padding:1px 5px; border-radius:3px;
-    font-size:9px; background:var(--panel3); border:1px solid var(--line2); color:var(--dim);
+    display:inline-block; padding:2px 6px; border-radius:3px;
+    font-size:10px; background:var(--panel3); border:1px solid var(--line2); color:var(--dim);
   }
   .exp-recent { margin-top:8px; }
   .exp-recent-header { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; margin-bottom:8px; }
@@ -917,7 +917,7 @@
   /* Recent lookups as little "cards" — playing-card feel with a colour edge */
   .exp-recent-card {
     position:relative; cursor:pointer; border-radius:8px;
-    padding:9px 11px 9px 13px; background:var(--panel2);
+    padding:8px 10px 8px 12px; background:var(--panel2);
     border:1px solid var(--line2); border-left:3px solid var(--dim2);
     transition:transform .1s, border-color .1s, background .1s;
   }
@@ -929,28 +929,19 @@
   .exp-recent-card.exp-danger-dangerous { border-left-color:var(--red); }
   .exp-recent-name {
     font-size:12.5px; font-weight:600; color:var(--fg); line-height:1.3;
-    padding-right:14px; margin-bottom:8px;
+    padding-right:14px; margin-bottom:6px;
   }
-  .exp-recent-stats { display:flex; flex-direction:column; gap:5px; }
-  .exp-stat { display:flex; align-items:center; gap:7px; }
+  /* Risk / Loot read as compact "Low·Med·High" — no bar, bigger value font */
+  .exp-recent-stats { display:flex; gap:14px; }
+  .exp-stat { display:flex; align-items:baseline; gap:5px; }
   .exp-stat-k {
     font-size:9px; text-transform:uppercase; letter-spacing:.5px;
-    color:var(--dim); font-weight:700; width:26px; flex-shrink:0;
+    color:var(--dim); font-weight:700;
   }
-  .exp-stat-v { font-size:10px; font-weight:700; letter-spacing:.3px; }
-  /* 3-segment level meter */
-  .exp-meter { display:inline-flex; gap:2px; }
-  .exp-seg {
-    width:14px; height:5px; border-radius:2px; background:var(--line2);
-  }
-  .exp-lvl-lo { background:var(--green); color:var(--green); }
-  .exp-lvl-md { background:var(--yellow); color:var(--yellow); }
-  .exp-lvl-hi { background:var(--red); color:var(--red); }
-  /* the level colour classes above set both segment fill and label text colour;
-     the label reads its colour via `color`, segments via `background` */
-  .exp-stat-v.exp-lvl-lo { background:none; }
-  .exp-stat-v.exp-lvl-md { background:none; }
-  .exp-stat-v.exp-lvl-hi { background:none; }
+  .exp-stat-v { font-size:13px; font-weight:800; letter-spacing:.2px; }
+  .exp-lvl-lo { color:var(--green); }
+  .exp-lvl-md { color:var(--yellow); }
+  .exp-lvl-hi { color:var(--red); }
   .exp-recent-rm {
     position:absolute; top:4px; right:4px;
     background:none; border:none; color:var(--dim); cursor:pointer; font-size:15px;
@@ -961,22 +952,35 @@
   .exp-content { padding:24px; overflow-y:auto; position:relative; }
   .exp-empty { color:var(--dim); text-align:center; padding:60px 20px; font-size:14px; }
   .exp-site-title { font-size:18px; color:var(--cyan); margin:0 0 16px; font-weight:700; }
-  .exp-cards-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px; }
+  .exp-site-title:empty { display:none; }
+  .exp-cards-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:14px; }
   .exp-card {
-    border:1px solid var(--line2); border-radius:8px;
+    border:1px solid var(--line2); border-radius:10px;
     background:var(--panel); overflow:hidden;
+    box-shadow:0 2px 10px rgba(0,0,0,.18);
+    transition:transform .12s, box-shadow .12s;
   }
+  .exp-card:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(0,0,0,.28); }
   .exp-card-header {
-    padding:9px 16px; font-size:11px; font-weight:700; letter-spacing:1px;
-    background:var(--panel2); border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:8px;
+    padding:11px 16px; font-size:12px; font-weight:800; letter-spacing:.8px;
+    background:var(--panel2); border-bottom:2px solid var(--line);
   }
+  /* Suit icon before each card title */
+  .exp-card-header::before { font-size:15px; font-weight:400; letter-spacing:0; }
   .exp-trigger-card .exp-card-header { color:var(--cyan); }
+  .exp-trigger-card .exp-card-header::before { content:"📋"; }
+  .exp-trigger-card { border-top:3px solid var(--cyan); }
   .exp-npc-card .exp-card-header { color:var(--red); }
+  .exp-npc-card .exp-card-header::before { content:"⚔️"; }
+  .exp-npc-card { border-top:3px solid var(--red); }
   .exp-loot-card .exp-card-header { color:var(--gold); }
-  .exp-card-body { padding:12px 16px; font-size:13px; line-height:1.7; }
-  .exp-card-body .exp-label { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.5px; margin-top:10px; }
+  .exp-loot-card .exp-card-header::before { content:"💰"; }
+  .exp-loot-card { border-top:3px solid var(--gold); }
+  .exp-card-body { padding:13px 16px; font-size:13.5px; line-height:1.65; }
+  .exp-card-body .exp-label { color:var(--dim); font-size:10.5px; text-transform:uppercase; letter-spacing:.6px; font-weight:700; margin-top:12px; }
   .exp-card-body .exp-label:first-child { margin-top:0; }
-  .exp-card-body .exp-value { color:var(--fg); margin-top:2px; }
+  .exp-card-body .exp-value { color:var(--fg); margin-top:3px; }
   .exp-danger-badge {
     display:inline-block; padding:3px 12px; border-radius:12px;
     font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
@@ -990,42 +994,80 @@
   .exp-tier-high { background:var(--gold); color:#000; }
   .exp-tier-jackpot { background:#7b1fa2; color:#fff; }
 
-  /* Hero strip — key metrics at a glance */
-  .exp-hero {
-    display:flex; gap:12px; margin-bottom:18px; flex-wrap:wrap;
+  /* Hero = a trading-card banner + a row of bold stat pills */
+  .exp-hero { margin-bottom:16px; }
+  .exp-hero-banner {
+    display:flex; align-items:center; gap:16px;
+    padding:16px 20px; border-radius:12px;
+    background:linear-gradient(135deg, var(--panel3), var(--panel));
+    border:1px solid var(--line2); border-left:5px solid var(--dim2);
+    margin-bottom:12px;
   }
-  .exp-hero-chip {
+  .exp-hero-banner.exp-danger-safe { border-left-color:var(--green); }
+  .exp-hero-banner.exp-danger-caution { border-left-color:var(--yellow); }
+  .exp-hero-banner.exp-danger-dangerous { border-left-color:var(--red); }
+  .exp-hero-crest {
+    font-size:34px; line-height:1; flex-shrink:0;
+    width:58px; height:58px; display:flex; align-items:center; justify-content:center;
+    background:var(--panel2); border:1px solid var(--line2); border-radius:12px;
+  }
+  .exp-hero-type {
+    font-size:11px; text-transform:uppercase; letter-spacing:1.2px;
+    color:var(--dim); font-weight:700; margin-bottom:2px;
+  }
+  .exp-hero-name { font-size:24px; font-weight:800; color:var(--cyan); line-height:1.15; }
+  .exp-hero-stats { display:flex; gap:10px; flex-wrap:wrap; }
+  .exp-stat-pill {
     display:flex; flex-direction:column; gap:2px;
-    background:var(--panel2); border:1px solid var(--line2); border-radius:8px;
-    padding:10px 18px; min-width:120px;
+    padding:9px 16px; border-radius:9px; min-width:96px;
+    background:var(--panel2); border:1px solid var(--line2);
+    border-top:3px solid var(--dim2);
   }
-  .exp-hero-label {
+  .exp-stat-pill.exp-lvl-lo { border-top-color:var(--green); }
+  .exp-stat-pill.exp-lvl-md { border-top-color:var(--yellow); }
+  .exp-stat-pill.exp-lvl-hi { border-top-color:var(--red); }
+  .exp-pill-gold { border-top-color:var(--gold); }
+  .exp-pill-k {
     font-size:9px; text-transform:uppercase; letter-spacing:.8px;
     color:var(--dim); font-weight:700;
   }
-  .exp-hero-value {
-    font-size:19px; font-weight:700; color:var(--fg); line-height:1.2;
-  }
-  .exp-hero-value .exp-danger-badge,
-  .exp-hero-value .exp-loot-tier { font-size:14px; padding:3px 14px; }
+  .exp-pill-v { font-size:18px; font-weight:800; color:var(--fg); line-height:1.1; }
+  .exp-pill-gold .exp-pill-v { color:var(--gold); font-size:15px; }
+  .exp-pill-plain .exp-pill-v { font-size:14px; font-weight:700; text-transform:capitalize; }
+  .exp-stat-pill.exp-lvl-lo .exp-pill-v { color:var(--green); }
+  .exp-stat-pill.exp-lvl-md .exp-pill-v { color:var(--yellow); }
+  .exp-stat-pill.exp-lvl-hi .exp-pill-v { color:var(--red); }
+  .exp-hero-wh { font-size:12px; color:var(--dim); font-weight:600; }
 
-  /* HOW TO TACKLE IT card */
-  .exp-tackle-card { grid-column:1 / -1; }
+  /* HOW TO TACKLE IT card — the playbook, styled like a quest sheet */
+  .exp-tackle-card { grid-column:1 / -1; border-top:3px solid var(--green); }
   .exp-tackle-card .exp-card-header { color:var(--green); }
+  .exp-tackle-card .exp-card-header::before { content:"🎯"; }
+  /* Steps as numbered "quest" chips instead of a plain <ol> */
   .exp-steps {
-    margin:4px 0 0; padding-left:20px; color:var(--fg);
-    line-height:1.7; font-size:13px;
+    list-style:none; counter-reset:step; margin:6px 0 0; padding:0;
   }
-  .exp-steps li { margin-bottom:4px; }
+  .exp-steps li {
+    counter-increment:step; position:relative;
+    padding:7px 10px 7px 40px; margin-bottom:6px;
+    background:var(--panel2); border:1px solid var(--line2); border-radius:7px;
+    font-size:13.5px; line-height:1.5; color:var(--fg);
+  }
+  .exp-steps li::before {
+    content:counter(step); position:absolute; left:9px; top:50%; transform:translateY(-50%);
+    width:22px; height:22px; display:flex; align-items:center; justify-content:center;
+    background:var(--green); color:#08121a; border-radius:50%;
+    font-size:12px; font-weight:800;
+  }
   .exp-safety {
-    margin-top:14px; padding:10px 14px; border-radius:6px;
-    background:rgba(224,85,85,.08); border:1px solid rgba(224,85,85,.35);
-    color:var(--fg); font-size:12.5px; line-height:1.6;
+    margin-top:16px; padding:12px 15px; border-radius:8px;
+    background:rgba(224,85,85,.1); border:1px solid rgba(224,85,85,.4);
+    color:var(--fg); font-size:13.5px; line-height:1.55; font-weight:500;
   }
   .exp-safety-tag {
-    display:inline-block; margin-right:6px; padding:1px 7px; border-radius:3px;
-    background:var(--red); color:#fff; font-size:9px; font-weight:700;
-    letter-spacing:.5px; vertical-align:middle;
+    display:inline-block; margin-right:8px; padding:2px 9px; border-radius:4px;
+    background:var(--red); color:#fff; font-size:10px; font-weight:800;
+    letter-spacing:.5px; vertical-align:middle; text-transform:uppercase;
   }
 
   /* Sticky "how hacking works" button — pinned to the bottom of the sidebar */

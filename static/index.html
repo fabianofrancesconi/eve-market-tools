@@ -265,6 +265,11 @@
   <div id="exp-tablewrap" class="tablewrap hidden">
     <div class="exp-layout">
       <div class="exp-sidebar">
+        <!-- Sticky primer button: pinned to the top, opens the rulebook overlay -->
+        <button id="exp-primer-toggle" class="exp-primer-toggle">
+          <span class="exp-primer-icon">⚡</span>
+          <span>How hacking works</span>
+        </button>
         <div class="exp-search-wrap">
           <input id="exp-search" type="text" placeholder="Search site name..." class="exp-search-input">
         </div>
@@ -273,11 +278,6 @@
           <div class="exp-recent-header">Recent lookups</div>
           <div id="exp-recent-list" class="exp-recent-list"></div>
         </div>
-        <!-- Sticky primer button: opens the hacking cheat-sheet overlay -->
-        <button id="exp-primer-toggle" class="exp-primer-toggle">
-          <span class="exp-primer-icon">⚡</span>
-          <span>How hacking works</span>
-        </button>
       </div>
       <div class="exp-resize-handle" id="exp-resize-handle"></div>
       <div class="exp-content" id="exp-content">

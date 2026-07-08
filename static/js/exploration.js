@@ -306,75 +306,119 @@ function expTackle(site){
   };
 }
 
-// ── Shared reference: the hacking minigame + fitting primer ─────────────────
+// ── Shared reference: the hacking minigame as a board-game rulebook ─────────
+// Structured like a tabletop rules sheet — Objective → Turn order → the Board →
+// the Pieces (foes to kill, tiles to grab) → Setup → Finding more sites — so a
+// newcomer can read it top-to-bottom once and know how to play.
 const EXP_PRIMER_HTML = `
-  <div class="exp-primer-grid">
-    <div class="exp-primer-sec">
-      <h4>The minigame</h4>
-      <ul>
-        <li>Kill the <b>System Core</b>. Lose if your Virus dies or time runs out.</li>
-        <li>Your Virus = <b>Coherence</b> (HP) + <b>Strength</b> (hit). You strike first, node hits back.</li>
-        <li>Grey = hidden. Green = clickable. Orange = explored.</li>
-        <li>Numbers = distance (1–5) to Core/utility/cache. Chase low numbers.</li>
-        <li>Explore wide before you fight — you might trip over the Core.</li>
-        <li>Two fails = can destroyed (drone sites excepted).</li>
-      </ul>
+  <div class="exp-rulebook">
+
+    <div class="exp-rule-obj">
+      <span class="exp-rule-obj-icon">🎯</span>
+      <div>
+        <div class="exp-rule-obj-t">Objective</div>
+        <div class="exp-rule-obj-d">Destroy the <b>System Core</b> before your Virus dies or the timer runs out. Crack the can, grab the loot.</div>
+      </div>
     </div>
-    <div class="exp-primer-sec">
-      <h4>Kill these</h4>
-      <ul>
-        <li><b>Firewall</b> — tanky wall, weak hit.</li>
-        <li><b>Anti-Virus</b> — glass cannon, dies fast.</li>
-        <li><b>Restoration Node</b> — heals defences. Kill first.</li>
-        <li><b>Virus Suppressor</b> — saps your Strength. Kill first.</li>
-      </ul>
-      <h4>Grab these</h4>
-      <ul>
-        <li><b>Self Repair</b> — +5–10 HP/turn ×3.</li>
-        <li><b>Kernel Rot</b> — halves a node's HP.</li>
-        <li><b>Polymorphic Shield</b> — blocks 2 hits.</li>
-        <li><b>Secondary Vector</b> — −20 HP/turn ×3.</li>
-        <li>Grab utilities fast. Open Data Caches only as a last resort (50/50).</li>
-      </ul>
+
+    <div class="exp-rule-step">
+      <div class="exp-rule-num">1</div>
+      <div class="exp-rule-body">
+        <div class="exp-rule-h">Bring your kit</div>
+        <div class="exp-rule-p"><b>Data</b> Analyzer for data sites, <b>Relic</b> Analyzer for relic — carry both. Your Virus has two stats: <b class="exp-coh">Coherence</b> (its HP) and <b class="exp-str">Strength</b> (damage per hit). T1 analyzer = 40 / 20, T2 = 60 / 30 (needs Hacking &amp; Archaeology&nbsp;V). Rigs (Memetic&nbsp;/&nbsp;Emission&nbsp;Scope) and skills add more.</div>
+      </div>
     </div>
-    <div class="exp-primer-sec">
-      <h4>Gear</h4>
-      <ul>
-        <li><b>Data</b> Analyzer → data sites. <b>Relic</b> → relic. Carry both.</li>
-        <li>T1 = 40/20. T2 = 60/30 (needs Hacking/Archaeology V).</li>
-        <li>Rigs: Memetic (data) / Emission Scope (relic), +10–20.</li>
-        <li>Hacking & Archaeology skills: +10 HP/level.</li>
-        <li>Cargo Scanner skips junk. Mobile Depot refits in space.</li>
-      </ul>
+
+    <div class="exp-rule-step">
+      <div class="exp-rule-num">2</div>
+      <div class="exp-rule-body">
+        <div class="exp-rule-h">Read the board</div>
+        <div class="exp-rule-p">A web of nodes. Only tiles next to explored ground are clickable.</div>
+        <div class="exp-legend">
+          <span class="exp-tile exp-tile-hidden">?</span><span class="exp-legend-l">Grey — hidden, not yet reachable</span>
+          <span class="exp-tile exp-tile-open">＋</span><span class="exp-legend-l">Green — clickable now</span>
+          <span class="exp-tile exp-tile-done">✓</span><span class="exp-legend-l">Orange — already explored</span>
+          <span class="exp-tile exp-tile-num">3</span><span class="exp-legend-l">Number — steps to the nearest Core / tile</span>
+        </div>
+      </div>
     </div>
-    <div class="exp-primer-sec">
-      <h4>Ship by danger</h4>
-      <ul>
-        <li><b>Highsec:</b> T1 frigate (Heron / Magnate).</li>
-        <li><b>Lowsec:</b> T1, or Astero to cloak.</li>
-        <li><b>Nullsec:</b> Covert Ops frigate / Astero. Cloak up.</li>
-        <li><b>W-space hack:</b> Covert Ops / Astero / Stratios.</li>
-        <li><b>W-space combat:</b> BC (C1–2) → BS (C3) → fleet (C4–6).</li>
-      </ul>
+
+    <div class="exp-rule-step">
+      <div class="exp-rule-num">3</div>
+      <div class="exp-rule-body">
+        <div class="exp-rule-h">Explore, then fight</div>
+        <div class="exp-rule-p">Click outward to reveal the map — chase the <b>low numbers</b>, they point at the Core. You may trip over it early. When you hit a node, <b>you strike first</b>, then it strikes back — so soften tough nodes with power-ups before trading blows.</div>
+      </div>
     </div>
-    <div class="exp-primer-sec">
-      <h4>Finding more sites</h4>
-      <ul>
-        <li>Each system rolls its own mix — you <b>can't</b> force other types where you stand. Hop systems and re-scan.</li>
-        <li>Move whole <b>constellations</b>, not just one jump — spawns are budgeted per constellation and respawn on a timer.</li>
-        <li>Watch the <b>Anomalies</b> tab too: combat (DED) &amp; ore sites need <b>no probes</b>, so probe-only scanning walks past them.</li>
-        <li>Deeper, lower-<b>truesec</b> (−0.7 to −1.0) rolls richer combat sites &amp; the best faction relic/data.</li>
-        <li>Hunt <b>quiet backwaters</b> — farmed systems run thin; systems nobody clears stack up.</li>
-      </ul>
+
+    <div class="exp-rule-step">
+      <div class="exp-rule-num">4</div>
+      <div class="exp-rule-body">
+        <div class="exp-rule-h">Win — or reset</div>
+        <div class="exp-rule-p">Kill the Core and the can opens. Lose the Virus <b>twice</b> and the can self-destructs (drone sites are forgiving). Two attempts, that's it.</div>
+      </div>
     </div>
+
+    <div class="exp-pieces-block">
+      <div class="exp-pieces-title exp-pieces-foe">☠ Enemy nodes — clear the path</div>
+      <div class="exp-pieces">
+        <div class="exp-piece exp-piece-foe"><span class="exp-piece-name">Firewall</span><span class="exp-piece-role">Tanky wall · weak hit</span></div>
+        <div class="exp-piece exp-piece-foe"><span class="exp-piece-name">Anti-Virus</span><span class="exp-piece-role">Glass cannon · dies fast</span></div>
+        <div class="exp-piece exp-piece-foe exp-piece-priority"><span class="exp-piece-name">Restoration Node</span><span class="exp-piece-role">Heals foes · KILL FIRST</span></div>
+        <div class="exp-piece exp-piece-foe exp-piece-priority"><span class="exp-piece-name">Virus Suppressor</span><span class="exp-piece-role">Saps Strength · KILL FIRST</span></div>
+      </div>
+      <div class="exp-pieces-title exp-pieces-buff">✦ Power-up tiles — grab on sight</div>
+      <div class="exp-pieces">
+        <div class="exp-piece exp-piece-buff"><span class="exp-piece-name">Self Repair</span><span class="exp-piece-role">+5–10 HP/turn ×3</span></div>
+        <div class="exp-piece exp-piece-buff"><span class="exp-piece-name">Kernel Rot</span><span class="exp-piece-role">Halves a node's HP</span></div>
+        <div class="exp-piece exp-piece-buff"><span class="exp-piece-name">Polymorphic Shield</span><span class="exp-piece-role">Blocks the next 2 hits</span></div>
+        <div class="exp-piece exp-piece-buff"><span class="exp-piece-name">Secondary Vector</span><span class="exp-piece-role">−20 HP/turn ×3 to a node</span></div>
+        <div class="exp-piece exp-piece-wild"><span class="exp-piece-name">Data Cache</span><span class="exp-piece-role">50/50 gift or trap · last resort</span></div>
+      </div>
+    </div>
+
+    <div class="exp-primer-grid">
+      <div class="exp-primer-sec">
+        <h4>Setup — pack the hold</h4>
+        <ul>
+          <li>Matching <b>Analyzer</b> (data / relic), plus a <b>Cargo Scanner</b> to skip junk cans.</li>
+          <li>A <b>Mobile Depot</b> lets you refit modules out in space.</li>
+          <li>Hacking &amp; Archaeology skills: <b>+10 Coherence</b> per level.</li>
+        </ul>
+      </div>
+      <div class="exp-primer-sec">
+        <h4>Ship by danger</h4>
+        <ul>
+          <li><b>Highsec:</b> T1 frigate (Heron / Magnate).</li>
+          <li><b>Lowsec:</b> T1, or Astero to cloak.</li>
+          <li><b>Nullsec:</b> Covert Ops frigate / Astero. Cloak up.</li>
+          <li><b>W-space hack:</b> Covert Ops / Astero / Stratios.</li>
+          <li><b>W-space combat:</b> BC (C1–2) → BS (C3) → fleet (C4–6).</li>
+        </ul>
+      </div>
+      <div class="exp-primer-sec">
+        <h4>Finding more sites</h4>
+        <ul>
+          <li>Each system rolls its own mix — you <b>can't</b> force other types where you stand. Hop systems and re-scan.</li>
+          <li>Move whole <b>constellations</b>, not just one jump — spawns are budgeted per constellation and respawn on a timer.</li>
+          <li>Watch the <b>Anomalies</b> tab too: combat (DED) &amp; ore sites need <b>no probes</b>, so probe-only scanning walks past them.</li>
+          <li>Deeper, lower-<b>truesec</b> (−0.7 to −1.0) rolls richer combat sites &amp; the best faction relic/data.</li>
+          <li>Hunt <b>quiet backwaters</b> — farmed systems run thin; systems nobody clears stack up.</li>
+        </ul>
+      </div>
+    </div>
+
   </div>`;
 
 let EXP = { selected: null, recent: [] };
 
-try { EXP.recent = JSON.parse(localStorage.getItem("exp-recent")) || []; } catch(e) { EXP.recent = []; }
+// Cap recents at 10 on load too — a legacy/oversized blob shouldn't overflow.
+const EXP_RECENT_MAX = 10;
+try { EXP.recent = (JSON.parse(localStorage.getItem("exp-recent")) || []).slice(0, EXP_RECENT_MAX); } catch(e) { EXP.recent = []; }
 
 function expSaveRecent(){
-  try { localStorage.setItem("exp-recent", JSON.stringify(EXP.recent.slice(0,10))); } catch(e){}
+  EXP.recent = EXP.recent.slice(0, EXP_RECENT_MAX);
+  try { localStorage.setItem("exp-recent", JSON.stringify(EXP.recent)); } catch(e){}
   // Also push into the server-synced settings blob so recents follow the
   // logged-in character across browsers/devices (loadSettings restores them).
   if(typeof saveLS==="function") saveLS();
@@ -466,7 +510,7 @@ function expSelect(site){
   // Only add new sites to the front — re-opening an existing recent leaves the
   // list order untouched so the sidebar doesn't reshuffle under the click.
   if(!EXP.recent.includes(site.name)){
-    EXP.recent = [site.name, ...EXP.recent].slice(0,10);
+    EXP.recent = [site.name, ...EXP.recent].slice(0, EXP_RECENT_MAX);
     expSaveRecent();
   }
   expRenderRecent();

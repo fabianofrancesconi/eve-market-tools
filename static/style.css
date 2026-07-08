@@ -1070,9 +1070,9 @@
     letter-spacing:.5px; vertical-align:middle; text-transform:uppercase;
   }
 
-  /* Sticky "how hacking works" button — pinned to the bottom of the sidebar */
+  /* Sticky "how hacking works" button — pinned to the top of the sidebar */
   .exp-primer-toggle {
-    position:sticky; bottom:0; margin-top:auto;
+    position:sticky; top:0; z-index:5; margin-bottom:4px;
     width:100%; display:flex; align-items:center; justify-content:center; gap:8px;
     padding:11px 14px; cursor:pointer; text-align:center;
     background:linear-gradient(180deg, var(--panel2), var(--panel));
@@ -1119,6 +1119,80 @@
   .exp-primer-sec ul { margin:0; padding-left:16px; font-size:13px; line-height:1.6; color:var(--fg); }
   .exp-primer-sec li { margin-bottom:3px; }
   .exp-primer-sec b { color:var(--cyan); font-weight:600; }
+
+  /* ── Board-game rulebook layout for the hacking primer ─────────────────── */
+  .exp-rulebook { display:flex; flex-direction:column; gap:12px; }
+  .exp-rulebook b { color:var(--cyan); font-weight:600; }
+  .exp-coh { color:var(--green) !important; }
+  .exp-str { color:var(--gold) !important; }
+
+  /* Objective banner — the headline goal, like the top of a rules card */
+  .exp-rule-obj {
+    display:flex; align-items:center; gap:14px;
+    padding:14px 16px; border-radius:10px;
+    background:linear-gradient(135deg, rgba(0,200,255,.12), var(--panel));
+    border:1px solid var(--cyan2); border-left:4px solid var(--cyan);
+  }
+  .exp-rule-obj-icon { font-size:28px; line-height:1; flex-shrink:0; }
+  .exp-rule-obj-t {
+    font-size:11px; text-transform:uppercase; letter-spacing:1.2px;
+    color:var(--cyan); font-weight:800; margin-bottom:2px;
+  }
+  .exp-rule-obj-d { font-size:13.5px; line-height:1.5; color:var(--fg); }
+
+  /* Numbered turn-sequence steps */
+  .exp-rule-step { display:flex; gap:12px; align-items:flex-start; }
+  .exp-rule-num {
+    flex-shrink:0; width:28px; height:28px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    background:var(--cyan); color:#08121a; font-weight:800; font-size:15px;
+    box-shadow:0 0 0 3px var(--panel2);
+  }
+  .exp-rule-body { flex:1; padding-bottom:4px; border-bottom:1px dashed var(--line); }
+  .exp-rule-step:last-of-type .exp-rule-body { border-bottom:none; }
+  .exp-rule-h {
+    font-size:13px; font-weight:800; color:var(--gold);
+    text-transform:uppercase; letter-spacing:.5px; margin-bottom:3px;
+  }
+  .exp-rule-p { font-size:13px; line-height:1.55; color:var(--fg); }
+
+  /* Board legend — the tile key */
+  .exp-legend {
+    display:grid; grid-template-columns:auto 1fr; gap:6px 10px;
+    align-items:center; margin-top:9px;
+  }
+  .exp-tile {
+    width:24px; height:24px; border-radius:5px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:13px; font-weight:800; border:1px solid var(--line2);
+  }
+  .exp-tile-hidden { background:var(--panel3); color:var(--dim2); }
+  .exp-tile-open   { background:rgba(74,222,128,.18); color:var(--green); border-color:var(--green); }
+  .exp-tile-done   { background:rgba(240,170,70,.16); color:var(--gold); border-color:var(--gold); }
+  .exp-tile-num    { background:var(--panel2); color:var(--cyan); border-color:var(--cyan2); }
+  .exp-legend-l { font-size:12.5px; color:var(--fg); line-height:1.3; }
+
+  /* Piece "cards" — foes and power-ups laid out like game tokens */
+  .exp-pieces-block { display:flex; flex-direction:column; gap:8px; }
+  .exp-pieces-title {
+    font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.6px;
+    margin-top:4px;
+  }
+  .exp-pieces-foe { color:var(--red); }
+  .exp-pieces-buff { color:var(--green); }
+  .exp-pieces { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:8px; }
+  .exp-piece {
+    display:flex; flex-direction:column; gap:2px;
+    padding:8px 10px; border-radius:8px;
+    background:var(--panel2); border:1px solid var(--line2); border-left:3px solid var(--dim2);
+  }
+  .exp-piece-name { font-size:13px; font-weight:700; color:var(--fg); line-height:1.2; }
+  .exp-piece-role { font-size:11px; color:var(--dim); line-height:1.3; }
+  .exp-piece-foe { border-left-color:var(--red); }
+  .exp-piece-buff { border-left-color:var(--green); }
+  .exp-piece-wild { border-left-color:#7b1fa2; }
+  .exp-piece-priority { background:rgba(224,85,85,.1); }
+  .exp-piece-priority .exp-piece-role { color:var(--red); font-weight:700; }
 
   /* Sources footer (mirrors the Abyss tab) */
   .exp-sources {

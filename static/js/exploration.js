@@ -357,6 +357,16 @@ const EXP_PRIMER_HTML = `
         <li><b>W-space combat:</b> BC (C1–2) → BS (C3) → fleet (C4–6).</li>
       </ul>
     </div>
+    <div class="exp-primer-sec">
+      <h4>Finding more sites</h4>
+      <ul>
+        <li>Each system rolls its own mix — you <b>can't</b> force other types where you stand. Hop systems and re-scan.</li>
+        <li>Move whole <b>constellations</b>, not just one jump — spawns are budgeted per constellation and respawn on a timer.</li>
+        <li>Watch the <b>Anomalies</b> tab too: combat (DED) &amp; ore sites need <b>no probes</b>, so probe-only scanning walks past them.</li>
+        <li>Deeper, lower-<b>truesec</b> (−0.7 to −1.0) rolls richer combat sites &amp; the best faction relic/data.</li>
+        <li>Hunt <b>quiet backwaters</b> — farmed systems run thin; systems nobody clears stack up.</li>
+      </ul>
+    </div>
   </div>`;
 
 let EXP = { selected: null, recent: [] };

@@ -201,6 +201,18 @@ async function scan(forceRefresh=false){
   const _il=$("#init-loading"); if(_il) _il.remove();
   const corp=$("#corp").value.trim();
   if(!corp){ setStatus("Enter a corporation name.",true); return; }
+  // Refresh only re-pulls offers + prices from ESI; it does NOT re-run the
+  // expensive tradeability / liquidity fill. Snapshot the current saturation
+  // values first so we can carry them onto the refreshed rows (the numbers move
+  // slowly, so last scan's figures stay meaningful) — only an explicit Scan
+  // fetches them fresh.
+  let carry=null;
+  if(forceRefresh){
+    carry={};
+    for(const r of STATE.rows) if(r.liq_loaded)
+      carry[r.offer_id]={daily_vol:r.daily_vol, days_to_clear:r.days_to_clear,
+        list_price:r.list_price, floor_age:r.floor_age};
+  }
   // Supersede any in-flight scan: abort it, bump the token, and wipe the table
   // now so the previous corp's rows don't linger while the new data loads.
   if(_scanAbort) _scanAbort.abort();
@@ -220,8 +232,23 @@ async function scan(forceRefresh=false){
     if(seq!==_scanSeq) return;  // a newer scan started while we waited
     if(data.error){ setStatus(data.error,true); return; }
     STATE.rows=data.rows; STATE.ctx.corp_id=data.corp_id; STATE.selOffer=null;
-    STATE.lastScanData=data; closeDetail(); renderLPStatus(); renderTable();
-    fillLiquidity(seq, signal);
+    STATE.lastScanData=data; closeDetail(); renderLPStatus();
+    if(forceRefresh){
+      // Carry over the prior saturation values instead of re-fetching; rows with
+      // no prior data (e.g. a newly added offer) render "no data" rather than
+      // spinning, since we won't fetch until the next Scan.
+      for(const r of STATE.rows){
+        const c=carry[r.offer_id];
+        if(c){ r.daily_vol=c.daily_vol; r.days_to_clear=c.days_to_clear;
+          r.list_price=c.list_price; r.floor_age=c.floor_age; }
+        r.liq_loaded=true;
+      }
+      renderTable();
+      persistScan("lp", {...data, rows:STATE.rows});
+    } else {
+      renderTable();
+      fillLiquidity(seq, signal);
+    }
   }catch(e){
     if(e.name==="AbortError") return;  // superseded; the newer scan owns the UI
     setStatus("Request failed: "+e,true);

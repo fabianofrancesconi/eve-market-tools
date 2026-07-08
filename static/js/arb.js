@@ -92,7 +92,7 @@ function renderArbStatus(){
   const mode=d.cross_station?`Cross-station ≤${d.max_jumps}J RT`:"Same-station";
   const stale = d.snap_expires && (Date.now()/1000) > d.snap_expires;
   const staleNote = stale
-    ? ` <span style="color:var(--yellow);font-size:12px">· order book expired — click ⟳ Refresh for latest prices</span>`
+    ? ` <span style="color:var(--yellow);font-size:13px">· order book expired — click ⟳ Refresh for latest prices</span>`
     : "";
   setStatus(
     `<span class="pill"><b>${d.region_name}</b></span>`

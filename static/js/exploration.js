@@ -396,7 +396,7 @@ function expLoot(site){
 
 function expRenderRecent(){
   const list = $("#exp-recent-list");
-  if(!EXP.recent.length){ list.innerHTML = '<div style="color:var(--dim);font-size:12px;padding:6px 10px">No recent lookups</div>'; return; }
+  if(!EXP.recent.length){ list.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:6px 10px">No recent lookups</div>'; return; }
   list.innerHTML = EXP.recent.map((name,i)=>{
     const site = EXP_SITES.find(s=> s.name===name);
     if(!site) return "";

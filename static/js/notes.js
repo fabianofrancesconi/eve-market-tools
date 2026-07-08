@@ -100,7 +100,7 @@ function _inlineEditLabel(item, n){
   const inp=document.createElement("input");
   inp.type="text"; inp.value=n.title;
   inp.className="ni-inline-edit";
-  inp.style.cssText="background:var(--bg);border:1px solid var(--cyan2);color:var(--fg);font:inherit;font-size:12px;padding:1px 4px;border-radius:3px;width:100%;outline:none;";
+  inp.style.cssText="background:var(--bg);border:1px solid var(--cyan2);color:var(--fg);font:inherit;font-size:13px;padding:1px 4px;border-radius:3px;width:100%;outline:none;";
   labelSpan.replaceWith(inp);
   inp.focus(); inp.select();
   const commit=()=>{

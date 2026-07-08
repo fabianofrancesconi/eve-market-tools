@@ -134,18 +134,18 @@ function expPlaybookId(site){
 function expShipFor(site){
   const sp = site.space;
   if(sp.includes("nullsec") || sp.includes("wormhole"))
-    return "A Covert Ops frigate (Buzzard, Helios, Anathema, Cheetah) or an Astero — a Covert Ops Cloak is essential this deep.";
+    return "Covert Ops frigate or Astero. Cloak is non-negotiable.";
   if(sp.includes("lowsec"))
-    return "A T1 exploration frigate works, but an Astero or Covert Ops frigate lets you warp cloaked and shake hunters.";
-  return "A cheap T1 exploration frigate — Heron, Imicus, Magnate or Probe. Losing one costs almost nothing.";
+    return "T1 frigate — or an Astero to warp cloaked.";
+  return "Cheap T1 frigate: Heron, Imicus, Magnate, Probe. It's disposable.";
 }
 
 function expWhShip(whClass){
   const c = Math.min(...(whClass && whClass.length ? whClass : [1]));
-  if(c<=2)   return "C1–C2 can be soloed by a single T2-fit battlecruiser.";
-  if(c===3)  return "C3: a battleship (Rattlesnake / well-fit Praxis) or a small T2 cruiser gang with logi.";
-  if(c===4)  return "C4: a fleet of 5–6 battleships.";
-  return "C5–C6: an organised fleet with dedicated logi + EWAR (capital escalation likely).";
+  if(c<=2)   return "C1–2: one T2 battlecruiser, solo.";
+  if(c===3)  return "C3: a battleship, or a small cruiser gang + logi.";
+  if(c===4)  return "C4: 5–6 battleships.";
+  return "C5–6: a real fleet with logi + EWAR. Caps may drop in.";
 }
 
 const GHOST_INFO = {
@@ -163,149 +163,146 @@ function expTackle(site){
   if(pid==="data_safe" || pid==="relic_safe"){
     const isData = site.type==="data";
     return {
-      modules: isData
-        ? "A Data Analyzer (carry a Relic Analyzer too so you can run whatever you scan). T2 pays off in null."
-        : "A Relic Analyzer (carry a Data Analyzer too). T2 pays off in null.",
+      modules: (isData ? "Data Analyzer" : "Relic Analyzer") + ". Pack both. T2 in null.",
       ship: expShipFor(site),
       steps: [
-        "Scan the signature to 100% with combat probes, then warp in.",
-        "There are no NPCs and no triggers — cargo-scan the cans and skip the junk.",
-        "Hack the good cans (see the minigame primer at the top of this tab).",
-        "Fly through the loot spew to scoop the cans that burst open on a successful hack.",
-        "Warp out — the loot is worth far more than the paper-thin hull.",
+        "Scan to 100%. Warp in.",
+        "No rats, no triggers. Cargo-scan, skip the junk.",
+        "Hack the good cans.",
+        "Fly through the loot spew to scoop it.",
+        "Warp out.",
       ],
-      note: "Two failed hacks destroy a can and its loot. Grab utility subsystems early and kill Restoration Nodes / Virus Suppressors first.",
-      safety: "No NPCs, no triggers — the only threat is other capsuleers. Watch D-scan and Local, and warp off the instant someone probes you.",
+      note: "Two failed hacks kill the can. Grab utilities early. Restoration Nodes & Suppressors die first.",
+      safety: "Only threat is other players. Watch D-scan. Someone probes you? Leave.",
     };
   }
 
   if(pid==="data_drone"){
     return {
-      modules: "A Data Analyzer, plus a flight of light combat drones.",
-      ship: "A T1 exploration frigate is plenty — the drones are trivial. Just carry drones.",
+      modules: "Data Analyzer + a flight of light drones.",
+      ship: "T1 frigate. Just bring drones.",
       steps: [
-        "Scan down and warp in (drone regions, nullsec only).",
-        "Start hacking the High-Security Containment Facility cans.",
-        "If a hack FAILS, a few rogue-drone frigates spawn — pop them with your drones, then resume hacking.",
-        "Hack the Research & Development can too (usually empty, but skipping it forfeits the escalation chance).",
-        "Watch for an escalation into a follow-up drone site, then warp out.",
+        "Warp in (drone null only).",
+        "Hack the Containment Facility cans.",
+        "Fail = drone frigates spawn. Pop them, keep hacking.",
+        "Hack the R&D can too (skip = no escalation).",
+        "Warp out.",
       ],
-      note: "Unlike pirate data sites, a failed hack here does NOT destroy the can — it spawns drones instead, so a fail is recoverable.",
-      safety: "The drones are weak — nullsec PvP is the real danger. Always carry drones so a failed hack can't strand you mid-site.",
+      note: "A fail here spawns drones — it does NOT destroy the can. Recoverable.",
+      safety: "Drones are trivial. Nullsec PvP is the real killer. Always carry drones.",
     };
   }
 
   if(pid==="wh_combat"){
     const isData = site.type==="data";
     return {
-      modules: (isData ? "A Data Analyzer" : "A Relic Analyzer")
-        + " on a full combat, omni-tanked fit — bring salvagers too.",
+      modules: (isData ? "Data Analyzer" : "Relic Analyzer") + " on a combat, omni-tank fit. Bring salvagers.",
       ship: expWhShip(site.whClass),
       steps: [
-        "Scan the signature and warp in with a COMBAT ship — this is a combat site, not a quiet hack.",
-        "Clear every Sleeper wave (kill the trigger ship to spawn the next). Omni-tank all four damage types.",
-        "Only once the grid is completely clear, hack the relic/data cans.",
-        "Salvage the Sleeper wrecks — the blue loot is most of the ISK.",
-        "Warp back to your exit hole.",
+        "Warp in with a COMBAT ship. This is a fight.",
+        "Clear every Sleeper wave (kill the trigger ship).",
+        "Grid clear? Now hack.",
+        "Salvage the wrecks — that's the ISK.",
+        "Warp to your exit hole.",
       ],
-      note: "Sleepers can't be neuted (infinite cap) but can be jammed/damped. Higher classes remote-rep each other and warp-scramble.",
-      safety: "No Local chat in wormhole space — watch D-scan constantly and always know your way out. Never stop to hack while Sleepers are alive.",
+      note: "Sleepers can't be neuted. Jam/damp them. Higher classes rep each other & scram.",
+      safety: "No Local in w-space. Watch D-scan, know your exit. Never hack while rats are alive.",
     };
   }
 
   if(pid.indexOf("ghost")===0){
     const g = GHOST_INFO[pid];
     return {
-      modules: "A Data Analyzer II — speed matters, so fit for a fast lock and a fast align.",
-      ship: "A tank-one-blast fit (~13k explosive shield EHP: MWD, Data Analyzer II, explosive shield hardener, extender) — Heron Navy Issue on a budget, or a Buzzard/Helios. Armour face-tankers (Stratios, T3C) can simply sit through the blast.",
+      modules: "Data Analyzer II. Fit for fast lock + fast align.",
+      ship: "Tank one blast (~13k explosive shield EHP) — cheap Heron Navy, or Buzzard/Helios. Or face-tank in a Stratios/T3C.",
       steps: [
-        "Warp in — landing cloaked delays the hidden timer until you decloak.",
-        "Cargo-scan and pick the single best can.",
-        "Hack that ONE can and grab the loot.",
-        "Warp out before the visible 30-second countdown hits 0. Skilled pilots grab 2–3 cans, but never gamble the final seconds.",
+        "Warp in cloaked — that delays the timer.",
+        "Cargo-scan. Pick the ONE best can.",
+        "Hack it. Grab loot.",
+        "Warp out before the 30s countdown ends.",
       ],
-      note: "A failed hack destroys only that can. Warping mid-hack auto-fails it and can trigger the blast early.",
-      safety: `One hack, grab, warp. When the countdown ends the ${g.rats} response fleet detonates EVERY can for ~${g.dmg} explosive damage in a 10 km radius, then warp-disrupts survivors (24 km). Be finished and 40+ km clear of the cans.`,
+      note: "A fail kills only that can. Warping mid-hack auto-fails it.",
+      safety: `One hack, grab, warp. Timer ends → ${g.rats} fleet blows EVERY can for ~${g.dmg} dmg (10 km). Be 40+ km clear.`,
     };
   }
 
   if(pid.indexOf("cache")===0){
-    const modules = "BOTH a Data AND a Relic Analyzer (T2 recommended). Turn Auto-Repeat OFF, and bring a Mobile Depot to refit and stash bulky loot.";
-    const note = "Shows up as a data site but needs both analyzers. The site clears from the scanner the moment you hack the first relic can, so save that for last.";
+    const modules = "BOTH analyzers (T2). Auto-Repeat OFF. Bring a Mobile Depot.";
+    const note = "Scans as data, needs both analyzers. First relic hack clears the site — save it for last.";
     if(pid==="cache_limited") return {
       modules, note,
-      ship: "Frigate-only site — a hacking frigate (Heron/Magnate), or an Astero on an armour fit. You need ~60 EHP/s sustained and cap stability to sit in the gas cloud.",
+      ship: "Frigate only. Heron/Magnate, or armour Astero. Need ~60 EHP/s, cap-stable.",
       steps: [
-        "Hack the Hyperfluct entry can (7/10 — a fail despawns the whole site in 2 min) and take the Spatial Rift.",
-        "Cargo-scan the depots. Approach on AFTERBURNER at ~200 m/s — never MWD.",
-        "Clear the wreck-cloud depot: hack its Remote Pressure Control Unit (7/10) to disperse the ~100 DPS cloud.",
-        "Handle the force-field depot — hack the RDGU (8/10), or DPS it down, or MWD inside before the bubble forms.",
-        "Hack the remaining depots, refit at your depot if needed, scoop, and leave.",
+        "Hack the Hyperfluct entry (7/10). Take the rift.",
+        "Cargo-scan. Approach on AFTERBURNER, ~200 m/s.",
+        "Wreck-cloud depot: hack its Pressure Control Unit (7/10).",
+        "Force-field depot: hack the RDGU (8/10) or DPS it.",
+        "Hack the rest, scoop, leave.",
       ],
-      safety: "Move slowly on an afterburner — MWD signature bloom trips the Unstable Plasma 'mines' (500 dmg + AoE) from much farther away. Do not fit an MWD for the approach.",
+      safety: "AB only, never MWD. Sig bloom trips the plasma mines (500 dmg) from way out.",
     };
     if(pid==="cache_superior") return {
       modules, note,
-      ship: "The hardest PvE site in EVE. A strongly-tanked T3C or battleship (~900–2,000 EHP/s, cap-stable) for the Turret/Archive rooms. A frigate can do everything EXCEPT the Archive, alarm-check and Mine rooms.",
+      ship: "Hardest PvE in EVE. Tanked T3C/battleship (900–2,000 EHP/s). A frigate skips Archive, alarm & Mine rooms.",
       steps: [
-        "Always run the Solray room first — the entry rift's warp distance tells you where you land (≈31,000 km = Solray).",
-        "Stabilise the Solray: hack the Observational Unit and place the matching disc to cut its ~600 DPS to ~20.",
-        "Mine room ONLY with ~70k EHP (a failed hack hits for 10–25k). No MWD — mines trip at 17–30 km.",
-        "Sentry/Turret room: ~900–1,000 EHP/s cap-stable, and NEVER shoot a tower — it trips the alarm and you get alpha'd.",
-        "Archive room only with a ~2,000 EHP/s tank; orbit the Cerebrum at 60 km to dodge the shockwaves.",
-        "Remote-rep the lone Pristine cache's battery for the bonus loot.",
+        "Solray room first (entry warp ≈31,000 km = Solray).",
+        "Stabilise it: hack Observational Unit, place the disc. 600 → 20 DPS.",
+        "Mine room only with 70k EHP. No MWD.",
+        "Turret room: 900–1,000 EHP/s. NEVER shoot a tower.",
+        "Archive only with 2,000 EHP/s. Orbit Cerebrum at 60 km.",
+        "Rep the Pristine cache battery for bonus loot.",
       ],
-      safety: "Never trip the alarm or aggress a Plasma Chamber (100,000 dmg, ~250 km) unless the procedure calls for it. Match your ship to each room and skip any phase your tank can't cover.",
+      safety: "Never trip the alarm. Never touch a Plasma Chamber (100,000 dmg). Skip any room your tank can't hold.",
     };
     return { // cache_standard
       modules, note,
-      ship: "Runnable in a T1 frigate but tight — you need ~1,200 EHP/s to tank the gas clouds indefinitely, plus light drones/sentries for the Sentry Towers. Bring a depot to refit between rooms.",
+      ship: "Tight in a T1 frigate. Need ~1,200 EHP/s + light drones. Bring a depot.",
       steps: [
-        "Hack the Hyperfluct (7/10), take the rift, and drop your depot.",
-        "Stay ~100 km off the alarm-cloud spawns; hack the 3 Coordinate Plotting cans (7/10 each).",
-        "Refit to an AB buffer + EM/Thermal hardeners + guns, rift to the back room, and kill the Sentry Towers (orbit tight, on an afterburner).",
-        "Refit to Relic + cargo + MWD, hack the storage depots, then the hidden room.",
-        "Cargo-scan and hack the valuable cans first; you may reset the self-destruct once (8/10).",
+        "Hack Hyperfluct (7/10). Take the rift. Drop your depot.",
+        "Stay ~100 km off the alarm-cloud spawns.",
+        "Hack the 3 Coordinate Plotting cans (7/10).",
+        "Refit, rift back, kill the Sentry Towers with drones.",
+        "Hack the depots, then the hidden room. Reset self-destruct once.",
       ],
-      safety: "Sentry Towers hit for ~1,000 out to 250 km with no cover — orbit tight on an afterburner and let drones/sentries kill them. Use an MWD only to escape; its sig bloom gets you alpha'd.",
+      safety: "Towers hit ~1,000 out to 250 km. Orbit tight on AB. MWD only to run — sig bloom = death.",
     };
   }
 
   if(pid==="gas_wh") return {
-    modules: "Gas Cloud Scoops (or Gas Cloud Harvesters on a mining hull).",
-    ship: "A Venture to start (gas bonus + built-in warp-core stab), or a Prospect to warp cloaked in hostile space.",
+    modules: "Gas Cloud Scoops.",
+    ship: "Venture (built-in stab), or Prospect to warp cloaked.",
     steps: [
-      "Warp in and start huffing — the site is undefended at first.",
-      "Stay ALIGNED to a safe (station/exit) the entire time.",
-      "Watch the clock and D-scan: Sleepers spawn ~15–20 min after the FIRST pilot arrived.",
-      "Warp off as the timer approaches, or the instant Sleepers show on D-scan.",
+      "Warp in. Start huffing.",
+      "Stay ALIGNED to a safe the whole time.",
+      "Sleepers spawn ~15–20 min after the FIRST pilot arrived.",
+      "Warp off as the timer nears, or on first D-scan hit.",
     ],
-    note: "The spawn timer is per-site (it started when the first pilot warped in), not per-pilot — you may have far less than the full 15–20 min.",
-    safety: "'Huff aligned and warp.' There's no Local in wormhole space, so D-scan is your only warning — the delayed Sleeper spawn will wipe an untanked Venture.",
+    note: "Timer is per-site, not per-pilot. You may have far less than 15 min.",
+    safety: "Huff aligned, warp. No Local — D-scan is your only warning. The spawn wipes a Venture.",
   };
 
   if(pid==="gas_myko") return {
     modules: "Gas Cloud Scoops.",
-    ship: "A Venture — nothing fancy needed.",
+    ship: "A Venture.",
     steps: [
       "Warp in.",
-      "Huff at your leisure — no NPCs, no timer.",
-      "Haul it home for Synth booster production.",
+      "Huff. No rats, no timer.",
+      "Haul home for Synth boosters.",
     ],
-    safety: "K-space Mykoserocin sites have no NPCs and no timer — completely safe. Mine as long as you like.",
+    safety: "Totally safe — no NPCs, no timer. Mine all day.",
   };
 
   // gas_cyto
   return {
-    modules: "Gas Cloud Scoops — plus a tank and/or drones for the unstable nebulae.",
-    ship: "A Venture for the safe nebulae; a tanked ship for the ones with NPCs or damaging clouds.",
+    modules: "Gas Cloud Scoops + a tank/drones for the nasty ones.",
+    ship: "Venture on safe nebulae; a tanked ship where there are rats or damage clouds.",
     steps: [
-      "Check the specific nebula name first — hazards vary a lot between them.",
-      "Safe nebulae (Emerald, Crimson, Bandit, Phoenix, Forgotten, Rapture): warp in and huff freely.",
-      "Hostile nebulae: expect NPCs and/or clouds hitting ~1,000–1,400 per mining cycle — tank them or avoid.",
-      "Huff and haul home for Improved booster production.",
+      "Check the nebula name — hazards vary a lot.",
+      "Safe: Emerald, Crimson, Bandit, Phoenix, Forgotten, Rapture. Huff freely.",
+      "Hostile: rats and/or ~1,000–1,400 dmg per cycle. Tank or skip.",
+      "Haul home for Improved boosters.",
     ],
-    safety: "Most Cytoserocin clouds are unstable — several deal damage every mining cycle and some have NPCs on grid. Know your nebula before you commit.",
+    safety: "Most clouds are unstable — many bite every cycle, some have rats. Know your nebula first.",
   };
 }
 
@@ -313,50 +310,51 @@ function expTackle(site){
 const EXP_PRIMER_HTML = `
   <div class="exp-primer-grid">
     <div class="exp-primer-sec">
-      <h4>The hacking minigame</h4>
-      <p>Goal: reduce the <b>System Core</b> to 0 Coherence. You lose if your Virus hits 0 Coherence or the timer runs out. Your Virus has <b>Coherence</b> (its health) and <b>Strength</b> (its damage); combat is turn-based — you hit first, the node hits back.</p>
+      <h4>The minigame</h4>
       <ul>
-        <li><b>Node colours:</b> grey = hidden, green = revealable (touching an explored node), orange = explored.</li>
-        <li><b>Numbers</b> on empty nodes = distance (1–5) to the nearest Core, utility or Data Cache. Follow the low numbers.</li>
-        <li>Explore <i>widely</i> before you pick fights — you may stumble onto the Core early and skip the defences entirely.</li>
-        <li><b>Two failed hacks destroy the can</b> (drone sites are the exception — a fail there just spawns drones).</li>
+        <li>Kill the <b>System Core</b>. Lose if your Virus dies or time runs out.</li>
+        <li>Your Virus = <b>Coherence</b> (HP) + <b>Strength</b> (hit). You strike first, node hits back.</li>
+        <li>Grey = hidden. Green = clickable. Orange = explored.</li>
+        <li>Numbers = distance (1–5) to Core/utility/cache. Chase low numbers.</li>
+        <li>Explore wide before you fight — you might trip over the Core.</li>
+        <li>Two fails = can destroyed (drone sites excepted).</li>
       </ul>
     </div>
     <div class="exp-primer-sec">
-      <h4>Defensive nodes — kill these</h4>
+      <h4>Kill these</h4>
       <ul>
-        <li><b>Firewall</b> — high Coherence, weak hit. A tanky wall.</li>
-        <li><b>Anti-Virus</b> — low Coherence, hits hard. Dies fast.</li>
-        <li><b>Restoration Node</b> — heals +20 Coherence to a random defence each turn. <b>Kill first.</b></li>
-        <li><b>Virus Suppressor</b> — cuts your Strength by 15 (floor 10). <b>Kill first.</b></li>
+        <li><b>Firewall</b> — tanky wall, weak hit.</li>
+        <li><b>Anti-Virus</b> — glass cannon, dies fast.</li>
+        <li><b>Restoration Node</b> — heals defences. Kill first.</li>
+        <li><b>Virus Suppressor</b> — saps your Strength. Kill first.</li>
       </ul>
-      <h4>Utility nodes — grab &amp; use</h4>
+      <h4>Grab these</h4>
       <ul>
-        <li><b>Self Repair</b> — +5–10 Virus Coherence/turn for 3 turns.</li>
-        <li><b>Kernel Rot</b> — halves a node's Coherence.</li>
-        <li><b>Polymorphic Shield</b> — blocks the next 2 hits on you.</li>
-        <li><b>Secondary Vector</b> — −20 Coherence/turn for 3 turns (great vs Suppressors).</li>
+        <li><b>Self Repair</b> — +5–10 HP/turn ×3.</li>
+        <li><b>Kernel Rot</b> — halves a node's HP.</li>
+        <li><b>Polymorphic Shield</b> — blocks 2 hits.</li>
+        <li><b>Secondary Vector</b> — −20 HP/turn ×3.</li>
+        <li>Grab utilities fast. Open Data Caches only as a last resort (50/50).</li>
       </ul>
-      <p>Grab utilities the moment they're exposed — a later defensive node can wall them off. Open Data Caches only as a last resort (50/50 to be good or bad).</p>
     </div>
     <div class="exp-primer-sec">
-      <h4>Analyzers, rigs &amp; skills</h4>
+      <h4>Gear</h4>
       <ul>
-        <li><b>Data Analyzer</b> opens data sites; <b>Relic Analyzer</b> opens relic sites — carry both. The <b>Integrated Analyzer</b> does both but with weaker stats and fewer utility slots.</li>
-        <li><b>T1</b> = 40 Coherence / 20 Strength. <b>T2</b> = 60 / 30 (needs Hacking V / Archaeology V).</li>
-        <li><b>Rigs:</b> Memetic Algorithm Bank (data) / Emission Scope Sharpener (relic) — +10 (T1) or +20 (T2) Coherence.</li>
-        <li><b>Skills:</b> Hacking (data) &amp; Archaeology (relic) each give +10 Coherence/level. Astrometrics + support skills sharpen scanning.</li>
-        <li>Exploration frigates add a <b>+5 virus-strength</b> role bonus. A <b>Cargo Scanner</b> skips junk cans; a <b>Mobile Depot</b> lets you refit in space.</li>
+        <li><b>Data</b> Analyzer → data sites. <b>Relic</b> → relic. Carry both.</li>
+        <li>T1 = 40/20. T2 = 60/30 (needs Hacking/Archaeology V).</li>
+        <li>Rigs: Memetic (data) / Emission Scope (relic), +10–20.</li>
+        <li>Hacking & Archaeology skills: +10 HP/level.</li>
+        <li>Cargo Scanner skips junk. Mobile Depot refits in space.</li>
       </ul>
     </div>
     <div class="exp-primer-sec">
       <h4>Ship by danger</h4>
       <ul>
-        <li><b>Highsec:</b> T1 exploration frigate (Heron / Imicus / Magnate / Probe).</li>
-        <li><b>Lowsec:</b> T1 frigate, or an Astero / Covert Ops frigate to warp cloaked.</li>
-        <li><b>Nullsec:</b> Covert Ops frigate or Astero — a Covert Ops Cloak is essential.</li>
-        <li><b>Wormhole (scan/hack only):</b> Covert Ops frigate, Astero or Stratios.</li>
-        <li><b>Wormhole combat (Sleepers):</b> battlecruiser (C1–2) → battleship / small gang (C3) → fleet (C4–6). T3 cruisers are prized.</li>
+        <li><b>Highsec:</b> T1 frigate (Heron / Magnate).</li>
+        <li><b>Lowsec:</b> T1, or Astero to cloak.</li>
+        <li><b>Nullsec:</b> Covert Ops frigate / Astero. Cloak up.</li>
+        <li><b>W-space hack:</b> Covert Ops / Astero / Stratios.</li>
+        <li><b>W-space combat:</b> BC (C1–2) → BS (C3) → fleet (C4–6).</li>
       </ul>
     </div>
   </div>`;
@@ -372,14 +370,40 @@ function expSaveRecent(){
   if(typeof saveLS==="function") saveLS();
 }
 
+// Collapse a site's danger / loot into a shared low·med·high scale so recent
+// cards read at a glance. Returns {lvl:1-3, label, cls}.
+function expRisk(site){
+  return site.danger==="safe"     ? {lvl:1, label:"Low",  cls:"exp-lvl-lo"}
+       : site.danger==="caution"  ? {lvl:2, label:"Med",  cls:"exp-lvl-md"}
+       :                            {lvl:3, label:"High", cls:"exp-lvl-hi"};
+}
+function expLoot(site){
+  const t = site.lootTier||"low";
+  return t==="low"    ? {lvl:1, label:"Low",  cls:"exp-lvl-lo"}
+       : t==="medium" ? {lvl:2, label:"Med",  cls:"exp-lvl-md"}
+       :                {lvl:3, label:"High", cls:"exp-lvl-hi"};  // high + jackpot
+}
+// A 3-segment meter, `lvl` of them filled in the level's colour.
+function expMeter(m){
+  const seg = i => `<span class="exp-seg${i<m.lvl?" "+m.cls:""}"></span>`;
+  return `<span class="exp-meter">${seg(0)}${seg(1)}${seg(2)}</span>`;
+}
+
 function expRenderRecent(){
   const list = $("#exp-recent-list");
   if(!EXP.recent.length){ list.innerHTML = '<div style="color:var(--dim);font-size:12px;padding:6px 10px">No recent lookups</div>'; return; }
   list.innerHTML = EXP.recent.map((name,i)=>{
     const site = EXP_SITES.find(s=> s.name===name);
     if(!site) return "";
-    const dangerCls = site.danger==="safe"?"exp-badge-safe":site.danger==="caution"?"exp-badge-caution":"exp-badge-dangerous";
-    return `<div class="exp-recent-item" data-idx="${i}"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(site.name)}</span><span class="exp-result-badge ${dangerCls}">${esc(site.danger)}</span><button class="exp-recent-rm" data-ri="${i}" title="Remove">×</button></div>`;
+    const risk = expRisk(site), loot = expLoot(site);
+    return `<div class="exp-recent-item exp-recent-card exp-danger-${site.danger}" data-idx="${i}">
+      <button class="exp-recent-rm" data-ri="${i}" title="Remove">×</button>
+      <div class="exp-recent-name">${esc(site.name)}</div>
+      <div class="exp-recent-stats">
+        <span class="exp-stat"><span class="exp-stat-k">Risk</span>${expMeter(risk)}<span class="exp-stat-v ${risk.cls}">${risk.label}</span></span>
+        <span class="exp-stat"><span class="exp-stat-k">Loot</span>${expMeter(loot)}<span class="exp-stat-v ${loot.cls}">${loot.label}</span></span>
+      </div>
+    </div>`;
   }).join("");
   list.querySelectorAll(".exp-recent-item").forEach(el=>{
     el.onclick = (e)=>{ if(e.target.classList.contains("exp-recent-rm")) return; const site = EXP_SITES.find(s=>s.name===EXP.recent[+el.dataset.idx]); if(site) expSelect(site); };
@@ -424,8 +448,12 @@ function expSelect(site){
   $("#exp-empty").classList.add("hidden");
   $("#exp-cards").classList.remove("hidden");
 
-  EXP.recent = [site.name, ...EXP.recent.filter(n=>n!==site.name)].slice(0,10);
-  expSaveRecent();
+  // Only add new sites to the front — re-opening an existing recent leaves the
+  // list order untouched so the sidebar doesn't reshuffle under the click.
+  if(!EXP.recent.includes(site.name)){
+    EXP.recent = [site.name, ...EXP.recent].slice(0,10);
+    expSaveRecent();
+  }
   expRenderRecent();
 
   $("#exp-site-title").textContent = site.name;
@@ -489,21 +517,23 @@ document.addEventListener("click", (e)=>{
 });
 expRenderRecent();
 
-// Collapsible "how hacking works" primer — populated once, toggled open/closed.
+// "How hacking works" cheat-sheet — a slide-out overlay opened from the sticky
+// sidebar button. Populated once; closes on ✕, backdrop click, or Escape.
 (function(){
   const body = $("#exp-primer-body");
   const toggle = $("#exp-primer-toggle");
-  if(!body || !toggle) return;
+  const overlay = $("#exp-primer-overlay");
+  const close = $("#exp-primer-close");
+  if(!body || !toggle || !overlay) return;
   body.innerHTML = EXP_PRIMER_HTML;
-  const KEY = "exp-primer-open";
   const setOpen = (open)=>{
-    body.classList.toggle("hidden", !open);
-    toggle.classList.toggle("open", open);
-    try { localStorage.setItem(KEY, open ? "1" : "0"); } catch(e){}
+    overlay.classList.toggle("hidden", !open);
+    toggle.classList.toggle("active", open);
   };
-  // Default open on first visit so newcomers see the mechanics.
-  setOpen(localStorage.getItem(KEY) !== "0");
-  toggle.onclick = ()=> setOpen(body.classList.contains("hidden"));
+  toggle.onclick = ()=> setOpen(overlay.classList.contains("hidden"));
+  if(close) close.onclick = ()=> setOpen(false);
+  overlay.addEventListener("click", (e)=>{ if(e.target===overlay) setOpen(false); });
+  document.addEventListener("keydown", (e)=>{ if(e.key==="Escape") setOpen(false); });
 })();
 
 // Sidebar resize handle

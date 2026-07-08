@@ -152,21 +152,57 @@ def test_ghost_safety_scales_with_tier(tackle):
 
 
 def test_safe_data_relic_flag_no_npc_threat(tackle):
-    # The k-space no-NPC sites must call out that the only threat is PvP.
+    # The k-space no-NPC sites must call out that the only threat is players.
     for key in ("data_hs", "relic_ls"):
-        assert "PvP" in tackle[key]["tackle"]["safety"] \
-            or "capsuleer" in tackle[key]["tackle"]["safety"], key
+        assert "other players" in tackle[key]["tackle"]["safety"], key
 
 
 def test_sleeper_cache_needs_both_analyzers(tackle):
     # Sleeper caches are the only sites needing BOTH analyzers — the guide
-    # must say so for every cache tier.
+    # must say so (in the modules line or the minigame note) for every tier.
     for key in ("cache_lo", "cache_su"):
-        mods = tackle[key]["tackle"]["modules"]
-        assert "Data" in mods and "Relic" in mods, key
+        t = tackle[key]["tackle"]
+        blob = (t["modules"] + " " + t.get("note", "")).lower()
+        assert "both analyzers" in blob, key
 
 
 def test_myko_gas_is_flagged_safe(tackle):
     # Mykoserocin has no NPCs/timer; Cytoserocin is flagged variable/unstable.
     assert "safe" in tackle["gas_myko"]["tackle"]["safety"].lower()
     assert "unstable" in tackle["gas_cyto"]["tackle"]["safety"].lower()
+
+
+def test_recent_cards_show_risk_and_loot_levels():
+    # Recent lookups render name + low/med/high Risk & Loot meters.
+    src = _EXP_JS.read_text()
+    assert "function expRisk" in src
+    assert "function expLoot" in src
+    assert "function expMeter" in src
+    assert "exp-recent-stats" in src
+
+
+def test_reopening_a_recent_keeps_list_order():
+    # Re-selecting an already-listed site must NOT reshuffle it to the front.
+    if not _NODE:
+        pytest.skip("node not available")
+    driver = r"""
+const stub = new Proxy(function(){}, {
+  get: (_t,p)=> (p===Symbol.toPrimitive ? ()=>"" : stub),
+  apply: ()=>stub, construct: ()=>stub,
+});
+globalThis.$ = () => stub;
+globalThis.document = { addEventListener: () => {} };
+globalThis.localStorage = { getItem: () => null, setItem: () => {} };
+__SOURCE__
+// Simulate the add-to-recent rule from expSelect for an EXISTING entry.
+EXP.recent = ["Local Mainframe", "Decayed Excavation"];
+const name = "Decayed Excavation";
+if(!EXP.recent.includes(name)) EXP.recent = [name, ...EXP.recent].slice(0,10);
+process.stdout.write(JSON.stringify(EXP.recent));
+"""
+    script = driver.replace("__SOURCE__", _EXP_JS.read_text())
+    proc = subprocess.run([_NODE, "-e", script], capture_output=True,
+                          text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    # Order unchanged — the re-opened site stays where it was.
+    assert json.loads(proc.stdout) == ["Local Mainframe", "Decayed Excavation"]

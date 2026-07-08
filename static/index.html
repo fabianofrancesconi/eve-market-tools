@@ -273,16 +273,23 @@
           <div class="exp-recent-header">Recent lookups</div>
           <div id="exp-recent-list" class="exp-recent-list"></div>
         </div>
+        <!-- Sticky primer button: opens the hacking cheat-sheet overlay -->
+        <button id="exp-primer-toggle" class="exp-primer-toggle">
+          <span class="exp-primer-icon">⚡</span>
+          <span>How hacking works</span>
+        </button>
       </div>
       <div class="exp-resize-handle" id="exp-resize-handle"></div>
       <div class="exp-content" id="exp-content">
-        <!-- Collapsible primer: the hacking minigame + fitting/ship reference -->
-        <div class="exp-primer">
-          <button id="exp-primer-toggle" class="exp-primer-toggle">
-            <span class="exp-primer-caret">▸</span>
-            <span>How hacking works — the minigame, analyzers &amp; ships</span>
-          </button>
-          <div id="exp-primer-body" class="exp-primer-body hidden"></div>
+        <!-- Hacking cheat-sheet: slide-out overlay, opened from the sidebar -->
+        <div id="exp-primer-overlay" class="exp-primer-overlay hidden">
+          <div class="exp-primer-panel">
+            <div class="exp-primer-head">
+              <span>How hacking works</span>
+              <button id="exp-primer-close" class="exp-primer-close">✕</button>
+            </div>
+            <div id="exp-primer-body" class="exp-primer-body"></div>
+          </div>
         </div>
         <div id="exp-empty" class="exp-empty">Search for a site name to see its details</div>
         <div id="exp-cards" class="exp-cards hidden">

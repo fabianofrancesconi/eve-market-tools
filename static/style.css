@@ -281,6 +281,7 @@
   }
   #statusbar.err { color:var(--red); }
   #statusbar .ts { color:var(--dim); font-size:11px; margin-left:4px; }
+  #statusbar .ts .ts-stale { color:var(--gold); font-weight:600; cursor:help; }
   #statusbar .pill {
     display:inline-flex; align-items:center; gap:5px;
     background:var(--panel3); border:1px solid var(--line2);

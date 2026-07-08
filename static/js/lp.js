@@ -206,9 +206,12 @@ async function scan(forceRefresh=false){
   // values first so we can carry them onto the refreshed rows (the numbers move
   // slowly, so last scan's figures stay meaningful) — only an explicit Scan
   // fetches them fresh.
-  let carry=null;
+  let carry=null, carryComputedAt=null;
   if(forceRefresh){
     carry={};
+    // Keep the original compute time so the age shown in the status line reflects
+    // when these numbers were actually calculated, not this refresh.
+    carryComputedAt=STATE.lastScanData && STATE.lastScanData.liq_computed_at || null;
     for(const r of STATE.rows) if(r.liq_loaded)
       carry[r.offer_id]={daily_vol:r.daily_vol, days_to_clear:r.days_to_clear,
         list_price:r.list_price, floor_age:r.floor_age};
@@ -243,7 +246,8 @@ async function scan(forceRefresh=false){
           r.list_price=c.list_price; r.floor_age=c.floor_age; }
         r.liq_loaded=true;
       }
-      renderTable();
+      if(carryComputedAt) data.liq_computed_at=carryComputedAt;
+      renderTable(); renderLPStatus();
       persistScan("lp", {...data, rows:STATE.rows});
     } else {
       renderTable();
@@ -296,7 +300,10 @@ async function fillLiquidity(seq, signal){
       if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear; r.list_price=e.list_price; r.floor_age=e.floor_age; }
       r.liq_loaded=true;
     }
-    renderTable();
+    // Stamp when these saturation figures were computed so the status line can
+    // flag them as stale once carried across enough Refreshes (see renderLPStatus).
+    if(STATE.lastScanData) STATE.lastScanData.liq_computed_at=Math.floor(Date.now()/1000);
+    renderTable(); renderLPStatus();
     if(STATE.detail&&STATE.selOffer) renderDetail();
     persistScan("lp", STATE.lastScanData ? {...STATE.lastScanData, rows:STATE.rows} : null);
   }catch(e){
@@ -306,13 +313,23 @@ async function fillLiquidity(seq, signal){
   }
 }
 
+// Tradeability etc. are carried across Refreshes rather than recomputed, so they
+// can drift out of date. Flag them once they're older than this.
+const LIQ_STALE_SEC = 2*3600;
 function renderLPStatus(){
   const d=STATE.lastScanData; if(!d||ACTIVE_TAB!=="lp") return;
+  let trade="";
+  if(d.liq_computed_at){
+    const stale=(Date.now()/1000 - d.liq_computed_at) > LIQ_STALE_SEC;
+    trade = stale
+      ? ` · <span class="ts-stale" data-tip="Tradeability, Daily Vol, Days to Clear, List @ and Floor age were calculated ${fmtTs(d.liq_computed_at)} and aren't refreshed by ⟳ Refresh. Click Scan to recompute.">⚠ tradeability ${fmtTs(d.liq_computed_at)}</span>`
+      : ` · tradeability ${fmtTs(d.liq_computed_at)}`;
+  }
   setStatus(
     `<span class="pill"><b>${d.corp_name}</b></span>`
     +`<span class="pill"><b>${d.count}</b> offers</span>`
     +`<span class="pill"><b>${Number(d.lp).toLocaleString()}</b> LP · list vs instant sell</span>`
-    +`<span class="ts">offers ${fmtTs(d.offers_fetched_at)} · prices ${fmtTs(d.scanned_at)}</span>`);
+    +`<span class="ts">offers ${fmtTs(d.offers_fetched_at)} · prices ${fmtTs(d.scanned_at)}${trade}</span>`);
 }
 
 function saveLPSort(){

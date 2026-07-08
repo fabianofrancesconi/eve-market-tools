@@ -123,6 +123,20 @@
   .lp-mylp { text-transform:none; letter-spacing:0; font-weight:600; color:var(--gold);
     font-size:10px; margin-left:6px; }
   #lp.locked, #corp.locked { color:var(--gold); border-color:var(--line2); opacity:.85; cursor:not-allowed; }
+  /* While character data is loading we don't yet know the corp / LP budget, so
+     blank the field's value and overlay a small spinner instead of showing a
+     stale/default number that gets overwritten a moment later. */
+  #lp.loading, #corp.loading { color:transparent; text-shadow:none; }
+  #lp.loading::placeholder, #corp.loading::placeholder { color:transparent; }
+  .corp-wrap:has(input.loading)::after,
+  .field:has(#lp.loading)::after {
+    content:""; position:absolute; width:12px; height:12px;
+    border:2px solid var(--line2); border-top-color:var(--cyan);
+    border-radius:50%; animation:spin .7s linear infinite; pointer-events:none;
+  }
+  .corp-wrap:has(input.loading)::after { right:9px; top:50%; margin-top:-6px; }
+  .field:has(#lp.loading) { position:relative; }
+  .field:has(#lp.loading)::after { right:9px; bottom:8px; }
   .char-jobs-tbl .timer-cell { color:var(--cyan); font-weight:600; font-variant-numeric:tabular-nums; }
   .char-jobs-tbl .timer-cell.done { color:var(--green2); }
 

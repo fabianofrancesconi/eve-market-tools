@@ -89,10 +89,14 @@ async function checkAuth(){
   renderAuthChip();
   if(AUTH.loggedIn){
     // Lock LP + corp fields until char data arrives so the UI doesn't show
-    // stale/default values that get overwritten moments later.
+    // stale/default values that get overwritten moments later. When we don't
+    // yet have any char data (first load), also blank them and show a spinner
+    // instead of the stale value; on later refreshes the fields already hold
+    // the correct values so we leave them visible to avoid a flicker.
     const _lp=$("#lp"), _corp=$("#corp");
     _lp.readOnly=true; _lp.classList.add("locked");
     _corp.readOnly=true; _corp.classList.add("locked");
+    if(!AUTH.data){ _lp.classList.add("loading"); _corp.classList.add("loading"); }
     refreshCharData();
     openCharStream();
     if(location.pathname==="/character" || location.pathname==="/char") switchTab("char", {url:false});
@@ -197,8 +201,11 @@ async function _doRefreshCharData(force){
   setSyncCountdown(d.next_sync_in);
   const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge();
-  // Corp field was locked during the char-data fetch; unlock now that data arrived.
+  // Corp field was locked during the char-data fetch; unlock now that data
+  // arrived. Clear the loading spinner on both fields — updateMyLpBadge() above
+  // has already set the LP budget, and renderCharData() restored the corp value.
   $("#corp").readOnly=false; $("#corp").classList.remove("locked");
+  $("#corp").classList.remove("loading"); $("#lp").classList.remove("loading");
   // Re-run the LP scan when the budget changed OR when this is the first char
   // data load and no scan has run yet (we skip auto-scan at boot until char
   // data arrives so the budget is fresh).

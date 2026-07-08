@@ -978,6 +978,65 @@
   .exp-hero-value .exp-danger-badge,
   .exp-hero-value .exp-loot-tier { font-size:14px; padding:3px 14px; }
 
+  /* HOW TO TACKLE IT card */
+  .exp-tackle-card { grid-column:1 / -1; }
+  .exp-tackle-card .exp-card-header { color:var(--green); }
+  .exp-steps {
+    margin:4px 0 0; padding-left:20px; color:var(--fg);
+    line-height:1.7; font-size:13px;
+  }
+  .exp-steps li { margin-bottom:4px; }
+  .exp-safety {
+    margin-top:14px; padding:10px 14px; border-radius:6px;
+    background:rgba(224,85,85,.08); border:1px solid rgba(224,85,85,.35);
+    color:var(--fg); font-size:12.5px; line-height:1.6;
+  }
+  .exp-safety-tag {
+    display:inline-block; margin-right:6px; padding:1px 7px; border-radius:3px;
+    background:var(--red); color:#fff; font-size:9px; font-weight:700;
+    letter-spacing:.5px; vertical-align:middle;
+  }
+
+  /* Collapsible hacking primer */
+  .exp-primer {
+    border:1px solid var(--line2); border-radius:8px;
+    background:var(--panel); margin-bottom:18px; overflow:hidden;
+  }
+  .exp-primer-toggle {
+    width:100%; display:flex; align-items:center; gap:9px;
+    padding:11px 16px; background:var(--panel2); border:none;
+    border-bottom:1px solid transparent; cursor:pointer;
+    color:var(--cyan); font-size:12px; font-weight:700;
+    letter-spacing:.5px; text-transform:uppercase; text-align:left;
+  }
+  .exp-primer-toggle:hover { background:var(--panel3); }
+  .exp-primer-toggle.open { border-bottom-color:var(--line); }
+  .exp-primer-caret { display:inline-block; transition:transform .12s; }
+  .exp-primer-toggle.open .exp-primer-caret { transform:rotate(90deg); }
+  .exp-primer-body { padding:16px; }
+  .exp-primer-body.hidden { display:none; }
+  .exp-primer-grid {
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));
+    gap:20px;
+  }
+  .exp-primer-sec h4 {
+    margin:0 0 6px; font-size:12px; color:var(--gold);
+    text-transform:uppercase; letter-spacing:.5px;
+  }
+  .exp-primer-sec h4:not(:first-child) { margin-top:14px; }
+  .exp-primer-sec p { margin:0 0 8px; font-size:12.5px; line-height:1.6; color:var(--fg); }
+  .exp-primer-sec ul { margin:0; padding-left:18px; font-size:12.5px; line-height:1.65; color:var(--fg); }
+  .exp-primer-sec li { margin-bottom:3px; }
+  .exp-primer-sec b { color:var(--cyan); font-weight:600; }
+
+  /* Sources footer (mirrors the Abyss tab) */
+  .exp-sources {
+    margin-top:18px; padding-top:12px; border-top:1px solid var(--line);
+    font-size:11px; color:var(--dim); line-height:1.7;
+  }
+  .exp-sources a { color:var(--cyan); }
+  .exp-sources b { color:var(--fg); }
+
   /* ── Login landing (unauthenticated, multi-user deploy) ─────────────── */
   /* .pre-auth hides the app chrome from first paint until boot.js resolves
      auth — otherwise the shell flashes on screen before the landing appears.

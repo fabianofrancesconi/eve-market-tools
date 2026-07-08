@@ -276,6 +276,14 @@
       </div>
       <div class="exp-resize-handle" id="exp-resize-handle"></div>
       <div class="exp-content" id="exp-content">
+        <!-- Collapsible primer: the hacking minigame + fitting/ship reference -->
+        <div class="exp-primer">
+          <button id="exp-primer-toggle" class="exp-primer-toggle">
+            <span class="exp-primer-caret">▸</span>
+            <span>How hacking works — the minigame, analyzers &amp; ships</span>
+          </button>
+          <div id="exp-primer-body" class="exp-primer-body hidden"></div>
+        </div>
         <div id="exp-empty" class="exp-empty">Search for a site name to see its details</div>
         <div id="exp-cards" class="exp-cards hidden">
           <h2 id="exp-site-title" class="exp-site-title"></h2>
@@ -293,6 +301,20 @@
               <div class="exp-card-header">LOOT</div>
               <div class="exp-card-body" id="exp-loot-body"></div>
             </div>
+            <div class="exp-card exp-tackle-card" id="exp-tackle-card">
+              <div class="exp-card-header">HOW TO TACKLE IT</div>
+              <div class="exp-card-body" id="exp-tackle-body"></div>
+            </div>
+          </div>
+          <div class="exp-sources">
+            <b>Sources:</b> Mechanics, tactics &amp; numbers from the
+            <a href="https://wiki.eveuniversity.org/Hacking" target="_blank" rel="noopener">EVE University wiki</a>
+            (<a href="https://wiki.eveuniversity.org/Exploration" target="_blank" rel="noopener">Exploration</a>,
+            <a href="https://wiki.eveuniversity.org/Ghost_Sites" target="_blank" rel="noopener">Ghost Sites</a>,
+            <a href="https://wiki.eveuniversity.org/Sleeper_Cache" target="_blank" rel="noopener">Sleeper Cache</a>,
+            <a href="https://wiki.eveuniversity.org/Wormhole_sites" target="_blank" rel="noopener">Wormhole sites</a>,
+            <a href="https://wiki.eveuniversity.org/Gas_cloud_harvesting" target="_blank" rel="noopener">Gas harvesting</a>).
+            Exact damage / timer / DPS figures are per-wiki and shift between patches — treat them as approximate.
           </div>
         </div>
       </div>

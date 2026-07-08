@@ -192,10 +192,21 @@ function renderTable(){
   tbody.querySelectorAll("tr").forEach(tr=>tr.onclick=()=>openDetail(+tr.dataset.id));
 }
 
+// A scan supersedes anything already running. `_scanSeq` bumps on every scan so
+// a slow response from an earlier corp can't land late and clobber the current
+// one, and `_scanAbort` cancels the previous scan + liquidity fetches outright
+// (closing those connections) so the browser stops waiting on stale work.
+let _scanSeq=0, _scanAbort=null;
 async function scan(forceRefresh=false){
   const _il=$("#init-loading"); if(_il) _il.remove();
   const corp=$("#corp").value.trim();
   if(!corp){ setStatus("Enter a corporation name.",true); return; }
+  // Supersede any in-flight scan: abort it, bump the token, and wipe the table
+  // now so the previous corp's rows don't linger while the new data loads.
+  if(_scanAbort) _scanAbort.abort();
+  _scanAbort=new AbortController();
+  const seq=++_scanSeq, signal=_scanAbort.signal;
+  STATE.rows=[]; STATE.selOffer=null; STATE.lastScanData=null; closeDetail(); renderTable();
   const btn=$("#refresh");
   if(forceRefresh){ btn.disabled=true; btn.textContent="⟳ Fetching…"; }
   setStatus("Scanning "+corp+(forceRefresh?" (refreshing from ESI)":"")+" …");
@@ -204,25 +215,30 @@ async function scan(forceRefresh=false){
   const ms=$("#maxspread").value.trim(); if(ms) p.set("max_spread",ms);
   if(forceRefresh) p.set("refresh","1");
   try{
-    const res=await fetch("/api/scan?"+p);
+    const res=await fetch("/api/scan?"+p, {signal});
     const data=await res.json();
+    if(seq!==_scanSeq) return;  // a newer scan started while we waited
     if(data.error){ setStatus(data.error,true); return; }
     STATE.rows=data.rows; STATE.ctx.corp_id=data.corp_id; STATE.selOffer=null;
     STATE.lastScanData=data; closeDetail(); renderLPStatus(); renderTable();
-    fillLiquidity();
-  }catch(e){ setStatus("Request failed: "+e,true); }
-  finally{ btn.disabled=false; btn.textContent="⟳ Refresh"; }
+    fillLiquidity(seq, signal);
+  }catch(e){
+    if(e.name==="AbortError") return;  // superseded; the newer scan owns the UI
+    setStatus("Request failed: "+e,true);
+  }
+  finally{ if(seq===_scanSeq){ btn.disabled=false; btn.textContent="⟳ Refresh"; } }
 }
 
 // Background-fill the market-saturation columns (Days to Clear / Capped Profit)
 // after the table is already on screen. One history call per type server-side,
 // so this can take a few seconds on a fresh corp; rows show "…" until it lands.
-async function fillLiquidity(){
+async function fillLiquidity(seq, signal){
   const corpId=STATE.ctx.corp_id; if(!corpId) return;
   const p=new URLSearchParams({corp_id:corpId, lp:STATE.ctx.lp,
     tax:STATE.ctx.tax, broker:STATE.ctx.broker, station:STATE.ctx.station});
   try{
-    const d=await (await fetch("/api/liquidity?"+p)).json();
+    const d=await (await fetch("/api/liquidity?"+p, {signal})).json();
+    if(seq!==_scanSeq) return;  // a newer scan superseded this fill
     if(d.error||!d.liquidity) return;
     if(STATE.ctx.corp_id!==corpId) return;  // user re-scanned; drop stale fill
     const liq=d.liquidity;

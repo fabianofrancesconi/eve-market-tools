@@ -232,24 +232,51 @@ async function scan(forceRefresh=false){
 // Background-fill the market-saturation columns (Days to Clear / Capped Profit)
 // after the table is already on screen. One history call per type server-side,
 // so this can take a few seconds on a fresh corp; rows show "…" until it lands.
+//
+// Give up after this long so the saturation columns can't spin forever when the
+// fill stalls (a slow / unfetchable market). Generous enough that a normal fill
+// on a big corp finishes first — if real data lands after we've given up it just
+// replaces the "no data" placeholders.
+const LIQ_TIMEOUT_MS = 45000;
+// Stop the spinners on every row still waiting: mark them loaded so the columns
+// fall back to their "no data" / "—" / "no orders" text instead of "…". Used
+// both when the fill fails and when an offer simply has no market data (e.g. an
+// untradeable / unsellable item the server returns no liquidity entry for).
+function _liqGiveUp(seq){
+  if(seq!==_scanSeq) return;  // superseded by a newer scan
+  let changed=false;
+  for(const r of STATE.rows) if(!r.liq_loaded){ r.liq_loaded=true; changed=true; }
+  if(changed){ renderTable(); if(STATE.detail&&STATE.selOffer) renderDetail(); }
+}
 async function fillLiquidity(seq, signal){
   const corpId=STATE.ctx.corp_id; if(!corpId) return;
   const p=new URLSearchParams({corp_id:corpId, lp:STATE.ctx.lp,
     tax:STATE.ctx.tax, broker:STATE.ctx.broker, station:STATE.ctx.station});
+  let settled=false;
+  const giveUp=setTimeout(()=>{ if(!settled) _liqGiveUp(seq); }, LIQ_TIMEOUT_MS);
   try{
     const d=await (await fetch("/api/liquidity?"+p, {signal})).json();
+    settled=true; clearTimeout(giveUp);
     if(seq!==_scanSeq) return;  // a newer scan superseded this fill
-    if(d.error||!d.liquidity) return;
+    if(d.error||!d.liquidity){ _liqGiveUp(seq); return; }
     if(STATE.ctx.corp_id!==corpId) return;  // user re-scanned; drop stale fill
     const liq=d.liquidity;
+    // Mark EVERY row loaded, not just the ones with an entry: untradeable /
+    // unsellable offers get no liquidity entry, so keying off the map alone left
+    // them spinning forever. They keep their null values and render "no data".
     for(const r of STATE.rows){
       const e=liq[r.offer_id];
-      if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear; r.list_price=e.list_price; r.floor_age=e.floor_age; r.liq_loaded=true; }
+      if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear; r.list_price=e.list_price; r.floor_age=e.floor_age; }
+      r.liq_loaded=true;
     }
     renderTable();
     if(STATE.detail&&STATE.selOffer) renderDetail();
     persistScan("lp", STATE.lastScanData ? {...STATE.lastScanData, rows:STATE.rows} : null);
-  }catch(e){ /* leave the "…" placeholders; non-fatal */ }
+  }catch(e){
+    settled=true; clearTimeout(giveUp);
+    if(e.name==="AbortError"||seq!==_scanSeq) return;  // superseded; leave it be
+    _liqGiveUp(seq);  // network / parse error — give up so rows don't spin forever
+  }
 }
 
 function renderLPStatus(){

@@ -382,16 +382,16 @@ const EXP_PRIMER_HTML = `
         <span class="exp-escalation-icon">⚡</span>
         <div>
           <div class="exp-escalation-t">Special event — Escalations</div>
-          <div class="exp-escalation-d">Now and then, finishing a site fires a <b>pop-up notification</b> saying you've found the location of another site. This is an <b>Escalation</b> (a.k.a. Expedition) — a follow-up combat pocket that <b>only you can see and warp to</b>. Nobody else can scan it down. It's a small, unpublished chance — not every site can do it: in practice it's the sov-nullsec <b>Detected</b> data &amp; relic sites (→ Interrupted Expedition / Emergent Ruins) and drone-region data sites. Ordinary high/lowsec data &amp; relic sites don't escalate. Clearing one may chain into the next.</div>
+          <div class="exp-escalation-d">Now and then, finishing a site fires a <b>pop-up notification</b> saying you've found the location of another site. This is an <b>Escalation</b> (a.k.a. Expedition) — a bonus pocket that <b>only you can see and warp to</b>. Nobody else can scan it down. Best of all it's <b>more hacking, not combat</b>: no rats, no defenders — just more cans. It's a small, unpublished chance — not every site can do it: in practice it's the sov-nullsec <b>Detected</b> data &amp; relic sites (→ <b>Interrupted Expedition</b> / <b>Emergent Ruins</b>) and drone-region data sites. Ordinary high/lowsec data &amp; relic sites don't escalate.</div>
         </div>
       </div>
       <div class="exp-escalation-do">
         <div class="exp-escalation-do-h">What to do</div>
         <ol>
           <li><b>Grab the bookmark before you leave.</b> The site is logged under <b>Journal → Expeditions</b> (and The Agency in the NeoCom). It <b>expires</b> — act within the hour, don't sit on it.</li>
-          <li><b>It's a fight, not a hack.</b> The escalation is a <b>combat</b> site — your cloaky hacking frigate will die. Warp to a station, swap to a combat ship (or bring a friend) before going in.</li>
+          <li><b>Same ship works — it's pure hacking.</b> No rats to fight, so your exploration frigate is fine. Just keep the matching analyzer fitted (data for Interrupted Expedition, relic for Emergent Ruins). Expect harder cans: yellow (70) and red (90) cores.</li>
           <li><b>Warp to it from the Journal entry.</b> There's no signature to probe — you jump straight from the logged location. Take fleetmates if you want backup; they can follow you in.</li>
-          <li><b>Expect a chain.</b> Clearing it may pop <b>another</b> escalation notification. Watch for the next pop-up and repeat.</li>
+          <li><b>Free loot, sometimes big.</b> Typically ~20–50M in datacores, decryptors &amp; salvage, but cans can drop Triglavian Survey Databases, Atavums or module/implant BPCs. No fight for it — always worth grabbing.</li>
         </ol>
       </div>
     </div>

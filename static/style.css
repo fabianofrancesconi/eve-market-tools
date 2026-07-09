@@ -488,6 +488,10 @@
   .char-none.char-none-warn { color:var(--gold); }
   .char-orders-tbl td.tx-buy { color:var(--red); font-weight:600; }
   .char-orders-tbl td.tx-sell { color:var(--green2); font-weight:600; }
+  /* Expiry column: highlight orders about to lapse. */
+  .char-orders-tbl td.exp-cell { font-variant-numeric:tabular-nums; }
+  .char-orders-tbl td.exp-cell.exp-soon { color:var(--yellow); }
+  .char-orders-tbl td.exp-cell.exp-gone { color:var(--red); font-weight:600; }
   .char-jobs-tbl td.tl, .char-jobs-tbl th:last-child { text-align:right;
     font-variant-numeric:tabular-nums; }
   .char-jobs-tbl th:first-child, .char-jobs-tbl td:first-child { min-width:8em; }

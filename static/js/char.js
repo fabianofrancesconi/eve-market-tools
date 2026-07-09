@@ -219,6 +219,21 @@ async function _doRefreshCharData(force){
 let _charTabIdx=0;
 function _evPortrait(cid,sz){ return `https://images.evetech.net/characters/${cid}/portrait?size=${sz||64}`; }
 function _fmtAgo(ts){ const s=Math.floor((Date.now()/1000)-ts); if(s<60) return "just now"; if(s<3600) return Math.floor(s/60)+"m ago"; if(s<86400) return Math.floor(s/3600)+"h ago"; return Math.floor(s/86400)+"d ago"; }
+// Order-expiry column: relative countdown when it's within ~2 days ("expired",
+// "3h", "1d 4h"); an absolute date once it's further out. Returns {text, cls}
+// so the caller can flag imminent/expired orders.
+function _fmtExpires(expiresMs){
+  if(!isFinite(expiresMs)) return {text:"—", cls:""};
+  const rem=expiresMs-Date.now();
+  if(rem<=0) return {text:"expired", cls:"exp-gone"};
+  if(rem<2*86400000){
+    const s=Math.floor(rem/1000);
+    const d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.floor((s%3600)/60);
+    const text=d>0?`${d}d ${h}h`:(h>0?`${h}h ${m}m`:`${m}m`);
+    return {text, cls:rem<86400000?"exp-soon":""};
+  }
+  return {text:new Date(expiresMs).toLocaleDateString([],{day:'2-digit',month:'short'}), cls:""};
+}
 // EVE only publishes loyalty points to ESI about once an hour, so the LP value
 // can look "stuck" between updates even though sync is working. Format ESI's
 // Last-Modified into a short local clock time so the number is visibly "as of X".
@@ -312,7 +327,8 @@ function _renderCharPanel(c){
       const posted=isFinite(issuedMs)?fmtDur((Date.now()-issuedMs)/1000)+" ago":"—";
       const postedTip=isFinite(issuedMs)?` title="${new Date(issuedMs).toLocaleString()}"`:"";
       const expiresMs=isFinite(issuedMs)&&o.duration!=null?issuedMs+o.duration*86400000:NaN;
-      const expires=isFinite(expiresMs)?new Date(expiresMs).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
+      const exp=_fmtExpires(expiresMs);
+      const expTip=isFinite(expiresMs)?` title="${new Date(expiresMs).toLocaleString()}"`:"";
       const queueCell=o.is_best==null?`<span style="color:var(--dim)">—</span>`
         :o.is_best?`<span class="tx-sell">Best ✓</span>`:`<span class="tx-buy">#${o.queue_rank} / ${o.queue_total}</span>`;
       const saleTip=o.last_sale_ts?` title="Last sale: ${o.last_sale_qty} unit${o.last_sale_qty>1?'s':''} sold ${_fmtAgo(o.last_sale_ts)}" style="text-align:right;color:var(--green2)"`
@@ -325,7 +341,7 @@ function _renderCharPanel(c){
         +`<td style="text-align:right">${o.market_sell!=null?fmtISK(o.market_sell):"—"}</td>`
         +`<td style="text-align:right">${queueCell}</td>`
         +`<td style="text-align:right"${postedTip}>${posted}</td>`
-        +`<td style="text-align:right">${expires}</td></tr>`;
+        +`<td class="exp-cell ${exp.cls}" style="text-align:right"${expTip}>${exp.text}</td></tr>`;
     }
     h+=`</tbody></table></div>`;
   } else h+=`<div class="char-none${cOrdersError?' char-none-warn':''}">${cOrdersError||'No open orders.'}</div>`;
@@ -402,11 +418,14 @@ function _renderAllPanel(chars){
     h+=`<div class="char-card-scroll"><table class="mini char-orders-tbl"><thead><tr>`;
     h+=`<th>Character</th><th>Item</th><th>Side</th><th style="text-align:right">Remaining</th><th style="text-align:right">Price</th>`;
     h+=`<th style="text-align:right">Total value</th><th style="text-align:right">Jita sell</th>`;
-    h+=`<th style="text-align:right">Queue</th><th style="text-align:right">Posted</th></tr></thead><tbody>`;
+    h+=`<th style="text-align:right">Queue</th><th style="text-align:right">Posted</th><th style="text-align:right">Expires</th></tr></thead><tbody>`;
     for(const o of allOrders){
       const issuedMs=o.issued?Date.parse(o.issued):NaN;
       const posted=isFinite(issuedMs)?fmtDur((Date.now()-issuedMs)/1000)+" ago":"—";
       const postedTip=isFinite(issuedMs)?` title="${new Date(issuedMs).toLocaleString()}"`:"";
+      const expiresMs=isFinite(issuedMs)&&o.duration!=null?issuedMs+o.duration*86400000:NaN;
+      const exp=_fmtExpires(expiresMs);
+      const expTip=isFinite(expiresMs)?` title="${new Date(expiresMs).toLocaleString()}"`:"";
       const queueCell=o.is_best==null?`<span style="color:var(--dim)">—</span>`
         :o.is_best?`<span class="tx-sell">Best ✓</span>`:`<span class="tx-buy">#${o.queue_rank} / ${o.queue_total}</span>`;
       const saleTip=o.last_sale_ts?` title="Last sale: ${o.last_sale_qty} unit${o.last_sale_qty>1?'s':''} sold ${_fmtAgo(o.last_sale_ts)}" style="text-align:right;color:var(--green2)"`
@@ -418,11 +437,12 @@ function _renderAllPanel(chars){
         +`<td style="text-align:right">${fmtISK((o.volume_remain??0)*o.price)}</td>`
         +`<td style="text-align:right">${o.market_sell!=null?fmtISK(o.market_sell):"—"}</td>`
         +`<td style="text-align:right">${queueCell}</td>`
-        +`<td style="text-align:right"${postedTip}>${posted}</td></tr>`;
+        +`<td style="text-align:right"${postedTip}>${posted}</td>`
+        +`<td class="exp-cell ${exp.cls}" style="text-align:right"${expTip}>${exp.text}</td></tr>`;
     }
     h+=`<tr class="total"><td colspan="5">Totals</td>`
       +`<td style="text-align:right">${fmtISK(ordersVal)}</td>`
-      +`<td colspan="3" style="text-align:right"><span class="tx-sell">${sellOrders.length} sell (${fmtISK(sellVal)})</span> · <span class="tx-buy">${buyOrders.length} buy (${fmtISK(buyVal)})</span></td></tr>`;
+      +`<td colspan="4" style="text-align:right"><span class="tx-sell">${sellOrders.length} sell (${fmtISK(sellVal)})</span> · <span class="tx-buy">${buyOrders.length} buy (${fmtISK(buyVal)})</span></td></tr>`;
     h+=`</tbody></table></div>`;
   } else h+=`<div class="char-none">No open orders.</div>`;
   h+=`</div></section>`;

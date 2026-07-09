@@ -61,6 +61,15 @@ def test_walkthrough_functions_present_in_bundle():
     assert "function expBuildGuide" in src
 
 
+def test_browse_all_sites_wired_in_html():
+    # The sidebar's "Browse all sites" list is the primary discovery path.
+    html = lp_web.INDEX_HTML
+    assert 'id="exp-browse"' in html
+    assert 'id="exp-browse-list"' in html
+    src = lp_web.FRONTEND_SOURCE
+    assert "function expRenderBrowse" in src
+
+
 def test_primer_covers_key_hacking_mechanics():
     # The minigame primer must name the defensive/utility nodes and analyzers,
     # so it can't ship as an empty shell.
@@ -121,7 +130,10 @@ for (const s of EXP_SITES) {
   if (!g || !g.overview || !g.rule) broken.push(s.name + ":fields");
   if (!html || html.indexOf("undefined") >= 0) broken.push(s.name + ":html");
 }
-process.stdout.write(JSON.stringify({reps, broken, total: EXP_SITES.length}));
+// Every browse group's data-name must resolve to a real site (discovery path).
+const browseTypes = [...new Set(EXP_SITES.map(s => s.type))].sort();
+process.stdout.write(JSON.stringify(
+  {reps, broken, total: EXP_SITES.length, browseTypes}));
 """
 
 
@@ -212,6 +224,24 @@ def test_guide_weaves_in_per_site_data(walk):
         html = val["html"]
         assert "This site — mechanics" in html, key
         assert "This site drops:" in html, key
+
+
+def test_browse_covers_all_site_types(walk):
+    # The browse groups (EXP_BROWSE_ORDER) must cover every type present in the
+    # data, so no site is undiscoverable through the sidebar.
+    browse_order = {"data", "relic", "ghost", "sleeper_cache", "gas"}
+    assert set(walk["browseTypes"]).issubset(browse_order), walk["browseTypes"]
+
+
+def test_ghost_rule_is_tank_and_grab_not_one_hack(walk):
+    # Correction: ghost sites are NOT "hack one can and flee". With an explosive
+    # tank you eat the blast and keep grabbing — the guide must say so and must
+    # NOT carry the old "never attempt a second container" advice.
+    for key in ("ghost_hs", "ghost_wh"):
+        html = walk["reps"][key]["html"]
+        low = html.lower()
+        assert "never attempt a second" not in low, key
+        assert "so be it" in low or "eat the blast" in low or "tank it" in low, key
 
 
 def test_recent_cards_show_risk_and_loot_levels():

@@ -70,10 +70,10 @@ const EXP_SITES = [
   {name:"Unsecured Core Backup Array",type:"data",space:["wormhole"],whClass:[6],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Battleships + dreads, ~2000+ DPS",hazards:["combat_npcs"],triggers:"Strongest Sleepers on grid.",tips:"Capital fleet required.",lootTier:"high",lootSummary:"Highest-value sleeper components",lootExamples:["Sleeper Data Library","Sleeper Drone AI Nexus"],estimatedValue:"80-200M"},
   {name:"Unsecured Core Emergence",type:"data",space:["wormhole"],whClass:[6],danger:"dangerous",hasNPCs:true,npcType:"Sleeper",npcDetail:"Battleships + dreads, ~2000+ DPS",hazards:["combat_npcs"],triggers:"Strongest Sleepers.",tips:"Capital fleet required.",lootTier:"high",lootSummary:"Highest-value sleeper components",lootExamples:["Sleeper Data Library","Sleeper Drone AI Nexus"],estimatedValue:"80-200M"},
   // ── Ghost Sites ─────────────────────────────────────────────────────────
-  {name:"Lesser Covert Research Facility",altNames:["Lesser Sansha Covert Research Facility","Lesser Blood Raider Covert Research Facility","Lesser Angel Covert Research Facility","Lesser Guristas Covert Research Facility","Lesser Serpentis Covert Research Facility"],type:"ghost",space:["highsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in when timer expires. Warp disruption (24km range).",hazards:["exploding_cans","response_fleet"],triggers:"A hidden timer starts the MOMENT you land on grid (~30s-3min). When timer expires OR you fail a hack: ALL containers explode simultaneously dealing ~6000 explosive damage in 10km radius. Response fleet warps in with warp disruptors.",tips:"Hack ONE container as fast as possible, loot it, warp out immediately. Never attempt a second container. Fit explosive hardeners if worried.",lootTier:"high",lootSummary:"Implant BPCs (Ascendancy set), Covert Research Tools",lootExamples:["Mid-grade Ascendancy Alpha BPC","Covert Research Tools","Shattered Villard Wheel"],estimatedValue:"10-100M"},
-  {name:"Standard Covert Research Facility",altNames:["Standard Sansha Covert Research Facility","Standard Blood Raider Covert Research Facility","Standard Angel Covert Research Facility","Standard Guristas Covert Research Facility","Standard Serpentis Covert Research Facility"],type:"ghost",space:["lowsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Stronger response fleet with warp disruption.",hazards:["exploding_cans","response_fleet"],triggers:"Same timer mechanic as Lesser but explosions deal ~8000 explosive damage (10km radius). Timer starts on grid landing.",tips:"One hack, one loot, warp out. Explosions can kill poorly-tanked cruisers. Fit explosive hardeners.",lootTier:"high",lootSummary:"Wetu/Packrat mobile depot BPCs, mid/high-grade Ascendancy BPCs",lootExamples:["Wetu Mobile Depot BPC","High-grade Ascendancy Alpha BPC","Covert Research Tools"],estimatedValue:"30-200M"},
-  {name:"Improved Covert Research Facility",altNames:["Improved Sansha Covert Research Facility","Improved Blood Raider Covert Research Facility","Improved Angel Covert Research Facility","Improved Guristas Covert Research Facility","Improved Serpentis Covert Research Facility"],type:"ghost",space:["nullsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Strong response fleet with warp disruption.",hazards:["exploding_cans","response_fleet"],triggers:"~10,000 explosive damage on explosion (10km radius). Hidden timer from landing. Enough to kill most cruisers outright.",tips:"One hack, loot, warp. Must have explosive tank or be prepared to lose your ship. Jackpot-tier loot justifies the risk.",lootTier:"jackpot",lootSummary:"Wetu/Yurt/Magpie BPCs, high-grade Ascendancy BPCs",lootExamples:["Yurt Mobile Depot BPC","High-grade Ascendancy Omega BPC","Covert Research Tools"],estimatedValue:"50-500M"},
-  {name:"Superior Covert Research Facility",altNames:["Superior Sansha Covert Research Facility","Superior Blood Raider Covert Research Facility","Superior Angel Covert Research Facility","Superior Guristas Covert Research Facility","Superior Serpentis Covert Research Facility"],type:"ghost",space:["wormhole"],danger:"dangerous",hasNPCs:true,npcType:"Sleeper Response Fleet",npcDetail:"Sleeper response fleet (deadlier than faction). Warp disruption.",hazards:["exploding_cans","response_fleet"],triggers:"~12,000 explosive damage on explosion (10km radius). Sleeper response fleet instead of faction NPCs. Same timer mechanic.",tips:"One hack, loot, warp immediately. Sleeper response fleet will kill anything that stays. Found in all wormhole classes.",lootTier:"jackpot",lootSummary:"Magpie/Wetu/Yurt BPCs, high-grade Ascendancy Omega BPC",lootExamples:["Magpie Mobile Depot BPC","High-grade Ascendancy Omega BPC","Covert Research Tools"],estimatedValue:"80-800M"},
+  {name:"Lesser Covert Research Facility",altNames:["Lesser Sansha Covert Research Facility","Lesser Blood Raider Covert Research Facility","Lesser Angel Covert Research Facility","Lesser Guristas Covert Research Facility","Lesser Serpentis Covert Research Facility"],type:"ghost",space:["highsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Response fleet warps in when timer expires. Warp disruption (24km range).",hazards:["exploding_cans","response_fleet"],triggers:"A hidden timer starts the MOMENT you land on grid (~30s-3min). When timer expires OR you fail a hack: ALL containers explode simultaneously dealing ~6000 explosive damage in 10km radius. Response fleet warps in with warp disruptors.",tips:"Fit ~13k explosive EHP so the blast can't one-shot you, then hack as many cans as you can. If one detonates, so be it — you tanked it.",lootTier:"high",lootSummary:"Implant BPCs (Ascendancy set), Covert Research Tools",lootExamples:["Mid-grade Ascendancy Alpha BPC","Covert Research Tools","Shattered Villard Wheel"],estimatedValue:"10-100M"},
+  {name:"Standard Covert Research Facility",altNames:["Standard Sansha Covert Research Facility","Standard Blood Raider Covert Research Facility","Standard Angel Covert Research Facility","Standard Guristas Covert Research Facility","Standard Serpentis Covert Research Facility"],type:"ghost",space:["lowsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Stronger response fleet with warp disruption.",hazards:["exploding_cans","response_fleet"],triggers:"Same timer mechanic as Lesser but explosions deal ~8000 explosive damage (10km radius). Timer starts on grid landing.",tips:"Fit explosive hardeners and tank the blast — then hack aggressively. A poorly-tanked cruiser dies; a tanked one grabs several cans.",lootTier:"high",lootSummary:"Wetu/Packrat mobile depot BPCs, mid/high-grade Ascendancy BPCs",lootExamples:["Wetu Mobile Depot BPC","High-grade Ascendancy Alpha BPC","Covert Research Tools"],estimatedValue:"30-200M"},
+  {name:"Improved Covert Research Facility",altNames:["Improved Sansha Covert Research Facility","Improved Blood Raider Covert Research Facility","Improved Angel Covert Research Facility","Improved Guristas Covert Research Facility","Improved Serpentis Covert Research Facility"],type:"ghost",space:["nullsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Strong response fleet with warp disruption.",hazards:["exploding_cans","response_fleet"],triggers:"~10,000 explosive damage on explosion (10km radius). Hidden timer from landing. Enough to kill most cruisers outright.",tips:"Must have an explosive tank — then hack everything you can. Jackpot loot easily justifies risking a cheap hull. Grab, don't tiptoe.",lootTier:"jackpot",lootSummary:"Wetu/Yurt/Magpie BPCs, high-grade Ascendancy BPCs",lootExamples:["Yurt Mobile Depot BPC","High-grade Ascendancy Omega BPC","Covert Research Tools"],estimatedValue:"50-500M"},
+  {name:"Superior Covert Research Facility",altNames:["Superior Sansha Covert Research Facility","Superior Blood Raider Covert Research Facility","Superior Angel Covert Research Facility","Superior Guristas Covert Research Facility","Superior Serpentis Covert Research Facility"],type:"ghost",space:["wormhole"],danger:"dangerous",hasNPCs:true,npcType:"Sleeper Response Fleet",npcDetail:"Sleeper response fleet (deadlier than faction). Warp disruption.",hazards:["exploding_cans","response_fleet"],triggers:"~12,000 explosive damage on explosion (10km radius). Sleeper response fleet instead of faction NPCs. Same timer mechanic.",tips:"Tank the ~12k explosive blast, then hack as many cans as you can. The Sleeper fleet is deadly — stay clear of its point, but don't stop hacking out of fear of the blast.",lootTier:"jackpot",lootSummary:"Magpie/Wetu/Yurt BPCs, high-grade Ascendancy Omega BPC",lootExamples:["Magpie Mobile Depot BPC","High-grade Ascendancy Omega BPC","Covert Research Tools"],estimatedValue:"80-800M"},
   // ── Sleeper Caches ──────────────────────────────────────────────────────
   {name:"Limited Sleeper Cache",type:"sleeper_cache",space:["highsec","lowsec","nullsec","wormhole"],danger:"caution",hasNPCs:false,npcType:null,npcDetail:null,hazards:["env_damage"],triggers:"Entrance hack (7/10 Data): a FAILED entrance hack starts a 2-minute timer that despawns the site (the storage depots themselves do NOT self-destruct on failed hacks). No sentry turrets at this tier. Pressure/wreck cloud deals ~100 DPS (need 60+ EHP/s). Plasma chambers act as proximity mines: ~500 damage + a damage cloud, ~9km blast (slower approach = safer).",tips:"Frigates only (no stealth bombers). Both analyzers needed. Hack the RPCU (7/10) to clear the wreck cloud, or the RDGU (8/10) to drop the forcefield. Move slow (~200 m/s) near plasma chambers.",lootTier:"medium",lootSummary:"Polarized weapon BPCs, sleeper blue loot, datacores",lootExamples:["Polarized Torpedo Launcher BPC","Wrecked Components","Datacores"],estimatedValue:"10-60M"},
   {name:"Standard Sleeper Cache",type:"sleeper_cache",space:["lowsec","nullsec","wormhole"],danger:"dangerous",hasNPCs:false,npcType:null,npcDetail:null,hazards:["env_damage"],triggers:"Entrance hack (7/10 Data): failure = 2-min site despawn. Alarm system increments on failed hacks. Sentry Towers deal ~1000 damage every 15s (250km range). Guardian Extermination Units create damage clouds (400-1000 DPS). Hidden Room containers on 3-minute self-destruct timer.",tips:"Need BOTH Data AND Relic Analyzers. Multiple puzzle rooms. Bring good tank (500+ DPS in clouds), mobile depot to refit. 20-30 min to complete.",lootTier:"high",lootSummary:"Polarized weapon BPCs, faction modules, implant BPCs, blue loot",lootExamples:["Polarized Torpedo Launcher BPC","Intact Armor Plates","Sleeper Components"],estimatedValue:"50-250M"},
@@ -253,16 +253,16 @@ function expWalkthrough(site){
         "A <b>failed hack</b> only blows that one can (you can keep going) — but warping mid-hack auto-fails it.",
         `A <b>${g.rats} response fleet</b> warps in as the visible timer starts, with warp disruption out to <b>24 km</b>; it won't aggress if you're <b>30+ km</b> away.`,
       ],
-      ship:"Something that survives one blast — roughly <b>13,000 explosive EHP</b> — with fast targeting. A cheap Heron Navy or a Buzzard/Helios with an explosive shield hardener, or face-tank in a Stratios/T3C. <b>T2 Data Analyzer.</b>",
+      ship:`The one thing that matters: <b>tank the blast</b>. Fit ~<b>13,000 explosive EHP</b> (an explosive shield hardener + extender) so a detonation can't one-shot you — then you can keep hacking through it. A cheap Heron Navy / Buzzard / Helios works, or face-tank in a Stratios/T3C. <b>T2 Data Analyzer</b> for fast, reliable hacks.`,
       steps:[
-        "Warp in <b>cloaked</b> to hold the timer.",
-        "Decloak, cargo-scan, and pick the <b>one</b> best can.",
-        "Hack it cleanly (don't fail) and grab the loot.",
-        "When the rats appear / the 30 s shows, <b>get 40+ km clear, cloak, or warp</b> — explosive hardener already hot.",
-        "Farming trick: after 1–2 cans, burn 40 km off, wait for the rats to leave, then return for the untouched top can (empty in highsec, worth it in low/null).",
+        "Warp in <b>cloaked</b> to hold the timer, then decloak on the cans.",
+        "Cargo-scan and <b>hack the best cans first</b> — go for as many as you can, don't stop at one.",
+        "Keep your explosive hardener <b>hot</b> the whole time.",
+        "When the timer/rats hit: if you're tanked, <b>eat the blast and keep grabbing</b>; only bail if a second blast would kill you or the rats point you.",
+        "If it blows before you're done — <b>so be it</b>. You tanked it; scoop what spewed and move on. Losing a cheap hull to a jackpot can is a good trade.",
       ],
       loot:g.loot,
-      rule:`One hack, one grab, then leave. When the timer ends the ${g.rats} fleet detonates <b>every</b> can — even hacked ones — for ~${g.dmg} in 10 km, so be 40+ km clear with your explosive tank up.`,
+      rule:`<b>Tank it, don't tiptoe.</b> With enough explosive EHP a ~${g.dmg} blast won't kill you, so hack aggressively and grab everything you can — if a can blows, that's fine. The only real "don't" is sitting there <b>untanked</b> or letting the ${g.rats} fleet point you while you're not clear.`,
     };
   }
 
@@ -573,6 +573,44 @@ function expRenderRecent(){
   });
 }
 
+// Browse-all list: every site grouped by type, collapsible per group. This is
+// the primary discovery path — you don't need to know a site's exact name.
+const EXP_BROWSE_ORDER = ["data","relic","ghost","sleeper_cache","gas"];
+function expRenderBrowse(){
+  const wrap = $("#exp-browse-list");
+  if(!wrap) return;
+  let html = "";
+  for(const type of EXP_BROWSE_ORDER){
+    const sites = EXP_SITES.filter(s=> s.type===type);
+    if(!sites.length) continue;
+    const ty = EXP_TYPE[type] || {icon:"❔", label:type};
+    html += `<div class="exp-browse-group" data-type="${esc(type)}">
+      <button class="exp-browse-gh" type="button" data-type="${esc(type)}">
+        <span class="exp-browse-gi">${ty.icon}</span>
+        <span class="exp-browse-gl">${esc(ty.label)}</span>
+        <span class="exp-browse-gc">${sites.length}</span>
+        <span class="exp-browse-gcaret">▸</span>
+      </button>
+      <div class="exp-browse-items">${sites.map(s=>{
+        const risk = expRisk(s);
+        return `<button class="exp-browse-item exp-danger-${s.danger}" type="button" data-name="${esc(s.name)}">
+          <span class="exp-browse-name">${esc(s.name)}</span>
+          <span class="exp-browse-risk ${risk.cls}">${risk.label}</span>
+        </button>`;
+      }).join("")}</div>
+    </div>`;
+  }
+  wrap.innerHTML = html;
+  // Toggle a group open/closed.
+  wrap.querySelectorAll(".exp-browse-gh").forEach(btn=>{
+    btn.onclick = ()=> btn.parentElement.classList.toggle("open");
+  });
+  // Open a site.
+  wrap.querySelectorAll(".exp-browse-item").forEach(btn=>{
+    btn.onclick = ()=>{ const s = EXP_SITES.find(x=>x.name===btn.dataset.name); if(s) expSelect(s); };
+  });
+}
+
 function expSearch(){
   const q = ($("#exp-search").value||"").trim().toLowerCase();
   const results = $("#exp-results");
@@ -615,9 +653,22 @@ function expSelect(site){
     expSaveRecent();
   }
   expRenderRecent();
+  expMarkBrowseActive(site);
 
   $("#exp-guide").innerHTML = expBuildGuide(site);
   $("#exp-content").scrollTop = 0;
+}
+
+// Highlight the selected site in the Browse list and open its group.
+function expMarkBrowseActive(site){
+  const wrap = $("#exp-browse-list");
+  if(!wrap) return;
+  let active = null;
+  wrap.querySelectorAll(".exp-browse-item").forEach(b=>{
+    b.classList.remove("active");
+    if(b.dataset.name===site.name) active = b;
+  });
+  if(active){ active.classList.add("active"); active.closest(".exp-browse-group").classList.add("open"); }
 }
 
 // Build the whole single-column guide: hero banner → equal facts tiles →
@@ -701,6 +752,7 @@ document.addEventListener("click", (e)=>{
   if(!sidebar){ $("#exp-results").classList.add("hidden"); }
 });
 expRenderRecent();
+expRenderBrowse();
 
 // "How hacking works" cheat-sheet — a slide-out overlay opened from the sticky
 // sidebar button. Populated once; closes on ✕, backdrop click, or Escape.

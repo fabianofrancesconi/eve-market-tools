@@ -949,6 +949,43 @@
   }
   .exp-recent-card:hover .exp-recent-rm { opacity:1; }
   .exp-recent-rm:hover { color:var(--red); }
+
+  /* Browse-all: collapsible groups of every site, the primary discovery path */
+  .exp-browse { margin-top:16px; }
+  .exp-browse-list { display:flex; flex-direction:column; gap:4px; }
+  .exp-browse-group { border-radius:7px; overflow:hidden; }
+  .exp-browse-gh {
+    width:100%; display:flex; align-items:center; gap:8px; cursor:pointer;
+    padding:8px 10px; text-align:left;
+    background:var(--panel2); border:1px solid var(--line2); border-radius:7px;
+    color:var(--fg); font-size:13px; font-weight:700; transition:background .1s;
+  }
+  .exp-browse-gh:hover { background:var(--panel3); }
+  .exp-browse-gi { font-size:15px; }
+  .exp-browse-gl { flex:1; }
+  .exp-browse-gc {
+    font-size:11px; font-weight:700; color:var(--dim);
+    background:var(--panel); border:1px solid var(--line2);
+    border-radius:10px; padding:1px 7px;
+  }
+  .exp-browse-gcaret { color:var(--dim); font-size:11px; transition:transform .12s; }
+  .exp-browse-group.open .exp-browse-gcaret { transform:rotate(90deg); }
+  .exp-browse-items { display:none; flex-direction:column; gap:2px; padding:4px 0 4px 6px; }
+  .exp-browse-group.open .exp-browse-items { display:flex; }
+  .exp-browse-item {
+    width:100%; display:flex; align-items:center; gap:8px; cursor:pointer;
+    padding:6px 9px; text-align:left;
+    background:none; border:none; border-left:2px solid var(--dim2); border-radius:0 5px 5px 0;
+    color:var(--fg); font-size:12.5px; transition:background .1s;
+  }
+  .exp-browse-item:hover { background:var(--panel2); }
+  .exp-browse-item.exp-danger-safe { border-left-color:var(--green); }
+  .exp-browse-item.exp-danger-caution { border-left-color:var(--yellow); }
+  .exp-browse-item.exp-danger-dangerous { border-left-color:var(--red); }
+  .exp-browse-item.active { background:var(--panel3); font-weight:700; }
+  .exp-browse-name { flex:1; line-height:1.3; }
+  .exp-browse-risk { font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.4px; }
+
   .exp-content { padding:24px; overflow-y:auto; position:relative; }
   .exp-empty { color:var(--dim); text-align:center; padding:60px 20px; font-size:15px; }
 
@@ -1015,9 +1052,9 @@
   }
   .exp-steps li {
     counter-increment:step; position:relative;
-    padding:7px 10px 7px 40px; margin-bottom:6px;
+    padding:7px 10px 7px 38px; margin-bottom:6px;
     background:var(--panel2); border:1px solid var(--line2); border-radius:7px;
-    font-size:14px; line-height:1.5; color:var(--fg);
+    font-size:13px; line-height:1.5; color:var(--fg);
   }
   .exp-steps li::before {
     content:counter(step); position:absolute; left:9px; top:50%; transform:translateY(-50%);
@@ -1175,8 +1212,8 @@
   /* ── Inline walkthrough guide (the main content) ──────────────────────── */
   .exp-guide b { color:var(--cyan); font-weight:600; }
   .exp-wg-lead {
-    font-size:14.5px; line-height:1.6; color:var(--fg);
-    padding:13px 15px; border-radius:8px; margin-bottom:8px;
+    font-size:13px; line-height:1.55; color:var(--fg);
+    padding:12px 14px; border-radius:8px; margin-bottom:8px;
     background:linear-gradient(135deg, rgba(0,200,255,.1), var(--panel));
     border-left:3px solid var(--cyan);
   }
@@ -1190,13 +1227,13 @@
     font-size:12px; font-weight:800; color:var(--gold);
     text-transform:uppercase; letter-spacing:.6px; margin-bottom:9px;
   }
-  .exp-wg-ico { font-size:15px; }
-  .exp-wg-p { font-size:14px; line-height:1.6; color:var(--fg); margin:0; }
-  .exp-wg-p + .exp-wg-p, .exp-wg-p + .exp-wg-list, .exp-wg-p + .exp-loot-meta { margin-top:9px; }
+  .exp-wg-ico { font-size:14px; }
+  .exp-wg-p { font-size:13px; line-height:1.55; color:var(--fg); margin:0; }
+  .exp-wg-p + .exp-wg-p, .exp-wg-p + .exp-wg-list, .exp-wg-p + .exp-loot-meta { margin-top:8px; }
   .exp-wg-tip { color:var(--dim); }
   .exp-wg-tip b { color:var(--gold); }
   .exp-wg-safe { color:var(--green); font-weight:600; }
-  .exp-wg-list { margin:0; padding-left:4px; list-style:none; font-size:14px; line-height:1.6; color:var(--fg); }
+  .exp-wg-list { margin:0; padding-left:4px; list-style:none; font-size:13px; line-height:1.55; color:var(--fg); }
   .exp-wg-list li { position:relative; padding-left:18px; margin-bottom:5px; }
   .exp-wg-list li::before { content:"›"; position:absolute; left:4px; color:var(--cyan); font-weight:800; }
   /* Hazard chips — the site's hazard flags rendered as little tags */
@@ -1207,12 +1244,12 @@
     color:var(--red); font-size:11px; font-weight:700;
   }
   /* Loot tier + value chips inside the loot section */
-  .exp-loot-meta { display:flex; align-items:center; gap:10px; margin:9px 0; }
-  .exp-loot-val { font-size:15px; font-weight:800; color:var(--gold); }
+  .exp-loot-meta { display:flex; align-items:center; gap:10px; margin:8px 0; }
+  .exp-loot-val { font-size:14px; font-weight:800; color:var(--gold); }
   .exp-wg-rule {
-    margin-top:10px; padding:13px 15px; border-radius:8px;
+    margin-top:10px; padding:12px 14px; border-radius:8px;
     background:rgba(240,170,70,.12); border:1px solid var(--gold); border-left:4px solid var(--gold);
-    font-size:14px; line-height:1.55; color:var(--fg);
+    font-size:13px; line-height:1.5; color:var(--fg);
   }
   .exp-wg-rule-tag {
     display:inline-block; margin-right:8px; padding:2px 7px; border-radius:4px;

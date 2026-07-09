@@ -2,7 +2,8 @@
 // INDUSTRY TAB
 // ══════════════════════════════════════════════════════════════════════════
 let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es:null,
-           groupsLoaded:false, profiles:[], favorites:new Set(), hidden:new Set(),
+           groupsLoaded:false, profiles:[], profilesCleared:false,
+           favorites:new Set(), hidden:new Set(),
            timers:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{}, detailRuns:1,
            fillTotal:0, fillDone:0, tradeWeight:0.5,

@@ -823,6 +823,7 @@ function saveStructWizard(){
   let idx;
   if(IND_EDIT_IDX!=null){ IND.profiles[IND_EDIT_IDX]=p; idx=IND_EDIT_IDX; }
   else { IND.profiles.push(p); idx=IND.profiles.length-1; }
+  IND.profilesCleared=false;  // list is non-empty again
   renderIndProfiles();
   $("#ind-profile").value=String(idx);
   $("#ind-jobrate").value=structEffectiveRate(p).toFixed(2);
@@ -832,6 +833,9 @@ function saveStructWizard(){
 function deleteStruct(){
   if(IND_EDIT_IDX==null) return;
   IND.profiles.splice(IND_EDIT_IDX,1);
+  // A delete that empties the list is a deliberate clear — mark it so the sync
+  // tells the server this empty list is intentional (not a boot-race default).
+  if(IND.profiles.length===0) IND.profilesCleared=true;
   renderIndProfiles();
   $("#ind-profile").value="";
   saveIndPrefs();

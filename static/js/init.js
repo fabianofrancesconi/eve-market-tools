@@ -153,7 +153,16 @@ async function loadSettings(){
   // The DOM now reflects the stored settings, so it's safe to let saveLS()
   // persist again — any earlier boot-time save (e.g. from a character-data
   // refresh) was dropped to avoid clobbering the saved corp with a blank field.
-  markSettingsApplied();
+  //
+  // But ONLY open the gate if we actually loaded a settings state. If the
+  // /api/settings fetch failed (e.g. the cold-start window right after a deploy)
+  // AND localStorage was empty, the restore block above was skipped and the
+  // DOM/JS still hold empty defaults (blank corp, IND.profiles=[]). Opening the
+  // gate then lets the next saveLS() push those defaults over the durable account
+  // copy — which is exactly how saved build locations vanished after an update.
+  // Keep the gate shut for this session instead; a reload re-attempts the load.
+  const _settingsLoaded = !!server || !!(s && Object.keys(s).length);
+  if(_settingsLoaded) markSettingsApplied();
   // Restore last scan results from server cache, then auto-scan if the LP tab
   // is active and a corp is set.
   restoreLastScans().then(restored=>{

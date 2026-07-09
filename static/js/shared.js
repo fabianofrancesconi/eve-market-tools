@@ -157,6 +157,10 @@ function settingsBlob(){
       hide_bpc:$("#ind-hidebpc").checked?'1':'0',
       min_tradeability:$("#ind-mintrade").value,
       profiles:JSON.stringify(IND.profiles),profile:$("#ind-profile").value,
+      // Signals to the server that an empty profiles list is intentional (the
+      // user deleted their last build location) vs. an accidental boot-race
+      // default, so the server-side guard doesn't restore the old list.
+      profiles_cleared:(IND.profiles.length===0 && IND.profilesCleared)?'1':'0',
       favorites:JSON.stringify([...IND.favorites]),
       sort_key:IND.sort.key,sort_dir:IND.sort.dir,
       col_order:JSON.stringify(IND.colOrder),col_widths:JSON.stringify(IND.colw),

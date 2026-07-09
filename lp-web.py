@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.96.2"
+__version__ = "1.96.3"
 
 import argparse
 import base64
@@ -1720,6 +1720,54 @@ def save_account_settings(acct, data):
         save_user_settings(acct.active_char_id, data)
 
 
+def _profiles_list(blob):
+    """The build-location profiles inside a settings blob, as a list (best
+    effort). The client stores them under ind.profiles as a JSON string, but be
+    lenient about a raw list or missing/garbage values."""
+    try:
+        raw = ((blob or {}).get("ind") or {}).get("profiles")
+    except AttributeError:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        try:
+            v = json.loads(raw)
+            return v if isinstance(v, list) else []
+        except (ValueError, TypeError):
+            return []
+    return []
+
+
+def _preserve_profiles(incoming, stored):
+    """Defend the user's saved build locations against being silently wiped by a
+    settings sync. Build-location profiles live only inside the wholesale
+    settings blob, which the client snapshots from its live state and pushes to
+    the account row. A boot/cold-start race (e.g. the /api/settings fetch failing
+    right after a deploy) can leave the client holding its empty default
+    (IND.profiles = []) and push that over a durable copy — which is how saved
+    build locations kept vanishing after an update.
+
+    So: if the incoming blob has no profiles but the stored one does, keep the
+    stored profiles — UNLESS the client explicitly signalled that the user
+    cleared them (ind.profiles_cleared == "1", set only by the wizard's delete
+    button), in which case an empty list is intentional and honoured."""
+    if _profiles_list(incoming):
+        return incoming  # client sent real profiles — trust it
+    cleared = str(((incoming or {}).get("ind") or {}).get("profiles_cleared", "")) == "1"
+    if cleared:
+        return incoming  # user genuinely emptied the list
+    stored_profiles = _profiles_list(stored)
+    if not stored_profiles:
+        return incoming  # nothing to protect
+    ind = incoming.get("ind")
+    if not isinstance(ind, dict):
+        ind = {}
+        incoming["ind"] = ind
+    ind["profiles"] = json.dumps(stored_profiles)
+    return incoming
+
+
 def do_settings_sync(q):
     """Persist the full client-side settings blob for the account, remotely, so
     every browser the user logs in from converges on the same view. No-op when
@@ -1732,6 +1780,8 @@ def do_settings_sync(q):
         data = json.loads(blob)
     except json.JSONDecodeError:
         raise LPError("Invalid settings payload.")
+    # Never let a sync blank out saved build locations by accident (see helper).
+    data = _preserve_profiles(data, load_account_settings(acct))
     save_account_settings(acct, data)
     return {"ok": True, "synced": True}
 

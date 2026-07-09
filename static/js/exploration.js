@@ -75,7 +75,7 @@ const EXP_SITES = [
   {name:"Improved Covert Research Facility",altNames:["Improved Sansha Covert Research Facility","Improved Blood Raider Covert Research Facility","Improved Angel Covert Research Facility","Improved Guristas Covert Research Facility","Improved Serpentis Covert Research Facility"],type:"ghost",space:["nullsec"],danger:"dangerous",hasNPCs:true,npcType:"Faction Response Fleet",npcDetail:"Strong response fleet with warp disruption.",hazards:["exploding_cans","response_fleet"],triggers:"~10,000 explosive damage on explosion (10km radius). Hidden timer from landing. Enough to kill most cruisers outright.",tips:"One hack, loot, warp. Must have explosive tank or be prepared to lose your ship. Jackpot-tier loot justifies the risk.",lootTier:"jackpot",lootSummary:"Wetu/Yurt/Magpie BPCs, high-grade Ascendancy BPCs",lootExamples:["Yurt Mobile Depot BPC","High-grade Ascendancy Omega BPC","Covert Research Tools"],estimatedValue:"50-500M"},
   {name:"Superior Covert Research Facility",altNames:["Superior Sansha Covert Research Facility","Superior Blood Raider Covert Research Facility","Superior Angel Covert Research Facility","Superior Guristas Covert Research Facility","Superior Serpentis Covert Research Facility"],type:"ghost",space:["wormhole"],danger:"dangerous",hasNPCs:true,npcType:"Sleeper Response Fleet",npcDetail:"Sleeper response fleet (deadlier than faction). Warp disruption.",hazards:["exploding_cans","response_fleet"],triggers:"~12,000 explosive damage on explosion (10km radius). Sleeper response fleet instead of faction NPCs. Same timer mechanic.",tips:"One hack, loot, warp immediately. Sleeper response fleet will kill anything that stays. Found in all wormhole classes.",lootTier:"jackpot",lootSummary:"Magpie/Wetu/Yurt BPCs, high-grade Ascendancy Omega BPC",lootExamples:["Magpie Mobile Depot BPC","High-grade Ascendancy Omega BPC","Covert Research Tools"],estimatedValue:"80-800M"},
   // ── Sleeper Caches ──────────────────────────────────────────────────────
-  {name:"Limited Sleeper Cache",type:"sleeper_cache",space:["highsec","lowsec","nullsec","wormhole"],danger:"caution",hasNPCs:false,npcType:null,npcDetail:null,hazards:["env_damage"],triggers:"Entrance hack (7/10 Data): failure starts a 2-minute self-destruct timer for the entire site. Sentry turrets activate when you approach containers. Pressure clouds deal ~100 DPS (omni). Proximity mines deal 500 damage + spawn damage cloud.",tips:"Frigates only (no stealth bombers). Hack the entrance container first. Use tractor beam to pull containers out of clouds. Bring tank for ~200 DPS.",lootTier:"medium",lootSummary:"Polarized weapon BPCs, sleeper blue loot, datacores",lootExamples:["Polarized Torpedo Launcher BPC","Wrecked Components","Datacores"],estimatedValue:"10-60M"},
+  {name:"Limited Sleeper Cache",type:"sleeper_cache",space:["highsec","lowsec","nullsec","wormhole"],danger:"caution",hasNPCs:false,npcType:null,npcDetail:null,hazards:["env_damage"],triggers:"Entrance hack (7/10 Data): a FAILED entrance hack starts a 2-minute timer that despawns the site (the storage depots themselves do NOT self-destruct on failed hacks). No sentry turrets at this tier. Pressure/wreck cloud deals ~100 DPS (need 60+ EHP/s). Plasma chambers act as proximity mines: ~500 damage + a damage cloud, ~9km blast (slower approach = safer).",tips:"Frigates only (no stealth bombers). Both analyzers needed. Hack the RPCU (7/10) to clear the wreck cloud, or the RDGU (8/10) to drop the forcefield. Move slow (~200 m/s) near plasma chambers.",lootTier:"medium",lootSummary:"Polarized weapon BPCs, sleeper blue loot, datacores",lootExamples:["Polarized Torpedo Launcher BPC","Wrecked Components","Datacores"],estimatedValue:"10-60M"},
   {name:"Standard Sleeper Cache",type:"sleeper_cache",space:["lowsec","nullsec","wormhole"],danger:"dangerous",hasNPCs:false,npcType:null,npcDetail:null,hazards:["env_damage"],triggers:"Entrance hack (7/10 Data): failure = 2-min site despawn. Alarm system increments on failed hacks. Sentry Towers deal ~1000 damage every 15s (250km range). Guardian Extermination Units create damage clouds (400-1000 DPS). Hidden Room containers on 3-minute self-destruct timer.",tips:"Need BOTH Data AND Relic Analyzers. Multiple puzzle rooms. Bring good tank (500+ DPS in clouds), mobile depot to refit. 20-30 min to complete.",lootTier:"high",lootSummary:"Polarized weapon BPCs, faction modules, implant BPCs, blue loot",lootExamples:["Polarized Torpedo Launcher BPC","Intact Armor Plates","Sleeper Components"],estimatedValue:"50-250M"},
   {name:"Superior Sleeper Cache",type:"sleeper_cache",space:["nullsec","wormhole"],danger:"dangerous",hasNPCs:false,npcType:null,npcDetail:null,hazards:["env_damage"],triggers:"Entrance hack (7/10): failure = 2-min despawn. Solray room: Solar Flare deals ~600 DPS EM if alignment disc not placed. Mine Room: hidden mine deals 5,000 damage on entry. Turret Room: up to 32 sentry towers. Plasma Chambers explode for 100,000 damage (250km radius).",tips:"Most complex PvE site in EVE. Need Data + Relic Analyzers, 800+ DPS tank, mobile depot. 45-90 min. Remote-rep the Pristine cache for bonus loot. Use AB not MWD (bloom triggers mines).",lootTier:"jackpot",lootSummary:"Polarized BPCs, Isotropic Deposition Guides, storyline module BPCs",lootExamples:["Polarized Torpedo Launcher BPC","Isotropic Deposition Guide","Neural Network Analyzer"],estimatedValue:"100-600M+"},
   // ── Wormhole Gas Sites (Fullerite) ──────────────────────────────────────
@@ -304,6 +304,262 @@ function expTackle(site){
     ],
     safety: "Most clouds are unstable — many bite every cycle, some have rats. Know your nebula first.",
   };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// "FULL WALKTHROUGH" — the deep, per-site-type guide behind the 📖 button.
+//
+// One structured guide per playbook id (data/relic safe, drone data, w-space
+// combat, the 4 ghost tiers, the 3 sleeper caches, and the 3 gas categories).
+// Every number below is "per the EVE University wiki" — where the wiki gives
+// no figure we say so rather than invent one. Content is trusted static HTML
+// (site names come from EXP_SITES), so the renderer injects it un-escaped like
+// EXP_PRIMER_HTML does.
+// ══════════════════════════════════════════════════════════════════════════
+
+// Per-tier ghost specifics (rats + one-blast damage + loot) so the shared ghost
+// guide reads correctly for Lesser / Standard / Improved / Superior.
+const GHOST_WALK = {
+  ghost_lesser:   {space:"highsec",  rats:"faction pirate", dmg:"6,000",  loot:"Mid-grade Ascendancy implant BPCs, Covert Research Tools, and Shattered Villard Wheels (an Ascendancy component). Note the 5th/top can is <b>always empty in highsec</b>."},
+  ghost_standard: {space:"lowsec",   rats:"faction pirate", dmg:"8,000",  loot:"'Wetu' Mobile Depot &amp; 'Packrat' MTU BPCs, high-grade Ascendancy Alpha/Beta plus mid-grade BPCs, and Covert Research Tools. The top can reliably drops an Electro-Neural Signaller."},
+  ghost_improved: {space:"nullsec",  rats:"faction pirate", dmg:"10,000", loot:"'Wetu'/'Yurt' depot &amp; 'Magpie' MTU BPCs, high-grade Ascendancy BPCs, Covert Research Tools, and capital-module materials."},
+  ghost_superior: {space:"wormhole", rats:"Sleeper",        dmg:"12,000", loot:"'Wetu'/'Yurt'/'Magpie' depot BPCs, high-grade Ascendancy Delta/Epsilon/Gamma/Omega BPCs, Covert Research Tools, and capital-module materials."},
+};
+
+function expWalkthrough(site){
+  const pid = expPlaybookId(site);
+
+  if(pid==="data_safe" || pid==="relic_safe"){
+    const isData = site.type==="data";
+    return {
+      overview:`An ordinary <b>${isData?"data":"relic"} site</b> — pure hacking, <b>no NPCs and no triggers</b>. Scan it, crack the cans, scoop the spew, move on. The only real threat is other players once you leave highsec.`,
+      entry:`Scan the signature to 100% with core probes and warp straight to 0 — it's safe to land on top of. Approach a container until your ${isData?"Data":"Relic"} Analyzer is in range, then activate it to open the hacking minigame.`,
+      hazards:[
+        "<b>No rats, no timers, no explosions.</b> Nothing on grid will hurt you.",
+        "<b>Failing the same can twice destroys its loot</b> — the only in-site penalty. Closing the minigame window also counts as a fail, so weigh it before committing.",
+        "In low/null/wormhole space the danger is <b>other capsuleers</b>: watch D-scan and local, and bail the moment combat probes appear.",
+      ],
+      ship:`A cheap <b>T1 exploration frigate</b> (Heron, Magnate, Imicus, Probe) is fine in highsec — it's disposable. In low/nullsec fly a <b>Covert Ops frigate or Astero</b> so you can warp cloaked. Fit the matching analyzer (<b>${isData?"Data":"Relic"} Analyzer</b>; carry both and go T2 in null) and a coherence rig (${isData?"Memetic Algorithm Bank":"Emission Scope Sharpener"}) if you can.`,
+      steps:[
+        "Scan to 100%, warp to the site.",
+        "Optionally cargo-scan the cans to skip the junk ones.",
+        "Approach a can and open the minigame.",
+        "Kill <b>Restoration Nodes</b> and <b>Virus Suppressors</b> first; grab utility subsystems (Kernel Rot, Secondary Vector) to burn down the System Core.",
+        "Reduce the Core to 0 — the can spews loot; fly through it to scoop.",
+        "Repeat for the worthwhile cans, then warp off (emptied sites despawn quickly).",
+      ],
+      loot: isData
+        ? "Datacores, decryptors, invention &amp; faction-module BPCs, and Abyssal filaments. Highsec pays a few hundred k to a few million; nullsec and wormhole data pays more."
+        : "T1/T2 salvage materials (Intact Armor Plates and the like) and rig BPCs. Highsec is low value; nullsec and wormhole 'Ruined' relic sites are the lucrative ones.",
+      rule:"Never fail the same container twice — a second failure destroys the loot inside. If a board looks unwinnable, retreat rather than force the last node.",
+    };
+  }
+
+  if(pid==="data_drone"){
+    return {
+      overview:"A <b>drone-region data site</b> (the Abandoned Research Complex family), found only in the eight drone regions. It hacks like a normal data site, but a <b>failed hack can spawn hostile rogue-drone frigates</b> instead of wrecking the can.",
+      entry:"Scan and warp in as usual — these are nullsec drone-space signatures with no gate or timer.",
+      hazards:[
+        "<b>Failed hack → chance to spawn rogue-drone frigates.</b> They're weak and easily killed; the wiki lists no DPS figure.",
+        "Crucially, <b>a failed hack here does NOT destroy the can</b> — it's fully recoverable, unlike normal sites.",
+        "The real killer is <b>nullsec PvP</b>, not the drones.",
+      ],
+      ship:"A T1 exploration frigate or Astero, but <b>bring a flight of light combat drones</b> (Hobgoblins/Warriors) to clear the frigate spawns. Data Analyzer + coherence rig.",
+      steps:[
+        "Warp in and open the containers.",
+        "If a hack fails and drones spawn, launch your drones, pop them, and carry on hacking.",
+        "<b>Hack the lone Research &amp; Development Laboratories can too</b>, even though it's often empty — skipping it forfeits the escalation roll.",
+        "Loot and move on; the site can escalate into another drone data site.",
+      ],
+      loot:"Rogue-drone component BPCs (Integrated/Augmented drone blueprints; the racial pool varies by region) and datacores. The wiki lists no ISK total.",
+      rule:"Bring drones and hack every can — including the empty-looking R&amp;D one. The fail penalty is a trivial spawn, not lost loot, and skipping the research can throws away the escalation chance.",
+    };
+  }
+
+  if(pid==="wh_combat"){
+    const isData = site.type==="data";
+    return {
+      overview:`A <b>wormhole ${isData?"data":"relic"} site guarded by Sleepers</b>. It shows on probes as a normal ${isData?"data":"relic"} signature, but Sleeper battleships/cruisers sit on grid and <b>aggress the instant you land</b>. It's a combat site first and a hack second, and it scales hard from C1 to C6.`,
+      entry:"Scan the signature and confirm it's the Sleeper-guarded version, not a tame no-rat one. Warp in with a <b>combat ship</b>, never a fragile hacking frigate — you'll be shot immediately.",
+      hazards:[
+        "<b>Sleepers have infinite cap</b> — neuts/nos are wasted on them. But <b>they neut and web you</b> (out to ~40 km from cruisers, ~20 km from frigates) and <b>warp-scramble you in C3 and above</b>.",
+        "They <b>remote-repair each other</b> in higher classes — <b>ECM (jamming)</b> is the reliable counter.",
+        "They <b>switch targets by threat</b>: drones, ECM and damps pull aggro onto you.",
+        "<b>No local chat in wormholes</b> — D-scan is your only warning that someone's coming.",
+      ],
+      ship:expWhShip(site.whClass)+" <b>Omni-tank all four damage types.</b> Bring ECM / sensor damps (they work; neuts don't) and salvagers for the wrecks.",
+      steps:[
+        "Warp in with a combat ship and expect immediate aggression.",
+        "Clear the waves, killing the <b>trigger ship</b> of each to advance in a controlled order; prioritise anything neuting/webbing/scramming you.",
+        "Only once the grid is clear, <b>hack</b> the artifact/databank cans.",
+        "<b>Salvage the Sleeper wrecks</b> — the ancient salvage is where most of the ISK is.",
+        "Watch D-scan throughout and leave via your known exit hole.",
+      ],
+      loot:"Guaranteed <b>blue loot</b> (Sleeper components sold to NPCs): ~200k–5M ISK per item; a C1 site totals ~10–13M, a C5 relic site ~279M. Salvage (ancient materials) and the relic/data hacks feed <b>Tech 3</b> production — the real payout.",
+      rule:"Clear every Sleeper before you hack — never sit still hacking with rats alive. No local means constant D-scan, an escape bookmark, and never biting off a class above your ship or fleet.",
+    };
+  }
+
+  if(pid.indexOf("ghost")===0){
+    const g = GHOST_WALK[pid];
+    return {
+      overview:`A <b>Ghost Site</b> (in-game: Covert Research Facility) in ${g.space}. It scans as a data site, but it's a <b>smash-and-grab</b>: a hidden timer is ticking, and when it runs out the whole site explodes and a response fleet lands.`,
+      entry:"Scan it down and <b>warp in cloaked</b> — the timer doesn't start until you decloak, so cloaking buys you setup time. You'll only ever see the final 30-second countdown.",
+      hazards:[
+        "<b>Hidden timer</b> (~30 s to 3 min from decloak). Only the last 30 s is shown.",
+        `<b>Everything detonates at once when the timer ends</b> — including cans you already hacked — for ~<b>${g.dmg}</b> explosive damage in a <b>10 km</b> radius.`,
+        "A <b>failed hack</b> only blows that one can (you can keep going) — but warping mid-hack auto-fails it.",
+        `A <b>${g.rats} response fleet</b> warps in as the visible timer starts, with warp disruption out to <b>24 km</b>; it won't aggress if you're <b>30+ km</b> away.`,
+      ],
+      ship:"Something that survives one blast — roughly <b>13,000 explosive EHP</b> — with fast targeting. A cheap Heron Navy or a Buzzard/Helios with an explosive shield hardener, or face-tank in a Stratios/T3C. <b>T2 Data Analyzer.</b>",
+      steps:[
+        "Warp in <b>cloaked</b> to hold the timer.",
+        "Decloak, cargo-scan, and pick the <b>one</b> best can.",
+        "Hack it cleanly (don't fail) and grab the loot.",
+        "When the rats appear / the 30 s shows, <b>get 40+ km clear, cloak, or warp</b> — explosive hardener already hot.",
+        "Farming trick: after 1–2 cans, burn 40 km off, wait for the rats to leave, then return for the untouched top can (empty in highsec, worth it in low/null).",
+      ],
+      loot:g.loot,
+      rule:`One hack, one grab, then leave. When the timer ends the ${g.rats} fleet detonates <b>every</b> can — even hacked ones — for ~${g.dmg} in 10 km, so be 40+ km clear with your explosive tank up.`,
+    };
+  }
+
+  if(pid==="cache_limited") return {
+    overview:"The <b>easiest Sleeper Cache</b> — a frigate-only hazard course with <b>no NPCs</b>; everything that kills you is environmental. Found across all space.",
+    entry:"Scan to 100% (needs ~<b>80.9</b> probe strength). <b>Frigates only</b>, and <b>stealth bombers can't enter</b> (they can't use the rift). Bring <b>both</b> analyzers. Hack the <b>Hyperfluct Generator (7/10 Data)</b> to open the rift; fail it and a <b>2-minute</b> timer despawns the site.",
+    hazards:[
+      "<b>Wreck / pressure cloud</b>: ~<b>100 DPS</b> to unmodified T1 resists, ~12 km radius. You need ≥<b>60 EHP/s</b> to sit in it.",
+      "<b>Unstable Plasma Chambers (×2)</b>: proximity mines — ~<b>500</b> initial hit plus a damage cloud, ~9 km blast. <b>Slower is safer</b>: they rupture ~7 km out at 330 m/s but let you nearly touch at ~100 m/s.",
+      "<b>EM forcefield</b> around one depot: a ~14 km bubble that regenerates 150 hp/s.",
+      "<b>No sentry towers</b> at this tier, and the storage depots <b>don't self-destruct</b> on failed hacks.",
+    ],
+    ship:"A <b>Heron</b> (shield) or <b>Magnate/Astero</b> (armour), cap-stable with ≥60 EHP/s in the cloud. Both analyzers, a <b>Mobile Depot</b> to refit, and an afterburner (not MWD near the mines).",
+    steps:[
+      "Hack the Hyperfluct Generator (7/10) and take the rift.",
+      "Drop a mobile depot and cargo-scan all six cans.",
+      "For the depot in the wreck cloud: hack the <b>RPCU (7/10 Data)</b> to clear the cloud for 2–3 min (a fail is only ~200 dmg), or refit to a local repper and tank it.",
+      "For the forcefield depot: hack the <b>RDGU (8/10 Data)</b> to drop the field (a fail can hit ~1,225 dmg), or just MWD straight in before the bubble activates.",
+      "Move ~200 m/s around the plasma chambers, hack the worthwhile cans, refit, scoop the depot, and leave.",
+    ],
+    loot:"The two <b>Dented</b> depots (the one inside the wreck and the one beside it) hold the value; Mangled depots hold Sleeper materials. Least lucrative of the three caches, but low effort — very roughly 10–60M.",
+    rule:"Never drift into the wreck cloud or a plasma chamber's ~9 km blast without either clearing it (RPCU) or holding ≥60 EHP/s — carelessness here is an instant loss.",
+  };
+
+  if(pid==="cache_superior") return {
+    overview:"The <b>hardest PvE site in EVE</b> — a four-room gauntlet (Solray → Mine → Turret → Archive). Needs both analyzers and a seriously tanked ship; a frigate can only do the lighter rooms.",
+    entry:"Scan to 100% (needs ~<b>104</b> probe strength, pinpoint). All ships except capitals may enter (the Rorqual excepted). Hack the <b>Hyperfluct Generator (7/10 Data)</b>; failing gives a 2-min despawn. <b>Warp distance tells you the room</b>: ~31,000 km = Solray, 60,000+ km = the turret room.",
+    hazards:[
+      "<b>Solray solar flare</b> (EM): <b>600 DPS</b> unaligned, dropping to ~25 once you place the alignment disc. ~14 km radius.",
+      "<b>Mine room</b>: bring <b>70,000 EHP</b> — entry mines hit ~800–2,100 and a full field logged ~42,000 damage.",
+      "<b>Plasma Chambers</b>: <b>100,000</b> explosive damage over a ~<b>250 km</b> blast — never aggress one except in the scripted Archive move.",
+      "<b>Turret room</b>: up to <b>32 sentry towers</b>; a tripped room is instant death.",
+      "<b>Archive shockwaves</b>: up to <b>1,667 DPS</b> (56 km) — orbit the Cerebrum at 60 km to dodge them.",
+    ],
+    ship:"A tanked <b>T3 Strategic Cruiser or battleship</b>: ≥<b>2,000 EHP/s</b> active reps on a 50k+ EHP buffer for the Archive; ~900–1,000 EHP/s (EM/thermal) for the turret room; 70k EHP for the mine room. A frigate can only do Solray and lighter bits. Mobile depot to refit per room.",
+    steps:[
+      "Always run <b>Solray first</b>: hack the Observational Unit, place the alignment disc to drop the flare from 600 → ~25 DPS, then loot.",
+      "<b>Mine room</b> (skip under 70k EHP): hack the Reroute Unit, then the hidden RDGU (10/10 — reveals the mines and spawns a Pristine depot), grab the cans, MJD/warp out.",
+      "<b>Turret room</b>: hack the RDGU at range, then the Sentry Repair Station; wait for the towers to die before looting. <b>Never</b> shoot a tower or a Plasma Chamber.",
+      "<b>Archive</b> (only with a 2,000 EHP/s T3C/BS): work the Vessel Rejuvenation Batteries and Cerebrum chambers, place the 3 Oscillation Fluids, then loot while orbiting the Cerebrum at 60 km.",
+    ],
+    loot:"<b>Isotropic Deposition Guides</b> (valuable, 5 m³ each — carry a mobile depot), plus Pristine-depot loot from the mine/turret/archive rooms. The turret room is the most lucrative part for a frigate pilot.",
+    rule:"Never aggress a Plasma Chamber (100,000 dmg, ~250 km) or enter a tripped/alarmed room outside the one scripted Archive detonation — and only attempt the Archive in a T3C/battleship doing 2,000+ EHP/s.",
+  };
+
+  if(pid==="cache_standard") return {
+    overview:"The middle Sleeper Cache — mechanically like the Limited, but this is where <b>sentry towers and an alarm/gas-cloud system</b> appear. Pays better than the Limited, and still doable in a T1 frigate.",
+    entry:"Scan to 100% (needs ~<b>92</b> probe strength). Battleships-and-below can enter (not frigate-only). Bring both analyzers. Hack the <b>Hyperfluct Generator (7/10 Data)</b>; failing gives a 2-min despawn.",
+    hazards:[
+      "<b>Sentry Towers</b> (Restless/Vigilant/Wakeful): fire every <b>15 s</b>, reach <b>250 km</b>, and hit a frigate for ~<b>1,000</b> per shot at range (EM/thermal). Kill them with <b>light</b> drones (their 50 m signature dodges medium drones).",
+      "<b>Alarm level (0→5)</b>: tripping it — or failing control-unit hacks — spawns <b>gas clouds</b> starting ~160 DPS and expanding to ~<b>354–1,000 DPS</b>. ~<b>1,200 EHP/s</b> tanks them indefinitely.",
+      "Storage depots have <b>no fail penalty</b>; control-unit fails raise the alarm.",
+      "<b>Hidden-room self-destruct</b>: 180 s (60 s if you fail the reset). Container explosions do no damage.",
+    ],
+    ship:"Heron/Magnate/Astero, or a dual-rep <b>Stratios</b> (≥250 EHP/s tanks two towers). Carry two fits swapped at a mobile depot: a <b>tower-fight fit</b> (AB, EM/thermal hardeners, light drones) and a <b>loot fit</b> (MWD, analyzers, cargo scanner) used only after the towers are down.",
+    steps:[
+      "Hack the Hyperfluct (7/10), take the rift, drop a depot.",
+      "Hack the Logistic RDGU and the three <b>Coordinate Plotting Devices (7/10)</b>; load the coordinates into the Calibration Device.",
+      "Refit to the tower fit, take the rift to the back room, and <b>destroy the sentry towers</b> with light drones.",
+      "Refit to the loot fit and hack the storage depots; in the hidden room, manage the 180 s self-destruct (reset once if needed).",
+      "Cargo-scan and prioritise <b>Pristine/Intact</b> depots, loot, and warp out.",
+    ],
+    loot:"Standard relic/data loot from the depots; the <b>Pristine and Intact</b> ones have the best odds, so cargo-scan and hit those first. Pays better than the Limited cache.",
+    rule:"Don't run with the loot fit or trip the alarm until the sentry towers are dead — they hit ~1,000 per shot out to 250 km and the alarm spawns gas clouds. Manage the alarm level.",
+  };
+
+  if(pid==="gas_wh") return {
+    overview:"A <b>wormhole gas (Fullerite) site</b> — empty and safe when you arrive, but <b>Sleepers spawn on a delay</b> and will delete a mining frigate. The gas feeds Tech 3 and capital production.",
+    entry:"Scan the signature and warp in <b>at range</b> so you stay mobile. The C320/C540 'Core' sites (Instrumental/Vital Reservoir) only appear in C5/C6 or shattered holes.",
+    hazards:[
+      "<b>Delayed Sleeper spawn</b>: the wiki says ~<b>15–20 minutes</b> after the site is first entered. It does <b>not</b> confirm whether that timer is per-site or per-pilot — so treat 15 min as a hard ceiling and leave earlier.",
+      "When they spawn they hit instantly: a Barren Reservoir fields ~82 DPS + neut; an <b>Instrumental Core Reservoir throws ~1,864 DPS</b> with web + scram + heavy neut.",
+      "<b>No local chat</b> — other players are the bigger danger; keep D-scan up.",
+    ],
+    ship:"A <b>Venture</b> (gas bonus + built-in warp-core stab, cheap) or a <b>Prospect</b> (covert cloak, bigger hold). Fit <b>Gas Cloud Scoops</b>. Align speed and a cloak matter far more than tank.",
+    steps:[
+      "Warp in at range and <b>start a timer the moment you land</b>.",
+      "Huff the cloud while staying <b>aligned to a safe</b> (exit hole, POS, or celestial).",
+      "Keep D-scan running the whole time.",
+      "<b>Warp out well before ~15 minutes</b> (aim ~10 min solo). Come back later for the rest — the gas stays, but spawned Sleepers don't leave.",
+    ],
+    loot:"Fullerite-C320/C540 (Instrumental/Vital) are the high-value gases; the lower Perimeter/Frontier reservoirs are cheaper. A full Core site is 10+ hours of huffing, so you realistically ninja a fraction per visit.",
+    rule:"The site is empty now but not for long — leave before ~15 minutes. Never let greed hold you past the spawn, especially in a Core site where the Sleepers scram, web, and do ~1,864 DPS.",
+  };
+
+  if(pid==="gas_myko") return {
+    overview:"A <b>k-space Mykoserocin nebula</b> (highsec/lowsec), refined for <b>Synth boosters</b>. Completely safe — <b>no NPCs and no damage clouds</b>. This is the beginner gas.",
+    entry:"Scan it down (a cosmic signature) in a region that carries the colour you want. No gate, no deadspace.",
+    hazards:[
+      "<b>Nothing from the environment</b> — no rats, no cloud damage, no spawn timer.",
+      "Your only risk is <b>other players</b> (or a highsec suicide gank). Gas is bulky at <b>10 m³/unit</b>, so the hold fills fast.",
+    ],
+    ship:"A <b>Venture</b> is ideal (gas bonus, warp-core stab, cheap). One or two Gas Cloud Scoops. No environmental tank needed.",
+    steps:[
+      "Find the nebula for your colour/booster and scan it down.",
+      "Warp in, approach, and huff — no need to align for NPCs.",
+      "Watch local/D-scan in lowsec for hostile players.",
+      "Fill the hold (small nebula 2,000 units, large 6,000), dock, repeat.",
+    ],
+    loot:"2,000 (small) or 6,000 (large) units of the colour's Mykoserocin, for Synth booster production. Low per-unit ISK — volume and market proximity matter.",
+    rule:"These clouds are genuinely safe — the only threat is another capsuleer, so watch local, not your capacitor.",
+  };
+
+  // gas_cyto — the default gas fallthrough
+  return {
+    overview:"A <b>k-space Cytoserocin nebula</b> (lowsec/nullsec), refined for the stronger <b>Improved boosters</b>. Unlike Mykoserocin, <b>most Cytoserocin clouds are unstable</b> — many carry rats and/or damage that hits at the end of each harvest cycle.",
+    entry:"Each colour is region/constellation-locked. Scan the nebula down and check its name against the hazard list before you commit.",
+    hazards:[
+      "<b>Safe lowsec 'entry' nebulae</b> (no damage, no rats): Emerald, Crimson, Bandit, Profiteer, Phoenix, Forgotten, Rapture. Learn here.",
+      "<b>Nullsec clouds mostly do 1,000 EM + 1,000 thermal per cycle</b>; the standout killer is <b>Glistening (6,000 EM + 1,000 thermal)</b>. Damage lands at cycle-end, not continuously.",
+      "The richest 14,000–18,000-unit sites (Leopard, Shimmering, Hazy, Gaseous, Polar Bear, Red Dragonfly) <b>all have NPCs</b>.",
+    ],
+    ship:"A <b>Venture or Prospect</b> with Gas Cloud Scoops. For damage clouds, <b>fit resists to the listed type</b> (usually EM/thermal; thermal/explosive for Leopard/Shimmering). For rat sites, clear them first or huff aligned and warp when they land — a cloaky Prospect is best in null.",
+    steps:[
+      "Pick your colour and go to its region/constellation.",
+      "<b>Start on a safe lowsec nebula</b> to learn the mechanic.",
+      "For null damage sites: pre-fit resists, warp in, orbit in scoop range, and watch shield/cap each cycle.",
+      "If the site has rats, clear them first or huff aligned with D-scan up.",
+      "On the big 18,000-unit sites, take a chunk and reset rather than solo-huffing it all.",
+    ],
+    loot:"Lowsec safe sites hold ~500–1,400 units; null constellation sites 3,000–6,000, and the guarded 'big' ones up to 18,000 (10 m³ each). Sells for more than Mykoserocin, but the rich sites are all in dangerous null.",
+    rule:"Check the specific nebula's damage type and NPC status BEFORE you warp in, and match your tank — many clouds bite for 1,000+ per cycle (Glistening 6,000 EM), and the best sites all have rats.",
+  };
+}
+
+// Render a guide object into the walkthrough modal. Content is trusted static
+// HTML, so it's injected un-escaped (like EXP_PRIMER_HTML).
+function expRenderGuide(g){
+  const sec = (icon,title,inner)=> `<div class="exp-wg-sec"><div class="exp-wg-h"><span class="exp-wg-ico">${icon}</span>${title}</div>${inner}</div>`;
+  const ul  = arr => `<ul class="exp-wg-list">${arr.map(x=>`<li>${x}</li>`).join("")}</ul>`;
+  const ol  = arr => `<ol class="exp-wg-steps">${arr.map(x=>`<li>${x}</li>`).join("")}</ol>`;
+  let h = `<div class="exp-wg-lead">${g.overview}</div>`;
+  if(g.entry)   h += sec("🛰️","Scan &amp; entry", `<p class="exp-wg-p">${g.entry}</p>`);
+  if(g.hazards) h += sec("⚠️","Hazards", ul(g.hazards));
+  if(g.ship)    h += sec("🚀","Ship &amp; fit", `<p class="exp-wg-p">${g.ship}</p>`);
+  if(g.steps)   h += sec("📋","Step by step", ol(g.steps));
+  if(g.loot)    h += sec("💰","Loot &amp; value", `<p class="exp-wg-p">${g.loot}</p>`);
+  if(g.rule)    h += `<div class="exp-wg-rule"><span class="exp-wg-rule-tag">#1 RULE</span> ${g.rule}</div>`;
+  return h;
 }
 
 // ── Shared reference: the hacking minigame as a board-game rulebook ─────────
@@ -593,8 +849,29 @@ function expSelect(site){
   tackleHtml += `<div class="exp-label">STEP BY STEP</div><ol class="exp-steps">${t.steps.map(s=>`<li>${esc(s)}</li>`).join("")}</ol>`;
   if(t.note) tackleHtml += `<div class="exp-label">MINIGAME NOTE</div><div class="exp-value">${esc(t.note)}</div>`;
   tackleHtml += `<div class="exp-safety"><span class="exp-safety-tag">#1 RULE</span> ${esc(t.safety)}</div>`;
+  tackleHtml += `<button id="exp-walk-btn" class="exp-walk-btn" type="button"><span class="exp-walk-btn-ico">📖</span> Full walkthrough</button>`;
   $("#exp-tackle-body").innerHTML = tackleHtml;
+  $("#exp-walk-btn").onclick = ()=> expOpenWalk(site);
 }
+
+// ── Walkthrough modal: the deep per-site-type guide ─────────────────────────
+function expOpenWalk(site){
+  const overlay = $("#exp-walk-overlay");
+  if(!overlay) return;
+  const ty = expType(site);
+  $("#exp-walk-title").innerHTML = `${ty.icon} ${esc(site.name)} — full walkthrough`;
+  $("#exp-walk-body").innerHTML = expRenderGuide(expWalkthrough(site));
+  overlay.classList.remove("hidden");
+}
+(function(){
+  const overlay = $("#exp-walk-overlay");
+  const close = $("#exp-walk-close");
+  if(!overlay) return;
+  const hide = ()=> overlay.classList.add("hidden");
+  if(close) close.onclick = hide;
+  overlay.addEventListener("click", (e)=>{ if(e.target===overlay) hide(); });
+  document.addEventListener("keydown", (e)=>{ if(e.key==="Escape") hide(); });
+})();
 
 function esc(s){ return s==null?"":String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 

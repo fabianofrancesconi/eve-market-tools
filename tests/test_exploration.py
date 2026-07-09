@@ -55,6 +55,23 @@ def test_playbook_router_and_primer_present_in_bundle():
     assert "EXP_PRIMER_HTML" in src
 
 
+def test_walkthrough_modal_wired_in_html():
+    # The full-walkthrough modal + its close button ship in the HTML.
+    html = lp_web.INDEX_HTML
+    assert 'id="exp-walk-overlay"' in html
+    assert 'id="exp-walk-body"' in html
+    assert 'id="exp-walk-close"' in html
+
+
+def test_walkthrough_functions_present_in_bundle():
+    src = lp_web.FRONTEND_SOURCE
+    assert "function expWalkthrough" in src
+    assert "function expRenderGuide" in src
+    assert "function expOpenWalk" in src
+    # The tackle card renders the button that opens the modal.
+    assert "exp-walk-btn" in src
+
+
 def test_primer_covers_key_hacking_mechanics():
     # The minigame primer must name the defensive/utility nodes and analyzers,
     # so it can't ship as an empty shell.
@@ -118,6 +135,64 @@ def tackle():
     return json.loads(proc.stdout)
 
 
+# Drive expWalkthrough + expRenderGuide across EVERY site and one representative
+# per playbook, so a full guide + valid rendered HTML is proven for each branch.
+_WALK_DRIVER = r"""
+const stub = new Proxy(function(){}, {
+  get: (_t, p) => (p === Symbol.toPrimitive ? () => "" : stub),
+  apply: () => stub, construct: () => stub,
+});
+globalThis.$ = () => stub;
+globalThis.document = { addEventListener: () => {} };
+globalThis.localStorage = { getItem: () => null, setItem: () => {} };
+
+__SOURCE__
+
+const wanted = {
+  data_hs:  "Local Mainframe",
+  relic_ls: "Decayed Excavation",
+  drone:    "Abandoned Research Complex",
+  wh_relic: "Forgotten Perimeter Coronation Platform",
+  wh_data:  "Unsecured Frontier Database",
+  ghost_hs: "Lesser Covert Research Facility",
+  ghost_wh: "Superior Covert Research Facility",
+  cache_lo: "Limited Sleeper Cache",
+  cache_st: "Standard Sleeper Cache",
+  cache_su: "Superior Sleeper Cache",
+  gas_wh:   "Barren Perimeter Reservoir",
+  gas_myko: "Mykoserocin Nebula",
+  gas_cyto: "Cytoserocin Nebula",
+};
+const reps = {};
+for (const [k, name] of Object.entries(wanted)) {
+  const site = EXP_SITES.find(s => s.name === name);
+  if (!site) { reps[k] = {error: "site not found: " + name}; continue; }
+  reps[k] = {pid: expPlaybookId(site), guide: expWalkthrough(site),
+             html: expRenderGuide(expWalkthrough(site))};
+}
+// Also sweep every site to prove no branch returns a broken guide.
+let broken = [];
+for (const s of EXP_SITES) {
+  const g = expWalkthrough(s);
+  const html = expRenderGuide(g);
+  if (!g || !g.overview || !g.rule) broken.push(s.name + ":fields");
+  if (!html || html.indexOf("undefined") >= 0) broken.push(s.name + ":html");
+}
+process.stdout.write(JSON.stringify({reps, broken, total: EXP_SITES.length}));
+"""
+
+
+@pytest.fixture(scope="module")
+def walk():
+    if not _NODE:
+        pytest.skip("node not available")
+    script = _WALK_DRIVER.replace("__SOURCE__", _EXP_JS.read_text())
+    proc = subprocess.run([_NODE, "-e", script], capture_output=True,
+                          text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
 def test_every_playbook_resolves(tackle):
     # Each representative site routes to its own playbook id (no fall-through).
     assert tackle["data_hs"]["pid"] == "data_safe"
@@ -170,6 +245,56 @@ def test_myko_gas_is_flagged_safe(tackle):
     # Mykoserocin has no NPCs/timer; Cytoserocin is flagged variable/unstable.
     assert "safe" in tackle["gas_myko"]["tackle"]["safety"].lower()
     assert "unstable" in tackle["gas_cyto"]["tackle"]["safety"].lower()
+
+
+def test_every_site_yields_a_walkthrough(walk):
+    # No site anywhere falls through to a broken/undefined guide.
+    assert walk["total"] >= 70
+    assert walk["broken"] == [], walk["broken"]
+
+
+def test_every_walkthrough_guide_is_complete(walk):
+    # Each representative guide has the full set of sections + a rendered body.
+    for key, val in walk["reps"].items():
+        assert "error" not in val, (key, val)
+        g = val["guide"]
+        assert g["overview"].strip(), key
+        assert g["entry"].strip(), key
+        assert isinstance(g["hazards"], list) and len(g["hazards"]) >= 2, key
+        assert g["ship"].strip(), key
+        assert isinstance(g["steps"], list) and len(g["steps"]) >= 3, key
+        assert g["loot"].strip(), key
+        assert g["rule"].strip(), key
+        # The rendered HTML surfaces the section headers and the #1 rule.
+        html = val["html"]
+        assert "Step by step" in html, key
+        assert "#1 RULE" in html, key
+
+
+def test_walkthrough_ghost_blast_scales_with_tier(walk):
+    # The deep guide carries the same per-tier explosive numbers as the card.
+    assert "6,000" in walk["reps"]["ghost_hs"]["html"]
+    assert "12,000" in walk["reps"]["ghost_wh"]["html"]
+
+
+def test_walkthrough_escalation_is_pure_hacking_not_combat(walk):
+    # Regression guard for the v1.94.2 correction: the safe data/relic guide
+    # (which mentions escalations) must NOT tell players it's a combat site.
+    for key in ("data_hs", "relic_ls"):
+        html = walk["reps"][key]["html"].lower()
+        assert "no npcs" in html or "no rats" in html, key
+
+
+def test_walkthrough_gas_wh_flags_the_spawn_timer(walk):
+    # The part that gets people killed: the delayed Sleeper spawn window.
+    html = walk["reps"]["gas_wh"]["html"]
+    assert "15" in html and "spawn" in html.lower()
+
+
+def test_walkthrough_sleeper_caches_need_both_analyzers(walk):
+    for key in ("cache_lo", "cache_st", "cache_su"):
+        html = walk["reps"][key]["html"].lower()
+        assert "both" in html and "analyzer" in html, key
 
 
 def test_recent_cards_show_risk_and_loot_levels():

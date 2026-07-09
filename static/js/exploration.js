@@ -382,7 +382,7 @@ const EXP_PRIMER_HTML = `
         <span class="exp-escalation-icon">⚡</span>
         <div>
           <div class="exp-escalation-t">Special event — Escalations</div>
-          <div class="exp-escalation-d">Rarely (~5% roll), finishing a site fires a <b>pop-up on the top-left of the screen</b> saying you've found the location of another site. This is an <b>Escalation</b> (a.k.a. Expedition) — a follow-up combat pocket that <b>only you can see and warp to</b>. Nobody else can scan it down. Both <b>data and relic</b> sites can trigger one (the sov-null <b>Detected</b> variants), and each leg has a ~50% chance to chain to the next.</div>
+          <div class="exp-escalation-d">Now and then, finishing a site fires a <b>pop-up notification</b> saying you've found the location of another site. This is an <b>Escalation</b> (a.k.a. Expedition) — a follow-up combat pocket that <b>only you can see and warp to</b>. Nobody else can scan it down. It's a small, unpublished chance — not every site can do it: in practice it's the sov-nullsec <b>Detected</b> data &amp; relic sites (→ Interrupted Expedition / Emergent Ruins) and drone-region data sites. Ordinary high/lowsec data &amp; relic sites don't escalate. Clearing one may chain into the next.</div>
         </div>
       </div>
       <div class="exp-escalation-do">
@@ -391,7 +391,7 @@ const EXP_PRIMER_HTML = `
           <li><b>Grab the bookmark before you leave.</b> The site is logged under <b>Journal → Expeditions</b> (and The Agency in the NeoCom). It <b>expires</b> — act within the hour, don't sit on it.</li>
           <li><b>It's a fight, not a hack.</b> The escalation is a <b>combat</b> site — your cloaky hacking frigate will die. Warp to a station, swap to a combat ship (or bring a friend) before going in.</li>
           <li><b>Warp to it from the Journal entry.</b> There's no signature to probe — you jump straight from the logged location. Take fleetmates if you want backup; they can follow you in.</li>
-          <li><b>Expect a chain.</b> Clearing it may pop <b>another</b> escalation. Keep an eye on the top-left for the next pop-up and repeat.</li>
+          <li><b>Expect a chain.</b> Clearing it may pop <b>another</b> escalation notification. Watch for the next pop-up and repeat.</li>
         </ol>
       </div>
     </div>

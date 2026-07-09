@@ -1194,6 +1194,28 @@
   .exp-piece-priority { background:rgba(224,85,85,.1); }
   .exp-piece-priority .exp-piece-role { color:var(--red); font-weight:700; }
 
+  /* Special-event (escalation) callout — a highlighted, can't-miss panel */
+  .exp-escalation {
+    border-radius:10px; padding:14px 16px;
+    background:linear-gradient(135deg, rgba(240,170,70,.12), var(--panel));
+    border:1px solid var(--gold); border-left:4px solid var(--gold);
+    display:flex; flex-direction:column; gap:12px;
+  }
+  .exp-escalation-head { display:flex; align-items:flex-start; gap:14px; }
+  .exp-escalation-icon { font-size:26px; line-height:1; flex-shrink:0; }
+  .exp-escalation-t {
+    font-size:11px; text-transform:uppercase; letter-spacing:1.2px;
+    color:var(--gold); font-weight:800; margin-bottom:3px;
+  }
+  .exp-escalation-d { font-size:13.5px; line-height:1.55; color:var(--fg); }
+  .exp-escalation b { color:var(--cyan); font-weight:600; }
+  .exp-escalation-do-h {
+    font-size:12px; font-weight:800; color:var(--gold);
+    text-transform:uppercase; letter-spacing:.5px; margin-bottom:5px;
+  }
+  .exp-escalation-do ol { margin:0; padding-left:18px; font-size:13px; line-height:1.6; color:var(--fg); }
+  .exp-escalation-do li { margin-bottom:5px; }
+
   /* Sources footer (mirrors the Abyss tab) */
   .exp-sources {
     margin-top:18px; padding-top:12px; border-top:1px solid var(--line);

@@ -942,6 +942,11 @@
   .exp-lvl-lo { color:var(--green); }
   .exp-lvl-md { color:var(--yellow); }
   .exp-lvl-hi { color:var(--red); }
+  /* Loot climbs toward GOLD — high loot is good, not a warning */
+  .exp-loot-lo { color:var(--dim); }
+  .exp-loot-md { color:var(--cyan); }
+  .exp-loot-hi { color:var(--gold); }
+  .exp-loot-jp { color:#c77dff; }  /* jackpot — purple, the "epic" tier */
   .exp-recent-rm {
     position:absolute; top:4px; right:4px;
     background:none; border:none; color:var(--dim); cursor:pointer; font-size:16px;
@@ -1044,6 +1049,10 @@
   .exp-fact-v.exp-lvl-lo { color:var(--green); }
   .exp-fact-v.exp-lvl-md { color:var(--yellow); }
   .exp-fact-v.exp-lvl-hi { color:var(--red); }
+  .exp-fact-v.exp-loot-lo { color:var(--dim); }
+  .exp-fact-v.exp-loot-md { color:var(--cyan); }
+  .exp-fact-v.exp-loot-hi { color:var(--gold); }
+  .exp-fact-v.exp-loot-jp { color:#c77dff; }
   @media(max-width:560px){ .exp-facts { grid-template-columns:repeat(2, 1fr); } }
 
   /* Steps as numbered "quest" chips */

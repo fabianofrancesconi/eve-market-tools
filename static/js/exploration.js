@@ -256,13 +256,13 @@ function expWalkthrough(site){
       ship:`The one thing that matters: <b>tank the blast</b>. Fit ~<b>13,000 explosive EHP</b> (an explosive shield hardener + extender) so a detonation can't one-shot you — then you can keep hacking through it. A cheap Heron Navy / Buzzard / Helios works, or face-tank in a Stratios/T3C. <b>T2 Data Analyzer</b> for fast, reliable hacks.`,
       steps:[
         "Warp in <b>cloaked</b> to hold the timer, then decloak on the cans.",
-        "Cargo-scan and <b>hack the best cans first</b> — go for as many as you can, don't stop at one.",
-        "Keep your explosive hardener <b>hot</b> the whole time.",
-        "When the timer/rats hit: if you're tanked, <b>eat the blast and keep grabbing</b>; only bail if a second blast would kill you or the rats point you.",
-        "If it blows before you're done — <b>so be it</b>. You tanked it; scoop what spewed and move on. Losing a cheap hull to a jackpot can is a good trade.",
+        "Keep your explosive hardener <b>hot</b> from the moment you decloak.",
+        "Cargo-scan and <b>hack every can you can reach</b> — start with the best, don't stop at one.",
+        "When the timer ends and the cans blow, your tank <b>eats the blast</b> and you keep going.",
+        `Scoop the loot spew. When you've grabbed what you can (or the ${g.rats} fleet gets its point on you), warp off.`,
       ],
       loot:g.loot,
-      rule:`<b>Tank it, don't tiptoe.</b> With enough explosive EHP a ~${g.dmg} blast won't kill you, so hack aggressively and grab everything you can — if a can blows, that's fine. The only real "don't" is sitting there <b>untanked</b> or letting the ${g.rats} fleet point you while you're not clear.`,
+      rule:`<b>Commit — don't bail.</b> Backing out doesn't save you: warping mid-hack auto-fails the can, and the site detonates on the timer regardless. So fit the explosive tank, hack every can, and eat the ~${g.dmg} blast — if a hack looks unwinnable, push it anyway, because retreating loses the loot without avoiding the boom. The only way to actually lose is to arrive <b>untanked</b>.`,
     };
   }
 
@@ -542,11 +542,14 @@ function expRisk(site){
        : site.danger==="caution"  ? {lvl:2, label:"Med",  cls:"exp-lvl-md"}
        :                            {lvl:3, label:"High", cls:"exp-lvl-hi"};
 }
+// Loot uses its OWN scale — high loot is desirable, so it climbs toward gold
+// (not red, which would read as a warning like the risk scale does).
 function expLoot(site){
   const t = site.lootTier||"low";
-  return t==="low"    ? {lvl:1, label:"Low",  cls:"exp-lvl-lo"}
-       : t==="medium" ? {lvl:2, label:"Med",  cls:"exp-lvl-md"}
-       :                {lvl:3, label:"High", cls:"exp-lvl-hi"};  // high + jackpot
+  return t==="low"     ? {lvl:1, label:"Low",     cls:"exp-loot-lo"}
+       : t==="medium"  ? {lvl:2, label:"Med",     cls:"exp-loot-md"}
+       : t==="jackpot" ? {lvl:4, label:"Jackpot", cls:"exp-loot-jp"}
+       :                 {lvl:3, label:"High",    cls:"exp-loot-hi"};
 }
 
 function expRenderRecent(){
@@ -702,7 +705,7 @@ function expBuildGuide(site){
   // The walkthrough, section by section, with per-site specifics folded in.
   const sec = (icon,title,inner)=> `<div class="exp-wg-sec"><div class="exp-wg-h"><span class="exp-wg-ico">${icon}</span>${title}</div>${inner}</div>`;
   const ul  = arr => `<ul class="exp-wg-list">${arr.map(x=>`<li>${x}</li>`).join("")}</ul>`;
-  const ol  = arr => `<ol class="exp-wg-steps">${arr.map(x=>`<li>${x}</li>`).join("")}</ol>`;
+  const ol  = arr => `<ol class="exp-steps">${arr.map(x=>`<li>${x}</li>`).join("")}</ol>`;
 
   h += `<div class="exp-wg-lead">${g.overview}</div>`;
 

@@ -233,15 +233,17 @@ def test_browse_covers_all_site_types(walk):
     assert set(walk["browseTypes"]).issubset(browse_order), walk["browseTypes"]
 
 
-def test_ghost_rule_is_tank_and_grab_not_one_hack(walk):
-    # Correction: ghost sites are NOT "hack one can and flee". With an explosive
-    # tank you eat the blast and keep grabbing — the guide must say so and must
-    # NOT carry the old "never attempt a second container" advice.
+def test_ghost_rule_is_commit_and_tank_not_flee(walk):
+    # Correction: ghost sites are NOT "hack one can and flee". Retreating
+    # doesn't help — warping mid-hack auto-fails and the site blows on the
+    # timer anyway — so the guide must say commit & tank, keep the "eat the
+    # blast" mindset, and must NOT carry the old "never attempt a second" line.
     for key in ("ghost_hs", "ghost_wh"):
         html = walk["reps"][key]["html"]
         low = html.lower()
         assert "never attempt a second" not in low, key
-        assert "so be it" in low or "eat the blast" in low or "tank it" in low, key
+        assert "untanked" in low, key                       # the only real loss
+        assert "eat the" in low or "commit" in low, key     # commit, don't bail
 
 
 def test_recent_cards_show_risk_and_loot_levels():

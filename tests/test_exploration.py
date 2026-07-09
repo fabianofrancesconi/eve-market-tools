@@ -246,6 +246,18 @@ def test_ghost_rule_is_commit_and_tank_not_flee(walk):
         assert "eat the" in low or "commit" in low, key     # commit, don't bail
 
 
+def test_no_guide_tells_players_to_back_out_of_a_hack(walk):
+    # Backing out of a hack never helps — closing the minigame counts as the
+    # failure (and on ghost sites the site blows anyway). No guide should tell
+    # players to retreat from / not finish a hack, or to never fail twice.
+    banned = ("never fail the same", "retreat rather than force",
+              "weigh it before committing", "never attempt a second")
+    for key, val in walk["reps"].items():
+        low = val["html"].lower()
+        for phrase in banned:
+            assert phrase not in low, (key, phrase)
+
+
 def test_recent_cards_show_risk_and_loot_levels():
     # Recent lookups render name + low/med/high Risk & Loot values.
     src = _EXP_JS.read_text()

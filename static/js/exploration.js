@@ -178,7 +178,7 @@ function expWalkthrough(site){
       entry:`Scan the signature to 100% with core probes and warp straight to 0 — it's safe to land on top of. Approach a container until your ${isData?"Data":"Relic"} Analyzer is in range, then activate it to open the hacking minigame.`,
       hazards:[
         "<b>No rats, no timers, no explosions.</b> Nothing on grid will hurt you.",
-        "<b>Failing the same can twice destroys its loot</b> — the only in-site penalty. Closing the minigame window also counts as a fail, so weigh it before committing.",
+        "<b>A blown hack just locks that one can</b> — no damage, no penalty to you. So always finish the attempt; there's no reason to back out of a hack.",
         "In low/null/wormhole space the danger is <b>other capsuleers</b>: watch D-scan and local, and bail the moment combat probes appear.",
       ],
       ship:`A cheap <b>T1 exploration frigate</b> (Heron, Magnate, Imicus, Probe) is fine in highsec — it's disposable. In low/nullsec fly a <b>Covert Ops frigate or Astero</b> so you can warp cloaked. Fit the matching analyzer (<b>${isData?"Data":"Relic"} Analyzer</b>; carry both and go T2 in null) and a coherence rig (${isData?"Memetic Algorithm Bank":"Emission Scope Sharpener"}) if you can.`,
@@ -193,7 +193,7 @@ function expWalkthrough(site){
       loot: isData
         ? "Datacores, decryptors, invention &amp; faction-module BPCs, and Abyssal filaments. Highsec pays a few hundred k to a few million; nullsec and wormhole data pays more."
         : "T1/T2 salvage materials (Intact Armor Plates and the like) and rig BPCs. Highsec is low value; nullsec and wormhole 'Ruined' relic sites are the lucrative ones.",
-      rule:"Never fail the same container twice — a second failure destroys the loot inside. If a board looks unwinnable, retreat rather than force the last node.",
+      rule:"The site itself is harmless — <b>the only thing that kills you is another player</b>. Keep D-scan up, stay aligned in low/null, and warp off the instant combat probes appear. Always finish a hack (backing out loses the can anyway); just don't die to a hunter for a cheap can of loot.",
     };
   }
 

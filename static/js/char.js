@@ -590,18 +590,25 @@ function renderCharData(){
     html+=`</div>`;
   }
 
-  // Sale notifications
+  // Order activity (sales + expiries)
   if(events.length){
     const shown=events.slice(0,10);
     html+=`<div class="char-events"><div class="char-events-hdr">`;
-    html+=`<span class="char-events-title">Sales activity (${events.length})</span>`;
+    html+=`<span class="char-events-title">Order activity (${events.length})</span>`;
     html+=`<button class="char-events-dismiss" data-eid="all">dismiss all</button></div>`;
     for(const e of shown){
       const isk=e.sold*e.price;
-      html+=`<div class="char-event-row">`;
-      html+=`<span class="ev-icon">${e.filled?'✓':'↓'}</span>`;
+      // Three outcomes: partial sale (↓), fully sold (✓), or expired unsold (⌛).
+      const icon=e.expired?'⌛':(e.filled?'✓':'↓');
+      const cls=e.expired?' ev-expired':'';
+      html+=`<div class="char-event-row${cls}">`;
+      html+=`<span class="ev-icon">${icon}</span>`;
       html+=`<span class="ev-qty">${e.sold}x</span> ${authEsc(e.type_name)}`;
-      html+=` <span class="ev-isk">${fmtISK(isk)} ISK</span>`;
+      if(e.expired){
+        html+=` <span class="ev-tag">expired unsold</span>`;
+      } else {
+        html+=` <span class="ev-isk">${fmtISK(isk)} ISK</span>`;
+      }
       if(multiChar) html+=` <span class="ev-char">${authEsc(e.character_name)}</span>`;
       html+=`<span class="ev-time">${_fmtAgo(e.ts)}</span>`;
       html+=`<span class="ev-x" data-eid="${e.id}">✕</span>`;

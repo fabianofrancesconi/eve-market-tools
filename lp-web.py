@@ -12,11 +12,12 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.96.4"
+__version__ = "1.97.0"
 
 import argparse
 import base64
 import concurrent.futures
+import datetime
 import html
 import json
 import math
@@ -938,10 +939,30 @@ def _maybe_prune_wallet_history(acct):
                 save_json(WALLET_HISTORY_PATH, store)
 
 
+def _order_expiry_ts(prev):
+    """Unix timestamp at which a market order reaches the end of its listing
+    duration (``issued`` + ``duration`` days). Returns None if we can't tell."""
+    issued, duration = prev.get("issued"), prev.get("duration")
+    if not issued or duration is None:
+        return None
+    try:
+        s = issued.replace("Z", "+00:00")
+        dt = datetime.datetime.fromisoformat(s)
+        return dt.timestamp() + float(duration) * 86400
+    except (ValueError, TypeError):
+        return None
+
+
+# An order that vanishes within this margin of its computed expiry time is
+# treated as having expired rather than sold — covers clock skew and the gap
+# between a sync and the exact expiry instant.
+_EXPIRY_MARGIN = 6 * 3600
+
+
 def _compute_order_deltas(prev_orders, last_sales, current_orders, names, char_name):
     """Pure diff of current vs previously-seen orders. Returns
     ``(new_events, new_prev, new_sales)`` — new_events are freshly-detected
-    sale/fill events; new_prev/new_sales are the snapshots to persist."""
+    sale/fill/expiry events; new_prev/new_sales are the snapshots to persist."""
     now = time.time()
     last_sales = dict(last_sales)
     current_by_id = {str(o["order_id"]): o for o in current_orders if o.get("order_id")}
@@ -950,6 +971,15 @@ def _compute_order_deltas(prev_orders, last_sales, current_orders, names, char_n
     for oid_str, prev in prev_orders.items():
         cur = current_by_id.get(oid_str)
         prev_remain = prev.get("volume_remain", 0)
+        # An order that disappeared with volume left may have expired (reached
+        # its listing duration) rather than been fully bought out. Only sell
+        # orders "expire" in a way worth flagging; a vanished order past its
+        # computed end-of-life is counted as expired, not sold.
+        expired = False
+        if cur is None and prev_remain > 0:
+            exp_ts = _order_expiry_ts(prev)
+            if exp_ts is not None and now >= exp_ts - _EXPIRY_MARGIN:
+                expired = True
         sold = prev_remain if cur is None else prev_remain - cur.get("volume_remain", 0)
         if sold > 0:
             new_events.append({
@@ -960,7 +990,8 @@ def _compute_order_deltas(prev_orders, last_sales, current_orders, names, char_n
                 "sold": sold,
                 "price": prev.get("price", 0),
                 "is_buy_order": prev.get("is_buy_order", False),
-                "filled": cur is None,
+                "filled": cur is None and not expired,
+                "expired": expired,
                 "character_name": char_name,
                 "dismissed": False,
             })
@@ -975,6 +1006,8 @@ def _compute_order_deltas(prev_orders, last_sales, current_orders, names, char_n
             "type_name": o.get("type_name"),
             "price": o.get("price"),
             "is_buy_order": o.get("is_buy_order"),
+            "issued": o.get("issued"),
+            "duration": o.get("duration"),
         }
         for o in current_orders if o.get("order_id")
     }

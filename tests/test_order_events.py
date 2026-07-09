@@ -1,4 +1,5 @@
 """Tests for market order change tracking (sale/fill events)."""
+import datetime
 import time
 
 import pytest
@@ -83,8 +84,75 @@ class TestTrackOrderChanges:
         assert len(events) == 1
         assert events[0]["sold"] == 50
         assert events[0]["filled"] is True
+        assert events[0]["expired"] is False
         # last_sales should NOT include a filled order
         assert "200" not in last_sales
+
+    def test_expired_order_flagged_not_sold(self, monkeypatch, tmp_path):
+        """An order that vanishes past its listing duration is expired, not sold."""
+        evpath = tmp_path / "ev.json"
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
+        acct = _acct()
+
+        # Order issued 91 days ago with a 90-day duration => already past expiry.
+        issued = (datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(days=91)).isoformat()
+        orders_t0 = [
+            {"order_id": 700, "type_id": 34, "type_name": "Tritanium",
+             "volume_remain": 40, "volume_total": 100, "price": 5.0,
+             "is_buy_order": False, "issued": issued, "duration": 90},
+        ]
+        lp_web._track_order_changes(acct, 1, orders_t0, {})
+
+        events, _ = lp_web._track_order_changes(acct, 1, [], {})
+        assert len(events) == 1
+        assert events[0]["sold"] == 40
+        assert events[0]["expired"] is True
+        assert events[0]["filled"] is False
+
+    def test_vanished_before_expiry_counts_as_sold(self, monkeypatch, tmp_path):
+        """An order gone well before its duration elapses is a genuine fill."""
+        evpath = tmp_path / "ev.json"
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
+        acct = _acct()
+
+        # Issued today, 90-day duration => nowhere near expiry.
+        issued = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        orders_t0 = [
+            {"order_id": 701, "type_id": 34, "type_name": "Tritanium",
+             "volume_remain": 40, "volume_total": 100, "price": 5.0,
+             "is_buy_order": False, "issued": issued, "duration": 90},
+        ]
+        lp_web._track_order_changes(acct, 1, orders_t0, {})
+
+        events, _ = lp_web._track_order_changes(acct, 1, [], {})
+        assert len(events) == 1
+        assert events[0]["expired"] is False
+        assert events[0]["filled"] is True
+
+    def test_partial_sell_never_expired(self, monkeypatch, tmp_path):
+        """A still-present order with a decreased volume is a sale, never expired."""
+        evpath = tmp_path / "ev.json"
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
+        acct = _acct()
+
+        issued = (datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(days=91)).isoformat()
+        orders_t0 = [
+            {"order_id": 702, "type_id": 34, "type_name": "Tritanium",
+             "volume_remain": 100, "volume_total": 100, "price": 5.0,
+             "is_buy_order": False, "issued": issued, "duration": 90},
+        ]
+        lp_web._track_order_changes(acct, 1, orders_t0, {})
+        orders_t1 = [
+            {"order_id": 702, "type_id": 34, "type_name": "Tritanium",
+             "volume_remain": 80, "volume_total": 100, "price": 5.0,
+             "is_buy_order": False, "issued": issued, "duration": 90},
+        ]
+        events, _ = lp_web._track_order_changes(acct, 1, orders_t1, {})
+        assert len(events) == 1
+        assert events[0]["expired"] is False
+        assert events[0]["filled"] is False
 
     def test_no_change_no_event(self, monkeypatch, tmp_path):
         """If volume_remain doesn't change, no event is created."""

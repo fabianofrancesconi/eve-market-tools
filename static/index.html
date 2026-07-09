@@ -291,38 +291,10 @@
             <div id="exp-primer-body" class="exp-primer-body"></div>
           </div>
         </div>
-        <!-- Full-walkthrough modal: deep per-site-type guide, opened from the tackle card -->
-        <div id="exp-walk-overlay" class="exp-primer-overlay hidden">
-          <div class="exp-primer-panel exp-walk-panel">
-            <div class="exp-primer-head">
-              <span id="exp-walk-title">Full walkthrough</span>
-              <button id="exp-walk-close" class="exp-primer-close">✕</button>
-            </div>
-            <div id="exp-walk-body" class="exp-primer-body exp-walk-body"></div>
-          </div>
-        </div>
         <div id="exp-empty" class="exp-empty">Search for a site name to see its details</div>
         <div id="exp-cards" class="exp-cards hidden">
-          <h2 id="exp-site-title" class="exp-site-title"></h2>
-          <div id="exp-hero" class="exp-hero"></div>
-          <div class="exp-cards-grid">
-            <div class="exp-card exp-trigger-card" id="exp-trigger-card">
-              <div class="exp-card-header">WHAT TO EXPECT</div>
-              <div class="exp-card-body" id="exp-trigger-body"></div>
-            </div>
-            <div class="exp-card exp-npc-card" id="exp-npc-card">
-              <div class="exp-card-header">NPCs</div>
-              <div class="exp-card-body" id="exp-npc-body"></div>
-            </div>
-            <div class="exp-card exp-loot-card" id="exp-loot-card">
-              <div class="exp-card-header">LOOT</div>
-              <div class="exp-card-body" id="exp-loot-body"></div>
-            </div>
-            <div class="exp-card exp-tackle-card" id="exp-tackle-card">
-              <div class="exp-card-header">HOW TO TACKLE IT</div>
-              <div class="exp-card-body" id="exp-tackle-body"></div>
-            </div>
-          </div>
+          <!-- Single flowing guide: hero → facts strip → inline walkthrough -->
+          <div id="exp-guide" class="exp-guide"></div>
           <div class="exp-sources">
             <b>Sources:</b> Mechanics, tactics &amp; numbers from the
             <a href="https://wiki.eveuniversity.org/Hacking" target="_blank" rel="noopener">EVE University wiki</a>

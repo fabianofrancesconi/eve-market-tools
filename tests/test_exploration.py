@@ -27,11 +27,11 @@ _spec.loader.exec_module(lp_web)
 
 # ── Wiring ──────────────────────────────────────────────────────────────────
 
-def test_tackle_card_wired_in_html():
+def test_guide_container_wired_in_html():
+    # The single flowing guide renders into one container (no card grid/modal).
     html = lp_web.INDEX_HTML
-    assert 'id="exp-tackle-card"' in html
-    assert 'id="exp-tackle-body"' in html
-    assert "HOW TO TACKLE IT" in html
+    assert 'id="exp-guide"' in html
+    assert 'id="exp-cards"' in html
 
 
 def test_primer_wired_in_html():
@@ -50,26 +50,15 @@ def test_exploration_cites_eve_university():
 
 def test_playbook_router_and_primer_present_in_bundle():
     src = lp_web.FRONTEND_SOURCE
-    assert "function expTackle" in src
     assert "function expPlaybookId" in src
     assert "EXP_PRIMER_HTML" in src
 
 
-def test_walkthrough_modal_wired_in_html():
-    # The full-walkthrough modal + its close button ship in the HTML.
-    html = lp_web.INDEX_HTML
-    assert 'id="exp-walk-overlay"' in html
-    assert 'id="exp-walk-body"' in html
-    assert 'id="exp-walk-close"' in html
-
-
 def test_walkthrough_functions_present_in_bundle():
     src = lp_web.FRONTEND_SOURCE
+    # The inline guide is built by expBuildGuide from the per-type expWalkthrough.
     assert "function expWalkthrough" in src
-    assert "function expRenderGuide" in src
-    assert "function expOpenWalk" in src
-    # The tackle card renders the button that opens the modal.
-    assert "exp-walk-btn" in src
+    assert "function expBuildGuide" in src
 
 
 def test_primer_covers_key_hacking_mechanics():
@@ -86,58 +75,12 @@ def test_primer_covers_key_hacking_mechanics():
 
 _NODE = shutil.which("node")
 
-# Drive expTackle for one site per playbook branch and dump the result as JSON.
-_DRIVER = r"""
-// Minimal DOM/localStorage shims — a universal stub absorbs every DOM call the
-// module makes at load time so we can reach the pure playbook functions.
-const stub = new Proxy(function(){}, {
-  get: (_t, p) => (p === Symbol.toPrimitive ? () => "" : stub),
-  apply: () => stub, construct: () => stub,
-});
-globalThis.$ = () => stub;
-globalThis.document = { addEventListener: () => {} };
-globalThis.localStorage = { getItem: () => null, setItem: () => {} };
-
-__SOURCE__
-
-const wanted = {
-  data_hs:  "Local Mainframe",
-  relic_ls: "Decayed Excavation",
-  drone:    "Abandoned Research Complex",
-  wh_relic: "Forgotten Perimeter Coronation Platform",
-  wh_data:  "Unsecured Frontier Database",
-  ghost_hs: "Lesser Covert Research Facility",
-  ghost_wh: "Superior Covert Research Facility",
-  cache_lo: "Limited Sleeper Cache",
-  cache_su: "Superior Sleeper Cache",
-  gas_wh:   "Barren Perimeter Reservoir",
-  gas_myko: "Mykoserocin Nebula",
-  gas_cyto: "Cytoserocin Nebula",
-};
-const out = {};
-for (const [k, name] of Object.entries(wanted)) {
-  const site = EXP_SITES.find(s => s.name === name);
-  if (!site) { out[k] = {error: "site not found: " + name}; continue; }
-  out[k] = {pid: expPlaybookId(site), tackle: expTackle(site)};
-}
-process.stdout.write(JSON.stringify(out));
-"""
-
-
-@pytest.fixture(scope="module")
-def tackle():
-    if not _NODE:
-        pytest.skip("node not available")
-    script = _DRIVER.replace("__SOURCE__", _EXP_JS.read_text())
-    proc = subprocess.run([_NODE, "-e", script], capture_output=True,
-                          text=True, timeout=30)
-    assert proc.returncode == 0, proc.stderr
-    return json.loads(proc.stdout)
-
-
-# Drive expWalkthrough + expRenderGuide across EVERY site and one representative
-# per playbook, so a full guide + valid rendered HTML is proven for each branch.
+# Drive expBuildGuide (the real production render path) across EVERY site and
+# one representative per playbook, proving a full, balanced guide + valid HTML
+# for each branch. expBuildGuide reads DOM-free site data, so the stub suffices.
 _WALK_DRIVER = r"""
+// Minimal DOM/localStorage shims — a universal stub absorbs every DOM call the
+// module makes at load time so we can reach the pure guide functions.
 const stub = new Proxy(function(){}, {
   get: (_t, p) => (p === Symbol.toPrimitive ? () => "" : stub),
   apply: () => stub, construct: () => stub,
@@ -168,13 +111,13 @@ for (const [k, name] of Object.entries(wanted)) {
   const site = EXP_SITES.find(s => s.name === name);
   if (!site) { reps[k] = {error: "site not found: " + name}; continue; }
   reps[k] = {pid: expPlaybookId(site), guide: expWalkthrough(site),
-             html: expRenderGuide(expWalkthrough(site))};
+             html: expBuildGuide(site)};
 }
 // Also sweep every site to prove no branch returns a broken guide.
 let broken = [];
 for (const s of EXP_SITES) {
   const g = expWalkthrough(s);
-  const html = expRenderGuide(g);
+  const html = expBuildGuide(s);
   if (!g || !g.overview || !g.rule) broken.push(s.name + ":fields");
   if (!html || html.indexOf("undefined") >= 0) broken.push(s.name + ":html");
 }
@@ -193,58 +136,21 @@ def walk():
     return json.loads(proc.stdout)
 
 
-def test_every_playbook_resolves(tackle):
+def test_every_playbook_resolves(walk):
     # Each representative site routes to its own playbook id (no fall-through).
-    assert tackle["data_hs"]["pid"] == "data_safe"
-    assert tackle["relic_ls"]["pid"] == "relic_safe"
-    assert tackle["drone"]["pid"] == "data_drone"
-    assert tackle["wh_relic"]["pid"] == "wh_combat"
-    assert tackle["wh_data"]["pid"] == "wh_combat"
-    assert tackle["ghost_hs"]["pid"] == "ghost_lesser"
-    assert tackle["ghost_wh"]["pid"] == "ghost_superior"
-    assert tackle["cache_lo"]["pid"] == "cache_limited"
-    assert tackle["cache_su"]["pid"] == "cache_superior"
-    assert tackle["gas_wh"]["pid"] == "gas_wh"
-    assert tackle["gas_myko"]["pid"] == "gas_myko"
-    assert tackle["gas_cyto"]["pid"] == "gas_cyto"
-
-
-def test_every_tackle_guide_is_complete(tackle):
-    # Every playbook must yield modules, a ship, ordered steps, and a #1 rule.
-    for key, val in tackle.items():
-        t = val["tackle"]
-        assert t["modules"].strip(), key
-        assert t["ship"].strip(), key
-        assert isinstance(t["steps"], list) and len(t["steps"]) >= 3, key
-        assert t["safety"].strip(), key
-
-
-def test_ghost_safety_scales_with_tier(tackle):
-    # Highsec ghost blast is 6,000; wormhole (Sleeper) is 12,000.
-    assert "6,000" in tackle["ghost_hs"]["tackle"]["safety"]
-    assert "12,000" in tackle["ghost_wh"]["tackle"]["safety"]
-    assert "Sleeper" in tackle["ghost_wh"]["tackle"]["safety"]
-
-
-def test_safe_data_relic_flag_no_npc_threat(tackle):
-    # The k-space no-NPC sites must call out that the only threat is players.
-    for key in ("data_hs", "relic_ls"):
-        assert "other players" in tackle[key]["tackle"]["safety"], key
-
-
-def test_sleeper_cache_needs_both_analyzers(tackle):
-    # Sleeper caches are the only sites needing BOTH analyzers — the guide
-    # must say so (in the modules line or the minigame note) for every tier.
-    for key in ("cache_lo", "cache_su"):
-        t = tackle[key]["tackle"]
-        blob = (t["modules"] + " " + t.get("note", "")).lower()
-        assert "both analyzers" in blob, key
-
-
-def test_myko_gas_is_flagged_safe(tackle):
-    # Mykoserocin has no NPCs/timer; Cytoserocin is flagged variable/unstable.
-    assert "safe" in tackle["gas_myko"]["tackle"]["safety"].lower()
-    assert "unstable" in tackle["gas_cyto"]["tackle"]["safety"].lower()
+    pid = {k: v["pid"] for k, v in walk["reps"].items()}
+    assert pid["data_hs"] == "data_safe"
+    assert pid["relic_ls"] == "relic_safe"
+    assert pid["drone"] == "data_drone"
+    assert pid["wh_relic"] == "wh_combat"
+    assert pid["wh_data"] == "wh_combat"
+    assert pid["ghost_hs"] == "ghost_lesser"
+    assert pid["ghost_wh"] == "ghost_superior"
+    assert pid["cache_lo"] == "cache_limited"
+    assert pid["cache_su"] == "cache_superior"
+    assert pid["gas_wh"] == "gas_wh"
+    assert pid["gas_myko"] == "gas_myko"
+    assert pid["gas_cyto"] == "gas_cyto"
 
 
 def test_every_site_yields_a_walkthrough(walk):
@@ -265,14 +171,16 @@ def test_every_walkthrough_guide_is_complete(walk):
         assert isinstance(g["steps"], list) and len(g["steps"]) >= 3, key
         assert g["loot"].strip(), key
         assert g["rule"].strip(), key
-        # The rendered HTML surfaces the section headers and the #1 rule.
+        # The rendered guide surfaces the section headers, facts strip, #1 rule.
         html = val["html"]
         assert "Step by step" in html, key
         assert "#1 RULE" in html, key
+        assert "exp-facts" in html, key
+        assert "exp-hero-banner" in html, key
 
 
 def test_walkthrough_ghost_blast_scales_with_tier(walk):
-    # The deep guide carries the same per-tier explosive numbers as the card.
+    # The guide carries the per-tier explosive numbers (6k highsec, 12k WH).
     assert "6,000" in walk["reps"]["ghost_hs"]["html"]
     assert "12,000" in walk["reps"]["ghost_wh"]["html"]
 
@@ -297,6 +205,15 @@ def test_walkthrough_sleeper_caches_need_both_analyzers(walk):
         assert "both" in html and "analyzer" in html, key
 
 
+def test_guide_weaves_in_per_site_data(walk):
+    # The inline guide must fold in THIS site's own record — its triggers,
+    # loot summary, and estimated value — not just the generic per-type text.
+    for key, val in walk["reps"].items():
+        html = val["html"]
+        assert "This site — mechanics" in html, key
+        assert "This site drops:" in html, key
+
+
 def test_recent_cards_show_risk_and_loot_levels():
     # Recent lookups render name + low/med/high Risk & Loot values.
     src = _EXP_JS.read_text()
@@ -306,13 +223,13 @@ def test_recent_cards_show_risk_and_loot_levels():
 
 
 def test_hero_is_a_gamified_card_banner():
-    # The main content leads with a trading-card banner (suit icon + name) and
-    # bold stat pills rather than the old plain chip strip.
+    # The guide leads with a trading-card banner (suit icon + name) above an
+    # equal-tile facts strip (Risk / Loot / NPCs / Value / Found-in).
     src = _EXP_JS.read_text()
     assert "function expType" in src
     assert "exp-hero-banner" in src
     assert "exp-hero-name" in src
-    assert "exp-stat-pill" in src
+    assert "exp-facts" in src
 
 
 def test_reopening_a_recent_keeps_list_order():

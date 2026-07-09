@@ -148,164 +148,6 @@ function expWhShip(whClass){
   return "C5–6: a real fleet with logi + EWAR. Caps may drop in.";
 }
 
-const GHOST_INFO = {
-  ghost_lesser:   {rats:"faction",  dmg:"6,000"},
-  ghost_standard: {rats:"faction",  dmg:"8,000"},
-  ghost_improved: {rats:"faction",  dmg:"10,000"},
-  ghost_superior: {rats:"Sleeper",  dmg:"12,000"},
-};
-
-// Returns {modules, ship, steps[], note?, safety}. `note` is the minigame-
-// specific gotcha; `safety` is the single most important rule for the site.
-function expTackle(site){
-  const pid = expPlaybookId(site);
-
-  if(pid==="data_safe" || pid==="relic_safe"){
-    const isData = site.type==="data";
-    return {
-      modules: (isData ? "Data Analyzer" : "Relic Analyzer") + ". Pack both. T2 in null.",
-      ship: expShipFor(site),
-      steps: [
-        "Scan to 100%. Warp in.",
-        "No rats, no triggers. Cargo-scan, skip the junk.",
-        "Hack the good cans.",
-        "Fly through the loot spew to scoop it.",
-        "Warp out.",
-      ],
-      note: "Two failed hacks kill the can. Grab utilities early. Restoration Nodes & Suppressors die first.",
-      safety: "Only threat is other players. Watch D-scan. Someone probes you? Leave.",
-    };
-  }
-
-  if(pid==="data_drone"){
-    return {
-      modules: "Data Analyzer + a flight of light drones.",
-      ship: "T1 frigate. Just bring drones.",
-      steps: [
-        "Warp in (drone null only).",
-        "Hack the Containment Facility cans.",
-        "Fail = drone frigates spawn. Pop them, keep hacking.",
-        "Hack the R&D can too (skip = no escalation).",
-        "Warp out.",
-      ],
-      note: "A fail here spawns drones — it does NOT destroy the can. Recoverable.",
-      safety: "Drones are trivial. Nullsec PvP is the real killer. Always carry drones.",
-    };
-  }
-
-  if(pid==="wh_combat"){
-    const isData = site.type==="data";
-    return {
-      modules: (isData ? "Data Analyzer" : "Relic Analyzer") + " on a combat, omni-tank fit. Bring salvagers.",
-      ship: expWhShip(site.whClass),
-      steps: [
-        "Warp in with a COMBAT ship. This is a fight.",
-        "Clear every Sleeper wave (kill the trigger ship).",
-        "Grid clear? Now hack.",
-        "Salvage the wrecks — that's the ISK.",
-        "Warp to your exit hole.",
-      ],
-      note: "Sleepers can't be neuted. Jam/damp them. Higher classes rep each other & scram.",
-      safety: "No Local in w-space. Watch D-scan, know your exit. Never hack while rats are alive.",
-    };
-  }
-
-  if(pid.indexOf("ghost")===0){
-    const g = GHOST_INFO[pid];
-    return {
-      modules: "Data Analyzer II. Fit for fast lock + fast align.",
-      ship: "Tank one blast (~13k explosive shield EHP) — cheap Heron Navy, or Buzzard/Helios. Or face-tank in a Stratios/T3C.",
-      steps: [
-        "Warp in cloaked — that delays the timer.",
-        "Cargo-scan. Pick the ONE best can.",
-        "Hack it. Grab loot.",
-        "Warp out before the 30s countdown ends.",
-      ],
-      note: "A fail kills only that can. Warping mid-hack auto-fails it.",
-      safety: `One hack, grab, warp. Timer ends → ${g.rats} fleet blows EVERY can for ~${g.dmg} dmg (10 km). Be 40+ km clear.`,
-    };
-  }
-
-  if(pid.indexOf("cache")===0){
-    const modules = "BOTH analyzers (T2). Auto-Repeat OFF. Bring a Mobile Depot.";
-    const note = "Scans as data, needs both analyzers. First relic hack clears the site — save it for last.";
-    if(pid==="cache_limited") return {
-      modules, note,
-      ship: "Frigate only. Heron/Magnate, or armour Astero. Need ~60 EHP/s, cap-stable.",
-      steps: [
-        "Hack the Hyperfluct entry (7/10). Take the rift.",
-        "Cargo-scan. Approach on AFTERBURNER, ~200 m/s.",
-        "Wreck-cloud depot: hack its Pressure Control Unit (7/10).",
-        "Force-field depot: hack the RDGU (8/10) or DPS it.",
-        "Hack the rest, scoop, leave.",
-      ],
-      safety: "AB only, never MWD. Sig bloom trips the plasma mines (500 dmg) from way out.",
-    };
-    if(pid==="cache_superior") return {
-      modules, note,
-      ship: "Hardest PvE in EVE. Tanked T3C/battleship (900–2,000 EHP/s). A frigate skips Archive, alarm & Mine rooms.",
-      steps: [
-        "Solray room first (entry warp ≈31,000 km = Solray).",
-        "Stabilise it: hack Observational Unit, place the disc. 600 → 20 DPS.",
-        "Mine room only with 70k EHP. No MWD.",
-        "Turret room: 900–1,000 EHP/s. NEVER shoot a tower.",
-        "Archive only with 2,000 EHP/s. Orbit Cerebrum at 60 km.",
-        "Rep the Pristine cache battery for bonus loot.",
-      ],
-      safety: "Never trip the alarm. Never touch a Plasma Chamber (100,000 dmg). Skip any room your tank can't hold.",
-    };
-    return { // cache_standard
-      modules, note,
-      ship: "Tight in a T1 frigate. Need ~1,200 EHP/s + light drones. Bring a depot.",
-      steps: [
-        "Hack Hyperfluct (7/10). Take the rift. Drop your depot.",
-        "Stay ~100 km off the alarm-cloud spawns.",
-        "Hack the 3 Coordinate Plotting cans (7/10).",
-        "Refit, rift back, kill the Sentry Towers with drones.",
-        "Hack the depots, then the hidden room. Reset self-destruct once.",
-      ],
-      safety: "Towers hit ~1,000 out to 250 km. Orbit tight on AB. MWD only to run — sig bloom = death.",
-    };
-  }
-
-  if(pid==="gas_wh") return {
-    modules: "Gas Cloud Scoops.",
-    ship: "Venture (built-in stab), or Prospect to warp cloaked.",
-    steps: [
-      "Warp in. Start huffing.",
-      "Stay ALIGNED to a safe the whole time.",
-      "Sleepers spawn ~15–20 min after the FIRST pilot arrived.",
-      "Warp off as the timer nears, or on first D-scan hit.",
-    ],
-    note: "Timer is per-site, not per-pilot. You may have far less than 15 min.",
-    safety: "Huff aligned, warp. No Local — D-scan is your only warning. The spawn wipes a Venture.",
-  };
-
-  if(pid==="gas_myko") return {
-    modules: "Gas Cloud Scoops.",
-    ship: "A Venture.",
-    steps: [
-      "Warp in.",
-      "Huff. No rats, no timer.",
-      "Haul home for Synth boosters.",
-    ],
-    safety: "Totally safe — no NPCs, no timer. Mine all day.",
-  };
-
-  // gas_cyto
-  return {
-    modules: "Gas Cloud Scoops + a tank/drones for the nasty ones.",
-    ship: "Venture on safe nebulae; a tanked ship where there are rats or damage clouds.",
-    steps: [
-      "Check the nebula name — hazards vary a lot.",
-      "Safe: Emerald, Crimson, Bandit, Phoenix, Forgotten, Rapture. Huff freely.",
-      "Hostile: rats and/or ~1,000–1,400 dmg per cycle. Tank or skip.",
-      "Haul home for Improved boosters.",
-    ],
-    safety: "Most clouds are unstable — many bite every cycle, some have rats. Know your nebula first.",
-  };
-}
-
 // ══════════════════════════════════════════════════════════════════════════
 // "FULL WALKTHROUGH" — the deep, per-site-type guide behind the 📖 button.
 //
@@ -546,22 +388,6 @@ function expWalkthrough(site){
   };
 }
 
-// Render a guide object into the walkthrough modal. Content is trusted static
-// HTML, so it's injected un-escaped (like EXP_PRIMER_HTML).
-function expRenderGuide(g){
-  const sec = (icon,title,inner)=> `<div class="exp-wg-sec"><div class="exp-wg-h"><span class="exp-wg-ico">${icon}</span>${title}</div>${inner}</div>`;
-  const ul  = arr => `<ul class="exp-wg-list">${arr.map(x=>`<li>${x}</li>`).join("")}</ul>`;
-  const ol  = arr => `<ol class="exp-wg-steps">${arr.map(x=>`<li>${x}</li>`).join("")}</ol>`;
-  let h = `<div class="exp-wg-lead">${g.overview}</div>`;
-  if(g.entry)   h += sec("🛰️","Scan &amp; entry", `<p class="exp-wg-p">${g.entry}</p>`);
-  if(g.hazards) h += sec("⚠️","Hazards", ul(g.hazards));
-  if(g.ship)    h += sec("🚀","Ship &amp; fit", `<p class="exp-wg-p">${g.ship}</p>`);
-  if(g.steps)   h += sec("📋","Step by step", ol(g.steps));
-  if(g.loot)    h += sec("💰","Loot &amp; value", `<p class="exp-wg-p">${g.loot}</p>`);
-  if(g.rule)    h += `<div class="exp-wg-rule"><span class="exp-wg-rule-tag">#1 RULE</span> ${g.rule}</div>`;
-  return h;
-}
-
 // ── Shared reference: the hacking minigame as a board-game rulebook ─────────
 // Structured like a tabletop rules sheet — Objective → Turn order → the Board →
 // the Pieces (foes to kill, tiles to grab) → Setup → Finding more sites — so a
@@ -790,13 +616,23 @@ function expSelect(site){
   }
   expRenderRecent();
 
-  // Hide the plain title — the game-card banner below carries the name.
-  $("#exp-site-title").textContent = "";
+  $("#exp-guide").innerHTML = expBuildGuide(site);
+  $("#exp-content").scrollTop = 0;
+}
 
-  // Hero = a trading-card banner: suit icon + name, then bold stat pills.
-  const ty = expType(site), risk = expRisk(site), loot = expLoot(site);
+// Build the whole single-column guide: hero banner → equal facts tiles →
+// the inline walkthrough, with this site's own triggers / tips / NPCs / loot
+// woven into the matching sections. Content is trusted (site data + the static
+// guide strings), so guide HTML is injected un-escaped; raw site fields are
+// escaped via esc().
+function expBuildGuide(site){
+  const ty = expType(site), risk = expRisk(site), loot = expLoot(site), g = expWalkthrough(site);
   const space = esc(site.space.join(", ")) + (site.whClass ? " <span class='exp-hero-wh'>C"+site.whClass.join(",")+"</span>" : "");
-  $("#exp-hero").innerHTML = `
+  const npc = site.hasNPCs ? esc(site.npcType) : "None";
+  const npcCls = site.hasNPCs ? (site.danger==="dangerous"?"exp-lvl-hi":"exp-lvl-md") : "exp-lvl-lo";
+
+  // Hero banner + equal-width facts tiles (always the same 5 tiles → balanced).
+  let h = `
     <div class="exp-hero-banner exp-danger-${site.danger}">
       <div class="exp-hero-crest">${ty.icon}</div>
       <div class="exp-hero-id">
@@ -804,74 +640,58 @@ function expSelect(site){
         <div class="exp-hero-name">${esc(site.name)}</div>
       </div>
     </div>
-    <div class="exp-hero-stats">
-      <div class="exp-stat-pill ${risk.cls}"><span class="exp-pill-k">Risk</span><span class="exp-pill-v">${risk.label}</span></div>
-      <div class="exp-stat-pill ${loot.cls}"><span class="exp-pill-k">Loot</span><span class="exp-pill-v">${loot.label}</span></div>
-      <div class="exp-stat-pill exp-pill-gold"><span class="exp-pill-k">Value</span><span class="exp-pill-v">${esc(site.estimatedValue)}</span></div>
-      <div class="exp-stat-pill exp-pill-plain"><span class="exp-pill-k">Space</span><span class="exp-pill-v">${space}</span></div>
+    <div class="exp-facts">
+      <div class="exp-fact"><span class="exp-fact-k">Risk</span><span class="exp-fact-v ${risk.cls}">${risk.label}</span></div>
+      <div class="exp-fact"><span class="exp-fact-k">Loot</span><span class="exp-fact-v ${loot.cls}">${loot.label}</span></div>
+      <div class="exp-fact"><span class="exp-fact-k">NPCs</span><span class="exp-fact-v ${npcCls}">${npc}</span></div>
+      <div class="exp-fact"><span class="exp-fact-k">Value</span><span class="exp-fact-v exp-fact-gold">${esc(site.estimatedValue)}</span></div>
+      <div class="exp-fact exp-fact-wide"><span class="exp-fact-k">Found in</span><span class="exp-fact-v">${space}</span></div>
     </div>`;
 
-  // WHAT TO EXPECT card
-  const dangerCls = site.danger==="safe"?"exp-badge-safe":site.danger==="caution"?"exp-badge-caution":"exp-badge-dangerous";
-  let triggerHtml = `<div class="exp-label">DANGER LEVEL</div>
-    <div class="exp-value"><span class="exp-danger-badge ${dangerCls}">${esc(site.danger)}</span></div>`;
-  triggerHtml += `<div class="exp-label">TYPE</div><div class="exp-value">${esc(site.type.replace("_"," "))} site</div>`;
-  triggerHtml += `<div class="exp-label">FOUND IN</div><div class="exp-value">${site.space.join(", ")}${site.whClass?" (C"+site.whClass.join(",")+")":""}</div>`;
-  triggerHtml += `<div class="exp-label">TRIGGERS &amp; MECHANICS</div><div class="exp-value">${esc(site.triggers)}</div>`;
-  if(site.tips) triggerHtml += `<div class="exp-label">TIPS</div><div class="exp-value">${esc(site.tips)}</div>`;
-  $("#exp-trigger-body").innerHTML = triggerHtml;
+  // The walkthrough, section by section, with per-site specifics folded in.
+  const sec = (icon,title,inner)=> `<div class="exp-wg-sec"><div class="exp-wg-h"><span class="exp-wg-ico">${icon}</span>${title}</div>${inner}</div>`;
+  const ul  = arr => `<ul class="exp-wg-list">${arr.map(x=>`<li>${x}</li>`).join("")}</ul>`;
+  const ol  = arr => `<ol class="exp-wg-steps">${arr.map(x=>`<li>${x}</li>`).join("")}</ol>`;
 
-  // NPCs card
-  let npcHtml = "";
-  if(!site.hasNPCs){
-    npcHtml = `<div class="exp-value" style="color:var(--green);font-weight:600">No NPCs present</div>`;
-  } else {
-    npcHtml += `<div class="exp-label">NPC TYPE</div><div class="exp-value">${esc(site.npcType)}</div>`;
-    if(site.npcDetail) npcHtml += `<div class="exp-label">DETAIL</div><div class="exp-value">${esc(site.npcDetail)}</div>`;
+  h += `<div class="exp-wg-lead">${g.overview}</div>`;
+
+  // This-site facts box: triggers + tips, verbatim from the site record.
+  let mech = `<p class="exp-wg-p">${esc(site.triggers)}</p>`;
+  if(site.tips) mech += `<p class="exp-wg-p exp-wg-tip"><b>Tip:</b> ${esc(site.tips)}</p>`;
+  h += sec("🧭","This site — mechanics", mech);
+
+  if(g.entry)   h += sec("🛰️","Scan &amp; entry", `<p class="exp-wg-p">${g.entry}</p>`);
+
+  // Hazards: the site's own NPC/hazard summary first, then the general list.
+  let haz = "";
+  if(site.hasNPCs){
     const hazardLabels = {combat_npcs:"Combat NPCs on grid",exploding_cans:"Exploding containers",env_damage:"Environmental damage (clouds/turrets)",response_fleet:"Response fleet warps in",timed_spawn:"Timed delayed NPC spawn"};
-    if(site.hazards.length) npcHtml += `<div class="exp-label">HAZARDS</div><div class="exp-value">${site.hazards.map(h=>esc(hazardLabels[h]||h)).join("<br>")}</div>`;
+    haz += `<p class="exp-wg-p"><b>${esc(site.npcType)}</b>${site.npcDetail?" — "+esc(site.npcDetail):""}`;
+    if(site.hazards&&site.hazards.length) haz += ` <span class="exp-wg-tags">${site.hazards.map(x=>`<span class="exp-wg-tag">${esc(hazardLabels[x]||x)}</span>`).join("")}</span>`;
+    haz += `</p>`;
+  } else {
+    haz += `<p class="exp-wg-p exp-wg-safe">✔ No NPCs on grid.</p>`;
   }
-  $("#exp-npc-body").innerHTML = npcHtml;
+  if(g.hazards) haz += ul(g.hazards);
+  h += sec("⚠️","Hazards", haz);
 
-  // LOOT card
+  if(g.ship)    h += sec("🚀","Ship &amp; fit", `<p class="exp-wg-p">${g.ship}</p>`);
+  if(g.steps)   h += sec("📋","Step by step", ol(g.steps));
+
+  // Loot: the general note, then this site's tier / examples / value.
   const tierCls = "exp-tier-"+(site.lootTier||"low");
-  let lootHtml = `<div class="exp-label">LOOT TIER</div>
-    <div class="exp-value"><span class="exp-loot-tier ${tierCls}">${esc(site.lootTier||"low")}</span></div>`;
-  lootHtml += `<div class="exp-label">WHAT DROPS</div><div class="exp-value">${esc(site.lootSummary)}</div>`;
-  if(site.lootExamples&&site.lootExamples.length) lootHtml += `<div class="exp-label">EXAMPLES</div><div class="exp-value">${site.lootExamples.map(e=>esc(e)).join(", ")}</div>`;
-  lootHtml += `<div class="exp-label">ESTIMATED VALUE</div><div class="exp-value">${esc(site.estimatedValue)}</div>`;
-  $("#exp-loot-body").innerHTML = lootHtml;
+  let lootHtml = `<p class="exp-wg-p">${g.loot}</p>`;
+  lootHtml += `<div class="exp-loot-meta">`;
+  lootHtml += `<span class="exp-loot-tier ${tierCls}">${esc(site.lootTier||"low")}</span>`;
+  lootHtml += `<span class="exp-loot-val">${esc(site.estimatedValue)}</span></div>`;
+  lootHtml += `<p class="exp-wg-p"><b>This site drops:</b> ${esc(site.lootSummary)}.`;
+  if(site.lootExamples&&site.lootExamples.length) lootHtml += ` e.g. ${site.lootExamples.map(e=>esc(e)).join(", ")}.`;
+  lootHtml += `</p>`;
+  h += sec("💰","Loot &amp; value", lootHtml);
 
-  // HOW TO TACKLE IT card — the actionable playbook for this site.
-  const t = expTackle(site);
-  let tackleHtml = `<div class="exp-label">WHAT TO BRING</div><div class="exp-value">${esc(t.modules)}</div>`;
-  tackleHtml += `<div class="exp-label">SHIP</div><div class="exp-value">${esc(t.ship)}</div>`;
-  tackleHtml += `<div class="exp-label">STEP BY STEP</div><ol class="exp-steps">${t.steps.map(s=>`<li>${esc(s)}</li>`).join("")}</ol>`;
-  if(t.note) tackleHtml += `<div class="exp-label">MINIGAME NOTE</div><div class="exp-value">${esc(t.note)}</div>`;
-  tackleHtml += `<div class="exp-safety"><span class="exp-safety-tag">#1 RULE</span> ${esc(t.safety)}</div>`;
-  tackleHtml += `<button id="exp-walk-btn" class="exp-walk-btn" type="button"><span class="exp-walk-btn-ico">📖</span> Full walkthrough</button>`;
-  $("#exp-tackle-body").innerHTML = tackleHtml;
-  $("#exp-walk-btn").onclick = ()=> expOpenWalk(site);
+  if(g.rule) h += `<div class="exp-wg-rule"><span class="exp-wg-rule-tag">#1 RULE</span> ${g.rule}</div>`;
+  return h;
 }
-
-// ── Walkthrough modal: the deep per-site-type guide ─────────────────────────
-function expOpenWalk(site){
-  const overlay = $("#exp-walk-overlay");
-  if(!overlay) return;
-  const ty = expType(site);
-  $("#exp-walk-title").innerHTML = `${ty.icon} ${esc(site.name)} — full walkthrough`;
-  $("#exp-walk-body").innerHTML = expRenderGuide(expWalkthrough(site));
-  overlay.classList.remove("hidden");
-}
-(function(){
-  const overlay = $("#exp-walk-overlay");
-  const close = $("#exp-walk-close");
-  if(!overlay) return;
-  const hide = ()=> overlay.classList.add("hidden");
-  if(close) close.onclick = hide;
-  overlay.addEventListener("click", (e)=>{ if(e.target===overlay) hide(); });
-  document.addEventListener("keydown", (e)=>{ if(e.key==="Escape") hide(); });
-})();
 
 function esc(s){ return s==null?"":String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 

@@ -466,10 +466,11 @@
   .char-event-row .ev-time { color:var(--dim); font-size:12px; margin-left:auto; }
   .char-event-row .ev-x { color:var(--dim); cursor:pointer; font-size:15px; margin-left:6px; }
   .char-event-row .ev-x:hover { color:var(--fg); }
-  /* Expired-unsold orders read as a muted warning, not a green sale. */
-  .char-event-row.ev-expired .ev-icon { color:var(--yellow); }
+  /* Expired-unsold orders read as a red failure, distinct from the green/gold
+     of an actual sale (gold ISK vs. yellow was too close to tell apart). */
+  .char-event-row.ev-expired .ev-icon { color:var(--red); }
   .char-event-row.ev-expired .ev-qty { color:var(--dim); }
-  .char-event-row .ev-tag { color:var(--yellow); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
+  .char-event-row .ev-tag { color:var(--red); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
 
   .char-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
   @media(max-width:900px){ .char-grid { grid-template-columns:1fr; } }

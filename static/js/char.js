@@ -49,10 +49,13 @@ function markCharEventsSeen(){
   _saveSeenEvents(next);
   const badge=$("#char-tab-badge");
   if(badge) badge.classList.add("hidden");
+  const tab=$("#char-tab-btn");
+  if(tab) tab.classList.remove("has-activity");
 }
 function updateCharBadge(){
   const badge=$("#char-tab-badge");
-  if(!badge) return;
+  const tab=$("#char-tab-btn");
+  if(!badge||!tab) return;
   // When the Overview tab is already open, activity is visible in-place — no
   // point flagging it in the nav; treat everything as seen instead.
   if(ACTIVE_TAB==="char"){ markCharEventsSeen(); return; }
@@ -61,6 +64,7 @@ function updateCharBadge(){
   const unseen=events.filter(e=>!seen.has(e.id)).length;
   badge.textContent=unseen>99?"99+":String(unseen);
   badge.classList.toggle("hidden", unseen===0);
+  tab.classList.toggle("has-activity", unseen>0);
 }
 const ROMAN=["0","I","II","III","IV","V"];
 function authEsc(s){ return String(s==null?"":s).replace(/[&<>"]/g,

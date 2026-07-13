@@ -167,7 +167,7 @@ function selectNote(id){
 
 function _scheduleNoteSave(id){
   if(NOTES.saveTimer) clearTimeout(NOTES.saveTimer);
-  NOTES.saveTimer=setTimeout(()=>_saveActiveNote(id), 3000);
+  NOTES.saveTimer=setTimeout(()=>_saveActiveNote(id), 2000);
 }
 
 function _saveActiveNote(id){

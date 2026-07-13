@@ -255,7 +255,7 @@ function switchTab(tab, opts){
     if(!IND.groupsLoaded) loadIndGroups();
     renderIndTable(); renderIndStatus();
   }
-  if(tab==="char" && AUTH.loggedIn){ renderCharData(); refreshCharData(); }
+  if(tab==="char" && AUTH.loggedIn){ renderCharData(); refreshCharData(); markCharEventsSeen(); }
   if(tab==="notes" && !NOTES.loaded) loadNotes();
 }
 // The Industry planner has no manual ME/TE/skill inputs — it needs a real

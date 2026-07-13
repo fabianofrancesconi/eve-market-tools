@@ -25,6 +25,43 @@ function setSyncCountdown(secs){
   if(secs==null) return;
   charRefreshDeadline=Date.now()+secs*1000; tickCharRefreshTimer();
 }
+// ── Overview-tab notification badge ─────────────────────────────────────────
+// The nav badge counts order-activity events (sales/expiries) the user hasn't
+// looked at yet. Seen event ids are remembered in localStorage so the badge
+// stays cleared across reloads and only re-appears for genuinely new events.
+const CHAR_EVENTS_SEEN_KEY = "char-events-seen";
+function _loadSeenEvents(){
+  try{ return new Set(JSON.parse(localStorage.getItem(CHAR_EVENTS_SEEN_KEY))||[]); }
+  catch(e){ return new Set(); }
+}
+function _saveSeenEvents(set){
+  try{ localStorage.setItem(CHAR_EVENTS_SEEN_KEY, JSON.stringify([...set])); }catch(e){}
+}
+// Mark every current event as seen and clear the badge (called on tab open).
+function markCharEventsSeen(){
+  const events=(AUTH.data&&AUTH.data.order_events)||[];
+  const seen=_loadSeenEvents();
+  const live=new Set(events.map(e=>e.id));
+  // Keep only ids still live so the store can't grow unbounded, plus the ones
+  // we're marking seen now.
+  const next=new Set([...seen].filter(id=>live.has(id)));
+  events.forEach(e=>next.add(e.id));
+  _saveSeenEvents(next);
+  const badge=$("#char-tab-badge");
+  if(badge) badge.classList.add("hidden");
+}
+function updateCharBadge(){
+  const badge=$("#char-tab-badge");
+  if(!badge) return;
+  // When the Overview tab is already open, activity is visible in-place — no
+  // point flagging it in the nav; treat everything as seen instead.
+  if(ACTIVE_TAB==="char"){ markCharEventsSeen(); return; }
+  const events=(AUTH.loggedIn&&AUTH.data&&AUTH.data.order_events)||[];
+  const seen=_loadSeenEvents();
+  const unseen=events.filter(e=>!seen.has(e.id)).length;
+  badge.textContent=unseen>99?"99+":String(unseen);
+  badge.classList.toggle("hidden", unseen===0);
+}
 const ROMAN=["0","I","II","III","IV","V"];
 function authEsc(s){ return String(s==null?"":s).replace(/[&<>"]/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
@@ -147,7 +184,7 @@ async function doLogout(charId){
   if(!AUTH.loggedIn){
     AUTH.data=null; IND.timers={};
     charRefreshDeadline=0; tickCharRefreshTimer();
-    renderAuthChip(); updateMyLpBadge(); renderIndTable();
+    renderAuthChip(); updateMyLpBadge(); updateCharBadge(); renderIndTable();
     if(IND.openDetail) renderIndDetail(IND.openDetail);
   } else {
     refreshCharData();
@@ -200,7 +237,7 @@ async function _doRefreshCharData(force){
   // Display the server-defined countdown that came with this data.
   setSyncCountdown(d.next_sync_in);
   const prevLp=$("#lp").value;
-  renderCharData(); syncJobTimers(); updateMyLpBadge();
+  renderCharData(); syncJobTimers(); updateMyLpBadge(); updateCharBadge();
   // Corp field was locked during the char-data fetch; unlock now that data
   // arrived. Clear the loading spinner on both fields — updateMyLpBadge() above
   // has already set the LP budget, and renderCharData() restored the corp value.

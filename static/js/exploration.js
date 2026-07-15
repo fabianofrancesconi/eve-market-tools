@@ -552,29 +552,85 @@ function expLoot(site){
        :                 {lvl:3, label:"High",    cls:"exp-loot-hi"};
 }
 
-function expRenderRecent(){
-  const list = $("#exp-recent-list");
-  if(!EXP.recent.length){ list.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:6px 10px">No recent lookups</div>'; return; }
-  list.innerHTML = EXP.recent.map((name,i)=>{
-    const site = EXP_SITES.find(s=> s.name===name);
-    if(!site) return "";
-    const risk = expRisk(site), loot = expLoot(site);
-    return `<div class="exp-recent-item exp-recent-card exp-danger-${site.danger}" data-idx="${i}">
-      <button class="exp-recent-rm" data-ri="${i}" title="Remove">×</button>
-      <div class="exp-recent-name">${esc(site.name)}</div>
-      <div class="exp-recent-stats">
-        <span class="exp-stat"><span class="exp-stat-k">Risk</span><span class="exp-stat-v ${risk.cls}">${risk.label}</span></span>
-        <span class="exp-stat"><span class="exp-stat-k">Loot</span><span class="exp-stat-v ${loot.cls}">${loot.label}</span></span>
-      </div>
-    </div>`;
-  }).join("");
-  list.querySelectorAll(".exp-recent-item").forEach(el=>{
-    el.onclick = (e)=>{ if(e.target.classList.contains("exp-recent-rm")) return; const site = EXP_SITES.find(s=>s.name===EXP.recent[+el.dataset.idx]); if(site) expSelect(site); };
+// ── Command-palette dropdown ────────────────────────────────────────────────
+// One floating panel under the search box does double duty: with an empty query
+// it lists Recent lookups; with 2+ chars typed it lists name/altName matches.
+// It's absolutely positioned so it overlays the Browse list instead of shoving
+// it down the sidebar. Opened on focus, closed on blur / outside-click / Escape
+// / selection.
+let EXP_PANEL_OPEN = false;
+
+// A compact one-line row shared by recents and search results: a colour-coded
+// danger dot, the site name, and its type tag. `rm` adds a remove-× (recents).
+function expPanelRow(site, {rm=false, ri=0}={}){
+  const ty = expType(site);
+  return `<button class="exp-po-item exp-danger-${site.danger}" type="button" data-name="${esc(site.name)}">
+    <span class="exp-po-dot" title="${esc(site.danger)}"></span>
+    <span class="exp-po-name">${esc(site.name)}</span>
+    <span class="exp-po-type">${ty.icon} ${esc(ty.label)}</span>
+    ${rm ? `<span class="exp-po-rm" data-ri="${ri}" title="Remove from recent">×</span>` : ""}
+  </button>`;
+}
+
+function expRenderPanel(){
+  const panel = $("#exp-search-panel");
+  if(!panel) return;
+  const q = ($("#exp-search").value||"").trim().toLowerCase();
+
+  let html = "";
+  if(q.length < 2){
+    // Recent-lookups mode.
+    const rows = EXP.recent.map((name,i)=>{
+      const site = EXP_SITES.find(s=> s.name===name);
+      return site ? expPanelRow(site, {rm:true, ri:i}) : "";
+    }).join("");
+    html = `<div class="exp-po-head">Recent lookups</div>`
+         + (rows ? rows : `<div class="exp-po-empty">No recent lookups yet — search or browse to open a site.</div>`);
+  } else {
+    // Search mode: match name + altNames.
+    const matches = EXP_SITES.filter(s=>{
+      if(s.name.toLowerCase().includes(q)) return true;
+      if(s.altNames && s.altNames.some(a=>a.toLowerCase().includes(q))) return true;
+      return false;
+    });
+    html = `<div class="exp-po-head">${matches.length} match${matches.length===1?"":"es"}</div>`
+         + (matches.length
+             ? matches.slice(0,20).map(s=> expPanelRow(s)).join("")
+             : `<div class="exp-po-empty">No matching sites found.</div>`);
+  }
+  panel.innerHTML = html;
+
+  panel.querySelectorAll(".exp-po-item").forEach(btn=>{
+    btn.onclick = (e)=>{
+      if(e.target.classList.contains("exp-po-rm")) return;
+      const site = EXP_SITES.find(s=> s.name===btn.dataset.name);
+      if(site) expSelect(site);
+    };
   });
-  list.querySelectorAll(".exp-recent-rm").forEach(btn=>{
-    btn.onclick = (e)=>{ e.stopPropagation(); EXP.recent.splice(+btn.dataset.ri,1); expSaveRecent(); expRenderRecent(); };
+  panel.querySelectorAll(".exp-po-rm").forEach(rm=>{
+    rm.onclick = (e)=>{
+      e.stopPropagation();
+      EXP.recent.splice(+rm.dataset.ri, 1);
+      expSaveRecent();
+      expRenderPanel();
+    };
   });
 }
+
+function expOpenPanel(){
+  EXP_PANEL_OPEN = true;
+  expRenderPanel();
+  $("#exp-search-panel").classList.remove("hidden");
+}
+function expClosePanel(){
+  EXP_PANEL_OPEN = false;
+  const p = $("#exp-search-panel");
+  if(p) p.classList.add("hidden");
+}
+
+// init.js calls this after server-synced recents load; just refresh the panel
+// if it happens to be open.
+function expRenderRecent(){ if(EXP_PANEL_OPEN) expRenderPanel(); }
 
 // Browse-all list: every site grouped by type, collapsible per group. This is
 // the primary discovery path — you don't need to know a site's exact name.
@@ -614,38 +670,11 @@ function expRenderBrowse(){
   });
 }
 
-function expSearch(){
-  const q = ($("#exp-search").value||"").trim().toLowerCase();
-  const results = $("#exp-results");
-  if(q.length < 2){ results.classList.add("hidden"); return; }
-  const matches = EXP_SITES.filter(s=>{
-    if(s.name.toLowerCase().includes(q)) return true;
-    if(s.altNames && s.altNames.some(a=>a.toLowerCase().includes(q))) return true;
-    return false;
-  });
-  if(!matches.length){
-    results.innerHTML = `<div class="exp-result-item"><span class="exp-result-name" style="color:var(--dim)">No matching sites found</span></div>`;
-    results.classList.remove("hidden");
-    return;
-  }
-  results.innerHTML = matches.slice(0,15).map((s,i)=>{
-    const dangerCls = s.danger==="safe"?"exp-badge-safe":s.danger==="caution"?"exp-badge-caution":"exp-badge-dangerous";
-    return `<div class="exp-result-item" data-idx="${EXP_SITES.indexOf(s)}">
-      <span class="exp-result-name">${esc(s.name)}</span>
-      <span class="exp-type-badge">${esc(s.type.replace("_"," "))}</span>
-      <span class="exp-result-badge ${dangerCls}">${esc(s.danger)}</span>
-    </div>`;
-  }).join("");
-  results.classList.remove("hidden");
-  results.querySelectorAll(".exp-result-item[data-idx]").forEach(el=>{
-    el.onclick = ()=> expSelect(EXP_SITES[+el.dataset.idx]);
-  });
-}
-
 function expSelect(site){
   EXP.selected = site;
   $("#exp-search").value = "";
-  $("#exp-results").classList.add("hidden");
+  expClosePanel();
+  $("#exp-search").blur();
   $("#exp-empty").classList.add("hidden");
   $("#exp-cards").classList.remove("hidden");
 
@@ -749,12 +778,20 @@ function expBuildGuide(site){
 
 function esc(s){ return s==null?"":String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 
-$("#exp-search").addEventListener("input", expSearch);
-document.addEventListener("click", (e)=>{
-  const sidebar = e.target.closest(".exp-sidebar");
-  if(!sidebar){ $("#exp-results").classList.add("hidden"); }
-});
-expRenderRecent();
+// Command-palette wiring: focus opens the dropdown (recents), typing filters it,
+// Escape / outside-click / blur close it.
+(function(){
+  const input = $("#exp-search");
+  if(!input) return;
+  input.addEventListener("focus", expOpenPanel);
+  input.addEventListener("input", ()=>{ if(!EXP_PANEL_OPEN) expOpenPanel(); else expRenderPanel(); });
+  input.addEventListener("keydown", (e)=>{ if(e.key==="Escape"){ input.value=""; expClosePanel(); input.blur(); } });
+  // Close when the click lands outside the whole search widget (the input +
+  // its floating panel share the .exp-search-wrap parent).
+  document.addEventListener("mousedown", (e)=>{
+    if(EXP_PANEL_OPEN && !e.target.closest(".exp-search-wrap")) expClosePanel();
+  });
+})();
 expRenderBrowse();
 
 // "How hacking works" cheat-sheet — a slide-out overlay opened from the sticky

@@ -270,17 +270,16 @@
           <span class="exp-primer-icon">⚡</span>
           <span>How hacking works</span>
         </button>
+        <!-- Command-palette search: focus shows recents, typing shows matches,
+             both in a dropdown that floats over Browse rather than shoving it -->
         <div class="exp-search-wrap">
-          <input id="exp-search" type="text" placeholder="Search site name..." class="exp-search-input">
-        </div>
-        <div id="exp-results" class="exp-results hidden"></div>
-        <div id="exp-recent" class="exp-recent">
-          <div class="exp-recent-header">Recent lookups</div>
-          <div id="exp-recent-list" class="exp-recent-list"></div>
+          <span class="exp-search-icon">🔍</span>
+          <input id="exp-search" type="text" placeholder="Search site name…" class="exp-search-input" autocomplete="off">
+          <div id="exp-search-panel" class="exp-search-panel hidden"></div>
         </div>
         <!-- Browse every site, grouped by type — the primary way to discover -->
         <div id="exp-browse" class="exp-browse">
-          <div class="exp-recent-header">Browse all sites</div>
+          <div class="exp-browse-header">Browse all sites</div>
           <div id="exp-browse-list" class="exp-browse-list"></div>
         </div>
       </div>

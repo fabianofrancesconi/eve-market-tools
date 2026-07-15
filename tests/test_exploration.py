@@ -258,12 +258,18 @@ def test_no_guide_tells_players_to_back_out_of_a_hack(walk):
             assert phrase not in low, (key, phrase)
 
 
-def test_recent_cards_show_risk_and_loot_levels():
-    # Recent lookups render name + low/med/high Risk & Loot values.
+def test_search_is_a_command_palette_with_recents():
+    # Search + recents are unified into one floating dropdown: focusing the box
+    # opens it on the recent-lookups list, typing filters it to matches. The
+    # panel overlays the Browse list rather than pushing it down the sidebar.
     src = _EXP_JS.read_text()
-    assert "function expRisk" in src
-    assert "function expLoot" in src
-    assert "exp-recent-stats" in src
+    assert "function expRenderPanel" in src
+    assert "function expOpenPanel" in src
+    assert "function expClosePanel" in src
+    # Recents live inside the same panel (empty-query mode), each row a picker.
+    assert "Recent lookups" in src
+    assert "exp-po-item" in src
+    assert "exp-search-panel" in src
 
 
 def test_hero_is_a_gamified_card_banner():

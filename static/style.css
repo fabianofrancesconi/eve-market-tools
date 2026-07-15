@@ -914,63 +914,54 @@
     transition:background .12s;
   }
   .exp-resize-handle:hover, .exp-resize-handle.active { background:var(--cyan2); }
+  /* Command-palette search: a relative wrapper holding the icon, the input,
+     and a floating dropdown that overlays the Browse list below it */
+  .exp-search-wrap { position:relative; }
+  .exp-search-icon {
+    position:absolute; left:11px; top:50%; transform:translateY(-50%);
+    font-size:13px; pointer-events:none; opacity:.7;
+  }
   .exp-search-input {
-    width:100%; padding:10px 12px; font-size:14px; border-radius:6px;
+    width:100%; padding:10px 12px 10px 32px; font-size:14px; border-radius:6px;
     border:1px solid var(--line2); background:var(--panel2); color:var(--fg);
     outline:none; transition:border-color .15s;
   }
   .exp-search-input:focus { border-color:var(--cyan); }
   .exp-search-input::placeholder { color:var(--dim); }
-  .exp-results {
-    max-height:300px; overflow-y:auto;
-    border:1px solid var(--line); border-radius:6px; background:var(--panel);
+
+  /* Floating dropdown — recents when empty, matches while typing */
+  .exp-search-panel {
+    position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:20;
+    max-height:min(60vh, 420px); overflow-y:auto;
+    background:var(--panel); border:1px solid var(--line2); border-radius:8px;
+    box-shadow:0 12px 30px rgba(0,0,0,.45); padding:4px;
   }
-  .exp-result-item {
-    padding:10px 13px; cursor:pointer; display:flex; align-items:center; gap:8px;
-    border-bottom:1px solid var(--line); transition:background .08s;
+  .exp-search-panel.hidden { display:none; }
+  .exp-po-head {
+    font-size:10.5px; color:var(--dim); text-transform:uppercase; letter-spacing:.6px;
+    font-weight:700; padding:6px 8px 4px;
   }
-  .exp-result-item:last-child { border-bottom:none; }
-  .exp-result-item:hover, .exp-result-item.selected { background:var(--panel2); }
-  .exp-result-name { flex:1; color:var(--fg); font-size:14.5px; font-weight:500; }
-  .exp-result-badge {
-    display:inline-block; padding:2px 7px; border-radius:3px;
-    font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.3px;
+  .exp-po-empty { color:var(--dim); font-size:13px; padding:6px 8px 10px; line-height:1.4; }
+  .exp-po-item {
+    width:100%; display:flex; align-items:center; gap:9px; cursor:pointer;
+    padding:8px 9px; text-align:left; border:none; border-radius:6px;
+    background:none; color:var(--fg); font-size:13.5px; transition:background .08s;
   }
-  .exp-badge-safe { background:var(--green); color:#000; }
-  .exp-badge-caution { background:var(--yellow); color:#000; }
-  .exp-badge-dangerous { background:var(--red); color:#fff; }
-  .exp-type-badge {
-    display:inline-block; padding:2px 6px; border-radius:3px;
-    font-size:11px; background:var(--panel3); border:1px solid var(--line2); color:var(--dim);
+  .exp-po-item:hover { background:var(--panel3); }
+  .exp-po-dot { width:8px; height:8px; border-radius:50%; background:var(--dim2); flex:none; }
+  .exp-po-item.exp-danger-safe .exp-po-dot { background:var(--green); }
+  .exp-po-item.exp-danger-caution .exp-po-dot { background:var(--yellow); }
+  .exp-po-item.exp-danger-dangerous .exp-po-dot { background:var(--red); }
+  .exp-po-name { flex:1; line-height:1.3; font-weight:500; }
+  .exp-po-type { font-size:11px; color:var(--dim); white-space:nowrap; }
+  .exp-po-rm {
+    color:var(--dim); font-size:16px; line-height:1; padding:0 2px 0 4px;
+    opacity:0; transition:opacity .1s, color .1s;
   }
-  .exp-recent { margin-top:8px; }
-  .exp-recent-header { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; margin-bottom:8px; }
-  .exp-recent-list { display:flex; flex-direction:column; gap:8px; }
-  /* Recent lookups as little "cards" — playing-card feel with a colour edge */
-  .exp-recent-card {
-    position:relative; cursor:pointer; border-radius:8px;
-    padding:8px 10px 8px 12px; background:var(--panel2);
-    border:1px solid var(--line2); border-left:3px solid var(--dim2);
-    transition:transform .1s, border-color .1s, background .1s;
-  }
-  .exp-recent-card:hover {
-    background:var(--panel3); transform:translateY(-1px);
-  }
-  .exp-recent-card.exp-danger-safe { border-left-color:var(--green); }
-  .exp-recent-card.exp-danger-caution { border-left-color:var(--yellow); }
-  .exp-recent-card.exp-danger-dangerous { border-left-color:var(--red); }
-  .exp-recent-name {
-    font-size:13.5px; font-weight:600; color:var(--fg); line-height:1.3;
-    padding-right:14px; margin-bottom:6px;
-  }
-  /* Risk / Loot read as compact "Low·Med·High" — no bar, bigger value font */
-  .exp-recent-stats { display:flex; gap:14px; }
-  .exp-stat { display:flex; align-items:baseline; gap:5px; }
-  .exp-stat-k {
-    font-size:10px; text-transform:uppercase; letter-spacing:.5px;
-    color:var(--dim); font-weight:700;
-  }
-  .exp-stat-v { font-size:14px; font-weight:800; letter-spacing:.2px; }
+  .exp-po-item:hover .exp-po-rm { opacity:1; }
+  .exp-po-rm:hover { color:var(--red); }
+
+  /* Risk / Loot value colours — still used by the guide facts tiles */
   .exp-lvl-lo { color:var(--green); }
   .exp-lvl-md { color:var(--yellow); }
   .exp-lvl-hi { color:var(--red); }
@@ -979,16 +970,10 @@
   .exp-loot-md { color:var(--cyan); }
   .exp-loot-hi { color:var(--gold); }
   .exp-loot-jp { color:#c77dff; }  /* jackpot — purple, the "epic" tier */
-  .exp-recent-rm {
-    position:absolute; top:4px; right:4px;
-    background:none; border:none; color:var(--dim); cursor:pointer; font-size:16px;
-    padding:0 4px; line-height:1; opacity:0; transition:opacity .1s;
-  }
-  .exp-recent-card:hover .exp-recent-rm { opacity:1; }
-  .exp-recent-rm:hover { color:var(--red); }
 
   /* Browse-all: collapsible groups of every site, the primary discovery path */
   .exp-browse { margin-top:16px; }
+  .exp-browse-header { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; margin-bottom:8px; }
   .exp-browse-list { display:flex; flex-direction:column; gap:4px; }
   .exp-browse-group { border-radius:7px; overflow:hidden; }
   .exp-browse-gh {

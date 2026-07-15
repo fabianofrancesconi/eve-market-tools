@@ -199,6 +199,10 @@
     box-shadow:0 0 0 2px rgba(41,182,246,.15);
   }
   input[type=number] { width:90px; }
+  /* Build-location select: cap its width so a long station name truncates with
+     an ellipsis instead of stretching the row and shoving the ＋/✎ buttons and
+     the Job cost % field out of place. */
+  #ind-profile { width:200px; max-width:200px; text-overflow:ellipsis; }
   input#corp { width:210px; }
   input#arb-minisk { width:110px; }
   .corp-wrap { position:relative; }

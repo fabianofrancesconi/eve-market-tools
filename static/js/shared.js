@@ -206,11 +206,20 @@ document.addEventListener('visibilitychange',()=>{
 // stored state, so early boot-time saves are dropped instead of overwriting.
 let _settingsApplied=false;
 function markSettingsApplied(){ _settingsApplied=true; }
+// When logged in but the server didn't return its authoritative settings blob
+// (e.g. a post-deploy cold start where the session/DB pool isn't warm yet),
+// loadSettings sets this so saveLS won't PUSH this session's possibly-default
+// DOM over the durable Postgres copy. localStorage is still written (it's only
+// a local paint cache), and a later reload — once the server is warm — restores
+// and re-enables syncing. This is what stopped Industry filters/selection from
+// silently reverting to defaults after a redeploy.
+let _serverSyncSuppressed=false;
+function suppressServerSync(){ _serverSyncSuppressed=true; }
 function saveLS(){
   if(!_settingsApplied) return;
   const blob=settingsBlob();
   try{ localStorage.setItem(LS_KEY,JSON.stringify(blob)); }catch(e){}
-  syncSettingsToServer(blob);
+  if(!_serverSyncSuppressed) syncSettingsToServer(blob);
 }
 
 // ── Tab switching ─────────────────────────────────────────────────────────

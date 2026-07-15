@@ -27,21 +27,57 @@ async function restoreLastScans(){
 }
 
 updateArbJumpsVisibility();  // reflect default cross-station selection before settings load
+// Fetch the settings row, retrying briefly when the server says we're logged in
+// but hasn't produced its synced blob yet. That window is a cold start right
+// after a deploy (session/DB pool still warming): the durable Postgres copy
+// exists but the first request can come back _server_synced:false. Retrying a
+// couple of times avoids treating that transient miss as "no saved settings"
+// and clobbering the real copy with this session's defaults.
+async function _fetchSettings(){
+  for(let attempt=0; attempt<3; attempt++){
+    let r=null;
+    try{ r=await (await fetch("/api/settings")).json(); }catch(e){}
+    // Authoritative answer, or genuinely-logged-out: accept it as final.
+    if(r && (r._server_synced || !r._logged_in)) return r;
+    // Logged in but no synced blob yet — give the server a moment and re-ask.
+    await new Promise(res=>setTimeout(res, 400*(attempt+1)));
+    // Last attempt returns whatever we last saw (may still be unsynced).
+    if(attempt===2) return r;
+  }
+  return null;
+}
 async function loadSettings(){
-  let server=null;
-  try{ server=await (await fetch("/api/settings")).json(); }catch(e){}
+  const server=await _fetchSettings();
   let s=null;
   if(server && server._server_synced){
     // This character has synced settings from some device before — that's
     // the cross-device source of truth, takes priority over this browser's
     // local copy.
     s=server;
+  } else if(server && server._logged_in){
+    // Logged in, but the server still didn't hand us its synced blob after
+    // retries. Two cases look identical here:
+    //   • a genuinely new character (no durable row yet), or
+    //   • a cold-start hiccup where the durable row exists but the request
+    //     came back unsynced.
+    // Disambiguate with localStorage: if THIS browser has a cached blob, the
+    // account has synced before, so a bare unsynced reply is the hiccup — paint
+    // from local and SUPPRESS pushing, so we never overwrite the durable copy
+    // with this session's defaults (a reload once the server is warm restores
+    // the real settings). If there's no local cache, it's a fresh character
+    // with nothing to protect, so allow normal syncing to seed the server.
+    let local=null;
+    try{ local=JSON.parse(localStorage.getItem(LS_KEY)); }catch(e){}
+    if(local && Object.keys(local).length){
+      s=local;
+      suppressServerSync();
+    }
   } else {
+    // Not logged in (or the fetch failed outright): fall back to this browser's
+    // local settings, or the server's file-based single-device blob. Nothing to
+    // seed — the _logged_in cases are handled above.
     try{ s=JSON.parse(localStorage.getItem(LS_KEY)); }catch(e){}
     if(!s) s=server;
-    // First login on this character, before any device has synced yet — seed
-    // the server row now so other devices see something right away.
-    if(s && server && server._logged_in) syncSettingsToServer(s);
   }
   if(s && Object.keys(s).length){
       if(s.corp) $("#corp").value=s.corp;

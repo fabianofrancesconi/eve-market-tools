@@ -666,7 +666,7 @@ function renderIndDetail(d, container){
       <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
       <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy</button>
       <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
-      ${tier} · <span class="ind-d-runs-wrap">Runs <input class="ind-d-runs" type="number" min="1" value="${n}" style="width:68px"><button class="ind-d-runs-pre" data-n="1">1</button><button class="ind-d-runs-pre" data-n="10">10</button><button class="ind-d-runs-pre" data-n="100">100</button><button class="ind-d-runs-pre" data-n="10000">10k</button><button class="ind-d-runs-mul" data-m="10">×10</button></span> · source ${d.station_name}
+      ${tier} · <span class="ind-d-runs-wrap">Runs <input class="ind-d-runs" type="text" inputmode="numeric" pattern="[0-9]*" value="${n}" style="width:68px"><button class="ind-d-runs-pre" data-n="1">1</button><button class="ind-d-runs-pre" data-n="10">10</button><button class="ind-d-runs-pre" data-n="100">100</button><button class="ind-d-runs-pre" data-n="10000">10k</button><button class="ind-d-runs-mul" data-m="10">×10</button></span> · source ${d.station_name}
       <span class="ind-d-close" title="Close">✕</span>
     </div>
     <div class="ind-d-body">
@@ -821,13 +821,24 @@ function renderIndDetail(d, container){
   const runsInput=box.querySelector(".ind-d-runs");
   const setRuns=v=>{ IND.detailRuns=Math.max(1,v); renderIndDetail(d); };
   // Re-rendering rebuilds box.innerHTML, which destroys this very input and
-  // drops keyboard focus — so on each keystroke, refocus the freshly-rendered
-  // runs field and restore the caret so you can keep typing digits.
+  // drops keyboard focus. So on each keystroke: keep only the digits the user
+  // typed, remember the caret offset, re-render, then re-focus the fresh input
+  // and put the caret back where it was. It's a text field (not type=number) so
+  // selectionStart/setSelectionRange actually work — number inputs return null
+  // for the caret, which is why the cursor kept snapping to the end.
   runsInput.addEventListener("input", ()=>{
-    const caret=runsInput.selectionStart;
-    setRuns(parseInt(runsInput.value)||1);
+    const raw=runsInput.value;
+    const digits=raw.replace(/[^0-9]/g,"");
+    // How many digits sit left of the caret — the caret position that survives
+    // stripping non-digits and re-rendering the (possibly clamped) value.
+    const caretDigits=raw.slice(0, runsInput.selectionStart ?? raw.length).replace(/[^0-9]/g,"").length;
+    setRuns(parseInt(digits,10)||1);
     const fresh=box.querySelector(".ind-d-runs");
-    if(fresh){ fresh.focus(); try{ fresh.setSelectionRange(caret,caret); }catch(e){} }
+    if(fresh){
+      fresh.focus();
+      const pos=Math.min(caretDigits, fresh.value.length);
+      try{ fresh.setSelectionRange(pos,pos); }catch(e){}
+    }
   });
   box.querySelectorAll(".ind-d-runs-pre").forEach(b=>{
     b.onclick=()=>setRuns(+b.dataset.n);

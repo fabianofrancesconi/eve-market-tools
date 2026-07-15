@@ -564,10 +564,13 @@ let EXP_PANEL_OPEN = false;
 // danger dot, the site name, and its type tag. `rm` adds a remove-× (recents).
 function expPanelRow(site, {rm=false, ri=0}={}){
   const ty = expType(site);
-  return `<button class="exp-po-item exp-danger-${site.danger}" type="button" data-name="${esc(site.name)}">
+  // One quiet line: the danger dot is the only colour; the name truncates
+  // rather than wrapping; the type sits in a muted right-hand column. No
+  // colour-emoji here — that's the noise the palette is meant to avoid.
+  return `<button class="exp-po-item exp-danger-${site.danger}" type="button" data-name="${esc(site.name)}" title="${esc(site.name)}">
     <span class="exp-po-dot" title="${esc(site.danger)}"></span>
     <span class="exp-po-name">${esc(site.name)}</span>
-    <span class="exp-po-type">${ty.icon} ${esc(ty.label)}</span>
+    <span class="exp-po-type">${esc(ty.label)}</span>
     ${rm ? `<span class="exp-po-rm" data-ri="${ri}" title="Remove from recent">×</span>` : ""}
   </button>`;
 }

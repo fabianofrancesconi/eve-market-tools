@@ -943,19 +943,28 @@
   }
   .exp-po-empty { color:var(--dim); font-size:13px; padding:6px 8px 10px; line-height:1.4; }
   .exp-po-item {
-    width:100%; display:flex; align-items:center; gap:9px; cursor:pointer;
-    padding:8px 9px; text-align:left; border:none; border-radius:6px;
-    background:none; color:var(--fg); font-size:13.5px; transition:background .08s;
+    width:100%; display:flex; align-items:center; gap:10px; cursor:pointer;
+    padding:7px 10px; text-align:left; border:none; border-radius:6px;
+    background:none; color:var(--fg); font-size:13px; transition:background .08s;
   }
   .exp-po-item:hover { background:var(--panel3); }
-  .exp-po-dot { width:8px; height:8px; border-radius:50%; background:var(--dim2); flex:none; }
+  .exp-po-dot { width:7px; height:7px; border-radius:50%; background:var(--dim2); flex:none; }
   .exp-po-item.exp-danger-safe .exp-po-dot { background:var(--green); }
   .exp-po-item.exp-danger-caution .exp-po-dot { background:var(--yellow); }
   .exp-po-item.exp-danger-dangerous .exp-po-dot { background:var(--red); }
-  .exp-po-name { flex:1; line-height:1.3; font-weight:500; }
-  .exp-po-type { font-size:11px; color:var(--dim); white-space:nowrap; }
+  /* Name is the one readable thing — regular weight, truncates, never wraps */
+  .exp-po-name {
+    flex:1; min-width:0; line-height:1.3; font-weight:400; color:var(--fg);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  /* Type sits quietly at the right edge (name's flex:1 pushes it there, so
+     the labels' right edges line up into a clean column) */
+  .exp-po-type {
+    flex:none; white-space:nowrap;
+    font-size:10.5px; text-transform:uppercase; letter-spacing:.4px; color:var(--dim2);
+  }
   .exp-po-rm {
-    color:var(--dim); font-size:16px; line-height:1; padding:0 2px 0 4px;
+    flex:none; color:var(--dim); font-size:15px; line-height:1; padding:0 0 0 2px;
     opacity:0; transition:opacity .1s, color .1s;
   }
   .exp-po-item:hover .exp-po-rm { opacity:1; }

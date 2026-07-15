@@ -820,7 +820,15 @@ function renderIndDetail(d, container){
   };
   const runsInput=box.querySelector(".ind-d-runs");
   const setRuns=v=>{ IND.detailRuns=Math.max(1,v); renderIndDetail(d); };
-  runsInput.addEventListener("input", ()=>setRuns(parseInt(runsInput.value)||1));
+  // Re-rendering rebuilds box.innerHTML, which destroys this very input and
+  // drops keyboard focus — so on each keystroke, refocus the freshly-rendered
+  // runs field and restore the caret so you can keep typing digits.
+  runsInput.addEventListener("input", ()=>{
+    const caret=runsInput.selectionStart;
+    setRuns(parseInt(runsInput.value)||1);
+    const fresh=box.querySelector(".ind-d-runs");
+    if(fresh){ fresh.focus(); try{ fresh.setSelectionRange(caret,caret); }catch(e){} }
+  });
   box.querySelectorAll(".ind-d-runs-pre").forEach(b=>{
     b.onclick=()=>setRuns(+b.dataset.n);
   });

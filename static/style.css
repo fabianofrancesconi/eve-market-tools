@@ -525,6 +525,11 @@
   .char-jobs-tbl th:first-child, .char-jobs-tbl td:first-child { min-width:8em; }
   .char-jobs-tbl th:nth-child(2), .char-jobs-tbl td:nth-child(2),
   .char-jobs-tbl th:nth-child(3), .char-jobs-tbl td:nth-child(3) { white-space:nowrap; }
+  /* Clickable industry-job rows → jump into the Industry tab. */
+  .char-job-row { cursor:pointer; transition:background .1s; }
+  .char-job-row:hover td { background:var(--panel3); }
+  .char-job-tracked { color:var(--cyan); font-size:11.5px; margin-left:3px;
+    cursor:pointer; }
   table.mini { font-size:13.5px; width:100%; border-collapse:collapse; }
   table.mini th { position:static; background:none; color:var(--dim);
     font-size:10.5px; letter-spacing:.5px; border-bottom:1px solid var(--line); padding:4px 8px; }
@@ -800,24 +805,11 @@
   /* ── Tracked builds ──────────────────────────────────────────────── */
   .ind-builds { margin:4px 0 10px; }
   .ind-builds.hidden { display:none; }
+  /* Section header — always shown, no collapse toggle. */
   .ind-builds-head { font-size:11.5px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.05em; color:var(--cyan); cursor:pointer; user-select:none;
+    letter-spacing:.05em; color:var(--cyan); user-select:none;
     padding:6px 2px; border-bottom:1px solid var(--line2); }
-  .ind-builds-head:hover { color:var(--fg); }
-  .ind-builds-head .sect-arrow { display:inline-block; transition:transform .15s; margin-right:4px; }
-  .ind-builds-head.collapsed .sect-arrow { transform:rotate(-90deg); }
   .ind-builds-head .chip-count { opacity:.55; font-weight:400; }
-  .ind-builds-head.static { cursor:default; }
-  .ind-builds-head.static:hover { color:var(--cyan); }
-  /* In the Character overview the section already has its own card header, so
-     the mount's own "Tracked builds" head is redundant — hide it there. The
-     cards sit inside a panel2 char-card, so drop them to the darker --panel
-     background (an inset row rather than a redundant box-in-a-box) and give the
-     list a little breathing room under the card header. */
-  .char-tracked-builds .ind-builds-head { display:none; }
-  .char-tracked-builds { margin:0; }
-  .char-tracked-builds .ind-builds-list { margin-top:10px; }
-  .char-tracked-builds .ind-build-card { background:var(--panel); }
   .ind-builds-list { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
   .ind-builds-list.hidden { display:none; }
   .ind-track-btn { margin:0 6px; padding:1px 8px; font-size:11.5px; cursor:pointer;

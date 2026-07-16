@@ -327,18 +327,15 @@ function _renderCharPanel(c){
       if(isFinite(end)) tcell=rem>0
         ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
         :`<span class="timer-cell done">✓ Ready</span>`;
-      h+=`<tr><td>${authEsc(j.product_name)}</td><td>${authEsc(j.activity)}</td>`
+      const tracked=_jobIsTracked(j);
+      const link=tracked?` <span class="char-job-tracked" title="You're tracking a build for this job — click to open it in Industry">🔗</span>`:"";
+      h+=`<tr class="char-job-row" data-bp="${j.blueprint_type_id}" title="Open in Industry">`
+        +`<td>${authEsc(j.product_name)}${link}</td><td>${authEsc(j.activity)}</td>`
         +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
     }
     h+=`</tbody></table></div>`;
   } else h+=`<div class="char-none">No active jobs.</div>`;
   h+=`</div></section>`;
-
-  // Tracked builds (frozen build snapshots) — account-wide, populated by
-  // renderIndBuilds() into this mount after the overview HTML is inserted.
-  h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Tracked builds</h3></div>`
-    +`<div class="char-card-body"><div id="char-tracked-builds" class="ind-builds char-tracked-builds hidden"></div>`
-    +`<div class="char-none char-tracked-none">No tracked builds. Start one from the Industry tab's build panel.</div></div></section>`;
 
   // Skill queue
   h+=`<section class="char-card"><div class="char-card-header"><h3>Skill queue (${cQueue.length})</h3></div><div class="char-card-body">`;
@@ -439,18 +436,15 @@ function _renderAllPanel(chars){
       if(isFinite(end)) tcell=rem>0
         ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
         :`<span class="timer-cell done">✓ Ready</span>`;
-      h+=`<tr><td>${authEsc(j._char)}</td><td>${authEsc(j.product_name)}</td><td>${authEsc(j.activity)}</td>`
+      const tracked=_jobIsTracked(j);
+      const link=tracked?` <span class="char-job-tracked" title="You're tracking a build for this job — click to open it in Industry">🔗</span>`:"";
+      h+=`<tr class="char-job-row" data-bp="${j.blueprint_type_id}" title="Open in Industry">`
+        +`<td>${authEsc(j._char)}</td><td>${authEsc(j.product_name)}${link}</td><td>${authEsc(j.activity)}</td>`
         +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
     }
     h+=`</tbody></table></div>`;
   } else h+=`<div class="char-none">No active jobs.</div>`;
   h+=`</div></section>`;
-
-  // Tracked builds (frozen build snapshots) — account-wide, populated by
-  // renderIndBuilds() into this mount after the overview HTML is inserted.
-  h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Tracked builds</h3></div>`
-    +`<div class="char-card-body"><div id="char-tracked-builds" class="ind-builds char-tracked-builds hidden"></div>`
-    +`<div class="char-none char-tracked-none">No tracked builds. Start one from the Industry tab's build panel.</div></div></section>`;
 
   // Loyalty points — with character name
   h+=`<section class="char-card"><div class="char-card-header"><h3>Loyalty points</h3></div><div class="char-card-body">`;
@@ -707,12 +701,17 @@ function renderCharData(){
 
   $("#char-body").innerHTML=html;
 
-  // Populate the tracked-builds mount that the overview HTML just created.
-  // Builds load lazily; kick that off the first time the overview needs them.
-  if(typeof renderIndBuilds==="function"){
-    if(IND.buildsLoaded) renderIndBuilds();
-    else if(typeof loadIndBuilds==="function") loadIndBuilds();
-  }
+  // Load tracked builds in the background so the 🔗 tracked marker on industry
+  // jobs is accurate (it needs IND.builds). loadIndBuilds() re-renders this view
+  // via renderIndBuilds() once the list arrives.
+  if(!IND.buildsLoaded && typeof loadIndBuilds==="function") loadIndBuilds();
+
+  // Wire clicking an industry-job row → jump to the Industry tab and open that
+  // blueprint's detail panel.
+  $("#char-body").querySelectorAll("tr.char-job-row").forEach(tr=>{
+    tr.style.cursor="pointer";
+    tr.onclick=()=>{ const bp=parseInt(tr.dataset.bp,10); if(bp) openIndFromJob(bp); };
+  });
 
   // Wire tab clicks
   $("#char-body").querySelectorAll(".char-tab-btn").forEach(btn=>{
@@ -758,6 +757,38 @@ function syncJobTimers(){
   });
   if(ACTIVE_TAB==="ind") renderIndTable();
   if(IND.openDetail) renderIndDetail(IND.openDetail);
+}
+
+// Is this industry job covered by a tracked build? Matches on blueprint (+ runs
+// when the job reports them), consistent with the build↔job linking in ind.js.
+// job_id round-trips as a string, so compare via String().
+function _jobIsTracked(j){
+  const builds=(typeof IND!=="undefined" && IND.builds)||[];
+  return builds.some(b=>
+    (b.job_id!=null && String(b.job_id)===String(j.job_id))
+    || (b.blueprint_id===j.blueprint_type_id && (j.runs==null || b.runs===j.runs)));
+}
+
+// Jump from an overview industry-job row to the Industry tab and open that
+// blueprint's detail panel. The Industry catalogue may not be scanned yet, so
+// fall back to just switching tabs (the tracked-builds section is visible there
+// regardless) if the row isn't in the current scan.
+function openIndFromJob(bpId){
+  if(typeof switchTab==="function") switchTab("ind");
+  if(typeof IND==="undefined") return;
+  const row=(IND.rows||[]).find(r=>r.blueprint_id===bpId);
+  if(!row) return;   // not in the current scan — Industry tab still opens
+  // Defer so the tab's table is rendered before we look for the row element.
+  setTimeout(()=>{
+    const tbody=document.querySelector("#ind-tbl tbody");
+    if(!tbody) return;
+    const tr=[...tbody.querySelectorAll("tr[data-ridx]")].find(el=>{
+      const r=IND._ordered && IND._ordered[+el.dataset.ridx];
+      return r && r.blueprint_id===bpId;
+    });
+    if(tr){ tr.scrollIntoView({block:"center",behavior:"smooth"}); tr.click(); }
+    else if(typeof openIndDetail==="function") openIndDetail(row, null);
+  }, 60);
 }
 
 // When logged in, drive the LP budget from the character's loyalty points for

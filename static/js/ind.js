@@ -311,6 +311,7 @@ function renderIndTable(){
   }
 
   wireIndRows(tbody, ordered);
+  IND._ordered=ordered;   // exposed so openIndFromJob() can map a row index → blueprint
   // Re-expand inline detail if one was open before the re-render
   if(IND.openDetail){
     const bpId=IND.openDetail.blueprint_id;
@@ -920,7 +921,6 @@ function trackThisBuild(d, runs, btn){
       if(res && res.build){
         IND.builds=IND.builds.filter(b=>b.id!==res.build.id);
         IND.builds.unshift(res.build);
-        IND.sections.builds=true;
         renderIndBuilds();
         if(btn){ btn.textContent="✓ Tracked"; setTimeout(()=>{ btn.textContent="＋ Track this build"; btn.disabled=false; },1400); }
       } else if(btn){
@@ -1028,40 +1028,24 @@ function _buildStatus(b){
   return {key:"awaiting", label:"⚠ No matching job"};
 }
 
-// Render the tracked-builds list into every mount that exists: the Industry
-// tab's own section (#ind-builds, collapsible) and the Character overview mount
-// (#char-tracked-builds, always expanded). Both stay in sync from one call.
+// Render the tracked-builds section in the Industry tab. Always expanded — no
+// collapse toggle. If the Character overview is the active tab, refresh it too
+// so its 🔗 tracked-job markers reflect the current builds.
 function renderIndBuilds(){
-  _renderBuildsInto($("#ind-builds"), {collapsible:true});
-  _renderBuildsInto($("#char-tracked-builds"), {collapsible:false});
-}
-function _renderBuildsInto(box, opts){
-  if(!box) return;
-  opts=opts||{};
-  // A sibling "No tracked builds" placeholder (overview mount only) is shown
-  // when empty and hidden once there's at least one build.
-  const placeholder=box.parentElement?box.parentElement.querySelector(".char-tracked-none"):null;
-  if(!IND.builds.length){
-    box.classList.add("hidden"); box.innerHTML="";
-    if(placeholder) placeholder.classList.remove("hidden");
-    return;
+  const box=$("#ind-builds");
+  if(box){
+    if(!IND.builds.length){ box.classList.add("hidden"); box.innerHTML=""; }
+    else {
+      box.classList.remove("hidden");
+      const rows=IND.builds.map(b=>_buildCardHtml(b)).join("");
+      box.innerHTML=`
+        <div class="ind-builds-head static">Tracked builds <span class="chip-count">(${IND.builds.length})</span></div>
+        <div class="ind-builds-list">${rows}</div>`;
+      IND.builds.forEach(b=>_wireBuildCard(box, b));
+    }
   }
-  if(placeholder) placeholder.classList.add("hidden");
-  box.classList.remove("hidden");
-  const open=opts.collapsible ? IND.sections.builds : true;
-  const rows=IND.builds.map(b=>_buildCardHtml(b)).join("");
-  const arrow=opts.collapsible ? `<span class="sect-arrow">▾</span>` : "";
-  box.innerHTML=`
-    <div class="ind-builds-head${open?"":" collapsed"}${opts.collapsible?"":" static"}">
-      ${arrow}Tracked builds <span class="chip-count">(${IND.builds.length})</span>
-    </div>
-    <div class="ind-builds-list${open?"":" hidden"}">${rows}</div>`;
-  if(opts.collapsible){
-    box.querySelector(".ind-builds-head").onclick=()=>{
-      IND.sections.builds=!IND.sections.builds; renderIndBuilds(); saveLS();
-    };
-  }
-  IND.builds.forEach(b=>_wireBuildCard(box, b));
+  // Keep the overview's job 🔗 markers in sync (only when it's showing).
+  if(ACTIVE_TAB==="char" && AUTH.data && typeof renderCharData==="function") renderCharData();
 }
 
 function _buildCardHtml(b){

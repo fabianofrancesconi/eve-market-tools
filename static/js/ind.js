@@ -943,7 +943,17 @@ function _findJobForBuild(b, claimed){
   const jobs=(AUTH.data&&AUTH.data.jobs)||[];
   const cands=jobs.filter(j=>j.activity_id===1 && j.blueprint_type_id===b.blueprint_id
     && (j.runs==null || j.runs===b.runs));
-  return cands.find(j=>!claimed.has(j.job_id)) || null;
+  return cands.find(j=>!claimed.has(String(j.job_id))) || null;
+}
+
+// Set of active manufacturing job ids, as STRINGS. job_id round-trips through
+// the server as a string (JSON→str), but ESI hands it back as a number in the
+// same session — so comparisons must normalise to one type or a reloaded build
+// never matches its live job and wrongly flips to "done". Always compare via
+// String().
+function _activeJobIdSet(){
+  return new Set(((AUTH.data&&AUTH.data.jobs)||[])
+    .filter(j=>j.activity_id===1 && j.job_id!=null).map(j=>String(j.job_id)));
 }
 
 // Recompute each build's status from live jobs and persist the transitions that
@@ -951,27 +961,39 @@ function _findJobForBuild(b, claimed){
 // mutates IND.builds in place and re-renders.
 function reconcileBuilds(){
   if(!IND.builds.length){ renderIndBuilds(); return; }
-  const activeJobIds=new Set(((AUTH.data&&AUTH.data.jobs)||[])
-    .filter(j=>j.activity_id===1).map(j=>j.job_id));
+  // Guard: if jobs haven't loaded yet (AUTH.data absent, or no jobs array),
+  // we can't tell "job finished" from "not fetched" — don't mark anything done.
+  const jobsKnown = !!(AUTH.data && Array.isArray(AUTH.data.jobs));
+  const activeJobIds=_activeJobIdSet();
   const claimed=new Set();
   let changed=false;
   // Order by created_at so the oldest batch claims the oldest matching job.
   const ordered=[...IND.builds].sort((a,b)=>(a.created_at||0)-(b.created_at||0));
   ordered.forEach(b=>{
-    if(b.done_at) return;                       // already finished — leave it
-    if(b.job_id!=null && activeJobIds.has(b.job_id)){
-      claimed.add(b.job_id); return;            // still running under its link
+    if(b.done_at){
+      // Self-heal: a build wrongly marked done (e.g. a stale string/number
+      // job_id mismatch from an older build) whose linked job is in fact still
+      // running gets un-marked and reclaimed. A genuinely finished job stays.
+      if(b.job_id!=null && activeJobIds.has(String(b.job_id))){
+        b.done_at=null; changed=true; claimed.add(String(b.job_id));
+        _patchBuildLink(b, {done_at:null});
+      }
+      return;
     }
-    if(b.job_id!=null && !activeJobIds.has(b.job_id)){
+    if(b.job_id!=null && activeJobIds.has(String(b.job_id))){
+      claimed.add(String(b.job_id)); return;    // still running under its link
+    }
+    if(b.job_id!=null && jobsKnown && !activeJobIds.has(String(b.job_id))){
       // Its linked job left the active list → delivered.
       b.done_at=Date.now()/1000; changed=true;
       _patchBuildLink(b, {done_at:b.done_at});
       return;
     }
+    if(b.job_id!=null) return;                  // linked but jobs unknown — hold
     // Not yet linked — try to adopt a matching active job.
     const job=_findJobForBuild(b, claimed);
     if(job){
-      claimed.add(job.job_id);
+      claimed.add(String(job.job_id));
       b.job_id=job.job_id; b.job_end=job.end; b.char_name=job.character_name; changed=true;
       _patchBuildLink(b, {job_id:job.job_id, job_end:job.end, char_name:job.character_name});
     }
@@ -998,9 +1020,7 @@ function deleteBuild(id){
 // Status of a build for display, derived from its stored link fields + live jobs.
 function _buildStatus(b){
   if(b.done_at) return {key:"done", label:"✓ Done"};
-  const activeJobIds=new Set(((AUTH.data&&AUTH.data.jobs)||[])
-    .filter(j=>j.activity_id===1).map(j=>j.job_id));
-  if(b.job_id!=null && activeJobIds.has(b.job_id)) return {key:"building", label:"⏳ Building"};
+  if(b.job_id!=null && _activeJobIdSet().has(String(b.job_id))) return {key:"building", label:"⏳ Building"};
   return {key:"awaiting", label:"⚠ No matching job"};
 }
 

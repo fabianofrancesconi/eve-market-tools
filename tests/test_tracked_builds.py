@@ -159,3 +159,15 @@ class TestLink:
         _bind(monkeypatch, tmp_path, _acct())
         res = lp_web.do_ind_builds_link({"id": ["nope"], "job_id": ["1"]})
         assert res["ok"] is False
+
+    def test_link_clears_done_at(self, monkeypatch, tmp_path):
+        """The self-heal path (a build wrongly marked done whose job is still
+        running) patches done_at back to null — verify the server clears it."""
+        import json
+        _bind(monkeypatch, tmp_path, _acct())
+        b = lp_web.do_ind_builds_save(
+            {"runs": ["1"], "snapshot": [json.dumps(_snapshot())]})["build"]
+        lp_web.do_ind_builds_link({"id": [b["id"]], "done_at": ["1700000000.0"]})
+        assert lp_web.do_ind_builds_list({})["builds"][0]["done_at"] == 1700000000.0
+        lp_web.do_ind_builds_link({"id": [b["id"]], "done_at": ["null"]})
+        assert lp_web.do_ind_builds_list({})["builds"][0]["done_at"] is None

@@ -523,9 +523,21 @@
   #track-table td.track-cargo { padding:4px 10px; }
   #track-table td.track-cargo input { width:110px; text-align:right; background:var(--panel2);
     color:var(--fg); border:1px solid var(--line2); border-radius:4px; padding:3px 6px; font-size:12.5px; }
-  #track-table td.track-note { padding:4px 10px; width:100%; }
-  #track-table td.track-note input { width:100%; min-width:140px; background:var(--panel2);
-    color:var(--fg); border:1px solid var(--line2); border-radius:4px; padding:3px 6px; font-size:12.5px; }
+  #track-table td.track-note { padding:4px 10px; }
+  /* Cute per-system note button: an emoji chip when empty, a filled pill that
+     previews the note text when set. Opens the note modal on click. */
+  .track-note-btn { display:inline-flex; align-items:center; gap:5px; max-width:220px;
+    padding:3px 9px; font-size:12px; line-height:1.3; cursor:pointer;
+    background:var(--panel2); color:var(--dim); border:1px solid var(--line2);
+    border-radius:999px; transition:color .12s, border-color .12s, background .12s;
+    overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .track-note-btn:hover { color:var(--fg); border-color:var(--cyan); }
+  .track-note-btn.has-note { color:var(--fg); border-color:var(--cyan);
+    background:rgba(79,195,247,.10); }
+  .track-note-text { width:100%; min-height:120px; resize:vertical; box-sizing:border-box;
+    background:var(--panel2); color:var(--fg); border:1px solid var(--line2);
+    border-radius:6px; padding:8px 10px; font-size:13px; font-family:inherit;
+    line-height:1.5; margin-bottom:12px; }
   /* Session total cargo (sum of the per-system values) — read-only display. */
   .exp-cargo-total { flex-direction:row; align-items:center; gap:6px; }
   .exp-cargo-total b { color:var(--fg); font-size:14px; }

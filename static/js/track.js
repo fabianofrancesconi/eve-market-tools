@@ -253,7 +253,7 @@ function renderTrail(){
       <td>${fmtClock(r.entered_at)}</td>
       <td>${fmtDwell(x.dwell)}${here?" · now":""}</td>
       <td class="track-cargo num"><input type="number" min="0" step="1000000" placeholder="—" data-at="${r.entered_at}" value="${r.cargo_isk!=null?r.cargo_isk:""}"></td>
-      <td class="track-note"><input type="text" placeholder="Note…" data-at="${r.entered_at}" value="${authEsc(r.note||"")}"></td>
+      <td class="track-note">${noteBtnHtml(r)}</td>
     </tr>`;
   }).join("");
 
@@ -268,9 +268,44 @@ function renderTrail(){
       if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
     };
   });
-  tb.querySelectorAll(".track-note input").forEach(inp=>{
-    inp.onchange=()=>postPrefs("/api/track/note",{entered_at:+inp.dataset.at, note:inp.value});
+  tb.querySelectorAll(".track-note-btn").forEach(btn=>{
+    btn.onclick=()=>openNoteModal(+btn.dataset.at);
   });
+}
+
+// A per-system note button: 📝 when empty, a filled chip previewing the note
+// (with the full text on hover) when set. Clicking opens the note modal.
+function noteBtnHtml(r){
+  const has=(r.note||"").trim().length>0;
+  const at=r.entered_at;
+  if(!has) return `<button class="track-note-btn" type="button" data-at="${at}" title="Add a note for ${authEsc(r.system_name)}">📝</button>`;
+  const preview=r.note.length>28 ? r.note.slice(0,27)+"…" : r.note;
+  return `<button class="track-note-btn has-note" type="button" data-at="${at}" title="${authEsc(r.note)}">📝 ${authEsc(preview)}</button>`;
+}
+
+// ── per-system note modal ────────────────────────────────────────────────────
+
+function openNoteModal(enteredAt){
+  const row=TRACK.trail.find(r=>Math.abs(r.entered_at-enteredAt)<1e-6);
+  if(!row) return;
+  const modal=$("#trackNoteModal");
+  $("#track-note-title").textContent=`Note — ${row.system_name}`;
+  const ta=$("#track-note-text");
+  ta.value=row.note||"";
+  ta.dataset.at=enteredAt;
+  modal.classList.remove("hidden");
+  ta.focus();
+}
+function closeNoteModal(){ $("#trackNoteModal").classList.add("hidden"); }
+async function saveNoteModal(){
+  const ta=$("#track-note-text");
+  const at=+ta.dataset.at;
+  postPrefs("/api/track/note",{entered_at:at, note:ta.value});
+  // Keep the in-memory row in sync so the button re-renders without a round-trip.
+  const row=TRACK.trail.find(r=>Math.abs(r.entered_at-at)<1e-6);
+  if(row) row.note=ta.value;
+  closeNoteModal();
+  renderTrail();
 }
 
 // ── min-dwell filter control ─────────────────────────────────────────────────
@@ -312,4 +347,16 @@ document.addEventListener("DOMContentLoaded", ()=>{
   const md=$("#track-min-dwell"), mu=$("#track-min-unit");
   if(md) md.oninput=applyMinDwellFromInputs;
   if(mu) mu.onchange=applyMinDwellFromInputs;
+
+  // Per-system note modal.
+  b("#track-note-save", saveNoteModal);
+  b("#track-note-cancel", closeNoteModal);
+  const noteModal=$("#trackNoteModal");
+  if(noteModal) noteModal.addEventListener("click", e=>{ if(e.target.id==="trackNoteModal") closeNoteModal(); });
+  const noteTa=$("#track-note-text");
+  if(noteTa) noteTa.addEventListener("keydown", e=>{
+    // Ctrl/⌘-Enter saves; Escape cancels. Plain Enter stays a newline.
+    if(e.key==="Enter" && (e.ctrlKey||e.metaKey)){ e.preventDefault(); saveNoteModal(); }
+    else if(e.key==="Escape"){ e.preventDefault(); closeNoteModal(); }
+  });
 });

@@ -379,7 +379,7 @@
                 <thead><tr>
                   <th>#</th><th>System</th><th>Sec</th><th>Entered</th><th>Dwell</th>
                   <th class="num" title="ISK value of what you looted in this system — the session total above is the sum of these.">Cargo&nbsp;(ISK) <span class="track-th-hint">?</span></th>
-                  <th title="A freeform note for this system — separate from the session's overall notes.">Note <span class="track-th-hint">?</span></th>
+                  <th title="A freeform note for this system — click 📝 to open it. Separate from the session's overall notes.">Note <span class="track-th-hint">?</span></th>
                 </tr></thead>
                 <tbody></tbody>
               </table>
@@ -511,6 +511,20 @@
       <span style="flex:1"></span>
       <button id="sw-cancel" class="secondary">Cancel</button>
       <button id="sw-save" class="primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Per-system note modal (exploration journal) -->
+<div id="trackNoteModal" class="ind-modal hidden">
+  <div class="ind-modal-box">
+    <h3 id="track-note-title">Note</h3>
+    <p class="sw-hint">A note just for this system — separate from the session's overall notes. ⌘/Ctrl+Enter to save.</p>
+    <textarea id="track-note-text" class="track-note-text" placeholder="e.g. Intact depot, 3 relic cans left — come back with a hauler."></textarea>
+    <div class="sw-actions">
+      <span style="flex:1"></span>
+      <button id="track-note-cancel" class="secondary">Cancel</button>
+      <button id="track-note-save" class="primary">Save</button>
     </div>
   </div>
 </div>

@@ -334,6 +334,12 @@ function _renderCharPanel(c){
   } else h+=`<div class="char-none">No active jobs.</div>`;
   h+=`</div></section>`;
 
+  // Tracked builds (frozen build snapshots) — account-wide, populated by
+  // renderIndBuilds() into this mount after the overview HTML is inserted.
+  h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Tracked builds</h3></div>`
+    +`<div class="char-card-body"><div id="char-tracked-builds" class="ind-builds char-tracked-builds hidden"></div>`
+    +`<div class="char-none char-tracked-none">No tracked builds. Start one from the Industry tab's build panel.</div></div></section>`;
+
   // Skill queue
   h+=`<section class="char-card"><div class="char-card-header"><h3>Skill queue (${cQueue.length})</h3></div><div class="char-card-body">`;
   if(cQueue.length){
@@ -439,6 +445,12 @@ function _renderAllPanel(chars){
     h+=`</tbody></table></div>`;
   } else h+=`<div class="char-none">No active jobs.</div>`;
   h+=`</div></section>`;
+
+  // Tracked builds (frozen build snapshots) — account-wide, populated by
+  // renderIndBuilds() into this mount after the overview HTML is inserted.
+  h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Tracked builds</h3></div>`
+    +`<div class="char-card-body"><div id="char-tracked-builds" class="ind-builds char-tracked-builds hidden"></div>`
+    +`<div class="char-none char-tracked-none">No tracked builds. Start one from the Industry tab's build panel.</div></div></section>`;
 
   // Loyalty points — with character name
   h+=`<section class="char-card"><div class="char-card-header"><h3>Loyalty points</h3></div><div class="char-card-body">`;
@@ -694,6 +706,13 @@ function renderCharData(){
   }
 
   $("#char-body").innerHTML=html;
+
+  // Populate the tracked-builds mount that the overview HTML just created.
+  // Builds load lazily; kick that off the first time the overview needs them.
+  if(typeof renderIndBuilds==="function"){
+    if(IND.buildsLoaded) renderIndBuilds();
+    else if(typeof loadIndBuilds==="function") loadIndBuilds();
+  }
 
   // Wire tab clicks
   $("#char-body").querySelectorAll(".char-tab-btn").forEach(btn=>{

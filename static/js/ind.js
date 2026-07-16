@@ -1004,20 +1004,39 @@ function _buildStatus(b){
   return {key:"awaiting", label:"⚠ No matching job"};
 }
 
+// Render the tracked-builds list into every mount that exists: the Industry
+// tab's own section (#ind-builds, collapsible) and the Character overview mount
+// (#char-tracked-builds, always expanded). Both stay in sync from one call.
 function renderIndBuilds(){
-  const box=$("#ind-builds"); if(!box) return;
-  if(!IND.builds.length){ box.classList.add("hidden"); box.innerHTML=""; return; }
+  _renderBuildsInto($("#ind-builds"), {collapsible:true});
+  _renderBuildsInto($("#char-tracked-builds"), {collapsible:false});
+}
+function _renderBuildsInto(box, opts){
+  if(!box) return;
+  opts=opts||{};
+  // A sibling "No tracked builds" placeholder (overview mount only) is shown
+  // when empty and hidden once there's at least one build.
+  const placeholder=box.parentElement?box.parentElement.querySelector(".char-tracked-none"):null;
+  if(!IND.builds.length){
+    box.classList.add("hidden"); box.innerHTML="";
+    if(placeholder) placeholder.classList.remove("hidden");
+    return;
+  }
+  if(placeholder) placeholder.classList.add("hidden");
   box.classList.remove("hidden");
-  const open=IND.sections.builds;
+  const open=opts.collapsible ? IND.sections.builds : true;
   const rows=IND.builds.map(b=>_buildCardHtml(b)).join("");
+  const arrow=opts.collapsible ? `<span class="sect-arrow">▾</span>` : "";
   box.innerHTML=`
-    <div class="ind-builds-head${open?"":" collapsed"}">
-      <span class="sect-arrow">▾</span>Tracked builds <span class="chip-count">(${IND.builds.length})</span>
+    <div class="ind-builds-head${open?"":" collapsed"}${opts.collapsible?"":" static"}">
+      ${arrow}Tracked builds <span class="chip-count">(${IND.builds.length})</span>
     </div>
     <div class="ind-builds-list${open?"":" hidden"}">${rows}</div>`;
-  box.querySelector(".ind-builds-head").onclick=()=>{
-    IND.sections.builds=!IND.sections.builds; renderIndBuilds(); saveLS();
-  };
+  if(opts.collapsible){
+    box.querySelector(".ind-builds-head").onclick=()=>{
+      IND.sections.builds=!IND.sections.builds; renderIndBuilds(); saveLS();
+    };
+  }
   IND.builds.forEach(b=>_wireBuildCard(box, b));
 }
 

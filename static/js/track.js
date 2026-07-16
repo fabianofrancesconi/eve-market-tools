@@ -45,6 +45,15 @@ function secBand(sec){
 }
 function fmtSec(sec){ return sec==null? "—" : sec.toFixed(1); }
 
+// Cargo (ISK) input helpers: the field is a plain integer with thousands commas
+// for readability. stripCargo() gives back the bare digits (or "" when blank)
+// for the API; fmtCargoInput() re-adds the commas for display.
+function stripCargo(v){ return String(v==null?"":v).replace(/[^\d]/g, ""); }
+function fmtCargoInput(v){
+  const d=stripCargo(v);
+  return d ? Number(d).toLocaleString("en-US") : "";
+}
+
 // ── data loads ─────────────────────────────────────────────────────────────
 
 async function loadTrackStatus(){
@@ -252,7 +261,7 @@ function renderTrail(){
       <td class="${band?'sec-'+band:''}">${fmtSec(r.security)}</td>
       <td>${fmtClock(r.entered_at)}</td>
       <td>${fmtDwell(x.dwell)}${here?" · now":""}</td>
-      <td class="track-cargo num"><input type="number" min="0" step="1000000" placeholder="—" data-at="${r.entered_at}" value="${r.cargo_isk!=null?r.cargo_isk:""}"></td>
+      <td class="track-cargo num"><input type="text" inputmode="numeric" placeholder="—" data-at="${r.entered_at}" value="${fmtCargoInput(r.cargo_isk)}"></td>
       <td class="track-note">${noteBtnHtml(r)}</td>
     </tr>`;
   }).join("");
@@ -261,9 +270,13 @@ function renderTrail(){
   if(note) note.textContent=(min>0 && hidden>0)? `${hidden} short stop${hidden===1?"":"s"} hidden` : "";
 
   tb.querySelectorAll(".track-cargo input").forEach(inp=>{
+    // Re-group the digits with commas as the user types, keeping the caret near
+    // the end (this is an append-heavy field, so a full re-place reads fine).
+    inp.oninput=()=>{ inp.value=fmtCargoInput(inp.value); };
     inp.onchange=async ()=>{
+      const digits=stripCargo(inp.value);       // server wants a bare number / blank
       await fetch("/api/track/cargo",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({entered_at:+inp.dataset.at, cargo_isk:inp.value})});
+        body:JSON.stringify({entered_at:+inp.dataset.at, cargo_isk:digits})});
       // Re-pull so the session total (sum of rows) reflects the edit.
       if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
     };

@@ -668,7 +668,7 @@ function renderIndDetail(d, container){
       <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy</button>
       <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
       <button class="ind-track-btn" title="Freeze these stats for the current run count so you can revisit them after the batch finishes — the numbers stay put even as market prices move. Appears under 'Tracked builds' up top.">＋ Track this build</button>
-      ${tier} · <span class="ind-d-runs-wrap">Runs <input class="ind-d-runs" type="text" inputmode="numeric" pattern="[0-9]*" value="${n}" style="width:68px"><button class="ind-d-runs-pre" data-n="1">1</button><button class="ind-d-runs-pre" data-n="10">10</button><button class="ind-d-runs-pre" data-n="100">100</button><button class="ind-d-runs-pre" data-n="10000">10k</button><button class="ind-d-runs-mul" data-m="10">×10</button></span> · source ${d.station_name}
+      ${tier} · <span class="ind-d-runs-wrap">Runs <input class="ind-d-runs" type="text" inputmode="numeric" pattern="[0-9]*" value="${n}" style="width:68px"><span class="ind-d-runs-step"><button class="ind-d-runs-inc" title="Increase runs" tabindex="-1">▲</button><button class="ind-d-runs-dec" title="Decrease runs" tabindex="-1">▼</button></span><button class="ind-d-runs-pre" data-n="1">1</button><button class="ind-d-runs-pre" data-n="10">10</button><button class="ind-d-runs-pre" data-n="100">100</button><button class="ind-d-runs-pre" data-n="10000">10k</button><button class="ind-d-runs-mul" data-m="10">×10</button></span> · source ${d.station_name}
       <span class="ind-d-close" title="Close">✕</span>
     </div>
     <div class="ind-d-body">
@@ -844,6 +844,10 @@ function renderIndDetail(d, container){
       try{ fresh.setSelectionRange(pos,pos); }catch(e){}
     }
   });
+  const incBtn=box.querySelector(".ind-d-runs-inc");
+  if(incBtn) incBtn.onclick=()=>setRuns((IND.detailRuns||1)+1);
+  const decBtn=box.querySelector(".ind-d-runs-dec");
+  if(decBtn) decBtn.onclick=()=>setRuns((IND.detailRuns||1)-1);
   box.querySelectorAll(".ind-d-runs-pre").forEach(b=>{
     b.onclick=()=>setRuns(+b.dataset.n);
   });

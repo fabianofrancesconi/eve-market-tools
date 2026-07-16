@@ -668,6 +668,13 @@
   .ind-d-runs-wrap input { font-size:12.5px; border:1px solid var(--line2); background:var(--panel); color:var(--fg); border-radius:4px; padding:3px 6px; }
   .ind-d-runs-wrap button { font-size:11.5px; padding:3px 8px; cursor:pointer; border:1px solid var(--line2); background:var(--panel2); color:var(--dim); border-radius:4px; transition:background .12s, color .12s; }
   .ind-d-runs-wrap button:hover { background:var(--cyan2); color:var(--fg); border-color:var(--cyan2); }
+  /* Vertical ▲/▼ stepper mimicking a native number spinner (the field is a
+     text input, so it has no built-in spinner). */
+  .ind-d-runs-step { display:inline-flex; flex-direction:column; margin-left:-2px; }
+  .ind-d-runs-wrap .ind-d-runs-step button { padding:0 5px; font-size:8px; line-height:11px;
+    height:11px; border-radius:3px; min-width:0; }
+  .ind-d-runs-step .ind-d-runs-inc { border-bottom-left-radius:0; border-bottom-right-radius:0; }
+  .ind-d-runs-step .ind-d-runs-dec { border-top-left-radius:0; border-top-right-radius:0; margin-top:-1px; }
   .ind-bpc-warn { background:#3a2800; border:1px solid #b8860b; border-radius:6px; padding:8px 12px; margin-bottom:10px; color:#ffd080; font-size:13.5px; line-height:1.5; width:100%; }
   .ind-bpc-warn b { color:#ffe4a0; }
   .ind-bpc-warn .ind-bpc-buy { display:block; margin-top:6px; color:#fff; font-weight:700; font-size:14.5px; }

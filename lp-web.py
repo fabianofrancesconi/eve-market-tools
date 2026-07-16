@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.99.6"
+__version__ = "1.100.0"
 
 import argparse
 import base64
@@ -88,6 +88,7 @@ ARB_SETTINGS_PATH = CACHE_DIR / "arb_settings.json"
 IND_SETTINGS_PATH = CACHE_DIR / "ind_settings.json"
 JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-run counter
 ORDER_EVENTS_PATH = CACHE_DIR / "order_events.json"  # market order sale/fill events
+IND_BUILDS_PATH = CACHE_DIR / "ind_tracked_builds.json"  # frozen build-batch snapshots
 WALLET_HISTORY_PATH = CACHE_DIR / "wallet_history.json"  # ISK balance time-series
 USER_SETTINGS_DB_PATH = CACHE_DIR / "user_settings.sqlite"  # per-character synced settings
 LP_LAST_SCAN_PATH = CACHE_DIR / "lp_last_scan.json"
@@ -1075,6 +1076,123 @@ def _dismiss_order_event(acct, event_id):
                 if event_id == "all" or e.get("id") == event_id:
                     e["dismissed"] = True
     _acct_kv_save(acct, "order_events", ORDER_EVENTS_PATH, store)
+
+
+# ── Tracked builds ───────────────────────────────────────────────────────────
+# A "tracked build" freezes the Industry detail panel's stats at the moment the
+# user kicks off a manufacturing job in-game, so the exact economics they
+# committed to stay visible days later even as market prices drift. Stored
+# per-account as a list of {id, created_at, runs, snapshot:{…the /api/ind/detail
+# blob…}, status}. Status is derived from the character's live ESI jobs, never
+# stored authoritatively: a build with no matching active job is "awaiting"
+# (a warning), one matched to an active manufacturing job of the same blueprint
+# and run count is "building", and once that linked job has left ESI's active
+# list the build is "done". Linking is done client-side against AUTH.data.jobs
+# (the same source as the timers) so the server just persists the frozen blobs.
+_MAX_TRACKED_BUILDS = 200
+
+
+def _load_tracked_builds(acct):
+    store = _acct_kv_load(acct, "ind_tracked_builds", IND_BUILDS_PATH, None)
+    if not isinstance(store, list):
+        return []
+    return store
+
+
+def _save_tracked_builds(acct, builds):
+    _acct_kv_save(acct, "ind_tracked_builds", IND_BUILDS_PATH, builds)
+
+
+def do_ind_builds_list(q):
+    acct = current_account()
+    if not acct:
+        return {"builds": []}
+    return {"builds": _load_tracked_builds(acct)}
+
+
+def do_ind_builds_save(q):
+    """Freeze a build snapshot. The client sends the full detail blob it is
+    already showing (so the stored numbers exactly match what the user saw) plus
+    the run count; the server stamps an id + created_at and prepends it."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    raw = q.get("snapshot", [None])[0]
+    if not raw:
+        return {"error": "missing snapshot"}
+    try:
+        snapshot = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return {"error": "bad snapshot"}
+    if not isinstance(snapshot, dict):
+        return {"error": "bad snapshot"}
+    try:
+        runs = max(1, int(q.get("runs", ["1"])[0]))
+    except (TypeError, ValueError):
+        runs = 1
+    now = time.time()
+    build = {
+        "id": q.get("id", [""])[0] or f"{int(now * 1000)}-{snapshot.get('blueprint_id', 0)}",
+        "created_at": now,
+        "runs": runs,
+        "blueprint_id": snapshot.get("blueprint_id"),
+        "product_type_id": (snapshot.get("product") or {}).get("type_id"),
+        "product_name": (snapshot.get("product") or {}).get("name", "?"),
+        "snapshot": snapshot,
+    }
+    builds = _load_tracked_builds(acct)
+    builds = [b for b in builds if b.get("id") != build["id"]]
+    builds.insert(0, build)
+    del builds[_MAX_TRACKED_BUILDS:]
+    _save_tracked_builds(acct, builds)
+    return {"ok": True, "build": build}
+
+
+def do_ind_builds_delete(q):
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    build_id = q.get("id", [""])[0]
+    if not build_id:
+        return {"error": "missing id"}
+    builds = _load_tracked_builds(acct)
+    kept = [b for b in builds if b.get("id") != build_id]
+    if len(kept) != len(builds):
+        _save_tracked_builds(acct, kept)
+    return {"ok": True}
+
+
+def do_ind_builds_link(q):
+    """Patch the ESI-job linkage on an existing tracked build without resending
+    its (large) frozen snapshot. The client derives status from live jobs and
+    calls this only on a transition — first link to a job, or the job finishing —
+    so the linkage / completion date survives reloads on any device."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    build_id = q.get("id", [""])[0]
+    if not build_id:
+        return {"error": "missing id"}
+    builds = _load_tracked_builds(acct)
+    found = False
+    for b in builds:
+        if b.get("id") != build_id:
+            continue
+        found = True
+        for f in ("job_id", "job_end", "char_name"):
+            if f in q:
+                v = q.get(f, [None])[0]
+                b[f] = None if (v is None or v == "" or v == "null") else v
+        if "done_at" in q:
+            v = q.get("done_at", [None])[0]
+            try:
+                b["done_at"] = float(v) if v not in (None, "", "null") else None
+            except (TypeError, ValueError):
+                b["done_at"] = None
+        break
+    if found:
+        _save_tracked_builds(acct, builds)
+    return {"ok": found}
 
 
 _CHAR_DATA_CACHE = {}  # {cid: (timestamp, result)}
@@ -2579,6 +2697,7 @@ _GET_ROUTES = {
     "/api/ind/liquidity": do_ind_liquidity,
     "/api/ind/detail": do_ind_detail,
     "/api/ind/bpo-search": do_ind_bpo_search,
+    "/api/ind/builds": do_ind_builds_list,
     "/api/auth/login": do_auth_login,
     "/api/auth/switch": do_auth_switch,
     "/api/char/data": do_char_data,
@@ -2597,6 +2716,9 @@ _POST_ROUTES = {
     "/api/settings/sync": do_settings_sync,
     "/api/notes/save": do_notes_save,
     "/api/notes/delete": do_notes_delete,
+    "/api/ind/builds/save": do_ind_builds_save,
+    "/api/ind/builds/delete": do_ind_builds_delete,
+    "/api/ind/builds/link": do_ind_builds_link,
 }
 
 # Session cookie + the endpoints reachable without one (multi-user mode). The app

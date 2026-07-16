@@ -242,6 +242,11 @@ async function _doRefreshCharData(force){
   setSyncCountdown(d.next_sync_in);
   const prevLp=$("#lp").value;
   renderCharData(); syncJobTimers(); updateMyLpBadge(); updateCharBadge();
+  // Fresh jobs arrived — re-derive tracked-build statuses (link new jobs, mark
+  // finished ones done). Loads the frozen builds on first sight if not yet done.
+  if(typeof reconcileBuilds==="function"){
+    if(IND.buildsLoaded) reconcileBuilds(); else if(typeof loadIndBuilds==="function") loadIndBuilds();
+  }
   // Corp field was locked during the char-data fetch; unlock now that data
   // arrived. Clear the loading spinner on both fields — updateMyLpBadge() above
   // has already set the LP budget, and renderCharData() restored the corp value.

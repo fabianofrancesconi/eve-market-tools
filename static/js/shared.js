@@ -262,6 +262,7 @@ function switchTab(tab, opts){
   if(tab==="aby" && typeof abyInit==="function") abyInit();
   if(tab==="ind" && AUTH.loggedIn){
     if(!IND.groupsLoaded) loadIndGroups();
+    if(!IND.buildsLoaded) loadIndBuilds(); else reconcileBuilds();
     renderIndTable(); renderIndStatus();
   }
   if(tab==="char" && AUTH.loggedIn){ renderCharData(); refreshCharData(); markCharEventsSeen(); }

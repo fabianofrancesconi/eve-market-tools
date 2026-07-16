@@ -7,7 +7,8 @@ let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es
            timers:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{}, detailRuns:1,
            fillTotal:0, fillDone:0, tradeWeight:0.5,
-           sections:{fav:true, owned:true, hidden:false, all:true}};
+           builds:[], buildsLoaded:false, buildsExpanded:new Set(),
+           sections:{fav:true, owned:true, hidden:false, all:true, builds:true}};
 // Bumped whenever a scan starts or a new fill begins, so an in-flight background
 // tradeability fill from a previous scan knows to abandon itself.
 let IND_FILL_TOKEN = 0;
@@ -666,6 +667,7 @@ function renderIndDetail(d, container){
       <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
       <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy</button>
       <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
+      <button class="ind-track-btn" title="Freeze these stats for the current run count so you can revisit them after the batch finishes — the numbers stay put even as market prices move. Appears under 'Tracked builds' up top.">＋ Track this build</button>
       ${tier} · <span class="ind-d-runs-wrap">Runs <input class="ind-d-runs" type="text" inputmode="numeric" pattern="[0-9]*" value="${n}" style="width:68px"><button class="ind-d-runs-pre" data-n="1">1</button><button class="ind-d-runs-pre" data-n="10">10</button><button class="ind-d-runs-pre" data-n="100">100</button><button class="ind-d-runs-pre" data-n="10000">10k</button><button class="ind-d-runs-mul" data-m="10">×10</button></span> · source ${d.station_name}
       <span class="ind-d-close" title="Close">✕</span>
     </div>
@@ -788,6 +790,8 @@ function renderIndDetail(d, container){
   head.onmousedown=ev=>{ headDownInInteractive=!!ev.target.closest("button,input,.ind-d-runs-wrap"); };
   head.onclick=ev=>{ if(!ev.target.closest("button,input,.ind-d-runs-wrap") && !headDownInInteractive) closeIndDetail(); };
   box.querySelector(".ind-fav-btn").onclick=()=>toggleFavorite(d.blueprint_id);
+  const trackBtn=box.querySelector(".ind-track-btn");
+  if(trackBtn) trackBtn.onclick=()=>trackThisBuild(d, Math.max(1, IND.detailRuns||1), trackBtn);
   const copyBtn=box.querySelector(".ind-copy");
   copyBtn.onclick=()=>{
     const done=()=>{ copyBtn.textContent="✓ Copied"; setTimeout(()=>{copyBtn.textContent="⧉ Copy";},1200); };
@@ -872,8 +876,10 @@ setInterval(()=>{
   document.querySelectorAll(".ind-live-timer[data-end]").forEach(el=>{
     const rem=(+el.dataset.end)-Date.now();
     const isCell=el.classList.contains("timer-cell");
+    const inBuildCard=!!el.closest(".ind-build-card");
     if(rem<=0){
       if(isCell){ el.textContent="✓ Ready"; el.classList.add("done"); el.removeAttribute("data-end"); }
+      else if(inBuildCard){ el.textContent="finishing…"; el.removeAttribute("data-end"); }
       else if(IND.openDetail) renderIndDetail(IND.openDetail);
     } else {
       el.textContent=isCell?fmtCountdownShort(rem):fmtCountdown(rem);
@@ -881,4 +887,243 @@ setInterval(()=>{
   });
   tickCharRefreshTimer();
 }, 1000);
+
+// ══════════════════════════════════════════════════════════════════════════
+// TRACKED BUILDS
+// ──────────────────────────────────────────────────────────────────────────
+// "Track this build" freezes the detail panel's stats for the current run count
+// so the exact economics you committed to stay visible days later, even as
+// market prices drift. Each tracked build is matched — client-side, from the
+// same live ESI jobs that drive the timers — to an actual in-game manufacturing
+// job of the same blueprint + run count. Lifecycle, derived (never guessed):
+//   • awaiting — no matching active job yet → a warning (you haven't started it,
+//     or ESI hasn't caught up). Clears the moment a matching job appears.
+//   • building — linked to an active job; shows its live countdown.
+//   • done — the linked job has left ESI's active list (delivered).
+// Only a build that was actually linked can become "done", so a freshly-tracked
+// build never jumps straight to done.
+
+// Freeze the currently-open detail blob for N runs and persist it. The snapshot
+// is the exact /api/ind/detail response the panel is rendering, so reopening it
+// reproduces the numbers verbatim regardless of later price moves.
+function trackThisBuild(d, runs, btn){
+  const snap=JSON.parse(JSON.stringify(d));
+  const body={runs:String(runs), snapshot:JSON.stringify(snap)};
+  if(btn){ btn.disabled=true; btn.textContent="Tracking…"; }
+  fetch("/api/ind/builds/save",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(body)})
+    .then(r=>r.json()).then(res=>{
+      if(res && res.build){
+        IND.builds=IND.builds.filter(b=>b.id!==res.build.id);
+        IND.builds.unshift(res.build);
+        IND.sections.builds=true;
+        renderIndBuilds();
+        if(btn){ btn.textContent="✓ Tracked"; setTimeout(()=>{ btn.textContent="＋ Track this build"; btn.disabled=false; },1400); }
+      } else if(btn){
+        btn.textContent=res && res.error?("⚠ "+res.error):"⚠ Failed"; btn.disabled=false;
+      }
+    }).catch(()=>{ if(btn){ btn.textContent="⚠ Failed"; btn.disabled=false; } });
+}
+
+function loadIndBuilds(){
+  if(!AUTH.loggedIn){ IND.builds=[]; IND.buildsLoaded=true; renderIndBuilds(); return; }
+  fetch("/api/ind/builds").then(r=>r.json()).then(res=>{
+    IND.builds=(res && res.builds)||[];
+    IND.buildsLoaded=true;
+    // If jobs are already loaded, reconcile now (links jobs, marks done);
+    // otherwise just render — the next char-data refresh will reconcile.
+    if(AUTH.data && AUTH.data.jobs) reconcileBuilds(); else renderIndBuilds();
+  }).catch(()=>{ IND.buildsLoaded=true; });
+}
+
+// Match a tracked build to one of the character's live manufacturing jobs, by
+// blueprint + run count. Prefers an as-yet-unclaimed job so several concurrent
+// batches of the same blueprint each grab a distinct job.
+function _findJobForBuild(b, claimed){
+  const jobs=(AUTH.data&&AUTH.data.jobs)||[];
+  const cands=jobs.filter(j=>j.activity_id===1 && j.blueprint_type_id===b.blueprint_id
+    && (j.runs==null || j.runs===b.runs));
+  return cands.find(j=>!claimed.has(j.job_id)) || null;
+}
+
+// Recompute each build's status from live jobs and persist the transitions that
+// must survive a reload (first link to a job, and completion). Returns nothing;
+// mutates IND.builds in place and re-renders.
+function reconcileBuilds(){
+  if(!IND.builds.length){ renderIndBuilds(); return; }
+  const activeJobIds=new Set(((AUTH.data&&AUTH.data.jobs)||[])
+    .filter(j=>j.activity_id===1).map(j=>j.job_id));
+  const claimed=new Set();
+  let changed=false;
+  // Order by created_at so the oldest batch claims the oldest matching job.
+  const ordered=[...IND.builds].sort((a,b)=>(a.created_at||0)-(b.created_at||0));
+  ordered.forEach(b=>{
+    if(b.done_at) return;                       // already finished — leave it
+    if(b.job_id!=null && activeJobIds.has(b.job_id)){
+      claimed.add(b.job_id); return;            // still running under its link
+    }
+    if(b.job_id!=null && !activeJobIds.has(b.job_id)){
+      // Its linked job left the active list → delivered.
+      b.done_at=Date.now()/1000; changed=true;
+      _patchBuildLink(b, {done_at:b.done_at});
+      return;
+    }
+    // Not yet linked — try to adopt a matching active job.
+    const job=_findJobForBuild(b, claimed);
+    if(job){
+      claimed.add(job.job_id);
+      b.job_id=job.job_id; b.job_end=job.end; b.char_name=job.character_name; changed=true;
+      _patchBuildLink(b, {job_id:job.job_id, job_end:job.end, char_name:job.character_name});
+    }
+  });
+  renderIndBuilds();
+  return changed;
+}
+
+function _patchBuildLink(b, fields){
+  const body=Object.assign({id:b.id}, fields);
+  Object.keys(body).forEach(k=>{ if(body[k]==null) body[k]="null"; else body[k]=String(body[k]); });
+  fetch("/api/ind/builds/link",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(body)}).catch(()=>{});
+}
+
+function deleteBuild(id){
+  IND.builds=IND.builds.filter(b=>b.id!==id);
+  IND.buildsExpanded.delete(id);
+  renderIndBuilds();
+  fetch("/api/ind/builds/delete",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id})}).catch(()=>{});
+}
+
+// Status of a build for display, derived from its stored link fields + live jobs.
+function _buildStatus(b){
+  if(b.done_at) return {key:"done", label:"✓ Done"};
+  const activeJobIds=new Set(((AUTH.data&&AUTH.data.jobs)||[])
+    .filter(j=>j.activity_id===1).map(j=>j.job_id));
+  if(b.job_id!=null && activeJobIds.has(b.job_id)) return {key:"building", label:"⏳ Building"};
+  return {key:"awaiting", label:"⚠ No matching job"};
+}
+
+function renderIndBuilds(){
+  const box=$("#ind-builds"); if(!box) return;
+  if(!IND.builds.length){ box.classList.add("hidden"); box.innerHTML=""; return; }
+  box.classList.remove("hidden");
+  const open=IND.sections.builds;
+  const rows=IND.builds.map(b=>_buildCardHtml(b)).join("");
+  box.innerHTML=`
+    <div class="ind-builds-head${open?"":" collapsed"}">
+      <span class="sect-arrow">▾</span>Tracked builds <span class="chip-count">(${IND.builds.length})</span>
+    </div>
+    <div class="ind-builds-list${open?"":" hidden"}">${rows}</div>`;
+  box.querySelector(".ind-builds-head").onclick=()=>{
+    IND.sections.builds=!IND.sections.builds; renderIndBuilds(); saveLS();
+  };
+  IND.builds.forEach(b=>_wireBuildCard(box, b));
+}
+
+function _buildCardHtml(b){
+  const s=b.snapshot||{}, n=Math.max(1, b.runs||1);
+  const isk=v=>v===null||v===undefined?"—":fmtISK(v);
+  const st=_buildStatus(b);
+  const batchCost=s.total_cost!=null?s.total_cost*n:null;
+  const batchProfitL=s.profit_patient!=null?s.profit_patient*n:null;
+  const batchProfitI=s.profit_instant!=null?s.profit_instant*n:null;
+  const batchTime=s.build_time?s.build_time*n:null;
+  const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
+  const when=b.created_at?new Date(b.created_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"";
+  // Status line: warning if no job yet, live countdown while building, ETA/finish otherwise.
+  let statusLine="";
+  if(st.key==="awaiting"){
+    statusLine=`<span class="ind-build-warn">No matching in-game job yet — start ${n.toLocaleString()}× run(s) of this blueprint in EVE${AUTH.loggedIn?" and it'll link automatically":"; log in with EVE to link"}.</span>`;
+  } else if(st.key==="building"){
+    const end=b.job_end?Date.parse(b.job_end):null;
+    statusLine=end && isFinite(end)
+      ? `<span class="ind-build-live ind-live-timer" data-end="${end}">${fmtCountdown(end-Date.now())}</span> <span class="ind-build-eta">ETA ${new Date(end).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}${b.char_name?" · "+b.char_name:""}</span>`
+      : `<span class="ind-build-live">running${b.char_name?" · "+b.char_name:""}</span>`;
+  } else {
+    statusLine=`<span class="ind-build-done">Finished${b.done_at?" "+new Date(b.done_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""}</span>`;
+  }
+  const expanded=IND.buildsExpanded.has(b.id);
+  const detail=expanded?_buildDetailHtml(b):"";
+  return `<div class="ind-build-card ${st.key}" data-id="${b.id}">
+    <div class="ind-build-row">
+      <span class="ind-build-status ${st.key}">${st.label}</span>
+      <span class="ind-build-name">${b.product_name||"?"}</span>
+      <span class="ind-build-runs">${n.toLocaleString()} run(s)</span>
+      <span class="ind-build-stat">Cost <b>${isk(batchCost)}</b></span>
+      <span class="ind-build-stat">Profit list <b class="${pn(batchProfitL)}">${isk(batchProfitL)}</b></span>
+      <span class="ind-build-stat">Profit instant <b class="${pn(batchProfitI)}">${isk(batchProfitI)}</b></span>
+      <span class="ind-build-stat">Build ${fmtDur(batchTime)}</span>
+      <span class="ind-build-when">frozen ${when}</span>
+      <button class="ind-build-toggle" title="Show the full frozen snapshot">${expanded?"▲ Hide":"▼ Details"}</button>
+      <button class="ind-build-del" title="Stop tracking this build">✕</button>
+    </div>
+    <div class="ind-build-substatus">${statusLine}</div>
+    ${detail}
+  </div>`;
+}
+
+// The full frozen breakdown, mirroring the detail panel's materials + batch math
+// but computed only from the snapshot (so prices never move under it).
+function _buildDetailHtml(b){
+  const d=b.snapshot||{}, n=Math.max(1, b.runs||1);
+  const isk=v=>v===null||v===undefined?"—":fmtISK(v);
+  const mvol=v=> v==null?"—":(v.toLocaleString(undefined,{maximumFractionDigits:v<10?2:1})+" m³");
+  if(!d.required_items) return `<div class="ind-build-detail"><span class="ind-build-warn">Snapshot has no material breakdown.</span></div>`;
+  let matTotCost=0, matTotVol=0, matHasVol=false;
+  const sortedItems=[...d.required_items].sort((a,b)=>a.name.localeCompare(b.name));
+  const mats=sortedItems.map(m=>{
+    const qtyBatch=m.eff_qty*n;
+    const costBatch=m.line_cost==null?null:m.line_cost*n;
+    const volBatch=(m.volume_each!=null)?m.eff_qty*m.volume_each*n:null;
+    if(costBatch!=null) matTotCost+=costBatch;
+    if(volBatch!=null){ matTotVol+=volBatch; matHasVol=true; }
+    return `<tr><td>${m.name}</td><td class="num">${qtyBatch.toLocaleString()}</td>`
+      +`<td class="num">${isk(m.unit_price)}</td><td class="num">${isk(costBatch)}</td>`
+      +`<td class="num">${mvol(volBatch)}</td></tr>`;
+  }).join("");
+  const matTotal=`<tr class="ind-d-total"><td>Total — ${d.required_items.length} material${d.required_items.length===1?"":"s"}</td>`
+    +`<td class="num"></td><td class="num"></td><td class="num">${isk(matTotCost)}</td>`
+    +`<td class="num">${matHasVol?mvol(matTotVol):"—"}</td></tr>`;
+  const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
+  const batchCost=d.total_cost!=null?d.total_cost*n:null;
+  const batchProfitL=d.profit_patient!=null?d.profit_patient*n:null;
+  const batchProfitI=d.profit_instant!=null?d.profit_instant*n:null;
+  return `<div class="ind-build-detail">
+    <div class="ind-d-grid" style="max-width:none">
+      <div class="ind-d-sub">Per run — ${fmtNum(d.product.quantity)}× ${d.product.name} (frozen)</div>
+      <span>Sell @ ask — list</span><b>${isk(d.ask)}</b>
+      <span>Sell @ bid — instant</span><b>${isk(d.bid)}</b>
+      <span>Material cost</span><b>${isk(d.material_cost)}</b>
+      <span>Job install</span><b>${isk(d.job_cost)}</b>
+      ${d.invention?`<span>Invention cost</span><b>${isk(d.invention_cost)}</b>`:""}
+      <span>Total cost</span><b>${isk(d.total_cost)}</b>
+      <span>Profit — list</span><b class="${pn(d.profit_patient)}">${isk(d.profit_patient)}</b>
+      <span>Profit — instant</span><b class="${pn(d.profit_instant)}">${isk(d.profit_instant)}</b>
+      <div class="ind-d-sub">Batch — ${n.toLocaleString()} run(s)</div>
+      <span>Total cost</span><b>${isk(batchCost)}</b>
+      <span>Profit — list</span><b class="${pn(batchProfitL)}">${isk(batchProfitL)}</b>
+      <span>Profit — instant</span><b class="${pn(batchProfitI)}">${isk(batchProfitI)}</b>
+    </div>
+    <div class="ind-d-sub" style="margin-top:10px">Materials — ${n.toLocaleString()} run(s), at frozen prices</div>
+    <table class="ind-d-mats"><thead><tr><th>Material</th><th class="num">Qty</th>
+      <th class="num">Unit</th><th class="num">Total</th><th class="num">Cargo m³</th></tr></thead>
+      <tbody>${mats}${matTotal}</tbody></table>
+  </div>`;
+}
+
+function _wireBuildCard(box, b){
+  const card=box.querySelector(`.ind-build-card[data-id="${CSS.escape(b.id)}"]`);
+  if(!card) return;
+  const del=card.querySelector(".ind-build-del");
+  if(del) del.onclick=()=>{
+    if(confirm(`Stop tracking this build of ${b.product_name||"?"}?`)) deleteBuild(b.id);
+  };
+  const tog=card.querySelector(".ind-build-toggle");
+  if(tog) tog.onclick=()=>{
+    if(IND.buildsExpanded.has(b.id)) IND.buildsExpanded.delete(b.id);
+    else IND.buildsExpanded.add(b.id);
+    renderIndBuilds();
+  };
+}
 

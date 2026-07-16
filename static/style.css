@@ -453,6 +453,32 @@
     margin:18px 0 8px;
   }
 
+  /* ── Tracking tab (live exploration trail) ──────────────────────── */
+  #track-tablewrap { padding:24px 28px; overflow-y:auto; }
+  .track-bar { display:flex; align-items:center; justify-content:space-between;
+    gap:16px; flex-wrap:wrap; margin-bottom:14px; }
+  .track-status { color:var(--dim); font-size:13.5px; }
+  .track-status.track-live { color:var(--green2); font-weight:600; }
+  .track-controls { display:flex; gap:8px; }
+  .track-error { color:var(--yellow); background:var(--panel2); border:1px solid var(--line2);
+    border-radius:6px; padding:10px 14px; margin-bottom:14px; font-size:13px; line-height:1.5; }
+  .track-filter { display:flex; align-items:center; gap:12px; margin-bottom:10px; font-size:13px; color:var(--dim); }
+  .track-filter input { width:70px; background:var(--panel2); color:var(--fg);
+    border:1px solid var(--line2); border-radius:4px; padding:3px 6px; margin:0 4px; }
+  .track-filter select { background:var(--panel2); color:var(--fg);
+    border:1px solid var(--line2); border-radius:4px; padding:3px 6px; }
+  .track-hidden-note { color:var(--dim2); font-style:italic; }
+  .track-summary { color:var(--dim); font-size:13px; margin-bottom:12px; }
+  #track-table { width:100%; border-collapse:collapse; }
+  #track-table th { text-align:left; color:var(--dim); font-weight:600; font-size:12px;
+    padding:6px 10px; border-bottom:2px solid var(--line); }
+  #track-table td { padding:6px 10px; border-bottom:1px solid var(--line); font-size:13px; }
+  #track-table .track-sys { font-weight:600; color:var(--fg); }
+  #track-table .track-cargo input { width:120px; background:var(--panel2); color:var(--fg);
+    border:1px solid var(--line2); border-radius:4px; padding:3px 6px; }
+  .track-up { color:var(--green2); }
+  .track-down { color:var(--red); }
+
   /* ── Character tab ───────────────────────────────────────────────── */
   #char-tablewrap { padding:24px 28px; overflow-y:auto; }
   .char-empty { max-width:480px; margin:60px auto; text-align:center; color:var(--dim);

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.100.8"
+__version__ = "1.101.0"
 
 import argparse
 import base64
@@ -90,6 +90,8 @@ JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-
 ORDER_EVENTS_PATH = CACHE_DIR / "order_events.json"  # market order sale/fill events
 IND_BUILDS_PATH = CACHE_DIR / "ind_tracked_builds.json"  # frozen build-batch snapshots
 WALLET_HISTORY_PATH = CACHE_DIR / "wallet_history.json"  # ISK balance time-series
+LOCATION_TRAIL_PATH = CACHE_DIR / "location_trail.json"  # exploration system trail
+LOCATION_TRACK_PATH = CACHE_DIR / "location_tracking.json"  # per-char session state
 USER_SETTINGS_DB_PATH = CACHE_DIR / "user_settings.sqlite"  # per-character synced settings
 LP_LAST_SCAN_PATH = CACHE_DIR / "lp_last_scan.json"
 IND_LAST_SCAN_PATH = CACHE_DIR / "ind_last_scan.json"
@@ -1603,6 +1605,364 @@ def do_wallet_history(q):
     return {"series": series}
 
 
+# ── Exploration tracking (live location trail) ───────────────────────────────
+# A per-character "track my exploration" session. While a session is active the
+# background poll loop samples the character's ESI location every few seconds and
+# appends a trail entry whenever the solar system changes. Each entry carries two
+# optional user annotations — a "scanned here" flag and a manually-typed cargo
+# ISK value (for a between-systems delta). Session state machine:
+#
+#   stopped  no session; the loop ignores this character.
+#   active   running + pilot online; location sampled every _LOCATION_POLL_INTERVAL.
+#   paused   user paused, OR auto-paused because the pilot logged out. The loop
+#            only re-checks online status so an auto-paused run resumes itself
+#            when the pilot returns; a user pause stays put until Resume.
+#
+# Only "Stop & Finish" closes a run — a logout leaves it open indefinitely so a
+# roam can span a break. State is persisted per-account (survives a restart; an
+# active session rehydrates as paused/auto until the loop re-confirms online).
+
+_LOCATION_POLL_INTERVAL = 7      # seconds between location samples (ESI caches ~5s)
+_ONLINE_RECHECK_INTERVAL = 60    # ESI online cache window — no point checking faster
+
+_TRACK_LOCK = threading.RLock()
+_TRACK_SESSIONS = {}             # cid -> session dict (see state machine above)
+_TRACK_LOADED_ACCTS = set()      # account_ids whose sessions are hydrated in-memory
+_TRACK_SYSTEM_CACHE = {}         # system_id -> {name, sec} (never changes)
+_TRAIL_RECORD_LOCK = threading.Lock()
+
+
+def _resolve_track_system(system_id):
+    """{name, sec} for a solar system, cached forever (systems never change)."""
+    info = arb_core.resolve_system(system_id, _TRACK_SYSTEM_CACHE, SESSION)
+    return info or {"name": str(system_id), "sec": None}
+
+
+def _ensure_track_loaded(acct):
+    """Hydrate an account's persisted tracking sessions into memory once. An
+    active session found on disk resumes as paused(auto) — we can't know the
+    pilot is online until the loop next checks, so we don't sample blindly."""
+    if acct is None or acct.account_id is None:
+        return
+    with _TRACK_LOCK:
+        if acct.account_id in _TRACK_LOADED_ACCTS:
+            return
+        blob = _acct_kv_load(acct, "location_tracking", LOCATION_TRACK_PATH, {}) or {}
+        for cid_str, sess in blob.items():
+            try:
+                cid = int(cid_str)
+            except (TypeError, ValueError):
+                continue
+            if sess.get("state") == "active":
+                sess["state"] = "paused"
+                sess["pause_reason"] = "auto"
+            sess.setdefault("online", False)
+            sess["online_checked_at"] = 0.0
+            _TRACK_SESSIONS[cid] = sess
+        _TRACK_LOADED_ACCTS.add(acct.account_id)
+
+
+def _persist_track_sessions(acct):
+    """Write an account's in-memory sessions back to durable storage."""
+    if acct is None or acct.account_id is None:
+        return
+    with acct.lock:
+        char_ids = list(acct.characters.keys())
+    with _TRACK_LOCK:
+        blob = {str(cid): _TRACK_SESSIONS[cid]
+                for cid in char_ids if cid in _TRACK_SESSIONS}
+    _acct_kv_save(acct, "location_tracking", LOCATION_TRACK_PATH, blob)
+
+
+def _append_trail(acct, cid, entered_at, run_id, system_id, system_name, security):
+    if pg_store.enabled():
+        pg_store.location_trail_append(acct.account_id, cid, entered_at, run_id,
+                                       system_id, system_name, security)
+    else:
+        with _TRAIL_RECORD_LOCK:
+            store = load_json(LOCATION_TRAIL_PATH, {})
+            store.setdefault(str(cid), []).append(
+                {"entered_at": entered_at, "run_id": run_id, "system_id": system_id,
+                 "system_name": system_name, "security": security,
+                 "scanned": False, "cargo_isk": None})
+            save_json(LOCATION_TRAIL_PATH, store)
+
+
+def _query_trail(acct, cid, run_id=None, since_ts=0.0):
+    if pg_store.enabled():
+        return pg_store.location_trail_query(acct.account_id, cid, run_id, since_ts)
+    store = load_json(LOCATION_TRAIL_PATH, {})
+    rows = store.get(str(cid), [])
+    if run_id is not None:
+        rows = [r for r in rows if r.get("run_id") == run_id]
+    else:
+        rows = [r for r in rows if r.get("entered_at", 0) >= since_ts]
+    return sorted(rows, key=lambda r: r.get("entered_at", 0))
+
+
+def _annotate_trail(acct, cid, entered_at, scanned=None, cargo_isk=None):
+    if pg_store.enabled():
+        pg_store.location_trail_annotate(acct.account_id, cid, entered_at,
+                                         scanned=scanned, cargo_isk=cargo_isk)
+        return
+    with _TRAIL_RECORD_LOCK:
+        store = load_json(LOCATION_TRAIL_PATH, {})
+        for r in store.get(str(cid), []):
+            if abs(r.get("entered_at", 0) - entered_at) < 1e-6:
+                if scanned is not None:
+                    r["scanned"] = bool(scanned)
+                if cargo_isk is not None:
+                    r["cargo_isk"] = cargo_isk if cargo_isk != "" else None
+                break
+        save_json(LOCATION_TRAIL_PATH, store)
+
+
+def _set_session_state(acct, cid, state, pause_reason):
+    with _TRACK_LOCK:
+        s = _TRACK_SESSIONS.get(cid)
+        if not s:
+            return
+        s["state"] = state
+        s["pause_reason"] = pause_reason
+    _persist_track_sessions(acct)
+
+
+def _mark_track_error(cid, exc):
+    """Record an ESI error on a session so the UI can surface it (a 403 means the
+    location scope isn't granted — the pilot must re-authorise)."""
+    status = exc.response.status_code if exc.response is not None else "?"
+    with _TRACK_LOCK:
+        s = _TRACK_SESSIONS.get(cid)
+        if s is None:
+            return
+        if status == 403:
+            s["error"] = ("Location access denied (403). Enable "
+                          "'esi-location.read_location.v1' for your EVE application "
+                          "at developers.eveonline.com, then log out and back in.")
+        else:
+            s["error"] = f"ESI location error ({status})."
+
+
+def _poll_location_once(acct, cid):
+    """One poll tick for a tracked character: refresh online status (throttled to
+    the ESI cache window, driving auto-pause/resume) and, when active+online,
+    sample the location and extend the trail on a system change."""
+    with _TRACK_LOCK:
+        sess = _TRACK_SESSIONS.get(cid)
+        if not sess or sess.get("state") == "stopped":
+            return
+        state = sess.get("state")
+        pause_reason = sess.get("pause_reason")
+        online = sess.get("online", False)
+        online_checked_at = sess.get("online_checked_at", 0.0)
+    try:
+        token = _access_token(acct, cid)
+    except LPError:
+        return
+    now = time.time()
+    changed = False
+
+    if now - online_checked_at >= _ONLINE_RECHECK_INTERVAL:
+        try:
+            data = sso_core.fetch_online(token, cid, SESSION)
+            online = bool(data.get("online"))
+            with _TRACK_LOCK:
+                s = _TRACK_SESSIONS.get(cid)
+                if s:
+                    s["online"] = online
+                    s["online_checked_at"] = now
+                    s.pop("error", None)
+            if not online and state == "active":
+                _set_session_state(acct, cid, "paused", "auto")
+                state, pause_reason, changed = "paused", "auto", True
+            elif online and state == "paused" and pause_reason == "auto":
+                _set_session_state(acct, cid, "active", None)
+                state, pause_reason, changed = "active", None, True
+        except requests.HTTPError as e:
+            _mark_track_error(cid, e)
+        except requests.RequestException:
+            pass
+
+    if state == "active" and online:
+        try:
+            loc = sso_core.fetch_location(token, cid, SESSION)
+            sysid = loc.get("solar_system_id")
+            with _TRACK_LOCK:
+                s = _TRACK_SESSIONS.get(cid)
+                last = s.get("last_system_id") if s else None
+                run_id = s.get("run_id") if s else None
+            if sysid and sysid != last and run_id:
+                info = _resolve_track_system(sysid)
+                _append_trail(acct, cid, now, run_id, sysid,
+                              info["name"], info["sec"])
+                with _TRACK_LOCK:
+                    s = _TRACK_SESSIONS.get(cid)
+                    if s:
+                        s["last_system_id"] = sysid
+                        s.pop("error", None)
+                _persist_track_sessions(acct)
+                changed = True
+        except requests.HTTPError as e:
+            _mark_track_error(cid, e)
+        except requests.RequestException:
+            pass
+
+    if changed:
+        _CHAR_PUBSUB.bump(id(acct))
+
+
+def _bg_location_poll_loop():
+    """Fast per-tracked-character location poll. Only touches characters with an
+    open (active/paused) session; independent of the 5-min char-data refresh."""
+    time.sleep(20)
+    while True:
+        try:
+            accounts = list(_ACCOUNTS.values())
+            for acct in accounts:
+                _ensure_track_loaded(acct)
+                with acct.lock:
+                    char_ids = list(acct.characters.keys())
+                for cid in char_ids:
+                    with _TRACK_LOCK:
+                        s = _TRACK_SESSIONS.get(cid)
+                        open_session = bool(s) and s.get("state") != "stopped"
+                    if not open_session:
+                        continue
+                    try:
+                        _poll_location_once(acct, cid)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        time.sleep(_LOCATION_POLL_INTERVAL)
+
+
+def _track_target_cid(acct, q):
+    raw = q.get("char_id", [None])[0]
+    if raw:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    return acct.active_char_id
+
+
+def _track_payload(acct, cid):
+    """The tracking state + current-run trail for one character."""
+    with _TRACK_LOCK:
+        sess = dict(_TRACK_SESSIONS.get(cid) or {})
+    run_id = sess.get("run_id")
+    rows = _query_trail(acct, cid, run_id=run_id) if run_id else []
+    with acct.lock:
+        scopes = (acct.characters.get(cid, {}) or {}).get("scopes") or []
+    return {
+        "char_id": cid,
+        "state": sess.get("state", "stopped"),
+        "pause_reason": sess.get("pause_reason"),
+        "run_id": run_id,
+        "started_at": sess.get("started_at"),
+        "online": sess.get("online"),
+        "error": sess.get("error"),
+        "scope_ok": "esi-location.read_location.v1" in scopes,
+        "trail": rows,
+    }
+
+
+def do_track_trail(q):
+    acct = require_account()
+    _ensure_track_loaded(acct)
+    cid = _track_target_cid(acct, q)
+    if cid is None:
+        return {"error": "no character"}
+    return _track_payload(acct, cid)
+
+
+def do_track_start(q):
+    """Open a fresh run for the character and start sampling immediately."""
+    acct = require_account()
+    _ensure_track_loaded(acct)
+    cid = _track_target_cid(acct, q)
+    if cid is None or cid not in acct.characters:
+        return {"error": "no character"}
+    with _TRACK_LOCK:
+        _TRACK_SESSIONS[cid] = {
+            "state": "active", "run_id": secrets.token_hex(8), "pause_reason": None,
+            "last_system_id": None, "started_at": time.time(),
+            "online": True, "online_checked_at": 0.0,
+        }
+    _persist_track_sessions(acct)
+    _CHAR_PUBSUB.bump(id(acct))
+    return _track_payload(acct, cid)
+
+
+def do_track_pause(q):
+    acct = require_account()
+    _ensure_track_loaded(acct)
+    cid = _track_target_cid(acct, q)
+    with _TRACK_LOCK:
+        s = _TRACK_SESSIONS.get(cid)
+        if s and s.get("state") == "active":
+            s["state"] = "paused"
+            s["pause_reason"] = "user"
+    _persist_track_sessions(acct)
+    _CHAR_PUBSUB.bump(id(acct))
+    return _track_payload(acct, cid)
+
+
+def do_track_resume(q):
+    acct = require_account()
+    _ensure_track_loaded(acct)
+    cid = _track_target_cid(acct, q)
+    with _TRACK_LOCK:
+        s = _TRACK_SESSIONS.get(cid)
+        if s and s.get("state") == "paused":
+            s["state"] = "active"
+            s["pause_reason"] = None
+            s["online_checked_at"] = 0.0  # re-confirm online on next tick
+    _persist_track_sessions(acct)
+    _CHAR_PUBSUB.bump(id(acct))
+    return _track_payload(acct, cid)
+
+
+def do_track_stop(q):
+    """Stop & finish: the only action that closes a run."""
+    acct = require_account()
+    _ensure_track_loaded(acct)
+    cid = _track_target_cid(acct, q)
+    with _TRACK_LOCK:
+        s = _TRACK_SESSIONS.get(cid)
+        if s:
+            s["state"] = "stopped"
+            s["pause_reason"] = None
+    _persist_track_sessions(acct)
+    _CHAR_PUBSUB.bump(id(acct))
+    return _track_payload(acct, cid)
+
+
+def do_track_scanned(q):
+    acct = require_account()
+    cid = _track_target_cid(acct, q)
+    entered_at = float(q.get("entered_at", ["0"])[0] or 0)
+    scanned = str(q.get("scanned", ["true"])[0]).lower() in ("1", "true", "yes", "on")
+    _annotate_trail(acct, cid, entered_at, scanned=scanned)
+    _CHAR_PUBSUB.bump(id(acct))
+    return {"ok": True}
+
+
+def do_track_cargo(q):
+    acct = require_account()
+    cid = _track_target_cid(acct, q)
+    entered_at = float(q.get("entered_at", ["0"])[0] or 0)
+    raw = q.get("cargo_isk", [""])[0]
+    try:
+        cargo = float(raw) if raw not in ("", None) else ""
+    except (TypeError, ValueError):
+        cargo = ""
+    _annotate_trail(acct, cid, entered_at, cargo_isk=cargo)
+    _CHAR_PUBSUB.bump(id(acct))
+    return {"ok": True}
+
+
 def _all_type_ids(offers):
     ids = set()
     for o in offers:
@@ -2686,7 +3046,7 @@ def do_notes_delete(q):
 # or bookmark on any module reloads straight back into it.
 TAB_ROUTES = {"/lp", "/arbitrage", "/arb", "/industry", "/ind",
               "/character", "/char", "/notes", "/exploration", "/exp",
-              "/abyss", "/aby"}
+              "/abyss", "/aby", "/tracking", "/track"}
 
 _GET_ROUTES = {
     "/api/corps": lambda q: get_npc_corps(),
@@ -2702,6 +3062,7 @@ _GET_ROUTES = {
     "/api/auth/switch": do_auth_switch,
     "/api/char/data": do_char_data,
     "/api/char/wallet-history": do_wallet_history,
+    "/api/track/trail": do_track_trail,
     "/api/notes": do_notes_list,
     # /api/auth/status and /api/auth/logout are handled explicitly in do_GET so
     # they can refresh / clear the session cookie.
@@ -2716,6 +3077,12 @@ _POST_ROUTES = {
     "/api/settings/sync": do_settings_sync,
     "/api/notes/save": do_notes_save,
     "/api/notes/delete": do_notes_delete,
+    "/api/track/start": do_track_start,
+    "/api/track/pause": do_track_pause,
+    "/api/track/resume": do_track_resume,
+    "/api/track/stop": do_track_stop,
+    "/api/track/scanned": do_track_scanned,
+    "/api/track/cargo": do_track_cargo,
     "/api/ind/builds/save": do_ind_builds_save,
     "/api/ind/builds/delete": do_ind_builds_delete,
     "/api/ind/builds/link": do_ind_builds_link,
@@ -3148,6 +3515,7 @@ def main():
     threading.Thread(target=get_npc_corps, daemon=True).start()
     threading.Thread(target=_sweep_loop, daemon=True).start()
     threading.Thread(target=_bg_char_refresh_loop, daemon=True).start()
+    threading.Thread(target=_bg_location_poll_loop, daemon=True).start()
     print(f"EVE Market Tools running at {url}", file=sys.stderr)
     print("Press Ctrl+C to stop.", file=sys.stderr)
     if not args.no_browser:

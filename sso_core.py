@@ -41,6 +41,8 @@ SCOPES = [
     "esi-markets.read_character_orders.v1",
     "esi-characters.read_blueprints.v1",
     "esi-universe.read_structures.v1",
+    "esi-location.read_location.v1",
+    "esi-location.read_online.v1",
 ]
 
 AUTH_FILE = "eve_auth.json"
@@ -220,6 +222,28 @@ def fetch_market_orders(token, character_id, session):
     meta = {"last_modified": r.headers.get("Last-Modified"),
             "expires": r.headers.get("Expires")}
     return r.json(), meta
+
+
+def fetch_location(token, character_id, session):
+    """{solar_system_id, station_id?, structure_id?} — the character's current
+    location. Requires esi-location.read_location.v1. ESI caches this ~5s, so
+    polling faster than that just returns the same cached position. Note: a
+    logged-out character keeps returning its last-known system, so pair this with
+    fetch_online() to tell "still here" from "logged off in this system"."""
+    r = session.get(f"{ESI}/characters/{character_id}/location/",
+                    headers=_auth_headers(token), timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_online(token, character_id, session):
+    """{online: bool, last_login, last_logout, logins} — whether the character is
+    currently logged in. Requires esi-location.read_online.v1. ESI caches this
+    ~60s, so it lags a real logout/login by up to a minute."""
+    r = session.get(f"{ESI}/characters/{character_id}/online/",
+                    headers=_auth_headers(token), timeout=30)
+    r.raise_for_status()
+    return r.json()
 
 
 def fetch_industry_jobs(token, character_id, session, include_completed=False):

@@ -77,8 +77,12 @@ function renderAuthChip(){
   $("#login-eve").classList.toggle("hidden", AUTH.loggedIn);
   $("#char-chip").classList.toggle("hidden", !AUTH.loggedIn);
   $("#char-tab-btn").classList.toggle("hidden", !AUTH.loggedIn);
+  $("#track-tab-btn").classList.toggle("hidden", !AUTH.loggedIn);
   $("#char-empty").classList.toggle("hidden", AUTH.loggedIn);
   $("#char-body").classList.toggle("hidden", !AUTH.loggedIn);
+  const te=$("#track-empty"), tbdy=$("#track-body");
+  if(te) te.classList.toggle("hidden", AUTH.loggedIn);
+  if(tbdy) tbdy.classList.toggle("hidden", !AUTH.loggedIn);
   if(AUTH.loggedIn){
     const active=AUTH.characters.find(c=>c.character_id===AUTH.activeCharId);
     $("#chip-name").textContent=(active?active.name:AUTH.name)||"Capsuleer";
@@ -167,7 +171,12 @@ function openCharStream(){
       // "hello" (re)connect → catch up on anything missed while disconnected;
       // a "sync" with changed=true means this account's data actually changed, so
       // re-pull. A plain sweep tick (changed=false) only moves the countdown.
-      if(m.type==="hello" || (m.type==="sync" && m.changed)) refreshCharData();
+      if(m.type==="hello" || (m.type==="sync" && m.changed)){
+        refreshCharData();
+        // The same stream carries live trail changes (system entered, auto-pause);
+        // refresh the tracking table too when it's the visible tab.
+        if(ACTIVE_TAB==="track" && typeof refreshTrail==="function") refreshTrail();
+      }
     };
     es.onerror=()=>{ /* EventSource auto-reconnects; nothing to do */ };
   }catch(_){ _charStream=null; }

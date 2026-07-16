@@ -37,6 +37,7 @@
     <button class="tab" data-tab="exp">Exploration</button>
     <button class="tab" data-tab="aby">Abyss</button>
     <button class="tab hidden" id="char-tab-btn" data-tab="char">Overview<span id="char-tab-badge" class="tab-badge hidden" title="New order sales / expiries"></span></button>
+    <button class="tab hidden" id="track-tab-btn" data-tab="track">Tracking</button>
   </nav>
   <button class="tab tab-right" data-tab="notes">Notes</button>
   <div id="auth-region">
@@ -262,6 +263,42 @@
     </div>
     <div id="char-body" class="hidden"></div>
   </div>
+  <!-- Tracking tab (live exploration trail) -->
+  <div id="track-tablewrap" class="tablewrap hidden">
+    <div id="track-empty" class="char-empty hidden">
+      <p>Log in with your EVE Online account to track your exploration route live.</p>
+    </div>
+    <div id="track-body" class="hidden">
+      <div class="track-bar">
+        <div id="track-status" class="track-status"></div>
+        <div class="track-controls">
+          <button id="track-start" class="auth-btn primary-btn">Start tracking</button>
+          <button id="track-pause" class="auth-btn hidden">Pause</button>
+          <button id="track-resume" class="auth-btn hidden">Resume</button>
+          <button id="track-stop" class="auth-btn hidden">Stop &amp; finish</button>
+        </div>
+      </div>
+      <div id="track-error" class="track-error hidden"></div>
+      <div class="track-filter">
+        <label>Hide systems under
+          <input id="track-min-dwell" type="number" min="0" step="1" value="0">
+          <select id="track-min-unit">
+            <option value="1">sec</option>
+            <option value="60">min</option>
+          </select>
+        </label>
+        <span id="track-hidden-note" class="track-hidden-note"></span>
+      </div>
+      <div id="track-summary" class="track-summary"></div>
+      <table id="track-table" class="hidden">
+        <thead><tr>
+          <th>#</th><th>System</th><th>Sec</th><th>Entered</th><th>Dwell</th>
+          <th>Scanned</th><th>Cargo ISK</th><th>Δ</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
   <!-- Exploration tab -->
   <div id="exp-tablewrap" class="tablewrap hidden">
     <div class="exp-layout">
@@ -443,6 +480,7 @@
 <script src="/static/js/arb.js?v=__VERSION__"></script>
 <script src="/static/js/ind.js?v=__VERSION__"></script>
 <script src="/static/js/char.js?v=__VERSION__"></script>
+<script src="/static/js/track.js?v=__VERSION__"></script>
 <script src="/static/js/init.js?v=__VERSION__"></script>
 <script src="/static/js/notes.js?v=__VERSION__"></script>
 <script src="/static/js/exploration.js?v=__VERSION__"></script>

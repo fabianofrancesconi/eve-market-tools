@@ -207,6 +207,27 @@ def test_fetch_wallet_authorized():
     assert sess.get.call_args[0][0].endswith("/characters/42/wallet/")
 
 
+def test_location_scopes_present():
+    assert "esi-location.read_location.v1" in sso_core.SCOPES
+    assert "esi-location.read_online.v1" in sso_core.SCOPES
+
+
+def test_fetch_location_url_and_headers():
+    sess = _get_session({"solar_system_id": 30000142, "station_id": 60003760})
+    out = sso_core.fetch_location("TOKEN", 42, sess)
+    assert out["solar_system_id"] == 30000142
+    assert sess.get.call_args[0][0].endswith("/characters/42/location/")
+    assert sess.get.call_args[1]["headers"]["Authorization"] == "Bearer TOKEN"
+
+
+def test_fetch_online_url_and_headers():
+    sess = _get_session({"online": True, "last_login": "2026-07-16T00:00:00Z"})
+    out = sso_core.fetch_online("TOKEN", 42, sess)
+    assert out["online"] is True
+    assert sess.get.call_args[0][0].endswith("/characters/42/online/")
+    assert sess.get.call_args[1]["headers"]["Authorization"] == "Bearer TOKEN"
+
+
 def test_fetch_character_blueprints_url_and_headers():
     bps = [{"item_id": 1, "type_id": 2047, "location_id": 60003760,
             "quantity": -1, "runs": -1, "material_efficiency": 9,

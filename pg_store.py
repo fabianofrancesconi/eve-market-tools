@@ -154,6 +154,23 @@ def _ensure_schema(pool):
             "ts DOUBLE PRECISION NOT NULL, "
             "balance DOUBLE PRECISION NOT NULL, "
             "PRIMARY KEY (account_id, character_id, ts))")
+        # ── exploration location trail (v1.101+) ──────────────────────────
+        # One row per system the character entered while tracking, grouped into
+        # runs (a run = one Start…Stop&Finish trip). scanned / cargo_isk are
+        # optional per-entry user annotations. entered_at is the row key within
+        # a (account, character).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mono_location_trail ("
+            "account_id BIGINT NOT NULL, "
+            "character_id BIGINT NOT NULL, "
+            "entered_at DOUBLE PRECISION NOT NULL, "
+            "run_id TEXT NOT NULL, "
+            "system_id BIGINT NOT NULL, "
+            "system_name TEXT NOT NULL, "
+            "security DOUBLE PRECISION, "
+            "scanned BOOLEAN NOT NULL DEFAULT FALSE, "
+            "cargo_isk DOUBLE PRECISION, "
+            "PRIMARY KEY (account_id, character_id, entered_at))")
     _schema_ready = True
 
 
@@ -527,3 +544,58 @@ def wallet_history_compact(account_id, now=None):
                         "(account_id, character_id, ts, balance) "
                         "VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                         (account_id, cid, avg_ts, avg_bal))
+
+
+# ── exploration location trail ───────────────────────────────────────────────
+
+def location_trail_append(account_id, character_id, entered_at, run_id,
+                          system_id, system_name, security):
+    """Append one system-entry to a character's trail. Ignores duplicates."""
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_location_trail (account_id, character_id, entered_at, "
+            "run_id, system_id, system_name, security) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT DO NOTHING",
+            (account_id, character_id, entered_at, run_id, system_id,
+             system_name, security))
+
+
+def location_trail_query(account_id, character_id, run_id=None, since_ts=0.0):
+    """Trail rows for one character, oldest-first. Filtered to a single run when
+    run_id is given, else every entry since since_ts."""
+    with _get_pool().connection() as conn:
+        if run_id is not None:
+            rows = conn.execute(
+                "SELECT entered_at, run_id, system_id, system_name, security, "
+                "scanned, cargo_isk FROM mono_location_trail WHERE account_id=%s "
+                "AND character_id=%s AND run_id=%s ORDER BY entered_at",
+                (account_id, character_id, run_id)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT entered_at, run_id, system_id, system_name, security, "
+                "scanned, cargo_isk FROM mono_location_trail WHERE account_id=%s "
+                "AND character_id=%s AND entered_at>=%s ORDER BY entered_at",
+                (account_id, character_id, since_ts)).fetchall()
+    return [{"entered_at": r[0], "run_id": r[1], "system_id": r[2],
+             "system_name": r[3], "security": r[4], "scanned": r[5],
+             "cargo_isk": r[6]} for r in rows]
+
+
+def location_trail_annotate(account_id, character_id, entered_at,
+                            scanned=None, cargo_isk=None):
+    """Update the scanned flag and/or cargo_isk of one trail entry. A cargo_isk
+    of "" (empty) clears it back to NULL."""
+    sets, params = [], []
+    if scanned is not None:
+        sets.append("scanned=%s")
+        params.append(bool(scanned))
+    if cargo_isk is not None:
+        sets.append("cargo_isk=%s")
+        params.append(cargo_isk if cargo_isk != "" else None)
+    if not sets:
+        return
+    params += [account_id, character_id, entered_at]
+    with _get_pool().connection() as conn:
+        conn.execute(
+            f"UPDATE mono_location_trail SET {', '.join(sets)} "
+            "WHERE account_id=%s AND character_id=%s AND entered_at=%s", params)

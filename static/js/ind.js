@@ -311,7 +311,6 @@ function renderIndTable(){
   }
 
   wireIndRows(tbody, ordered);
-  IND._ordered=ordered;   // exposed so openIndFromJob() can map a row index → blueprint
   // Re-expand inline detail if one was open before the re-render
   if(IND.openDetail){
     const bpId=IND.openDetail.blueprint_id;
@@ -1046,6 +1045,17 @@ function renderIndBuilds(){
   }
   // Keep the overview's job 🔗 markers in sync (only when it's showing).
   if(ACTIVE_TAB==="char" && AUTH.data && typeof renderCharData==="function") renderCharData();
+}
+
+// Expand a tracked build's detailed view and scroll to it. Used when arriving
+// from a clicked industry-job row in the Character overview.
+function openTrackedBuild(id){
+  if(!IND.builds.some(b=>b.id===id)) return;
+  IND.buildsExpanded.add(id);
+  renderIndBuilds();
+  const box=$("#ind-builds");
+  const card=box&&box.querySelector(`.ind-build-card[data-id="${CSS.escape(id)}"]`);
+  if(card) card.scrollIntoView({block:"center", behavior:"smooth"});
 }
 
 function _buildCardHtml(b){

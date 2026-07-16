@@ -328,8 +328,10 @@ function _renderCharPanel(c){
         ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
         :`<span class="timer-cell done">✓ Ready</span>`;
       const tracked=_jobIsTracked(j);
-      const link=tracked?` <span class="char-job-tracked" title="You're tracking a build for this job — click to open it in Industry">🔗</span>`:"";
-      h+=`<tr class="char-job-row" data-bp="${j.blueprint_type_id}" title="Open in Industry">`
+      const link=tracked?` <span class="char-job-tracked" title="You're tracking a build for this job — click to open its tracked build in Industry">🔗</span>`:"";
+      const cls=tracked?" char-job-row":"";
+      const tip=tracked?` title="Open its tracked build in Industry"`:"";
+      h+=`<tr class="${cls.trim()}" data-job-id="${j.job_id}"${tip}>`
         +`<td>${authEsc(j.product_name)}${link}</td><td>${authEsc(j.activity)}</td>`
         +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
     }
@@ -437,8 +439,10 @@ function _renderAllPanel(chars){
         ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
         :`<span class="timer-cell done">✓ Ready</span>`;
       const tracked=_jobIsTracked(j);
-      const link=tracked?` <span class="char-job-tracked" title="You're tracking a build for this job — click to open it in Industry">🔗</span>`:"";
-      h+=`<tr class="char-job-row" data-bp="${j.blueprint_type_id}" title="Open in Industry">`
+      const link=tracked?` <span class="char-job-tracked" title="You're tracking a build for this job — click to open its tracked build in Industry">🔗</span>`:"";
+      const cls=tracked?" char-job-row":"";
+      const tip=tracked?` title="Open its tracked build in Industry"`:"";
+      h+=`<tr class="${cls.trim()}" data-job-id="${j.job_id}"${tip}>`
         +`<td>${authEsc(j._char)}</td><td>${authEsc(j.product_name)}${link}</td><td>${authEsc(j.activity)}</td>`
         +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
     }
@@ -710,7 +714,11 @@ function renderCharData(){
   // blueprint's detail panel.
   $("#char-body").querySelectorAll("tr.char-job-row").forEach(tr=>{
     tr.style.cursor="pointer";
-    tr.onclick=()=>{ const bp=parseInt(tr.dataset.bp,10); if(bp) openIndFromJob(bp); };
+    tr.onclick=()=>{
+      const jid=tr.dataset.jobId;
+      const job=((AUTH.data&&AUTH.data.jobs)||[]).find(j=>String(j.job_id)===String(jid));
+      if(job) openIndFromJob(job);
+    };
   });
 
   // Wire tab clicks
@@ -759,36 +767,27 @@ function syncJobTimers(){
   if(IND.openDetail) renderIndDetail(IND.openDetail);
 }
 
-// Is this industry job covered by a tracked build? Matches on blueprint (+ runs
-// when the job reports them), consistent with the build↔job linking in ind.js.
-// job_id round-trips as a string, so compare via String().
-function _jobIsTracked(j){
+// Find the tracked build covering an industry job — by job_id first (exact
+// link), then by blueprint (+ runs when the job reports them). job_id round-trips
+// as a string, so compare via String().
+function _trackedBuildForJob(j){
   const builds=(typeof IND!=="undefined" && IND.builds)||[];
-  return builds.some(b=>
-    (b.job_id!=null && String(b.job_id)===String(j.job_id))
-    || (b.blueprint_id===j.blueprint_type_id && (j.runs==null || b.runs===j.runs)));
+  return builds.find(b=>b.job_id!=null && String(b.job_id)===String(j.job_id))
+    || builds.find(b=>b.blueprint_id===j.blueprint_type_id && (j.runs==null || b.runs===j.runs))
+    || null;
 }
+function _jobIsTracked(j){ return !!_trackedBuildForJob(j); }
 
-// Jump from an overview industry-job row to the Industry tab and open that
-// blueprint's detail panel. The Industry catalogue may not be scanned yet, so
-// fall back to just switching tabs (the tracked-builds section is visible there
-// regardless) if the row isn't in the current scan.
-function openIndFromJob(bpId){
-  if(typeof switchTab==="function") switchTab("ind");
+// Clicking an industry-job row jumps to the Industry tab and opens the detailed
+// view of the tracked build covering that job (not the blueprint catalogue).
+function openIndFromJob(j){
   if(typeof IND==="undefined") return;
-  const row=(IND.rows||[]).find(r=>r.blueprint_id===bpId);
-  if(!row) return;   // not in the current scan — Industry tab still opens
-  // Defer so the tab's table is rendered before we look for the row element.
-  setTimeout(()=>{
-    const tbody=document.querySelector("#ind-tbl tbody");
-    if(!tbody) return;
-    const tr=[...tbody.querySelectorAll("tr[data-ridx]")].find(el=>{
-      const r=IND._ordered && IND._ordered[+el.dataset.ridx];
-      return r && r.blueprint_id===bpId;
-    });
-    if(tr){ tr.scrollIntoView({block:"center",behavior:"smooth"}); tr.click(); }
-    else if(typeof openIndDetail==="function") openIndDetail(row, null);
-  }, 60);
+  const build=_trackedBuildForJob(j);
+  if(typeof switchTab==="function") switchTab("ind");
+  if(!build || typeof openTrackedBuild!=="function") return;
+  // Defer so the Industry tab (and its Tracked builds section) is rendered
+  // before we expand + scroll to the card.
+  setTimeout(()=>openTrackedBuild(build.id), 60);
 }
 
 // When logged in, drive the LP budget from the character's loyalty points for

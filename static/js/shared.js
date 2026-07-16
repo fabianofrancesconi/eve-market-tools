@@ -12,7 +12,7 @@ async function _onSessionExpired(){
   const bar = document.createElement('div');
   bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;'
     + 'background:#7a1f1f;color:#fff;padding:10px 16px;text-align:center;'
-    + 'font:15px system-ui,sans-serif';
+    + 'font:14.5px system-ui,sans-serif';
   bar.innerHTML = 'Your session expired. <a href="#" style="color:#ffe08a">Log in with EVE again</a>';
   bar.querySelector('a').onclick = async (e) => {
     e.preventDefault();

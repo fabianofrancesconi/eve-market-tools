@@ -1050,6 +1050,8 @@ function _buildCardHtml(b){
       <span class="ind-build-status ${st.key}">${st.label}</span>
       <span class="ind-build-name">${b.product_name||"?"}</span>
       <span class="ind-build-runs">${n.toLocaleString()} run(s)</span>
+      <span class="ind-build-stat" title="Frozen lowest-ask sell price per unit — what a patient list order would have fetched">Sell list <b>${isk(s.ask)}</b></span>
+      <span class="ind-build-stat" title="Frozen highest-bid sell price per unit — what an instant sale would have fetched">Sell instant <b>${isk(s.bid)}</b></span>
       <span class="ind-build-stat">Cost <b>${isk(batchCost)}</b></span>
       <span class="ind-build-stat">Profit list <b class="${pn(batchProfitL)}">${isk(batchProfitL)}</b></span>
       <span class="ind-build-stat">Profit instant <b class="${pn(batchProfitI)}">${isk(batchProfitI)}</b></span>

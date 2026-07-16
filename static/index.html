@@ -355,9 +355,10 @@
                 <div class="exp-session-meta" id="exp-session-meta"></div>
               </div>
               <div class="exp-session-annot">
-                <label class="exp-annot-field">Cargo value (ISK)
-                  <input id="exp-session-cargo" type="number" min="0" step="1000000" placeholder="—">
-                </label>
+                <span class="exp-annot-field exp-cargo-total">Total cargo value
+                  <b id="exp-session-cargo-total">—</b>
+                  <span class="track-th-hint" title="Sum of the per-system cargo values you enter in the Cargo column below.">?</span>
+                </span>
                 <button id="exp-session-notes-toggle" class="auth-btn" type="button">📝 Notes</button>
                 <button id="exp-session-delete" class="auth-btn exp-danger-btn hidden" type="button">Delete</button>
               </div>
@@ -377,6 +378,7 @@
               <table id="track-table" class="hidden">
                 <thead><tr>
                   <th>#</th><th>System</th><th>Sec</th><th>Entered</th><th>Dwell</th>
+                  <th class="num" title="ISK value of what you looted in this system — the session total above is the sum of these.">Cargo&nbsp;(ISK) <span class="track-th-hint">?</span></th>
                   <th title="Tick a system once you've finished scanning &amp; running its sites — your own checklist so you know which systems are done.">Sites&nbsp;done <span class="track-th-hint">?</span></th>
                 </tr></thead>
                 <tbody></tbody>

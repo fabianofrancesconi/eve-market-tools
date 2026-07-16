@@ -3,7 +3,7 @@
 // active character's route while a session runs (background thread — it keeps
 // going no matter what you browse). This renders the live session controls, the
 // session list, and the selected session's trail + per-session annotations
-// (name, optional cargo value, freeform notes). Dwell is derived client-side; a
+// (name, per-system cargo value, freeform notes). Dwell is derived client-side; a
 // min-dwell filter hides short stops from the table without truncating the trail.
 
 const TRACK = { state:"stopped", pauseReason:null, liveRunId:null, online:null,
@@ -193,8 +193,8 @@ function renderSessionDetail(){
   const nameEl=$("#exp-session-name");
   if(nameEl && document.activeElement!==nameEl) nameEl.value=d.name||"";
 
-  const cargoEl=$("#exp-session-cargo");
-  if(cargoEl && document.activeElement!==cargoEl) cargoEl.value=(d.cargo_value!=null?d.cargo_value:"");
+  const cargoTotEl=$("#exp-session-cargo-total");
+  if(cargoTotEl) cargoTotEl.textContent=(d.cargo_value!=null?fmtISK(d.cargo_value):"—");
 
   const notesEl=$("#exp-session-notes");
   if(notesEl && document.activeElement!==notesEl) notesEl.value=d.notes||"";
@@ -252,6 +252,7 @@ function renderTrail(){
       <td class="${band?'sec-'+band:''}">${fmtSec(r.security)}</td>
       <td>${fmtClock(r.entered_at)}</td>
       <td>${fmtDwell(x.dwell)}${here?" · now":""}</td>
+      <td class="track-cargo num"><input type="number" min="0" step="1000000" placeholder="—" data-at="${r.entered_at}" value="${r.cargo_isk!=null?r.cargo_isk:""}"></td>
       <td class="track-scan"><input type="checkbox" data-at="${r.entered_at}" ${r.scanned?"checked":""}></td>
     </tr>`;
   }).join("");
@@ -261,6 +262,14 @@ function renderTrail(){
 
   tb.querySelectorAll(".track-scan input").forEach(cb=>{
     cb.onchange=()=>postPrefs("/api/track/scanned",{entered_at:+cb.dataset.at, scanned:cb.checked});
+  });
+  tb.querySelectorAll(".track-cargo input").forEach(inp=>{
+    inp.onchange=async ()=>{
+      await fetch("/api/track/cargo",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({entered_at:+inp.dataset.at, cargo_isk:inp.value})});
+      // Re-pull so the session total (sum of rows) reflects the edit.
+      if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
+    };
   });
 }
 
@@ -293,8 +302,6 @@ document.addEventListener("DOMContentLoaded", ()=>{
 
   const nameEl=$("#exp-session-name");
   if(nameEl) nameEl.onchange=()=>sessionUpdate({name:nameEl.value});
-  const cargoEl=$("#exp-session-cargo");
-  if(cargoEl) cargoEl.onchange=()=>sessionUpdate({cargo_value:cargoEl.value});
   const notesEl=$("#exp-session-notes");
   if(notesEl) notesEl.onchange=()=>sessionUpdate({notes:notesEl.value});
   const notesToggle=$("#exp-session-notes-toggle");

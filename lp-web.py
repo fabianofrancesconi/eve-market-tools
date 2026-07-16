@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.101.1"
+__version__ = "1.102.0"
 
 import argparse
 import base64
@@ -1711,10 +1711,10 @@ def _query_trail(acct, cid, run_id=None, since_ts=0.0):
     return sorted(rows, key=lambda r: r.get("entered_at", 0))
 
 
-def _annotate_trail(acct, cid, entered_at, scanned=None):
+def _annotate_trail(acct, cid, entered_at, scanned=None, cargo_isk=None):
     if pg_store.enabled():
         pg_store.location_trail_annotate(acct.account_id, cid, entered_at,
-                                         scanned=scanned)
+                                         scanned=scanned, cargo_isk=cargo_isk)
         return
     with _TRAIL_RECORD_LOCK:
         store = load_json(LOCATION_TRAIL_PATH, {})
@@ -1722,6 +1722,8 @@ def _annotate_trail(acct, cid, entered_at, scanned=None):
             if abs(r.get("entered_at", 0) - entered_at) < 1e-6:
                 if scanned is not None:
                     r["scanned"] = bool(scanned)
+                if cargo_isk is not None:
+                    r["cargo_isk"] = cargo_isk if cargo_isk != "" else None
                 break
         save_json(LOCATION_TRAIL_PATH, store)
 
@@ -1973,13 +1975,18 @@ def _session_summary(acct, cid, rec, live_run_id):
     """A session record enriched with derived trail stats for the journal list."""
     rows = _query_trail(acct, cid, run_id=rec["run_id"])
     scanned = sum(1 for r in rows if r.get("scanned"))
+    # Cargo value is now per-system: the session total is the sum of each row's
+    # cargo_isk. Fall back to the legacy session-level cargo_value for old
+    # sessions that predate per-system tracking and have no per-row cargo.
+    row_cargo = [r.get("cargo_isk") for r in rows if r.get("cargo_isk") is not None]
+    cargo_value = sum(row_cargo) if row_cargo else rec.get("cargo_value")
     return {
         "run_id": rec["run_id"],
         "name": rec.get("name") or _default_session_name(rows, rec.get("started_at")),
         "started_at": rec.get("started_at"),
         "ended_at": rec.get("ended_at"),
         "notes": rec.get("notes", ""),
-        "cargo_value": rec.get("cargo_value"),
+        "cargo_value": cargo_value,
         "systems": len(rows),
         "jumps": max(0, len(rows) - 1),
         "scanned": scanned,
@@ -2128,6 +2135,25 @@ def do_track_scanned(q):
     entered_at = float(q.get("entered_at", ["0"])[0] or 0)
     scanned = str(q.get("scanned", ["true"])[0]).lower() in ("1", "true", "yes", "on")
     _annotate_trail(acct, cid, entered_at, scanned=scanned)
+    _CHAR_PUBSUB.bump(id(acct))
+    return {"ok": True}
+
+
+def do_track_cargo(q):
+    """Set (or clear) the cargo value looted in one system. Blank clears it back
+    to NULL; the session total is the sum of these per-system values."""
+    acct = require_account()
+    cid = _track_target_cid(acct, q)
+    entered_at = float(q.get("entered_at", ["0"])[0] or 0)
+    raw = q.get("cargo_isk", [""])[0]
+    if raw in ("", None):
+        cargo_isk = ""            # sentinel: clear back to NULL
+    else:
+        try:
+            cargo_isk = float(raw)
+        except (TypeError, ValueError):
+            cargo_isk = ""
+    _annotate_trail(acct, cid, entered_at, cargo_isk=cargo_isk)
     _CHAR_PUBSUB.bump(id(acct))
     return {"ok": True}
 
@@ -3295,6 +3321,7 @@ _POST_ROUTES = {
     "/api/track/resume": do_track_resume,
     "/api/track/stop": do_track_stop,
     "/api/track/scanned": do_track_scanned,
+    "/api/track/cargo": do_track_cargo,
     "/api/track/session/update": do_track_session_update,
     "/api/track/session/delete": do_track_session_delete,
     "/api/ind/builds/save": do_ind_builds_save,

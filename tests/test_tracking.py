@@ -66,6 +66,16 @@ class TestTrailStore:
         lp_web._annotate_trail(acct, 1, 100.0, scanned=True)
         assert lp_web._query_trail(acct, 1, run_id="run1")[0]["scanned"] is True
 
+    def test_annotate_cargo_set_and_clear(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        lp_web._append_trail(acct, 1, 100.0, "run1", 1, "A", 0.5)
+        lp_web._annotate_trail(acct, 1, 100.0, cargo_isk=42_000_000.0)
+        assert lp_web._query_trail(acct, 1, run_id="run1")[0]["cargo_isk"] == 42_000_000.0
+        # Empty string clears it back to None.
+        lp_web._annotate_trail(acct, 1, 100.0, cargo_isk="")
+        assert lp_web._query_trail(acct, 1, run_id="run1")[0]["cargo_isk"] is None
+
     def test_delete_run_removes_trail(self, monkeypatch, tmp_path):
         _isolate(monkeypatch, tmp_path)
         acct = _acct()
@@ -205,6 +215,29 @@ class TestJournalHandlers:
         assert out["session"]["jumps"] == 1
         assert len(out["trail"]) == 2
 
+    def test_session_cargo_is_sum_of_rows(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._append_trail(acct, 1, 100.0, run_id, 1, "A", 0.5)
+        lp_web._append_trail(acct, 1, 200.0, run_id, 2, "B", 0.4)
+        lp_web._annotate_trail(acct, 1, 100.0, cargo_isk=30_000_000.0)
+        lp_web._annotate_trail(acct, 1, 200.0, cargo_isk=12_000_000.0)
+        out = lp_web.do_track_session({"run_id": [run_id]})
+        assert out["session"]["cargo_value"] == 42_000_000.0
+
+    def test_session_cargo_falls_back_to_legacy_session_value(self, monkeypatch, tmp_path):
+        """Old sessions with no per-row cargo still show their session-level value."""
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._append_trail(acct, 1, 100.0, run_id, 1, "A", 0.5)
+        lp_web._session_record_patch(acct, 1, run_id, cargo_value=99_000_000.0)
+        out = lp_web.do_track_session({"run_id": [run_id]})
+        assert out["session"]["cargo_value"] == 99_000_000.0
+
     def test_session_update_name_notes_cargo(self, monkeypatch, tmp_path):
         _isolate(monkeypatch, tmp_path)
         acct = _acct()
@@ -255,6 +288,28 @@ class TestJournalHandlers:
         lp_web._append_trail(acct, 1, 500.0, run_id, 1, "A", 0.5)
         lp_web.do_track_scanned({"entered_at": ["500.0"], "scanned": ["true"]})
         assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["scanned"] is True
+
+    def test_cargo_route_sets_and_clears(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._append_trail(acct, 1, 500.0, run_id, 1, "A", 0.5)
+        lp_web.do_track_cargo({"entered_at": ["500.0"], "cargo_isk": ["75000000"]})
+        assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["cargo_isk"] == 75_000_000.0
+        # Blank clears the per-system value.
+        lp_web.do_track_cargo({"entered_at": ["500.0"], "cargo_isk": [""]})
+        assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["cargo_isk"] is None
+
+    def test_cargo_route_ignores_bad_number(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._append_trail(acct, 1, 500.0, run_id, 1, "A", 0.5)
+        lp_web.do_track_cargo({"entered_at": ["500.0"], "cargo_isk": ["not-a-number"]})
+        # A garbage value is treated as "clear", never crashes.
+        assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["cargo_isk"] is None
 
 
 # ── poll tick: system change + online grace / auto-pause / auto-resume ───────

@@ -12,6 +12,7 @@ import json
 import math
 import os
 import statistics
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -62,7 +63,13 @@ def load_json(path, default):
 
 def save_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = Path(str(path) + ".tmp")
+    # Unique temp name per write: do_char_data fetches characters concurrently
+    # and several of them can write the SAME store file at once (order events,
+    # jobs counter, …). A shared "<path>.tmp" makes two writers race — the first
+    # os.replace() consumes the temp, the second raises FileNotFoundError and
+    # loses that character's fetch. A pid+thread-suffixed temp keeps them apart;
+    # os.replace stays atomic so readers still see a whole file.
+    tmp = Path(f"{path}.{os.getpid()}.{threading.get_ident()}.tmp")
     with open(tmp, "w") as f:
         json.dump(data, f)
     os.replace(tmp, path)

@@ -37,7 +37,6 @@
     <button class="tab" data-tab="exp">Exploration</button>
     <button class="tab" data-tab="aby">Abyss</button>
     <button class="tab hidden" id="char-tab-btn" data-tab="char">Overview<span id="char-tab-badge" class="tab-badge hidden" title="New order sales / expiries"></span></button>
-    <button class="tab hidden" id="track-tab-btn" data-tab="track">Tracking</button>
   </nav>
   <button class="tab tab-right" data-tab="notes">Notes</button>
   <div id="auth-region">
@@ -263,89 +262,128 @@
     </div>
     <div id="char-body" class="hidden"></div>
   </div>
-  <!-- Tracking tab (live exploration trail) -->
-  <div id="track-tablewrap" class="tablewrap hidden">
-    <div id="track-empty" class="char-empty hidden">
-      <p>Log in with your EVE Online account to track your exploration route live.</p>
-    </div>
-    <div id="track-body" class="hidden">
-      <div class="track-bar">
-        <div id="track-status" class="track-status"></div>
-        <div class="track-controls">
-          <button id="track-start" class="auth-btn primary-btn">Start tracking</button>
-          <button id="track-pause" class="auth-btn hidden">Pause</button>
-          <button id="track-resume" class="auth-btn hidden">Resume</button>
-          <button id="track-stop" class="auth-btn hidden">Stop &amp; finish</button>
-        </div>
-      </div>
-      <div id="track-error" class="track-error hidden"></div>
-      <div class="track-filter">
-        <label>Hide systems under
-          <input id="track-min-dwell" type="number" min="0" step="1" value="0">
-          <select id="track-min-unit">
-            <option value="1">sec</option>
-            <option value="60">min</option>
-          </select>
-        </label>
-        <span id="track-hidden-note" class="track-hidden-note"></span>
-      </div>
-      <div id="track-summary" class="track-summary"></div>
-      <table id="track-table" class="hidden">
-        <thead><tr>
-          <th>#</th><th>System</th><th>Sec</th><th>Entered</th><th>Dwell</th>
-          <th>Scanned</th><th>Cargo ISK</th><th>Δ</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
   <!-- Exploration tab -->
   <div id="exp-tablewrap" class="tablewrap hidden">
+    <!-- Guides ⇄ Journal switch: the module has two modes sharing one layout. -->
+    <div class="exp-modebar">
+      <div class="exp-modeswitch">
+        <button class="exp-mode-btn active" data-mode="guides">Guides</button>
+        <button class="exp-mode-btn" id="exp-mode-journal-btn" data-mode="journal">Journal<span id="exp-journal-live-dot" class="exp-live-dot hidden"></span></button>
+      </div>
+    </div>
     <div class="exp-layout">
       <div class="exp-sidebar">
-        <!-- Sticky primer button: pinned to the top, opens the rulebook overlay -->
-        <button id="exp-primer-toggle" class="exp-primer-toggle">
-          <span class="exp-primer-icon">⚡</span>
-          <span>How hacking works</span>
-        </button>
-        <!-- Command-palette search: focus shows recents, typing shows matches,
-             both in a dropdown that floats over Browse rather than shoving it -->
-        <div class="exp-search-wrap">
-          <span class="exp-search-icon">🔍</span>
-          <input id="exp-search" type="text" placeholder="Search site name…" class="exp-search-input" autocomplete="off">
-          <div id="exp-search-panel" class="exp-search-panel hidden"></div>
+        <!-- Guides sidebar: primer + search + browse -->
+        <div id="exp-sidebar-guides">
+          <!-- Sticky primer button: pinned to the top, opens the rulebook overlay -->
+          <button id="exp-primer-toggle" class="exp-primer-toggle">
+            <span class="exp-primer-icon">⚡</span>
+            <span>How hacking works</span>
+          </button>
+          <!-- Command-palette search: focus shows recents, typing shows matches,
+               both in a dropdown that floats over Browse rather than shoving it -->
+          <div class="exp-search-wrap">
+            <span class="exp-search-icon">🔍</span>
+            <input id="exp-search" type="text" placeholder="Search site name…" class="exp-search-input" autocomplete="off">
+            <div id="exp-search-panel" class="exp-search-panel hidden"></div>
+          </div>
+          <!-- Browse every site, grouped by type — the primary way to discover -->
+          <div id="exp-browse" class="exp-browse">
+            <div class="exp-browse-header">Browse all sites</div>
+            <div id="exp-browse-list" class="exp-browse-list"></div>
+          </div>
         </div>
-        <!-- Browse every site, grouped by type — the primary way to discover -->
-        <div id="exp-browse" class="exp-browse">
-          <div class="exp-browse-header">Browse all sites</div>
-          <div id="exp-browse-list" class="exp-browse-list"></div>
+        <!-- Journal sidebar: the session list (populated by track.js) -->
+        <div id="exp-sidebar-journal" class="hidden">
+          <div class="exp-browse-header">Sessions</div>
+          <div id="exp-session-list" class="exp-session-list"></div>
         </div>
       </div>
       <div class="exp-resize-handle" id="exp-resize-handle"></div>
       <div class="exp-content" id="exp-content">
-        <!-- Hacking cheat-sheet: slide-out overlay, opened from the sidebar -->
-        <div id="exp-primer-overlay" class="exp-primer-overlay hidden">
-          <div class="exp-primer-panel">
-            <div class="exp-primer-head">
-              <span>How hacking works</span>
-              <button id="exp-primer-close" class="exp-primer-close">✕</button>
+        <!-- Guides view -->
+        <div id="exp-guides-view">
+          <!-- Hacking cheat-sheet: slide-out overlay, opened from the sidebar -->
+          <div id="exp-primer-overlay" class="exp-primer-overlay hidden">
+            <div class="exp-primer-panel">
+              <div class="exp-primer-head">
+                <span>How hacking works</span>
+                <button id="exp-primer-close" class="exp-primer-close">✕</button>
+              </div>
+              <div id="exp-primer-body" class="exp-primer-body"></div>
             </div>
-            <div id="exp-primer-body" class="exp-primer-body"></div>
+          </div>
+          <div id="exp-empty" class="exp-empty">Pick a site from <b>Browse all sites</b> in the sidebar — or search by name — to see its full walkthrough.</div>
+          <div id="exp-cards" class="exp-cards hidden">
+            <!-- Single flowing guide: hero → facts strip → inline walkthrough -->
+            <div id="exp-guide" class="exp-guide"></div>
+            <div class="exp-sources">
+              <b>Sources:</b> Mechanics, tactics &amp; numbers from the
+              <a href="https://wiki.eveuniversity.org/Hacking" target="_blank" rel="noopener">EVE University wiki</a>
+              (<a href="https://wiki.eveuniversity.org/Exploration" target="_blank" rel="noopener">Exploration</a>,
+              <a href="https://wiki.eveuniversity.org/Ghost_Sites" target="_blank" rel="noopener">Ghost Sites</a>,
+              <a href="https://wiki.eveuniversity.org/Sleeper_Cache" target="_blank" rel="noopener">Sleeper Cache</a>,
+              <a href="https://wiki.eveuniversity.org/Wormhole_sites" target="_blank" rel="noopener">Wormhole sites</a>,
+              <a href="https://wiki.eveuniversity.org/Gas_cloud_harvesting" target="_blank" rel="noopener">Gas harvesting</a>).
+              Exact damage / timer / DPS figures are per-wiki and shift between patches — treat them as approximate.
+            </div>
           </div>
         </div>
-        <div id="exp-empty" class="exp-empty">Pick a site from <b>Browse all sites</b> in the sidebar — or search by name — to see its full walkthrough.</div>
-        <div id="exp-cards" class="exp-cards hidden">
-          <!-- Single flowing guide: hero → facts strip → inline walkthrough -->
-          <div id="exp-guide" class="exp-guide"></div>
-          <div class="exp-sources">
-            <b>Sources:</b> Mechanics, tactics &amp; numbers from the
-            <a href="https://wiki.eveuniversity.org/Hacking" target="_blank" rel="noopener">EVE University wiki</a>
-            (<a href="https://wiki.eveuniversity.org/Exploration" target="_blank" rel="noopener">Exploration</a>,
-            <a href="https://wiki.eveuniversity.org/Ghost_Sites" target="_blank" rel="noopener">Ghost Sites</a>,
-            <a href="https://wiki.eveuniversity.org/Sleeper_Cache" target="_blank" rel="noopener">Sleeper Cache</a>,
-            <a href="https://wiki.eveuniversity.org/Wormhole_sites" target="_blank" rel="noopener">Wormhole sites</a>,
-            <a href="https://wiki.eveuniversity.org/Gas_cloud_harvesting" target="_blank" rel="noopener">Gas harvesting</a>).
-            Exact damage / timer / DPS figures are per-wiki and shift between patches — treat them as approximate.
+        <!-- Journal view (live session + selected session detail) -->
+        <div id="exp-journal-view" class="hidden">
+          <div id="exp-journal-locked" class="exp-empty hidden">
+            <p>Log in with your EVE Online account to track exploration sessions.</p>
+          </div>
+          <div id="exp-journal-body">
+            <!-- Live session widget -->
+            <div id="exp-live" class="exp-live-card">
+              <div class="exp-live-head">
+                <div id="exp-live-status" class="track-status"></div>
+                <div class="track-controls">
+                  <button id="track-start" class="auth-btn primary-btn">Start session</button>
+                  <button id="track-pause" class="auth-btn hidden">Pause</button>
+                  <button id="track-resume" class="auth-btn hidden">Resume</button>
+                  <button id="track-stop" class="auth-btn hidden">Stop &amp; finish</button>
+                </div>
+              </div>
+              <div id="track-error" class="track-error hidden"></div>
+            </div>
+            <!-- Selected session detail (defaults to the live one) -->
+            <div id="exp-session-detail" class="hidden">
+              <div class="exp-session-hdr">
+                <input id="exp-session-name" class="exp-session-name" placeholder="Session name" autocomplete="off">
+                <div class="exp-session-meta" id="exp-session-meta"></div>
+              </div>
+              <div class="exp-session-annot">
+                <label class="exp-annot-field">Cargo value (ISK)
+                  <input id="exp-session-cargo" type="number" min="0" step="1000000" placeholder="—">
+                </label>
+                <button id="exp-session-notes-toggle" class="auth-btn" type="button">📝 Notes</button>
+                <button id="exp-session-delete" class="auth-btn exp-danger-btn hidden" type="button">Delete</button>
+              </div>
+              <div id="exp-session-notes-wrap" class="exp-notes-wrap hidden">
+                <textarea id="exp-session-notes" class="exp-notes" placeholder="Freeform notes for this session…"></textarea>
+              </div>
+              <div class="track-filter">
+                <label>Hide systems under
+                  <input id="track-min-dwell" type="number" min="0" step="1" value="0">
+                  <select id="track-min-unit">
+                    <option value="1">sec</option>
+                    <option value="60">min</option>
+                  </select>
+                </label>
+                <span id="track-hidden-note" class="track-hidden-note"></span>
+              </div>
+              <table id="track-table" class="hidden">
+                <thead><tr>
+                  <th>#</th><th>System</th><th>Sec</th><th>Entered</th><th>Dwell</th>
+                  <th title="Tick a system once you've finished scanning &amp; running its sites — your own checklist so you know which systems are done.">Sites&nbsp;done <span class="track-th-hint">?</span></th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+              <div id="track-table-caption" class="track-caption hidden">Tick <b>Sites&nbsp;done</b> when you've finished scanning &amp; running a system's sites — it's your own checklist, so you can tell explored systems from ones still to do.</div>
+              <div id="exp-session-empty" class="exp-empty hidden">No systems logged yet — jumps will appear here as you fly.</div>
+            </div>
           </div>
         </div>
       </div>

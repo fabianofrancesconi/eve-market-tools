@@ -225,11 +225,11 @@ function saveLS(){
 // ── Tab switching ─────────────────────────────────────────────────────────
 let ACTIVE_TAB = "lp";
 // Each tab has a clean URL so a refresh/bookmark reopens the same module.
-const TAB_PATH = { lp:"/", arb:"/arbitrage", ind:"/industry", char:"/character", notes:"/notes", exp:"/exploration", aby:"/abyss", track:"/tracking" };
+const TAB_PATH = { lp:"/", arb:"/arbitrage", ind:"/industry", char:"/character", notes:"/notes", exp:"/exploration", aby:"/abyss" };
 const PATH_TAB = { "/":"lp", "/lp":"lp", "/arbitrage":"arb", "/arb":"arb",
                    "/industry":"ind", "/ind":"ind", "/character":"char", "/char":"char",
                    "/notes":"notes", "/exploration":"exp", "/exp":"exp",
-                   "/abyss":"aby", "/aby":"aby", "/tracking":"track", "/track":"track" };
+                   "/abyss":"aby", "/aby":"aby" };
 function switchTab(tab, opts){
   opts = opts || {};
   ACTIVE_TAB = tab;
@@ -240,7 +240,7 @@ function switchTab(tab, opts){
     if(location.pathname !== p) history.pushState({tab}, "", p);
   }
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===tab));
-  $("#global-costs").classList.toggle("hidden", tab==="notes"||tab==="char"||tab==="exp"||tab==="aby"||tab==="track");
+  $("#global-costs").classList.toggle("hidden", tab==="notes"||tab==="char"||tab==="exp"||tab==="aby");
   $("#lp-controls").classList.toggle("hidden", tab!=="lp");
   $("#arb-controls").classList.toggle("hidden", tab!=="arb");
   $("#lp-tablewrap").classList.toggle("hidden", tab!=="lp");
@@ -249,7 +249,6 @@ function switchTab(tab, opts){
   $("#notes-tablewrap").classList.toggle("hidden", tab!=="notes");
   $("#exp-tablewrap").classList.toggle("hidden", tab!=="exp");
   $("#aby-tablewrap").classList.toggle("hidden", tab!=="aby");
-  $("#track-tablewrap").classList.toggle("hidden", tab!=="track");
   updateIndGate();
   if(tab!=="lp") closeDetail();
   setStatus("");
@@ -258,8 +257,7 @@ function switchTab(tab, opts){
                 : tab==="char" ? "EVE Character Overview"
                 : tab==="notes" ? "EVE Notes"
                 : tab==="exp" ? "EVE Exploration Guide"
-                : tab==="aby" ? "EVE Abyssal Deadspace Guide"
-                : tab==="track" ? "EVE Exploration Tracker" : "EVE Industry Planner";
+                : tab==="aby" ? "EVE Abyssal Deadspace Guide" : "EVE Industry Planner";
   postPrefs('/api/prefs',{active_tab:tab}); saveLS();
   if(tab==="aby" && typeof abyInit==="function") abyInit();
   if(tab==="ind" && AUTH.loggedIn){
@@ -268,7 +266,7 @@ function switchTab(tab, opts){
     renderIndTable(); renderIndStatus();
   }
   if(tab==="char" && AUTH.loggedIn){ renderCharData(); refreshCharData(); markCharEventsSeen(); }
-  if(tab==="track" && AUTH.loggedIn && typeof refreshTrail==="function") refreshTrail();
+  if(tab==="exp" && typeof expOnEnterTab==="function") expOnEnterTab();
   if(tab==="notes" && !NOTES.loaded) loadNotes();
 }
 // The Industry planner has no manual ME/TE/skill inputs — it needs a real
@@ -288,7 +286,7 @@ document.querySelectorAll(".tab").forEach(t=>{
 // Character tab needs a login; fall back to LP if the URL points there logged out.
 window.addEventListener("popstate", ()=>{
   let tab = PATH_TAB[location.pathname] || "lp";
-  if((tab==="char"||tab==="track") && !AUTH.loggedIn) tab="lp";
+  if(tab==="char" && !AUTH.loggedIn) tab="lp";
   switchTab(tab, {url:false});
 });
 

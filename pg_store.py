@@ -171,6 +171,20 @@ def _ensure_schema(pool):
             "scanned BOOLEAN NOT NULL DEFAULT FALSE, "
             "cargo_isk DOUBLE PRECISION, "
             "PRIMARY KEY (account_id, character_id, entered_at))")
+        # ── exploration session journal (v1.101+) ─────────────────────────
+        # One row per exploration trip (run). The trail rows above are joined
+        # to a session by run_id. name/notes/cargo_value are user annotations.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS mono_exploration_sessions ("
+            "account_id BIGINT NOT NULL, "
+            "character_id BIGINT NOT NULL, "
+            "run_id TEXT NOT NULL, "
+            "name TEXT NOT NULL DEFAULT '', "
+            "started_at DOUBLE PRECISION NOT NULL, "
+            "ended_at DOUBLE PRECISION, "
+            "notes TEXT NOT NULL DEFAULT '', "
+            "cargo_value DOUBLE PRECISION, "
+            "PRIMARY KEY (account_id, character_id, run_id))")
     _schema_ready = True
 
 
@@ -599,3 +613,74 @@ def location_trail_annotate(account_id, character_id, entered_at,
         conn.execute(
             f"UPDATE mono_location_trail SET {', '.join(sets)} "
             "WHERE account_id=%s AND character_id=%s AND entered_at=%s", params)
+
+
+def location_trail_delete_run(account_id, character_id, run_id):
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "DELETE FROM mono_location_trail WHERE account_id=%s AND "
+            "character_id=%s AND run_id=%s", (account_id, character_id, run_id))
+
+
+# ── exploration session journal ──────────────────────────────────────────────
+
+def exploration_session_upsert(account_id, character_id, run_id, name,
+                               started_at, ended_at=None, notes="", cargo_value=None):
+    """Create or update a session record (full upsert of the mutable fields)."""
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_exploration_sessions (account_id, character_id, run_id, "
+            "name, started_at, ended_at, notes, cargo_value) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (account_id, character_id, run_id) DO UPDATE SET "
+            "name=EXCLUDED.name, ended_at=EXCLUDED.ended_at, notes=EXCLUDED.notes, "
+            "cargo_value=EXCLUDED.cargo_value",
+            (account_id, character_id, run_id, name, started_at, ended_at,
+             notes, cargo_value))
+
+
+def exploration_session_patch(account_id, character_id, run_id, **fields):
+    """Update only the given columns of one session (name/ended_at/notes/cargo_value)."""
+    allowed = ("name", "ended_at", "notes", "cargo_value")
+    sets, params = [], []
+    for k in allowed:
+        if k in fields:
+            sets.append(f"{k}=%s")
+            params.append(fields[k])
+    if not sets:
+        return
+    params += [account_id, character_id, run_id]
+    with _get_pool().connection() as conn:
+        conn.execute(
+            f"UPDATE mono_exploration_sessions SET {', '.join(sets)} "
+            "WHERE account_id=%s AND character_id=%s AND run_id=%s", params)
+
+
+def exploration_sessions_list(account_id, character_id):
+    """All of a character's sessions, newest first."""
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT run_id, name, started_at, ended_at, notes, cargo_value "
+            "FROM mono_exploration_sessions WHERE account_id=%s AND character_id=%s "
+            "ORDER BY started_at DESC", (account_id, character_id)).fetchall()
+    return [{"run_id": r[0], "name": r[1], "started_at": r[2], "ended_at": r[3],
+             "notes": r[4], "cargo_value": r[5]} for r in rows]
+
+
+def exploration_session_get(account_id, character_id, run_id):
+    with _get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT run_id, name, started_at, ended_at, notes, cargo_value "
+            "FROM mono_exploration_sessions WHERE account_id=%s AND character_id=%s "
+            "AND run_id=%s", (account_id, character_id, run_id)).fetchone()
+    if not row:
+        return None
+    return {"run_id": row[0], "name": row[1], "started_at": row[2],
+            "ended_at": row[3], "notes": row[4], "cargo_value": row[5]}
+
+
+def exploration_session_delete(account_id, character_id, run_id):
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "DELETE FROM mono_exploration_sessions WHERE account_id=%s AND "
+            "character_id=%s AND run_id=%s", (account_id, character_id, run_id))

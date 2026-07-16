@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.101.0"
+__version__ = "1.101.1"
 
 import argparse
 import base64
@@ -91,7 +91,8 @@ ORDER_EVENTS_PATH = CACHE_DIR / "order_events.json"  # market order sale/fill ev
 IND_BUILDS_PATH = CACHE_DIR / "ind_tracked_builds.json"  # frozen build-batch snapshots
 WALLET_HISTORY_PATH = CACHE_DIR / "wallet_history.json"  # ISK balance time-series
 LOCATION_TRAIL_PATH = CACHE_DIR / "location_trail.json"  # exploration system trail
-LOCATION_TRACK_PATH = CACHE_DIR / "location_tracking.json"  # per-char session state
+LOCATION_TRACK_PATH = CACHE_DIR / "location_tracking.json"  # live-session state
+EXPLORATION_SESSIONS_PATH = CACHE_DIR / "exploration_sessions.json"  # session journal
 USER_SETTINGS_DB_PATH = CACHE_DIR / "user_settings.sqlite"  # per-character synced settings
 LP_LAST_SCAN_PATH = CACHE_DIR / "lp_last_scan.json"
 IND_LAST_SCAN_PATH = CACHE_DIR / "ind_last_scan.json"
@@ -1605,25 +1606,35 @@ def do_wallet_history(q):
     return {"series": series}
 
 
-# ── Exploration tracking (live location trail) ───────────────────────────────
-# A per-character "track my exploration" session. While a session is active the
+# ── Exploration journal (live location tracking + session history) ───────────
+# The exploration journal is a per-character list of sessions (trips). One session
+# is "live" at a time; the rest are history. While a session is active the
 # background poll loop samples the character's ESI location every few seconds and
-# appends a trail entry whenever the solar system changes. Each entry carries two
-# optional user annotations — a "scanned here" flag and a manually-typed cargo
-# ISK value (for a between-systems delta). Session state machine:
+# appends a trail entry whenever the solar system changes. Trail rows carry an
+# optional "scanned here" flag; the session as a whole carries an optional cargo
+# value and freeform notes. Live-session state machine:
 #
-#   stopped  no session; the loop ignores this character.
+#   stopped  no live session for this character; the loop ignores it.
 #   active   running + pilot online; location sampled every _LOCATION_POLL_INTERVAL.
-#   paused   user paused, OR auto-paused because the pilot logged out. The loop
-#            only re-checks online status so an auto-paused run resumes itself
-#            when the pilot returns; a user pause stays put until Resume.
+#   paused   user paused, OR auto-paused after the pilot was offline through the
+#            grace window. The loop keeps re-checking online status so an
+#            auto-paused run resumes itself when the pilot returns; a user pause
+#            stays put until Resume.
 #
-# Only "Stop & Finish" closes a run — a logout leaves it open indefinitely so a
-# roam can span a break. State is persisted per-account (survives a restart; an
+# Only "Stop & Finish" closes a run — it stamps the session's ended_at and the
+# session drops into history. A logout leaves the run open indefinitely so a roam
+# can span a break. Live state is persisted per-account (survives a restart; an
 # active session rehydrates as paused/auto until the loop re-confirms online).
+# The durable session record (name/started/ended/notes/cargo) lives in
+# mono_exploration_sessions (Postgres) or the local sessions JSON.
 
 _LOCATION_POLL_INTERVAL = 7      # seconds between location samples (ESI caches ~5s)
 _ONLINE_RECHECK_INTERVAL = 60    # ESI online cache window — no point checking faster
+# ESI's online flag is cached ~60s and lags a fresh login, so a single "offline"
+# reading right after Start/Resume (or a transient hiccup) is not a real logout.
+# Only auto-pause once a character has read offline continuously for longer than
+# this grace window; until then an active session stays "live (waiting for pilot)".
+_ONLINE_OFFLINE_GRACE = 150      # seconds of sustained offline before auto-pause
 
 _TRACK_LOCK = threading.RLock()
 _TRACK_SESSIONS = {}             # cid -> session dict (see state machine above)
@@ -1684,7 +1695,7 @@ def _append_trail(acct, cid, entered_at, run_id, system_id, system_name, securit
             store.setdefault(str(cid), []).append(
                 {"entered_at": entered_at, "run_id": run_id, "system_id": system_id,
                  "system_name": system_name, "security": security,
-                 "scanned": False, "cargo_isk": None})
+                 "scanned": False})
             save_json(LOCATION_TRAIL_PATH, store)
 
 
@@ -1700,10 +1711,10 @@ def _query_trail(acct, cid, run_id=None, since_ts=0.0):
     return sorted(rows, key=lambda r: r.get("entered_at", 0))
 
 
-def _annotate_trail(acct, cid, entered_at, scanned=None, cargo_isk=None):
+def _annotate_trail(acct, cid, entered_at, scanned=None):
     if pg_store.enabled():
         pg_store.location_trail_annotate(acct.account_id, cid, entered_at,
-                                         scanned=scanned, cargo_isk=cargo_isk)
+                                         scanned=scanned)
         return
     with _TRAIL_RECORD_LOCK:
         store = load_json(LOCATION_TRAIL_PATH, {})
@@ -1711,10 +1722,90 @@ def _annotate_trail(acct, cid, entered_at, scanned=None, cargo_isk=None):
             if abs(r.get("entered_at", 0) - entered_at) < 1e-6:
                 if scanned is not None:
                     r["scanned"] = bool(scanned)
-                if cargo_isk is not None:
-                    r["cargo_isk"] = cargo_isk if cargo_isk != "" else None
                 break
         save_json(LOCATION_TRAIL_PATH, store)
+
+
+def _delete_trail_run(acct, cid, run_id):
+    if pg_store.enabled():
+        pg_store.location_trail_delete_run(acct.account_id, cid, run_id)
+        return
+    with _TRAIL_RECORD_LOCK:
+        store = load_json(LOCATION_TRAIL_PATH, {})
+        store[str(cid)] = [r for r in store.get(str(cid), [])
+                           if r.get("run_id") != run_id]
+        save_json(LOCATION_TRAIL_PATH, store)
+
+
+# ── session records (the journal: name / times / notes / cargo value) ────────
+
+def _session_record_upsert(acct, cid, rec):
+    """Create or update a session record."""
+    if pg_store.enabled():
+        pg_store.exploration_session_upsert(
+            acct.account_id, cid, rec["run_id"], rec.get("name", ""),
+            rec["started_at"], rec.get("ended_at"), rec.get("notes", ""),
+            rec.get("cargo_value"))
+        return
+    with _TRAIL_RECORD_LOCK:
+        store = load_json(EXPLORATION_SESSIONS_PATH, {})
+        by_run = {r["run_id"]: r for r in store.get(str(cid), [])}
+        by_run[rec["run_id"]] = rec
+        store[str(cid)] = list(by_run.values())
+        save_json(EXPLORATION_SESSIONS_PATH, store)
+
+
+def _session_record_patch(acct, cid, run_id, **fields):
+    """Update selected fields (name/ended_at/notes/cargo_value) of one session."""
+    if pg_store.enabled():
+        pg_store.exploration_session_patch(acct.account_id, cid, run_id, **fields)
+        return
+    with _TRAIL_RECORD_LOCK:
+        store = load_json(EXPLORATION_SESSIONS_PATH, {})
+        for r in store.get(str(cid), []):
+            if r.get("run_id") == run_id:
+                r.update(fields)
+                break
+        save_json(EXPLORATION_SESSIONS_PATH, store)
+
+
+def _session_records_list(acct, cid):
+    """All of a character's session records, newest first."""
+    if pg_store.enabled():
+        return pg_store.exploration_sessions_list(acct.account_id, cid)
+    store = load_json(EXPLORATION_SESSIONS_PATH, {})
+    recs = list(store.get(str(cid), []))
+    recs.sort(key=lambda r: r.get("started_at", 0), reverse=True)
+    return recs
+
+
+def _session_record_get(acct, cid, run_id):
+    if pg_store.enabled():
+        return pg_store.exploration_session_get(acct.account_id, cid, run_id)
+    store = load_json(EXPLORATION_SESSIONS_PATH, {})
+    for r in store.get(str(cid), []):
+        if r.get("run_id") == run_id:
+            return r
+    return None
+
+
+def _session_record_delete(acct, cid, run_id):
+    if pg_store.enabled():
+        pg_store.exploration_session_delete(acct.account_id, cid, run_id)
+        return
+    with _TRAIL_RECORD_LOCK:
+        store = load_json(EXPLORATION_SESSIONS_PATH, {})
+        store[str(cid)] = [r for r in store.get(str(cid), [])
+                           if r.get("run_id") != run_id]
+        save_json(EXPLORATION_SESSIONS_PATH, store)
+
+
+def _default_session_name(rows, started_at):
+    """Auto name: 'YYYY-MM-DD · <first region/system>' from the trail, else date."""
+    stamp = time.strftime("%Y-%m-%d %H:%M", time.gmtime(started_at or time.time()))
+    if rows:
+        return f"{stamp} · {rows[0].get('system_name', 'roam')}"
+    return f"{stamp} · session"
 
 
 def _set_session_state(acct, cid, state, pause_reason):
@@ -1769,10 +1860,23 @@ def _poll_location_once(acct, cid):
             with _TRACK_LOCK:
                 s = _TRACK_SESSIONS.get(cid)
                 if s:
+                    was_online = s.get("online")
                     s["online"] = online
                     s["online_checked_at"] = now
                     s.pop("error", None)
-            if not online and state == "active":
+                    # Track the start of a continuous offline streak so we can
+                    # require it to exceed the grace window before pausing.
+                    if online:
+                        s.pop("offline_since", None)
+                    elif not was_online:
+                        s.setdefault("offline_since", now)
+                    else:
+                        s["offline_since"] = now
+                    offline_since = s.get("offline_since") if s else None
+            # Auto-pause only after sustained offline (rides out the ESI cache
+            # lag / a fresh login), and auto-resume the moment the pilot is back.
+            if (not online and state == "active" and offline_since is not None
+                    and now - offline_since >= _ONLINE_OFFLINE_GRACE):
                 _set_session_state(acct, cid, "paused", "auto")
                 state, pause_reason, changed = "paused", "auto", True
             elif online and state == "paused" and pause_reason == "auto":
@@ -1847,52 +1951,118 @@ def _track_target_cid(acct, q):
     return acct.active_char_id
 
 
-def _track_payload(acct, cid):
-    """The tracking state + current-run trail for one character."""
+def _live_state(cid):
+    """(state, pause_reason, run_id, online, error) for a character's live session."""
     with _TRACK_LOCK:
-        sess = dict(_TRACK_SESSIONS.get(cid) or {})
-    run_id = sess.get("run_id")
-    rows = _query_trail(acct, cid, run_id=run_id) if run_id else []
-    with acct.lock:
-        scopes = (acct.characters.get(cid, {}) or {}).get("scopes") or []
+        s = dict(_TRACK_SESSIONS.get(cid) or {})
+    return (s.get("state", "stopped"), s.get("pause_reason"), s.get("run_id"),
+            s.get("online"), s.get("error"))
+
+
+def _open_run_id(cid):
+    """The run_id of the currently-OPEN (active/paused) session, or None. A
+    stopped run is finished history, so it's not considered live here."""
+    with _TRACK_LOCK:
+        s = _TRACK_SESSIONS.get(cid)
+        if s and s.get("state") != "stopped":
+            return s.get("run_id")
+    return None
+
+
+def _session_summary(acct, cid, rec, live_run_id):
+    """A session record enriched with derived trail stats for the journal list."""
+    rows = _query_trail(acct, cid, run_id=rec["run_id"])
+    scanned = sum(1 for r in rows if r.get("scanned"))
     return {
-        "char_id": cid,
-        "state": sess.get("state", "stopped"),
-        "pause_reason": sess.get("pause_reason"),
-        "run_id": run_id,
-        "started_at": sess.get("started_at"),
-        "online": sess.get("online"),
-        "error": sess.get("error"),
-        "scope_ok": "esi-location.read_location.v1" in scopes,
-        "trail": rows,
+        "run_id": rec["run_id"],
+        "name": rec.get("name") or _default_session_name(rows, rec.get("started_at")),
+        "started_at": rec.get("started_at"),
+        "ended_at": rec.get("ended_at"),
+        "notes": rec.get("notes", ""),
+        "cargo_value": rec.get("cargo_value"),
+        "systems": len(rows),
+        "jumps": max(0, len(rows) - 1),
+        "scanned": scanned,
+        "is_live": rec["run_id"] == live_run_id,
     }
 
 
-def do_track_trail(q):
+def do_track_status(q):
+    """The journal payload: live-session state + the current run's trail. Used for
+    the always-visible live widget and SSE-driven refreshes."""
     acct = require_account()
     _ensure_track_loaded(acct)
     cid = _track_target_cid(acct, q)
     if cid is None:
         return {"error": "no character"}
-    return _track_payload(acct, cid)
+    state, pause_reason, run_id, online, error = _live_state(cid)
+    rows = _query_trail(acct, cid, run_id=run_id) if run_id else []
+    rec = _session_record_get(acct, cid, run_id) if run_id else None
+    with acct.lock:
+        scopes = (acct.characters.get(cid, {}) or {}).get("scopes") or []
+    return {
+        "char_id": cid,
+        "state": state,
+        "pause_reason": pause_reason,
+        "run_id": run_id,
+        "online": online,
+        "error": error,
+        "scope_ok": "esi-location.read_location.v1" in scopes,
+        "name": (rec or {}).get("name") if rec else None,
+        "trail": rows,
+    }
+
+
+def do_track_sessions(q):
+    """List a character's sessions (journal), newest first, with derived stats."""
+    acct = require_account()
+    _ensure_track_loaded(acct)
+    cid = _track_target_cid(acct, q)
+    if cid is None:
+        return {"sessions": []}
+    live_run_id = _open_run_id(cid)
+    recs = _session_records_list(acct, cid)
+    return {"sessions": [_session_summary(acct, cid, r, live_run_id) for r in recs]}
+
+
+def do_track_session(q):
+    """One session's full detail: record + its trail rows."""
+    acct = require_account()
+    _ensure_track_loaded(acct)
+    cid = _track_target_cid(acct, q)
+    run_id = q.get("run_id", [""])[0]
+    if cid is None or not run_id:
+        return {"error": "no session"}
+    rec = _session_record_get(acct, cid, run_id)
+    if rec is None:
+        return {"error": "not found"}
+    rows = _query_trail(acct, cid, run_id=run_id)
+    live_run_id = _open_run_id(cid)
+    return {"session": _session_summary(acct, cid, rec, live_run_id), "trail": rows}
 
 
 def do_track_start(q):
-    """Open a fresh run for the character and start sampling immediately."""
+    """Open a fresh run for the character, create its journal record, and start
+    sampling immediately."""
     acct = require_account()
     _ensure_track_loaded(acct)
     cid = _track_target_cid(acct, q)
     if cid is None or cid not in acct.characters:
         return {"error": "no character"}
+    run_id = secrets.token_hex(8)
+    started = time.time()
     with _TRACK_LOCK:
         _TRACK_SESSIONS[cid] = {
-            "state": "active", "run_id": secrets.token_hex(8), "pause_reason": None,
-            "last_system_id": None, "started_at": time.time(),
+            "state": "active", "run_id": run_id, "pause_reason": None,
+            "last_system_id": None, "started_at": started,
             "online": True, "online_checked_at": 0.0,
         }
     _persist_track_sessions(acct)
+    _session_record_upsert(acct, cid, {
+        "run_id": run_id, "name": "", "started_at": started,
+        "ended_at": None, "notes": "", "cargo_value": None})
     _CHAR_PUBSUB.bump(id(acct))
-    return _track_payload(acct, cid)
+    return do_track_status(q)
 
 
 def do_track_pause(q):
@@ -1906,7 +2076,7 @@ def do_track_pause(q):
             s["pause_reason"] = "user"
     _persist_track_sessions(acct)
     _CHAR_PUBSUB.bump(id(acct))
-    return _track_payload(acct, cid)
+    return do_track_status(q)
 
 
 def do_track_resume(q):
@@ -1918,25 +2088,38 @@ def do_track_resume(q):
         if s and s.get("state") == "paused":
             s["state"] = "active"
             s["pause_reason"] = None
+            s["online"] = True            # assume back until the next check says otherwise
+            s.pop("offline_since", None)
             s["online_checked_at"] = 0.0  # re-confirm online on next tick
     _persist_track_sessions(acct)
     _CHAR_PUBSUB.bump(id(acct))
-    return _track_payload(acct, cid)
+    return do_track_status(q)
 
 
 def do_track_stop(q):
-    """Stop & finish: the only action that closes a run."""
+    """Stop & finish: the only action that closes a run. Stamps ended_at so the
+    session drops into history."""
     acct = require_account()
     _ensure_track_loaded(acct)
     cid = _track_target_cid(acct, q)
+    run_id = None
     with _TRACK_LOCK:
         s = _TRACK_SESSIONS.get(cid)
         if s:
+            run_id = s.get("run_id")
             s["state"] = "stopped"
             s["pause_reason"] = None
+    if run_id:
+        # Auto-name the session from its trail if the user never renamed it.
+        rows = _query_trail(acct, cid, run_id=run_id)
+        rec = _session_record_get(acct, cid, run_id) or {}
+        patch = {"ended_at": time.time()}
+        if not rec.get("name"):
+            patch["name"] = _default_session_name(rows, rec.get("started_at"))
+        _session_record_patch(acct, cid, run_id, **patch)
     _persist_track_sessions(acct)
     _CHAR_PUBSUB.bump(id(acct))
-    return _track_payload(acct, cid)
+    return do_track_status(q)
 
 
 def do_track_scanned(q):
@@ -1949,16 +2132,44 @@ def do_track_scanned(q):
     return {"ok": True}
 
 
-def do_track_cargo(q):
+def do_track_session_update(q):
+    """Rename / set notes / set cargo value on a session (any subset)."""
     acct = require_account()
+    _ensure_track_loaded(acct)
     cid = _track_target_cid(acct, q)
-    entered_at = float(q.get("entered_at", ["0"])[0] or 0)
-    raw = q.get("cargo_isk", [""])[0]
-    try:
-        cargo = float(raw) if raw not in ("", None) else ""
-    except (TypeError, ValueError):
-        cargo = ""
-    _annotate_trail(acct, cid, entered_at, cargo_isk=cargo)
+    run_id = q.get("run_id", [""])[0]
+    if cid is None or not run_id:
+        return {"error": "no session"}
+    fields = {}
+    if "name" in q:
+        fields["name"] = (q.get("name", [""])[0] or "").strip()
+    if "notes" in q:
+        fields["notes"] = q.get("notes", [""])[0] or ""
+    if "cargo_value" in q:
+        raw = q.get("cargo_value", [""])[0]
+        try:
+            fields["cargo_value"] = float(raw) if raw not in ("", None) else None
+        except (TypeError, ValueError):
+            fields["cargo_value"] = None
+    if fields:
+        _session_record_patch(acct, cid, run_id, **fields)
+    _CHAR_PUBSUB.bump(id(acct))
+    return {"ok": True}
+
+
+def do_track_session_delete(q):
+    """Delete a session and its trail. A live session can't be deleted — stop it
+    first."""
+    acct = require_account()
+    _ensure_track_loaded(acct)
+    cid = _track_target_cid(acct, q)
+    run_id = q.get("run_id", [""])[0]
+    if cid is None or not run_id:
+        return {"error": "no session"}
+    if run_id == _open_run_id(cid):
+        return {"error": "Stop the live session before deleting it."}
+    _session_record_delete(acct, cid, run_id)
+    _delete_trail_run(acct, cid, run_id)
     _CHAR_PUBSUB.bump(id(acct))
     return {"ok": True}
 
@@ -3046,7 +3257,7 @@ def do_notes_delete(q):
 # or bookmark on any module reloads straight back into it.
 TAB_ROUTES = {"/lp", "/arbitrage", "/arb", "/industry", "/ind",
               "/character", "/char", "/notes", "/exploration", "/exp",
-              "/abyss", "/aby", "/tracking", "/track"}
+              "/abyss", "/aby"}
 
 _GET_ROUTES = {
     "/api/corps": lambda q: get_npc_corps(),
@@ -3062,7 +3273,9 @@ _GET_ROUTES = {
     "/api/auth/switch": do_auth_switch,
     "/api/char/data": do_char_data,
     "/api/char/wallet-history": do_wallet_history,
-    "/api/track/trail": do_track_trail,
+    "/api/track/status": do_track_status,
+    "/api/track/sessions": do_track_sessions,
+    "/api/track/session": do_track_session,
     "/api/notes": do_notes_list,
     # /api/auth/status and /api/auth/logout are handled explicitly in do_GET so
     # they can refresh / clear the session cookie.
@@ -3082,7 +3295,8 @@ _POST_ROUTES = {
     "/api/track/resume": do_track_resume,
     "/api/track/stop": do_track_stop,
     "/api/track/scanned": do_track_scanned,
-    "/api/track/cargo": do_track_cargo,
+    "/api/track/session/update": do_track_session_update,
+    "/api/track/session/delete": do_track_session_delete,
     "/api/ind/builds/save": do_ind_builds_save,
     "/api/ind/builds/delete": do_ind_builds_delete,
     "/api/ind/builds/link": do_ind_builds_link,

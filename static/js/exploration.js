@@ -847,3 +847,45 @@ expRenderBrowse();
     localStorage.setItem("exp-sidebar-width", w);
   });
 })();
+
+// ── Guides ⇄ Journal mode switch ────────────────────────────────────────────
+// The module has two modes sharing the sidebar+content layout: Guides (static
+// site walkthroughs) and Journal (live tracking + session history). The Journal
+// lives here so tracking is one click from any guide and never interrupts the
+// background poll. The last-used mode is remembered locally.
+let EXP_MODE = "guides";
+try { EXP_MODE = localStorage.getItem("exp-mode") || "guides"; } catch(e){}
+
+function expSetMode(mode){
+  EXP_MODE = (mode==="journal") ? "journal" : "guides";
+  try { localStorage.setItem("exp-mode", EXP_MODE); } catch(e){}
+  const journal = EXP_MODE==="journal";
+  document.querySelectorAll(".exp-mode-btn").forEach(b=>
+    b.classList.toggle("active", b.dataset.mode===EXP_MODE));
+  const t=(id,hide)=>{ const el=$(id); if(el) el.classList.toggle("hidden", hide); };
+  t("#exp-sidebar-guides", journal);
+  t("#exp-sidebar-journal", !journal);
+  t("#exp-guides-view", journal);
+  t("#exp-journal-view", !journal);
+  if(journal){ expApplyAuth(); if(AUTH.loggedIn && typeof refreshJournal==="function") refreshJournal(); }
+}
+
+// Show/hide the journal body vs the login prompt based on auth. Called on mode
+// entry and whenever auth changes (from renderAuthChip).
+function expApplyAuth(){
+  const locked=$("#exp-journal-locked"), body=$("#exp-journal-body");
+  if(locked) locked.classList.toggle("hidden", !!AUTH.loggedIn);
+  if(body) body.classList.toggle("hidden", !AUTH.loggedIn);
+}
+
+// switchTab() calls this whenever the Exploration tab is opened.
+function expOnEnterTab(){
+  expSetMode(EXP_MODE);
+}
+
+(function(){
+  if(!document.querySelectorAll) return;
+  document.querySelectorAll(".exp-mode-btn").forEach(b=>{
+    b.onclick=()=>expSetMode(b.dataset.mode);
+  });
+})();

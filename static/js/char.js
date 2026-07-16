@@ -77,12 +77,9 @@ function renderAuthChip(){
   $("#login-eve").classList.toggle("hidden", AUTH.loggedIn);
   $("#char-chip").classList.toggle("hidden", !AUTH.loggedIn);
   $("#char-tab-btn").classList.toggle("hidden", !AUTH.loggedIn);
-  $("#track-tab-btn").classList.toggle("hidden", !AUTH.loggedIn);
   $("#char-empty").classList.toggle("hidden", AUTH.loggedIn);
   $("#char-body").classList.toggle("hidden", !AUTH.loggedIn);
-  const te=$("#track-empty"), tbdy=$("#track-body");
-  if(te) te.classList.toggle("hidden", AUTH.loggedIn);
-  if(tbdy) tbdy.classList.toggle("hidden", !AUTH.loggedIn);
+  if(typeof expApplyAuth==="function") expApplyAuth();
   if(AUTH.loggedIn){
     const active=AUTH.characters.find(c=>c.character_id===AUTH.activeCharId);
     $("#chip-name").textContent=(active?active.name:AUTH.name)||"Capsuleer";
@@ -173,9 +170,9 @@ function openCharStream(){
       // re-pull. A plain sweep tick (changed=false) only moves the countdown.
       if(m.type==="hello" || (m.type==="sync" && m.changed)){
         refreshCharData();
-        // The same stream carries live trail changes (system entered, auto-pause);
-        // refresh the tracking table too when it's the visible tab.
-        if(ACTIVE_TAB==="track" && typeof refreshTrail==="function") refreshTrail();
+        // The same stream carries live journal changes (system entered, auto-pause);
+        // refresh the exploration journal when it's the visible tab.
+        if(ACTIVE_TAB==="exp" && typeof trackOnLivePush==="function") trackOnLivePush();
       }
     };
     es.onerror=()=>{ /* EventSource auto-reconnects; nothing to do */ };

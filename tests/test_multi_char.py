@@ -47,8 +47,16 @@ def _legacy_mode(monkeypatch):
     """These tests exercise the legacy (file-backed, single-account) path."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
     lp_web._REQUEST.account = None
+    # do_char_data caches per-character bundles in module globals for 120s. Other
+    # test files fetch data for the same character ids (1, 2), so a leaked entry
+    # would satisfy this file's fetch from stale data instead of its own mocks —
+    # a real, order-dependent flake. Clear the caches around every test here.
+    lp_web._CHAR_DATA_CACHE.clear()
+    lp_web._CHAR_DATA_SIG.clear()
     yield
     lp_web._REQUEST.account = None
+    lp_web._CHAR_DATA_CACHE.clear()
+    lp_web._CHAR_DATA_SIG.clear()
 
 
 # ── Auth file migration (v1 → v2), legacy mode ───────────────────────────────

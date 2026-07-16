@@ -170,7 +170,13 @@ def _ensure_schema(pool):
             "security DOUBLE PRECISION, "
             "scanned BOOLEAN NOT NULL DEFAULT FALSE, "
             "cargo_isk DOUBLE PRECISION, "
+            "note TEXT NOT NULL DEFAULT '', "
             "PRIMARY KEY (account_id, character_id, entered_at))")
+        # Per-system note added after the trail table shipped — backfill it on
+        # databases that predate the column (CREATE IF NOT EXISTS won't add it).
+        conn.execute(
+            "ALTER TABLE mono_location_trail "
+            "ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT ''")
         # ── exploration session journal (v1.101+) ─────────────────────────
         # One row per exploration trip (run). The trail rows above are joined
         # to a session by run_id. name/notes/cargo_value are user annotations.
@@ -581,24 +587,24 @@ def location_trail_query(account_id, character_id, run_id=None, since_ts=0.0):
         if run_id is not None:
             rows = conn.execute(
                 "SELECT entered_at, run_id, system_id, system_name, security, "
-                "scanned, cargo_isk FROM mono_location_trail WHERE account_id=%s "
+                "scanned, cargo_isk, note FROM mono_location_trail WHERE account_id=%s "
                 "AND character_id=%s AND run_id=%s ORDER BY entered_at",
                 (account_id, character_id, run_id)).fetchall()
         else:
             rows = conn.execute(
                 "SELECT entered_at, run_id, system_id, system_name, security, "
-                "scanned, cargo_isk FROM mono_location_trail WHERE account_id=%s "
+                "scanned, cargo_isk, note FROM mono_location_trail WHERE account_id=%s "
                 "AND character_id=%s AND entered_at>=%s ORDER BY entered_at",
                 (account_id, character_id, since_ts)).fetchall()
     return [{"entered_at": r[0], "run_id": r[1], "system_id": r[2],
              "system_name": r[3], "security": r[4], "scanned": r[5],
-             "cargo_isk": r[6]} for r in rows]
+             "cargo_isk": r[6], "note": r[7] or ""} for r in rows]
 
 
 def location_trail_annotate(account_id, character_id, entered_at,
-                            scanned=None, cargo_isk=None):
-    """Update the scanned flag and/or cargo_isk of one trail entry. A cargo_isk
-    of "" (empty) clears it back to NULL."""
+                            scanned=None, cargo_isk=None, note=None):
+    """Update the scanned flag, cargo_isk and/or note of one trail entry. A
+    cargo_isk of "" (empty) clears it back to NULL."""
     sets, params = [], []
     if scanned is not None:
         sets.append("scanned=%s")
@@ -606,6 +612,9 @@ def location_trail_annotate(account_id, character_id, entered_at,
     if cargo_isk is not None:
         sets.append("cargo_isk=%s")
         params.append(cargo_isk if cargo_isk != "" else None)
+    if note is not None:
+        sets.append("note=%s")
+        params.append(str(note))
     if not sets:
         return
     params += [account_id, character_id, entered_at]

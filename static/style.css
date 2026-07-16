@@ -523,6 +523,9 @@
   #track-table td.track-cargo { padding:4px 10px; }
   #track-table td.track-cargo input { width:110px; text-align:right; background:var(--panel2);
     color:var(--fg); border:1px solid var(--line2); border-radius:4px; padding:3px 6px; font-size:12.5px; }
+  #track-table td.track-note { padding:4px 10px; width:100%; }
+  #track-table td.track-note input { width:100%; min-width:140px; background:var(--panel2);
+    color:var(--fg); border:1px solid var(--line2); border-radius:4px; padding:3px 6px; font-size:12.5px; }
   /* Session total cargo (sum of the per-system values) — read-only display. */
   .exp-cargo-total { flex-direction:row; align-items:center; gap:6px; }
   .exp-cargo-total b { color:var(--fg); font-size:14px; }

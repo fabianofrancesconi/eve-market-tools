@@ -76,6 +76,27 @@ class TestTrailStore:
         lp_web._annotate_trail(acct, 1, 100.0, cargo_isk="")
         assert lp_web._query_trail(acct, 1, run_id="run1")[0]["cargo_isk"] is None
 
+    def test_annotate_note_set_and_clear(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        lp_web._append_trail(acct, 1, 100.0, "run1", 1, "A", 0.5)
+        lp_web._annotate_trail(acct, 1, 100.0, note="Sansha relic here")
+        assert lp_web._query_trail(acct, 1, run_id="run1")[0]["note"] == "Sansha relic here"
+        # Blank note clears it.
+        lp_web._annotate_trail(acct, 1, 100.0, note="")
+        assert lp_web._query_trail(acct, 1, run_id="run1")[0]["note"] == ""
+
+    def test_note_and_cargo_are_independent(self, monkeypatch, tmp_path):
+        """Setting a note must not disturb cargo_isk, and vice-versa."""
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        lp_web._append_trail(acct, 1, 100.0, "run1", 1, "A", 0.5)
+        lp_web._annotate_trail(acct, 1, 100.0, cargo_isk=5_000_000.0)
+        lp_web._annotate_trail(acct, 1, 100.0, note="left a can")
+        row = lp_web._query_trail(acct, 1, run_id="run1")[0]
+        assert row["cargo_isk"] == 5_000_000.0
+        assert row["note"] == "left a can"
+
     def test_delete_run_removes_trail(self, monkeypatch, tmp_path):
         _isolate(monkeypatch, tmp_path)
         acct = _acct()
@@ -310,6 +331,17 @@ class TestJournalHandlers:
         lp_web.do_track_cargo({"entered_at": ["500.0"], "cargo_isk": ["not-a-number"]})
         # A garbage value is treated as "clear", never crashes.
         assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["cargo_isk"] is None
+
+    def test_note_route_sets_and_clears(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._append_trail(acct, 1, 500.0, run_id, 1, "A", 0.5)
+        lp_web.do_track_note({"entered_at": ["500.0"], "note": ["intact depot"]})
+        assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["note"] == "intact depot"
+        lp_web.do_track_note({"entered_at": ["500.0"], "note": [""]})
+        assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["note"] == ""
 
 
 # ── poll tick: system change + online grace / auto-pause / auto-resume ───────

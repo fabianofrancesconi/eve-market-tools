@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.102.0"
+__version__ = "1.103.0"
 
 import argparse
 import base64
@@ -1695,7 +1695,7 @@ def _append_trail(acct, cid, entered_at, run_id, system_id, system_name, securit
             store.setdefault(str(cid), []).append(
                 {"entered_at": entered_at, "run_id": run_id, "system_id": system_id,
                  "system_name": system_name, "security": security,
-                 "scanned": False})
+                 "scanned": False, "note": ""})
             save_json(LOCATION_TRAIL_PATH, store)
 
 
@@ -1711,10 +1711,11 @@ def _query_trail(acct, cid, run_id=None, since_ts=0.0):
     return sorted(rows, key=lambda r: r.get("entered_at", 0))
 
 
-def _annotate_trail(acct, cid, entered_at, scanned=None, cargo_isk=None):
+def _annotate_trail(acct, cid, entered_at, scanned=None, cargo_isk=None, note=None):
     if pg_store.enabled():
         pg_store.location_trail_annotate(acct.account_id, cid, entered_at,
-                                         scanned=scanned, cargo_isk=cargo_isk)
+                                         scanned=scanned, cargo_isk=cargo_isk,
+                                         note=note)
         return
     with _TRAIL_RECORD_LOCK:
         store = load_json(LOCATION_TRAIL_PATH, {})
@@ -1724,6 +1725,8 @@ def _annotate_trail(acct, cid, entered_at, scanned=None, cargo_isk=None):
                     r["scanned"] = bool(scanned)
                 if cargo_isk is not None:
                     r["cargo_isk"] = cargo_isk if cargo_isk != "" else None
+                if note is not None:
+                    r["note"] = str(note)
                 break
         save_json(LOCATION_TRAIL_PATH, store)
 
@@ -2154,6 +2157,18 @@ def do_track_cargo(q):
         except (TypeError, ValueError):
             cargo_isk = ""
     _annotate_trail(acct, cid, entered_at, cargo_isk=cargo_isk)
+    _CHAR_PUBSUB.bump(id(acct))
+    return {"ok": True}
+
+
+def do_track_note(q):
+    """Set (or clear) the freeform note on one system. This is separate from the
+    session-level notes; it annotates a single trail entry."""
+    acct = require_account()
+    cid = _track_target_cid(acct, q)
+    entered_at = float(q.get("entered_at", ["0"])[0] or 0)
+    note = q.get("note", [""])[0] or ""
+    _annotate_trail(acct, cid, entered_at, note=note)
     _CHAR_PUBSUB.bump(id(acct))
     return {"ok": True}
 
@@ -3322,6 +3337,7 @@ _POST_ROUTES = {
     "/api/track/stop": do_track_stop,
     "/api/track/scanned": do_track_scanned,
     "/api/track/cargo": do_track_cargo,
+    "/api/track/note": do_track_note,
     "/api/track/session/update": do_track_session_update,
     "/api/track/session/delete": do_track_session_delete,
     "/api/ind/builds/save": do_ind_builds_save,

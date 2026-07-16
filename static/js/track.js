@@ -3,7 +3,7 @@
 // active character's route while a session runs (background thread — it keeps
 // going no matter what you browse). This renders the live session controls, the
 // session list, and the selected session's trail + per-session annotations
-// (name, per-system cargo value, freeform notes). Dwell is derived client-side; a
+// (name, per-system cargo value, per-system + overall notes). Dwell is derived client-side; a
 // min-dwell filter hides short stops from the table without truncating the trail.
 
 const TRACK = { state:"stopped", pauseReason:null, liveRunId:null, online:null,
@@ -171,7 +171,7 @@ function renderSessionList(){
   wrap.innerHTML=TRACK.sessions.map(s=>{
     const sel=s.run_id===TRACK.selRunId?" active":"";
     const live=s.is_live?`<span class="exp-live-dot"></span>`:"";
-    const stats=`${s.systems} sys · ${s.scanned} scanned`;
+    const stats=`${s.systems} sys${s.cargo_value!=null?` · ${fmtISK(s.cargo_value)} ISK`:""}`;
     return `<button class="exp-session-item${sel}" type="button" data-run="${authEsc(s.run_id)}">
       <span class="exp-session-item-name">${live}${authEsc(s.name)}</span>
       <span class="exp-session-item-meta">${fmtDay(s.started_at)} · ${stats}</span>
@@ -208,7 +208,7 @@ function renderSessionDetail(){
     const when=d.ended_at
       ? `${fmtDay(d.started_at)} ${fmtClock(d.started_at)} → ${fmtClock(d.ended_at)}`
       : `${fmtDay(d.started_at)} ${fmtClock(d.started_at)} · ongoing`;
-    meta.textContent=`${when} · ${d.systems} systems · ${d.jumps} jumps · ${d.scanned} scanned`;
+    meta.textContent=`${when} · ${d.systems} systems · ${d.jumps} jumps`;
   }
 
   renderTrail();
@@ -253,16 +253,13 @@ function renderTrail(){
       <td>${fmtClock(r.entered_at)}</td>
       <td>${fmtDwell(x.dwell)}${here?" · now":""}</td>
       <td class="track-cargo num"><input type="number" min="0" step="1000000" placeholder="—" data-at="${r.entered_at}" value="${r.cargo_isk!=null?r.cargo_isk:""}"></td>
-      <td class="track-scan"><input type="checkbox" data-at="${r.entered_at}" ${r.scanned?"checked":""}></td>
+      <td class="track-note"><input type="text" placeholder="Note…" data-at="${r.entered_at}" value="${authEsc(r.note||"")}"></td>
     </tr>`;
   }).join("");
 
   const note=$("#track-hidden-note");
   if(note) note.textContent=(min>0 && hidden>0)? `${hidden} short stop${hidden===1?"":"s"} hidden` : "";
 
-  tb.querySelectorAll(".track-scan input").forEach(cb=>{
-    cb.onchange=()=>postPrefs("/api/track/scanned",{entered_at:+cb.dataset.at, scanned:cb.checked});
-  });
   tb.querySelectorAll(".track-cargo input").forEach(inp=>{
     inp.onchange=async ()=>{
       await fetch("/api/track/cargo",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -270,6 +267,9 @@ function renderTrail(){
       // Re-pull so the session total (sum of rows) reflects the edit.
       if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
     };
+  });
+  tb.querySelectorAll(".track-note input").forEach(inp=>{
+    inp.onchange=()=>postPrefs("/api/track/note",{entered_at:+inp.dataset.at, note:inp.value});
   });
 }
 

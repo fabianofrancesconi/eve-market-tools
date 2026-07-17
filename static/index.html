@@ -516,6 +516,20 @@
   </div>
 </div>
 
+<!-- Cargo breakdown modal (exploration journal) — shows the items behind a fetched
+     cargo value, sorted by ISK, so an inflated total's culprit line is obvious. -->
+<div id="trackCargoModal" class="ind-modal hidden">
+  <div class="ind-modal-box">
+    <h3 id="track-cargo-title">Cargo breakdown</h3>
+    <p class="sw-hint" id="track-cargo-sub"></p>
+    <div id="track-cargo-body" class="track-cargo-breakdown"></div>
+    <div class="sw-actions">
+      <span style="flex:1"></span>
+      <button id="track-cargo-close" class="primary">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Per-system note modal (exploration journal) -->
 <div id="trackNoteModal" class="ind-modal hidden">
   <div class="ind-modal-box">

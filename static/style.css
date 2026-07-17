@@ -570,6 +570,16 @@
     font-variant-numeric:tabular-nums; }
   .track-cargo-delta.pos { color:var(--green2); }
   .track-cargo-delta.neg { color:var(--red); }
+  /* Cargo breakdown modal: the item-by-item table behind a fetched cargo value. */
+  .track-cargo-breakdown { max-height:52vh; overflow:auto; margin:6px 0 2px; }
+  .track-cargo-bd-table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  .track-cargo-bd-table th, .track-cargo-bd-table td { padding:3px 8px; text-align:left; }
+  .track-cargo-bd-table th.num, .track-cargo-bd-table td.num {
+    text-align:right; font-variant-numeric:tabular-nums; }
+  .track-cargo-bd-table thead th { position:sticky; top:0; background:var(--panel);
+    color:var(--dim2); font-weight:600; border-bottom:1px solid var(--line2); }
+  .track-cargo-bd-table tbody tr:nth-child(even) { background:rgba(255,255,255,.03); }
+  .track-cargo-bd-unpriced td { color:var(--dim2); font-style:italic; }
   #track-table td.track-note { padding:4px 10px; }
   /* Cute per-system note button: an emoji chip when empty, a filled pill that
      previews the note text when set. Opens the note modal on click. */

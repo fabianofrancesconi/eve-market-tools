@@ -301,7 +301,7 @@ function renderTrail(){
       <td class="${band?'sec-'+band:''}">${fmtSec(r.security)}</td>
       <td>${fmtClock(r.entered_at)}</td>
       <td>${fmtDwell(x.dwell)}${here?" · now":""}</td>
-      <td class="track-cargo num"><input type="text" inputmode="numeric" placeholder="—" class="${cargoCls}" data-at="${r.entered_at}" value="${cargoVal}">${delta}</td>
+      <td class="track-cargo num"><input type="text" inputmode="numeric" placeholder="—" class="${cargoCls}" data-at="${r.entered_at}" value="${cargoVal}"><button class="track-cargo-fetch" type="button" data-at="${r.entered_at}" title="Fetch this ship's cargo from ESI and value it at Jita (assets are cached ~1h)">⟳</button>${delta}</td>
       <td class="track-note">${noteBtnHtml(r)}</td>
       <td class="track-hide"><button class="track-hide-btn" type="button" data-at="${r.entered_at}" title="Hide this system from the journal">✕</button></td>
     </tr>`;
@@ -355,6 +355,28 @@ function renderTrail(){
         body:JSON.stringify({entered_at:+inp.dataset.at, cargo_isk:digits})});
       // Re-pull so the session total (latest system's value) reflects the edit.
       if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
+    };
+  });
+
+  // "⟳ Fetch": pull the real cargo from ESI, value it at Jita, fill this row.
+  tb.querySelectorAll(".track-cargo-fetch").forEach(btn=>{
+    btn.onclick=async ()=>{
+      btn.disabled=true; const glyph=btn.textContent; btn.textContent="…";
+      try{
+        const r=await fetch("/api/track/cargo/fetch",{method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({entered_at:+btn.dataset.at})});
+        const j=await r.json();
+        if(j.error){ alert(j.error); return; }
+        const n=(j.items||[]).length;
+        const unpriced=(j.unpriced&&j.unpriced.length)
+          ? `\n(no market price for: ${j.unpriced.join(", ")})` : "";
+        alert(`${j.ship_name||"Ship"}: ${n} item type${n===1?"":"s"} · ${fmtISK(j.total)} ISK`
+          + `\n${j.stale_hint||"ESI assets are cached ~1h, so a freshly looted hold may lag."}`
+          + unpriced);
+        if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
+      }catch(e){ alert("Cargo fetch failed."); }
+      finally{ btn.disabled=false; btn.textContent=glyph; }
     };
   });
   tb.querySelectorAll(".track-note-btn").forEach(btn=>{

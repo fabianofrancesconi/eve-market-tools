@@ -260,6 +260,86 @@ def test_fetch_character_blueprints_paginates():
     assert sess.get.call_count == 2
 
 
+# ── ship + assets fetchers ───────────────────────────────────────────────────
+
+def test_fetch_ship_url_and_headers():
+    sess = _get_session({"ship_item_id": 1000000016991,
+                         "ship_type_id": 670, "ship_name": "My Heron"})
+    out = sso_core.fetch_ship("TOKEN", 42, sess)
+    assert out["ship_item_id"] == 1000000016991
+    url = sess.get.call_args[0][0]
+    headers = sess.get.call_args[1]["headers"]
+    assert url.endswith("/characters/42/ship/")
+    assert headers["Authorization"] == "Bearer TOKEN"
+
+
+def test_fetch_assets_url_and_headers():
+    assets = [{"item_id": 1, "type_id": 34, "quantity": 100,
+               "location_id": 999, "location_flag": "Cargo"}]
+    sess = _get_session(assets)
+    sess.get.return_value.headers = {"X-Pages": "1"}
+    out = sso_core.fetch_assets("TOKEN", 42, sess)
+    assert out == assets
+    url = sess.get.call_args[0][0]
+    assert url.endswith("/characters/42/assets/")
+    assert sess.get.call_args[1]["headers"]["Authorization"] == "Bearer TOKEN"
+
+
+def test_fetch_assets_paginates():
+    page1 = MagicMock()
+    page1.json.return_value = [{"item_id": 1, "type_id": 34}]
+    page1.headers = {"X-Pages": "2"}
+    page1.raise_for_status.return_value = None
+    page2 = MagicMock()
+    page2.json.return_value = [{"item_id": 2, "type_id": 35}]
+    page2.headers = {"X-Pages": "2"}
+    page2.raise_for_status.return_value = None
+    sess = MagicMock()
+    sess.get.side_effect = [page1, page2]
+    out = sso_core.fetch_assets("TOKEN", 42, sess)
+    assert [a["item_id"] for a in out] == [1, 2]
+    assert sess.get.call_count == 2
+
+
+def test_cargo_items_in_ship_filters_by_ship_and_flag():
+    ship_id = 1000000016991
+    assets = [
+        # In the flown ship's cargo — counted.
+        {"item_id": 1, "type_id": 34, "quantity": 100,
+         "location_id": ship_id, "location_flag": "Cargo"},
+        # A second stack of the same type in the ore hold — summed with the above? No,
+        # different type; this one is its own line.
+        {"item_id": 2, "type_id": 1230, "quantity": 50,
+         "location_id": ship_id, "location_flag": "SpecializedOreHold"},
+        # Fitted module on the ship — excluded (not a cargo flag).
+        {"item_id": 3, "type_id": 578, "quantity": 1,
+         "location_id": ship_id, "location_flag": "HiSlot0"},
+        # Loot in a DIFFERENT ship / station hangar — excluded (wrong location).
+        {"item_id": 4, "type_id": 34, "quantity": 999,
+         "location_id": 60003760, "location_flag": "Hangar"},
+    ]
+    cargo = sso_core.cargo_items_in_ship(assets, ship_id)
+    assert cargo == {34: 100, 1230: 50}
+
+
+def test_cargo_items_in_ship_sums_same_type_stacks():
+    ship_id = 500
+    assets = [
+        {"item_id": 1, "type_id": 34, "quantity": 100,
+         "location_id": ship_id, "location_flag": "Cargo"},
+        {"item_id": 2, "type_id": 34, "quantity": 25,
+         "location_id": ship_id, "location_flag": "Cargo"},
+    ]
+    assert sso_core.cargo_items_in_ship(assets, ship_id) == {34: 125}
+
+
+def test_cargo_items_in_ship_empty_when_no_match():
+    assert sso_core.cargo_items_in_ship([], 500) == {}
+    assert sso_core.cargo_items_in_ship(
+        [{"item_id": 1, "type_id": 34, "quantity": 5,
+          "location_id": 999, "location_flag": "Cargo"}], 500) == {}
+
+
 # ── mapping helpers: owned blueprints ────────────────────────────────────────
 
 def test_owned_blueprint_lookup_keeps_best_researched_copy():

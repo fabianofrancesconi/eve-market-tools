@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.121.0"
+__version__ = "1.122.0"
 
 import argparse
 import base64
@@ -2908,6 +2908,7 @@ _POST_ROUTES = {
     "/api/track/stop": do_track_stop,
     "/api/track/scanned": do_track_scanned,
     "/api/track/cargo": do_track_cargo,
+    "/api/track/cargo/fetch": do_track_cargo_fetch,
     "/api/track/note": do_track_note,
     "/api/track/hide": do_track_hide,
     "/api/track/session/update": do_track_session_update,

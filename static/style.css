@@ -555,6 +555,12 @@
     color:var(--fg); border:1px solid var(--line2); border-radius:4px; padding:3px 6px; font-size:12.5px; }
   /* Inherited (carried-forward) value: shown greyed until the user edits it. */
   #track-table td.track-cargo input.inherited { color:var(--dim2); font-style:italic; }
+  /* "⟳ Fetch cargo from ESI" — reveals on row hover next to the input. */
+  .track-cargo-fetch { background:none; border:none; color:var(--dim2); cursor:pointer;
+    font-size:13px; margin-left:4px; opacity:0; transition:opacity .1s; vertical-align:middle; }
+  #track-table tr:hover .track-cargo-fetch { opacity:1; }
+  .track-cargo-fetch:hover { color:var(--fg); }
+  .track-cargo-fetch:disabled { cursor:default; color:var(--dim2); }
   /* ISK change vs the previous system — shown under the input when both have a
      value. Green for a gain, red for a loss. */
   .track-cargo-delta { display:block; margin-top:2px; font-size:11px;

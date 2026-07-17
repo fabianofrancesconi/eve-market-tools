@@ -358,6 +358,96 @@ class TestJournalHandlers:
         lp_web.do_track_session_update({"run_id": [run_id], "cargo_value": [""]})
         assert lp_web._session_record_get(acct, 1, run_id)["cargo_value"] is None
 
+    def _cargo_acct(self):
+        """An account whose character has the assets/ship scopes granted."""
+        a = _acct()
+        a.characters[1]["scopes"] = [
+            "esi-location.read_location.v1",
+            "esi-assets.read_assets.v1",
+            "esi-location.read_ship_type.v1",
+        ]
+        return a
+
+    def test_cargo_fetch_values_hold_and_writes_row(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = self._cargo_acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._append_trail(acct, 1, 100.0, run_id, 30000142, "Jita", 0.9)
+
+        monkeypatch.setattr(lp_web.sso_core, "fetch_ship",
+                            lambda t, c, s: {"ship_item_id": 500, "ship_name": "Heron"})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_assets", lambda t, c, s: [
+            {"item_id": 1, "type_id": 34, "quantity": 100,
+             "location_id": 500, "location_flag": "Cargo"},
+            {"item_id": 2, "type_id": 35, "quantity": 10,
+             "location_id": 500, "location_flag": "Cargo"},
+            # A fitted module — must not be valued.
+            {"item_id": 3, "type_id": 578, "quantity": 1,
+             "location_id": 500, "location_flag": "HiSlot0"},
+        ])
+        monkeypatch.setattr(lp_web, "fetch_prices", lambda tids, s: {
+            34: {"buy_max": 5.0, "sell_min": 6.0},
+            35: {"buy_max": 100.0, "sell_min": 120.0},
+        })
+        monkeypatch.setattr(lp_web, "resolve_names", lambda tids, s, cd: {
+            34: "Tritanium", 35: "Pyerite"})
+
+        out = lp_web.do_track_cargo_fetch({"entered_at": ["100.0"]})
+        assert out["ok"] is True
+        assert out["total"] == 100 * 5.0 + 10 * 100.0    # buy_max preferred
+        assert out["ship_name"] == "Heron"
+        assert {i["name"] for i in out["items"]} == {"Tritanium", "Pyerite"}
+        # The trail row now carries the computed value.
+        row = lp_web._query_trail(acct, 1, run_id=run_id)[0]
+        assert row["cargo_isk"] == out["total"]
+
+    def test_cargo_fetch_empty_hold_records_zero(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = self._cargo_acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._append_trail(acct, 1, 100.0, run_id, 30000142, "Jita", 0.9)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_ship",
+                            lambda t, c, s: {"ship_item_id": 500, "ship_name": "Heron"})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_assets", lambda t, c, s: [])
+        out = lp_web.do_track_cargo_fetch({"entered_at": ["100.0"]})
+        assert out["ok"] is True and out["total"] == 0.0
+        assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["cargo_isk"] == 0.0
+
+    def test_cargo_fetch_unpriced_item_listed(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = self._cargo_acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._append_trail(acct, 1, 100.0, run_id, 30000142, "Jita", 0.9)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_ship",
+                            lambda t, c, s: {"ship_item_id": 500, "ship_name": "Heron"})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_assets", lambda t, c, s: [
+            {"item_id": 1, "type_id": 99, "quantity": 3,
+             "location_id": 500, "location_flag": "Cargo"}])
+        monkeypatch.setattr(lp_web, "fetch_prices", lambda tids, s: {99: {}})
+        monkeypatch.setattr(lp_web, "resolve_names", lambda tids, s, cd: {99: "Mystery Loot"})
+        out = lp_web.do_track_cargo_fetch({"entered_at": ["100.0"]})
+        assert out["total"] == 0.0
+        assert out["unpriced"] == ["Mystery Loot"]
+
+    def test_cargo_fetch_requires_scopes(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()   # only the location scope, no assets/ship
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._append_trail(acct, 1, 100.0, run_id, 30000142, "Jita", 0.9)
+        out = lp_web.do_track_cargo_fetch({"entered_at": ["100.0"]})
+        assert "error" in out and "permission" in out["error"].lower()
+
+    def test_cargo_fetch_no_row_target(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = self._cargo_acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        out = lp_web.do_track_cargo_fetch({"entered_at": ["0"]})
+        assert "error" in out
+
     def test_delete_live_session_refused(self, monkeypatch, tmp_path):
         _isolate(monkeypatch, tmp_path)
         acct = _acct()

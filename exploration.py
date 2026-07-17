@@ -51,7 +51,8 @@ EXPORTS = (
     "_bg_location_poll_loop", "_track_target_cid", "_live_state", "_open_run_id",
     "_session_summary", "do_track_status", "do_track_sessions", "do_track_session",
     "do_track_start", "do_track_pause", "do_track_resume", "do_track_stop",
-    "do_track_scanned", "do_track_cargo", "do_track_note", "do_track_hide",
+    "do_track_scanned", "do_track_cargo", "do_track_cargo_fetch",
+    "do_track_note", "do_track_hide",
     "do_track_session_update", "do_track_session_delete",
 )
 
@@ -622,6 +623,76 @@ class Exploration:
         self._h._annotate_trail(acct, cid, entered_at, cargo_isk=cargo_isk)
         self._h._CHAR_PUBSUB.bump(id(acct))
         return {"ok": True}
+
+    def do_track_cargo_fetch(self, q):
+        """Pull the character's *actual* cargo from ESI, value it at Jita, write the
+        total to this system's trail row, and return a breakdown. This auto-fills the
+        cargo value the user would otherwise type by hand.
+
+        Requires esi-assets.read_assets.v1 + esi-location.read_ship_type.v1. ESI
+        caches assets ~1h and only refreshes on server-side changes, so freshly
+        looted items may lag — the response flags this via `stale_hint`."""
+        acct = self._h.require_account()
+        cid = self._h._track_target_cid(acct, q)
+        entered_at = float(q.get("entered_at", ["0"])[0] or 0)
+        if not entered_at:
+            return {"error": "no system row to fill"}
+
+        scopes = (acct.characters.get(cid) or {}).get("scopes") or []
+        need = ("esi-assets.read_assets.v1", "esi-location.read_ship_type.v1")
+        missing = [s for s in need if s not in scopes]
+        if missing:
+            return {"error": "Cargo fetch needs new permissions. Enable "
+                    "'esi-assets.read_assets.v1' and 'esi-location.read_ship_type.v1' "
+                    "for your EVE application at developers.eveonline.com, then log out "
+                    "and back in."}
+
+        try:
+            token = self._h._access_token(acct, cid)
+            ship = sso_core.fetch_ship(token, cid, self._h.SESSION)
+            assets = sso_core.fetch_assets(token, cid, self._h.SESSION)
+        except LPError as e:
+            return {"error": str(e)}
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else "?"
+            return {"error": f"ESI returned {status} fetching cargo. If this is a "
+                    "permissions error, re-enable the assets/ship scopes and log back in."}
+        except requests.RequestException:
+            return {"error": "Couldn't reach ESI to fetch cargo."}
+
+        ship_item_id = ship.get("ship_item_id")
+        cargo = sso_core.cargo_items_in_ship(assets, ship_item_id)
+        if not cargo:
+            # Empty hold is a legitimate result: record 0 so the column shows it.
+            self._h._annotate_trail(acct, cid, entered_at, cargo_isk=0.0)
+            self._h._CHAR_PUBSUB.bump(id(acct))
+            return {"ok": True, "total": 0.0, "items": [],
+                    "ship_name": ship.get("ship_name"),
+                    "stale_hint": "ESI assets are cached ~1h; a freshly looted hold "
+                                  "may still read empty."}
+
+        tids = list(cargo)
+        prices = self._h.fetch_prices(tids, self._h.SESSION)
+        names = self._h.resolve_names(tids, self._h.SESSION, self._h.CACHE_DIR)
+
+        items, total = [], 0.0
+        for tid, qty in cargo.items():
+            p = prices.get(tid) or {}
+            # Liquidation value: what you'd get dumping to Jita buy orders, falling
+            # back to sell_min when nothing is bid. None -> unpriced (worth 0 here).
+            unit = p.get("buy_max") or p.get("sell_min")
+            line = (unit or 0.0) * qty
+            total += line
+            items.append({"type_id": tid, "name": names.get(tid, str(tid)),
+                          "qty": qty, "unit": unit, "value": line,
+                          "priced": unit is not None})
+        items.sort(key=lambda i: i["value"], reverse=True)
+
+        self._h._annotate_trail(acct, cid, entered_at, cargo_isk=total)
+        self._h._CHAR_PUBSUB.bump(id(acct))
+        return {"ok": True, "total": total, "items": items,
+                "ship_name": ship.get("ship_name"),
+                "unpriced": [i["name"] for i in items if not i["priced"]]}
 
     def do_track_note(self, q):
         """Set (or clear) the freeform note on one system. This is separate from the

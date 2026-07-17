@@ -43,6 +43,8 @@ SCOPES = [
     "esi-universe.read_structures.v1",
     "esi-location.read_location.v1",
     "esi-location.read_online.v1",
+    "esi-location.read_ship_type.v1",
+    "esi-assets.read_assets.v1",
 ]
 
 AUTH_FILE = "eve_auth.json"
@@ -244,6 +246,69 @@ def fetch_online(token, character_id, session):
                     headers=_auth_headers(token), timeout=30)
     r.raise_for_status()
     return r.json()
+
+
+def fetch_ship(token, character_id, session):
+    """{ship_item_id, ship_type_id, ship_name} — the character's active ship.
+    Requires esi-location.read_ship_type.v1. ESI caches this ~5s. ship_item_id is
+    the unique item id of the hull the pilot is flying, which is the location_id of
+    everything currently in that ship's holds (see fetch_assets)."""
+    r = session.get(f"{ESI}/characters/{character_id}/ship/",
+                    headers=_auth_headers(token), timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_assets(token, character_id, session):
+    """[{item_id, type_id, quantity, location_id, location_flag, is_singleton, ...},
+    …] — every asset the character owns, across all locations. Requires
+    esi-assets.read_assets.v1. Paginated (X-Pages). Note: ESI caches assets ~1h and
+    only refreshes on server-side asset changes, so freshly looted items lag."""
+    out, page = [], 1
+    while page <= 100:
+        r = session.get(f"{ESI}/characters/{character_id}/assets/",
+                        params={"page": page},
+                        headers=_auth_headers(token), timeout=30)
+        r.raise_for_status()
+        batch = r.json()
+        if not batch:
+            break
+        out.extend(batch)
+        if page >= int(r.headers.get("X-Pages", 1)):
+            break
+        page += 1
+    return out
+
+
+# location_flags that count as "cargo" the pilot is hauling. Fitted modules,
+# rigs and the like are excluded — this is the loot/haul in the holds, not the
+# fit. Kept broad so ore/gas/mineral/fuel/ammo holds all count.
+CARGO_FLAGS = frozenset({
+    "Cargo", "DroneBay", "FighterBay", "FleetHangar", "ShipHangar",
+    "SpecializedOreHold", "SpecializedGasHold", "SpecializedMineralHold",
+    "SpecializedSalvageHold", "SpecializedAmmoHold", "SpecializedFuelBay",
+    "SpecializedCommandCenterHold", "SpecializedPlanetaryCommoditiesHold",
+    "SpecializedIndustrialShipHold", "SpecializedMaterialBay", "SpecializedAsteroidHold",
+    "SpecializedIceHold", "SpecializedSmallShipHold", "SpecializedMediumShipHold",
+    "SpecializedLargeShipHold", "SpecializedShipHold",
+})
+
+
+def cargo_items_in_ship(assets, ship_item_id):
+    """From a raw assets list, return {type_id: quantity} for everything sitting in
+    the given ship's cargo/hold flags (see CARGO_FLAGS). Excludes fitted modules,
+    rigs and the ship itself. Stacks of the same type are summed."""
+    out = {}
+    for a in assets or []:
+        if a.get("location_id") != ship_item_id:
+            continue
+        if a.get("location_flag") not in CARGO_FLAGS:
+            continue
+        tid = a.get("type_id")
+        if tid is None:
+            continue
+        out[int(tid)] = out.get(int(tid), 0) + int(a.get("quantity") or 0)
+    return out
 
 
 def fetch_industry_jobs(token, character_id, session, include_completed=False):

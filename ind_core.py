@@ -706,14 +706,17 @@ def manufacturing_cost(bp, prices, adjusted, job_rate, me, runs=1):
         eff_batch = effective_qty(base_qty, me, runs=n)
         unit = (prices.get(mid) or {}).get("sell_min")
         adj = adjusted.get(mid)
-        line_cost = (eff * unit) if unit else None
-        line_cost_batch = (eff_batch * unit) if unit else None
+        # `is not None`, not truthiness: a genuine price of 0 is a real price, not
+        # a missing one. Only an absent sell order flips missing_price / drops the
+        # EIV contribution.
+        line_cost = (eff * unit) if unit is not None else None
+        line_cost_batch = (eff_batch * unit) if unit is not None else None
         if line_cost is None:
             missing = True
         else:
             material_cost += line_cost
             material_cost_batch += line_cost_batch
-        if adj:
+        if adj is not None:
             eiv += base_qty * adj
         lines.append({
             "type_id": mid,
@@ -959,11 +962,22 @@ def invention_cost_per_run(inv, prices, params):
     attempt = 0.0
     for dcid, qty in inv.get("datacores", []):
         unit = (prices.get(dcid) or {}).get("sell_min")
-        if unit:
+        if unit is not None:   # a genuine 0 counts; only an absent order is skipped
             attempt += qty * unit
     if params.get("decryptor_price"):
         attempt += params["decryptor_price"]
     return attempt / (p * runs)
+
+
+def invention_datacores_missing(inv, prices):
+    """True when any datacore for this invention has no sell order to price
+    against. invention_cost_per_run silently omits such a datacore (understating
+    T2 cost/inflating profit with no visible warning), so callers OR this into
+    their missing_price flag the same way manufacturing does for materials."""
+    if not inv:
+        return False
+    return any((prices.get(dcid) or {}).get("sell_min") is None
+               for dcid, _qty in inv.get("datacores", []))
 
 
 def evaluate_industry(candidates, prices, adjusted, params):
@@ -1021,6 +1035,9 @@ def evaluate_industry(candidates, prices, adjusted, params):
         inv = bp.get("invention")
         bpo_price = (params.get("bpo_prices") or {}).get(bp["blueprint_id"])
         invention_cost = invention_cost_per_run(inv, prices, params) if inv else 0.0
+        # An unpriced datacore silently understates invention cost — flag it like
+        # a missing material so the row is marked, not shown as cheaper-than-real.
+        missing_price = cost["missing_price"] or invention_datacores_missing(inv, prices)
         bp_buyin = None if inv else bpo_price          # T1 BPO purchase price
         bp_available = bool(inv or bpo_price)          # obtainable: inventable or BPO on sale
 
@@ -1087,7 +1104,7 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "payback_runs_instant": payback_runs_instant,
             "requires_invention": bool(inv),
             "total_cost": operating_cost,
-            "missing_price": cost["missing_price"],
+            "missing_price": missing_price,
             "ask": ask,
             "bid": bid,
             "profit_patient": profit_patient,
@@ -1226,7 +1243,7 @@ def build_industry_detail(bp, prices, names, volumes, params):
         "total_cost": operating_cost,
         "total_cost_batch": operating_cost_batch,
         "material_cost_batch": cost["material_cost_batch"],
-        "missing_price": cost["missing_price"],
+        "missing_price": cost["missing_price"] or invention_datacores_missing(inv, prices),
         "ask": ask,
         "bid": bid,
         "sales_tax": sales_tax,

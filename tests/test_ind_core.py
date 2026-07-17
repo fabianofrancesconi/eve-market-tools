@@ -357,6 +357,26 @@ class TestManufacturingCost:
         assert c["material_cost_batch"] == pytest.approx(c["material_cost"])
         assert c["lines"][0]["eff_qty_batch"] == c["lines"][0]["eff_qty"]
 
+    def test_zero_price_is_a_real_price_not_missing(self):
+        # A genuine sell_min of 0 is a real (if odd) price — it must be counted,
+        # not treated as a missing order. Only an absent sell_min flips missing.
+        c = ind_core.manufacturing_cost(
+            _bp(), _prices({35: {"sell_min": 0.0, "buy_max": 9.0}}),
+            _ADJUSTED, job_rate=0.06, me=0)
+        assert c["missing_price"] is False           # 0 is priced, not missing
+        assert c["material_cost"] == pytest.approx(500.0)   # 100*5 + 50*0
+        # And its line cost is 0.0, not None.
+        line35 = next(l for l in c["lines"] if l["type_id"] == 35)
+        assert line35["line_cost"] == pytest.approx(0.0)
+
+    def test_zero_adjusted_price_still_contributes_to_eiv(self):
+        # adjusted price 0 must be added to EIV (0 contribution) without being
+        # dropped as "falsy"; a non-zero one on the other material still counts.
+        c = ind_core.manufacturing_cost(
+            _bp(), _prices(), {34: 0.0, 35: 8.0}, job_rate=0.06, me=0)
+        # EIV = 100*0 + 50*8 = 400
+        assert c["eiv"] == pytest.approx(400.0)
+
 
 # ---------------------------------------------------------------------------
 # build_time
@@ -569,6 +589,34 @@ class TestInventionCost:
 
     def test_zero_probability_is_zero(self):
         assert ind_core.invention_cost_per_run(_inv(probability=0), _inv_prices(), {}) == 0.0
+
+    def test_unpriced_datacore_flagged_missing(self):
+        # A datacore with no sell order is silently skipped from invention cost
+        # (understating it). invention_datacores_missing surfaces that so callers
+        # can flag the row instead of showing fake profit.
+        assert ind_core.invention_datacores_missing(_inv(), _inv_prices()) is False
+        # Drop 20411's price -> missing.
+        assert ind_core.invention_datacores_missing(
+            _inv(), {20410: {"sell_min": 1000.0}}) is True
+        assert ind_core.invention_datacores_missing(None, {}) is False
+
+    def test_zero_priced_datacore_is_not_missing(self):
+        # A genuine 0 price is a real price, not a missing order.
+        assert ind_core.invention_datacores_missing(
+            _inv(), {20410: {"sell_min": 0.0}, 20411: {"sell_min": 0.0}}) is False
+
+    def test_t2_row_missing_price_when_datacore_unpriced(self):
+        # The scan row's missing_price must reflect an unpriced datacore, not
+        # just unpriced materials.
+        bp = _bp(invention=_inv())
+        merged = _prices()
+        merged.update({20410: {"sell_min": 1000.0}})   # 20411 deliberately unpriced
+        r = ind_core.evaluate_industry([bp], merged, _ADJUSTED, _params())[0]
+        assert r["missing_price"] is True
+        # Detail panel agrees.
+        d = ind_core.build_industry_detail(bp, merged, {}, _VOLUMES,
+                                           _params(adjusted=_ADJUSTED))
+        assert d["missing_price"] is True
 
     def test_t2_invention_cost_is_in_operating_profit(self):
         # For a T2 item the invention (datacore) cost is a recurring per-run cost

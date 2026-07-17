@@ -521,7 +521,10 @@
      and stays left-packed next to its header — a compact log, not a table
      sprawled across the viewport with values floating far from their headers.
      System is the one flexible column; a max-width keeps it from running away. */
-  #track-table { border-collapse:collapse; }
+  /* width:auto overrides the global `table { width:100% }` — otherwise the
+     table stretches and auto-layout spreads the columns wide, so values sit
+     centred far from their left-aligned headers. */
+  #track-table { border-collapse:collapse; width:auto; }
   #track-table th { text-align:left; color:var(--dim); font-weight:600; font-size:12px;
     padding:6px 14px; border-bottom:2px solid var(--line); white-space:nowrap; }
   #track-table td { padding:6px 14px; border-bottom:1px solid var(--line); font-size:13px;

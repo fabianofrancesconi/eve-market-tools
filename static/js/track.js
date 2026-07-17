@@ -138,8 +138,12 @@ async function sessionDelete(){
 
 function renderJournal(){
   // Live-dot on the Journal mode button whenever a session is active/paused.
+  // Green = live, yellow = paused.
   const dot=$("#exp-journal-live-dot");
-  if(dot) dot.classList.toggle("hidden", TRACK.state==="stopped");
+  if(dot){
+    dot.classList.toggle("hidden", TRACK.state==="stopped");
+    dot.classList.toggle("exp-live-dot-paused", TRACK.state==="paused");
+  }
 
   renderLiveControls();
   renderSessionList();

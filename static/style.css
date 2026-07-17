@@ -464,6 +464,7 @@
   .exp-mode-btn.active { color:var(--cyan); border-bottom-color:var(--cyan); background:var(--panel2); }
   .exp-live-dot { width:8px; height:8px; border-radius:50%; background:var(--green2);
     display:inline-block; box-shadow:0 0 6px var(--green2); }
+  .exp-live-dot.exp-live-dot-paused { background:var(--yellow); box-shadow:0 0 6px var(--yellow); }
 
   #exp-journal-view { padding:4px 4px 20px; }
   .exp-live-card { background:var(--panel2); border:1px solid var(--line); border-radius:8px;

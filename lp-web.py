@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.103.2"
+__version__ = "1.103.3"
 
 import argparse
 import base64

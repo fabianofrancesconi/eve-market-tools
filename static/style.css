@@ -517,22 +517,25 @@
   .track-hidden-chip.sec-low  { border-color:rgba(240,192,64,.5); }
   .track-hidden-chip.sec-null { border-color:rgba(224,85,85,.5); }
   .track-hidden-dwell { color:var(--dim2); font-size:11px; font-variant-numeric:tabular-nums; }
-  #track-table { width:100%; border-collapse:collapse; table-layout:fixed; }
+  /* Constrained width so the trail reads as a compact log, not a table sprawled
+     across the whole viewport (which floats every value far from its header). */
+  #track-table { width:100%; max-width:880px; border-collapse:collapse; table-layout:fixed; }
   #track-table th { text-align:left; color:var(--dim); font-weight:600; font-size:12px;
     padding:6px 10px; border-bottom:2px solid var(--line); white-space:nowrap; }
   #track-table td { padding:6px 10px; border-bottom:1px solid var(--line); font-size:13px;
     vertical-align:middle; overflow:hidden; text-overflow:ellipsis; }
-  /* Fixed column widths so values line up under their headers: #, System,
-     Sec, Entered, Dwell, Cargo, Note. System + Note take the slack. */
-  #track-table th:nth-child(1), #track-table td:nth-child(1) { width:40px; text-align:right;
+  /* Explicit column widths so values line up under their headers: #, System,
+     Sec, Entered, Dwell, Cargo, Note. System takes the remaining slack. */
+  #track-table th:nth-child(1), #track-table td:nth-child(1) { width:38px; text-align:right;
     color:var(--dim); font-variant-numeric:tabular-nums; }
-  #track-table th:nth-child(3), #track-table td:nth-child(3) { width:56px; }
-  #track-table th:nth-child(4), #track-table td:nth-child(4) { width:74px;
+  #track-table th:nth-child(2), #track-table td:nth-child(2) { width:auto; }
+  #track-table th:nth-child(3), #track-table td:nth-child(3) { width:52px; }
+  #track-table th:nth-child(4), #track-table td:nth-child(4) { width:72px;
     font-variant-numeric:tabular-nums; color:var(--dim); }
-  #track-table th:nth-child(5), #track-table td:nth-child(5) { width:88px;
+  #track-table th:nth-child(5), #track-table td:nth-child(5) { width:96px;
     font-variant-numeric:tabular-nums; }
-  #track-table th:nth-child(6), #track-table td:nth-child(6) { width:130px; }
-  #track-table th:nth-child(7), #track-table td:nth-child(7) { width:34%; }
+  #track-table th:nth-child(6), #track-table td:nth-child(6) { width:126px; }
+  #track-table th:nth-child(7), #track-table td:nth-child(7) { width:150px; }
   #track-table .track-sys { font-weight:600; color:var(--fg); white-space:nowrap;
     overflow:hidden; text-overflow:ellipsis; }
   /* "You are here" — the live session's current system. */

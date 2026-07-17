@@ -991,6 +991,14 @@ function reconcileBuilds(){
   const jobsKnown = !!(AUTH.data && Array.isArray(AUTH.data.jobs));
   const activeJobIds=_activeJobIdSet();
   const claimed=new Set();
+  // Pre-seed with EVERY already-linked, still-active job id before the loop.
+  // Otherwise an older unlinked build (processed first in created_at order) can
+  // adopt a job that a newer, already-linked build owns, because that newer
+  // build hasn't added its id to `claimed` yet — leaving two builds on one job.
+  IND.builds.forEach(b=>{
+    if(b.job_id!=null && !b.done_at && activeJobIds.has(String(b.job_id)))
+      claimed.add(String(b.job_id));
+  });
   let changed=false;
   // Order by created_at so the oldest batch claims the oldest matching job.
   const ordered=[...IND.builds].sort((a,b)=>(a.created_at||0)-(b.created_at||0));
@@ -1124,9 +1132,14 @@ function _buildCardHtml(b, linked){
   let statusLine="";
   if(st.key==="awaiting"){
     // If a running job for this blueprint exists with a different run count,
-    // offer it as a one-click close match instead of only nagging.
-    const close=AUTH.loggedIn ? _findCloseJobForBuild(b, linked||new Set()) : null;
+    // offer it as a one-click close match instead of only nagging. `linked` is
+    // shared across cards this render, and includes jobs already suggested to an
+    // earlier awaiting card — so two awaiting builds of the same blueprint never
+    // both point at the same job (which would double-link on accept).
+    const claimedJobs=linked||new Set();
+    const close=AUTH.loggedIn ? _findCloseJobForBuild(b, claimedJobs) : null;
     if(close){
+      claimedJobs.add(String(close.job_id));   // reserve it for this card
       const cn=close.runs;
       statusLine=`<span class="ind-build-warn">No exact match — but a running `
         +`<b>${cn.toLocaleString()}×</b> job of this blueprint`
@@ -1245,6 +1258,11 @@ function acceptCloseJob(buildId, jobId, jobRuns){
   if(!b) return;
   const job=((AUTH.data&&AUTH.data.jobs)||[]).find(j=>String(j.job_id)===String(jobId));
   if(!job) return;   // stale card — job no longer active; a reconcile will refresh
+  // Guard against a double-claim: if another build already links this job (e.g.
+  // two stale cards clicked in quick succession), don't steal it — just refresh.
+  if(IND.builds.some(x=>x.id!==buildId && String(x.job_id)===String(jobId) && !x.done_at)){
+    renderIndBuilds(); return;
+  }
   b.job_id=job.job_id;
   b.job_end=job.end;
   b.char_name=job.character_name;

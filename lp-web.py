@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.112.0"
+__version__ = "1.113.0"
 
 import argparse
 import base64
@@ -2112,19 +2112,36 @@ def do_arb_prefs(q):
     return {"ok": True}
 
 
+def _parse_arb_params(q):
+    """Parse the arb-scan query params with defaults. Each `... or <default>`
+    guards a present-but-empty field (e.g. "sales_tax=") which would otherwise
+    raise float("")/int("") and surface as an SSE error event instead of the
+    same fallback the LP scan applies. Returns a dict of coerced values."""
+    return {
+        "region": int(q.get("region", ["10000002"])[0] or 10000002),
+        "sales_tax": float(q.get("sales_tax", ["0.075"])[0] or 0.075),
+        "cross_station": q.get("cross_station", ["1"])[0] in ("1", "true", "on"),
+        "min_isk": float(q.get("min_isk", ["0"])[0] or 0),
+        "max_jumps": int(q.get("max_jumps", ["6"])[0] or 6),
+        "avoid_lowsec": q.get("avoid_lowsec", ["0"])[0] in ("1", "true", "on"),
+        "route_flag": q.get("route_flag", ["shortest"])[0],
+    }
+
+
 def do_arb_scan(q, emit=None):
     """Run the arb scan, optionally streaming SSE progress via emit(dict)."""
     def _emit(d):
         if emit:
             emit(d)
 
-    region = int(q.get("region", ["10000002"])[0])
-    sales_tax = float(q.get("sales_tax", ["0.075"])[0])
-    cross_station = q.get("cross_station", ["1"])[0] in ("1", "true", "on")
-    min_isk = float(q.get("min_isk", ["0"])[0] or 0)
-    max_jumps = int(q.get("max_jumps", ["6"])[0])
-    avoid_lowsec = q.get("avoid_lowsec", ["0"])[0] in ("1", "true", "on")
-    route_flag = q.get("route_flag", ["shortest"])[0]
+    ap = _parse_arb_params(q)
+    region = ap["region"]
+    sales_tax = ap["sales_tax"]
+    cross_station = ap["cross_station"]
+    min_isk = ap["min_isk"]
+    max_jumps = ap["max_jumps"]
+    avoid_lowsec = ap["avoid_lowsec"]
+    route_flag = ap["route_flag"]
 
     s = load_arb_settings()
     s.update({

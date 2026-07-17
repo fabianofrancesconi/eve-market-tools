@@ -495,7 +495,10 @@ function bindLotCalcs(savedLots){
 function renderBody(){
   const d=STATE.detail;
   const n=Math.max(1,parseInt($("#reds").value||"1"));
-  const tax=parseFloat(STATE.ctx.tax)||0.045, broker=parseFloat(STATE.ctx.broker)||0.015;
+  // A legitimate 0% fee must survive: `parseFloat(x)||default` would turn 0 into
+  // the default, so only fall back when the value isn't a finite number.
+  const _fee=(v,dflt)=>{ const n=parseFloat(v); return isFinite(n)?n:dflt; };
+  const tax=_fee(STATE.ctx.tax, 0.045), broker=_fee(STATE.ctx.broker, 0.015);
   const hub=(STATE.lastScanData&&STATE.lastScanData.station_name)||"the selected hub";
   const pn=v=>v>0?"pos":(v<0?"neg":"");
   const savedLots={};

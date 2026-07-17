@@ -82,5 +82,12 @@ class TestConversionWiring:
         assert '$("#g-tax").value=fracToPct(s.tax)' in lp_web.FRONTEND_SOURCE
         assert '$("#g-broker").value=fracToPct(s.broker)' in lp_web.FRONTEND_SOURCE
 
-    def test_arb_tax_uses_numeric_addition(self):
-        assert 'parseFloat(pctToFrac($("#g-tax").value)||0)+parseFloat(pctToFrac($("#g-broker").value)||0)' in lp_web.FRONTEND_SOURCE
+    def test_arb_tax_is_sales_tax_only_no_broker(self):
+        # Arbitrage dumps instantly into a buy order, which pays sales tax only
+        # (no broker fee — no order placed). The scan must send sales tax as a
+        # parsed number, and must NOT add the broker fee (doing so understated
+        # net/margin and hid profitable flips).
+        assert 'const arbTax=parseFloat(pctToFrac($("#g-tax").value)||0);' in lp_web.FRONTEND_SOURCE
+        # The scanArb body itself must not reach for the broker field.
+        body = lp_web.FRONTEND_SOURCE.split("function scanArb(")[1].split("\nfunction ")[0]
+        assert "g-broker" not in body

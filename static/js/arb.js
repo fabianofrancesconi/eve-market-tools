@@ -17,7 +17,7 @@ const ARB_COLS = [
   {k:"from_sec",       t:"Sec",         w: 52, tip:"Security status of From station's system.", f:v=>v===null?"?":v.toFixed(1), secBand:"from_sec_band"},
   {k:"buy_station",    t:"To",          w:220, tip:"Station where you deliver and sell.", cls:""},
   {k:"to_sec",         t:"Sec",         w: 52, tip:"Security status of To station's system.", f:v=>v===null?"?":v.toFixed(1), secBand:"to_sec_band"},
-  {k:"jumps",          t:"Jumps",       w: 65, tip:"Jump count From→To (0 = same station).", f:fmtNum},
+  {k:"jumps",          t:"Jumps",       w: 65, tip:"Round-trip jumps: From→To and back (0 = same station). Matches the max-jumps filter, which is also round-trip.", f:fmtNum},
   {k:"risk",           t:"Risk",        w: 80, tip:"SAFE = all highsec. LOWSEC/NULLSEC = route touches lower security.", riskBand:"risk_band"},
 ];
 
@@ -120,7 +120,11 @@ function scanArb(){
   const btn=$("#arb-go");
   btn.disabled=true; btn.textContent="Scanning…";
 
-  const arbTax=parseFloat(pctToFrac($("#g-tax").value)||0)+parseFloat(pctToFrac($("#g-broker").value)||0);
+  // Arbitrage buys from a sell order (ask) and dumps INSTANTLY into a buy order.
+  // An instant sale into someone's buy order pays sales tax only — no broker fee,
+  // because you place no order. So the scan must pass sales tax alone; folding in
+  // the broker fee understated net/margin and hid genuinely profitable flips.
+  const arbTax=parseFloat(pctToFrac($("#g-tax").value)||0);
   const p=new URLSearchParams({
     region:       $("#arb-region").value,
     cross_station: $("#arb-cross").value,

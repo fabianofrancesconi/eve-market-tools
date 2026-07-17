@@ -4,6 +4,8 @@ detector. Pins the spread math (net proceeds after sales tax, per-unit and
 total ISK opportunity, margin %), the best-order selection (cheapest sell vs
 highest buy), the min_volume gate, and same-station vs cross-station keying.
 """
+import pytest
+
 from arb_core import find_spreads
 
 
@@ -41,6 +43,26 @@ class TestProfitableSpread:
 
     def test_margin_pct_relative_to_cost(self):
         assert self._result()["margin_pct"] == 23.5 / 100.0 * 100.0
+
+    def test_only_sales_tax_deducted_no_broker_fee(self):
+        # The arb model dumps instantly into a buy order, which pays sales tax
+        # ONLY (no broker fee — no order is placed). find_spreads must therefore
+        # take a single sales_tax rate; if a caller folds a broker fee into it,
+        # the effective deduction is larger and profitable flips vanish. Prove
+        # that a flip which clears on tax-only would be wrongly killed by a
+        # combined tax+broker rate — so the client must pass tax alone.
+        orders = [
+            _order(price=1_000_000.0, is_buy=False, volume_remain=10),
+            _order(price=1_048_000.0, is_buy=True, volume_remain=10),
+        ]
+        # sales tax 4.5% only: 1_048_000 * 0.955 - 1_000_000 = +840 -> a deal
+        ok = find_spreads(orders, sales_tax=0.045, same_station_only=True)
+        assert len(ok) == 1
+        assert ok[0]["net_per_unit"] == pytest.approx(840.0)
+        # tax 4.5% + broker 3% folded together = 7.5%: 1_048_000*0.925 -
+        # 1_000_000 = -30_600 -> the deal vanishes (the bug this fix prevents)
+        killed = find_spreads(orders, sales_tax=0.075, same_station_only=True)
+        assert killed == []
 
     def test_records_prices_and_locations(self):
         r = self._result()

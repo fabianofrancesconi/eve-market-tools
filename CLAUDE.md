@@ -2,30 +2,53 @@
 
 ## Releases
 
-**Every commit that changes behaviour must bump the version.** The UI reads `__version__` directly — if it is not updated, the version badge in the browser will not change.
+**One version bump per push, NOT per commit.** A version corresponds to a *release*
+(one Docker image, one `latest`), not to an individual commit. The UI reads
+`__version__` directly — if it is not updated, the version badge in the browser will
+not change — so every push that ships behaviour changes must carry exactly one bump.
 
-### Steps on every behaviour-changing commit (do not wait for the user to ask):
+### What `x.y.z` means
 
-1. **Update `__version__ = "x.y.z"`** in `lp-web.py` line 13 — this is what the UI displays
-2. Run `pytest tests/` — all tests must pass
-3. Commit with message `vx.y.z: <description>`
+- **`z` (patch)** — the default. Bump `z` for essentially everything: bug fixes,
+  refinements, small user-visible tweaks, internal changes, most feature work. Unless a
+  release clears the bar for a `y` bump below, it increments `z`.
+- **`y` (minor)** — bump `y` (and reset `z` to 0) only for a *big* release: a new
+  feature or capability, a large or sweeping change, a major user-visible change, or a
+  significant rewrite. This is the exception, not the norm.
+- **`x` (major)** — left alone unless there's a genuinely huge, deliberate milestone;
+  don't reach for it without the user's say-so.
 
-**Do NOT tag at commit time, and do NOT push automatically.** A commit is not yet a
-release — it may still be WIP, get amended, or get reordered before it ships. Tagging
-early just litters the repo with tags for commits that were never actually released.
-Only push when the user explicitly asks (e.g. "push", "ship it"); several versioned
-commits can pile up locally first and go out together.
+When in doubt, bump `z`. A batch that collates several small fixes is a `z` bump even
+if there are many commits; it's the *size/nature of the change*, not the commit count,
+that decides `y`.
 
-**Tags are created at push time, not before, and pushed ONE AT A TIME.** When asked
-to push, work through the local `vX.Y.Z: ...` commits oldest-first: tag the commit
-(`git tag vX.Y.Z <sha>`), push that single tag with the branch, wait for its Docker
-workflow run to finish, then move on to the next one:
+### While working (before a push is requested):
+
+Commit freely. A workstream can be many commits — split them however makes the history
+readable (one per logical fix is fine). **Do NOT bump `__version__` on each commit and
+do NOT put `vX.Y.Z:` in every commit message.** Those intermediate commits are just
+work-in-progress; use plain descriptive messages (e.g. `Fix notes autosave data loss`).
+Do run `pytest tests/` as you go — all tests must pass.
+
+### When the user asks to push ("push", "ship it"):
+
+Collate everything since the last released tag into a *single* release:
+
+1. Pick the next version `x.y.z` for the whole batch (one bump for all the commits).
+2. **Update `__version__ = "x.y.z"`** in `lp-web.py` (near the top) — what the UI shows.
+3. Run `pytest tests/` — all must pass.
+4. Commit the bump with message `vx.y.z: <summary of the batch>` (a short summary line;
+   the body can bullet the notable changes). This is the only versioned commit.
+5. Tag that commit and push the branch + that one tag together:
 
 ```
 git tag v1.2.3 <sha>
 git push origin master v1.2.3
-gh run list --workflow=docker.yml --limit 1   # confirm it completed before tagging the next
+gh run list --workflow=docker.yml --limit 1   # confirm it completed
 ```
+
+There is normally only **one** new tag per push now, so the multi-tag ordering hazard
+below rarely applies — but the rule still holds if you ever have more than one.
 
 ⚠️ **Never push more than one new `vX.Y.Z` tag in a single `git push` command**, and
 never use `git push origin master --tags`. The Docker workflow tags every build
@@ -36,8 +59,9 @@ and whichever run's `docker push` finishes last wins the mutable `latest` tag �
 success. (Confirmed: pushing v1.49.0 and v1.50.0 together left `latest` == v1.49.0's
 image until v1.50.0's run was manually re-triggered alone.) Separately, pushing more
 than three new tags in one push makes GitHub trigger **no** tag workflows at all for
-that push — another reason to go one at a time. To re-trigger a tag whose workflow
-didn't run, delete it on the remote and re-push it:
+that push. If for some reason you do have multiple tags to ship, push them ONE AT A
+TIME, waiting for each Docker run to finish before the next. To re-trigger a tag whose
+workflow didn't run, delete it on the remote and re-push it:
 `git push origin :refs/tags/vX.Y.Z && git push origin vX.Y.Z`. If `latest` ever looks
 wrong, compare digests (`docker manifest inspect ghcr.io/.../eve-market-tools:latest`
 vs the newest version tag) and fix by re-running just that tag's workflow

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.116.0"
+__version__ = "1.117.0"
 
 import argparse
 import base64
@@ -406,6 +406,28 @@ def _get_account_by_id(account_id):
     return acct
 
 
+_SESSION_TOUCH_INTERVAL = 3600           # bump DB last_seen at most hourly per sid
+_SESSION_TOUCH_LAST = {}                 # {sid: monotonic-ish last touch time}
+_SESSION_TOUCH_LOCK = threading.Lock()
+
+
+def _touch_session_throttled(sid):
+    """Advance a cache-hit session's DB last_seen, but at most once per hour per
+    sid so we don't write on every request. Without this an active session's
+    last_seen freezes at creation time and the idle sweep eventually deletes it."""
+    if not pg_store.enabled():
+        return
+    now = time.time()
+    with _SESSION_TOUCH_LOCK:
+        if now - _SESSION_TOUCH_LAST.get(sid, 0) < _SESSION_TOUCH_INTERVAL:
+            return
+        _SESSION_TOUCH_LAST[sid] = now
+    try:
+        pg_store.session_touch(sid)
+    except Exception:
+        pass
+
+
 def _resolve_session(sid):
     """Resolve a cookie session id to its Account (multi-user mode), or None."""
     if not sid:
@@ -413,6 +435,7 @@ def _resolve_session(sid):
     with _REGISTRY_LOCK:
         acct = _SESSIONS.get(sid)
     if acct is not None:
+        _touch_session_throttled(sid)   # keep the DB last_seen fresh on cache hits
         return acct
     account_id = pg_store.session_get(sid)
     if account_id is None:

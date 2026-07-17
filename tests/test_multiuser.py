@@ -73,6 +73,12 @@ class FakePG:
     def session_set(self, sid, aid):
         self.sessions[sid] = {"account_id": aid, "last_seen": time.time()}
 
+    def session_touch(self, sid):
+        s = self.sessions.get(sid)
+        if s is not None:
+            s["last_seen"] = time.time()
+            s["touches"] = s.get("touches", 0) + 1
+
     def session_delete(self, sid):
         self.sessions.pop(sid, None)
 
@@ -173,6 +179,36 @@ class TestSessions:
     def test_unknown_or_empty_session_is_none(self, pg):
         assert lp_web._resolve_session("nope") is None
         assert lp_web._resolve_session(None) is None
+
+    def test_cache_hit_touches_last_seen(self, pg, monkeypatch):
+        """A cached-session resolution must still bump the DB last_seen (throttled),
+        or an actively-used session's last_seen freezes at creation and the idle
+        sweep eventually deletes it despite daily use."""
+        monkeypatch.setattr(lp_web, "_SESSION_TOUCH_LAST", {})
+        a = _acct(pg, 100, "Main")
+        sid = lp_web._new_session(a)
+        pg.sessions[sid]["touches"] = 0
+        # A cache hit with no prior touch record bumps last_seen once.
+        assert lp_web._resolve_session(sid) is a
+        assert pg.sessions[sid]["touches"] == 1
+        # Within the throttle window, further hits don't write again...
+        assert lp_web._resolve_session(sid) is a
+        assert pg.sessions[sid]["touches"] == 1
+        # ...but once the window elapses, the next hit touches again.
+        lp_web._SESSION_TOUCH_LAST[sid] = time.time() - (lp_web._SESSION_TOUCH_INTERVAL + 1)
+        assert lp_web._resolve_session(sid) is a
+        assert pg.sessions[sid]["touches"] == 2
+
+    def test_cache_hit_touch_is_throttled(self, pg, monkeypatch):
+        """Rapid repeated resolves must not write on every request."""
+        monkeypatch.setattr(lp_web, "_SESSION_TOUCH_LAST", {})
+        a = _acct(pg, 100, "Main")
+        sid = lp_web._new_session(a)
+        pg.sessions[sid]["touches"] = 0
+        lp_web._SESSION_TOUCH_LAST[sid] = 0    # force the first resolve to touch
+        for _ in range(10):
+            lp_web._resolve_session(sid)
+        assert pg.sessions[sid]["touches"] == 1   # only one write despite 10 hits
 
     def test_char_account_index_written(self, pg):
         _acct(pg, 100, "Main")

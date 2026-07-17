@@ -190,6 +190,17 @@ def session_set(sid, account_id):
             (sid, account_id, now, now))
 
 
+def session_touch(sid):
+    """Bump a session's last_seen without resolving it. Used on the in-memory
+    cache-hit path, where session_get (which also touches) is skipped — otherwise
+    an actively-used session's DB last_seen never advances and the idle sweep
+    deletes it after max_idle even though it's in daily use."""
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "UPDATE mono_sessions SET last_seen = %s WHERE sid = %s",
+            (time.time(), sid))
+
+
 def session_delete(sid):
     with _get_pool().connection() as conn:
         conn.execute("DELETE FROM mono_sessions WHERE sid = %s", (sid,))

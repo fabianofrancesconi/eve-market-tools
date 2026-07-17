@@ -295,6 +295,14 @@ def fetch_assets(token, character_id, session):
     return out, last_modified
 
 
+# type_ids that are NEVER real ship haulage even when ESI reports them at the
+# ship's location under a cargo flag. PLEX (44992) lives in the account-wide PLEX
+# Vault — a secure hold reachable from anywhere, not the ship's cargo — which is
+# exactly why the in-game client omits it from a ship's cargo manifest. Counting it
+# inflated the cargo value by the whole vault (e.g. 560 PLEX ≈ 3.46B ISK).
+CARGO_EXCLUDED_TYPE_IDS = frozenset({44992})
+
+
 # location_flags that count as "cargo" the pilot is hauling. Fitted modules,
 # rigs and the like are excluded — this is the loot/haul in the holds, not the
 # fit. Kept broad so ore/gas/mineral/fuel/ammo holds all count.
@@ -312,7 +320,9 @@ CARGO_FLAGS = frozenset({
 def cargo_items_in_ship(assets, ship_item_id):
     """From a raw assets list, return {type_id: quantity} for everything sitting in
     the given ship's cargo/hold flags (see CARGO_FLAGS). Excludes fitted modules,
-    rigs and the ship itself. Stacks of the same type are summed."""
+    rigs, the ship itself, and account-vault items like PLEX that ESI reports at the
+    ship but that aren't real haulage (see CARGO_EXCLUDED_TYPE_IDS). Stacks of the
+    same type are summed."""
     out = {}
     for a in assets or []:
         if a.get("location_id") != ship_item_id:
@@ -321,6 +331,8 @@ def cargo_items_in_ship(assets, ship_item_id):
             continue
         tid = a.get("type_id")
         if tid is None:
+            continue
+        if int(tid) in CARGO_EXCLUDED_TYPE_IDS:
             continue
         out[int(tid)] = out.get(int(tid), 0) + int(a.get("quantity") or 0)
     return out

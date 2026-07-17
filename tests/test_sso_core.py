@@ -334,6 +334,20 @@ def test_cargo_items_in_ship_filters_by_ship_and_flag():
     assert cargo == {34: 100, 1230: 50}
 
 
+def test_cargo_items_in_ship_excludes_plex_vault():
+    # PLEX (44992) sits in the account-wide PLEX Vault, which ESI can report at the
+    # ship's location under a cargo flag. It is NOT real haulage (the in-game client
+    # omits it), so it must not inflate the cargo value.
+    ship_id = 500
+    assets = [
+        {"item_id": 1, "type_id": 34, "quantity": 100,
+         "location_id": ship_id, "location_flag": "Cargo"},
+        {"item_id": 2, "type_id": 44992, "quantity": 560,
+         "location_id": ship_id, "location_flag": "Cargo"},
+    ]
+    assert sso_core.cargo_items_in_ship(assets, ship_id) == {34: 100}
+
+
 def test_cargo_items_in_ship_sums_same_type_stacks():
     ship_id = 500
     assets = [

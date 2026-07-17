@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.104.1"
+__version__ = "1.105.0"
 
 import argparse
 import base64
@@ -1640,6 +1640,9 @@ _TRACK_LOCK = threading.RLock()
 _TRACK_SESSIONS = {}             # cid -> session dict (see state machine above)
 _TRACK_LOADED_ACCTS = set()      # account_ids whose sessions are hydrated in-memory
 _TRACK_SYSTEM_CACHE = {}         # system_id -> {name, sec} (never changes)
+_TRACK_REGION_CACHE = {}         # system_id -> {region_id, region, constellation} (never changes)
+_TRACK_REGION_PATH = CACHE_DIR / "system_regions.json"  # persistent system→region map
+_TRACK_REGION_LOCK = threading.Lock()
 _TRAIL_RECORD_LOCK = threading.Lock()
 
 
@@ -1647,6 +1650,47 @@ def _resolve_track_system(system_id):
     """{name, sec} for a solar system, cached forever (systems never change)."""
     info = arb_core.resolve_system(system_id, _TRACK_SYSTEM_CACHE, SESSION)
     return info or {"name": str(system_id), "sec": None}
+
+
+def _resolve_track_region(system_id):
+    """{region_id, region, constellation} for a solar system, or None. The
+    system→constellation→region chain never changes, so it's cached both in
+    memory and on disk (one ESI round-trip per system, ever)."""
+    if not system_id:
+        return None
+    with _TRACK_REGION_LOCK:
+        if not _TRACK_REGION_CACHE:
+            _TRACK_REGION_CACHE.update(load_json(_TRACK_REGION_PATH, {}))
+        hit = _TRACK_REGION_CACHE.get(str(system_id))
+        if hit is not None:
+            return hit or None
+    info = None
+    try:
+        r = SESSION.get(f"{arb_core.ESI}/universe/systems/{system_id}/",
+                        headers=arb_core.HEADERS, timeout=15)
+        if r.status_code == 200:
+            const_id = r.json().get("constellation_id")
+            r2 = SESSION.get(f"{arb_core.ESI}/universe/constellations/{const_id}/",
+                             headers=arb_core.HEADERS, timeout=15)
+            if r2.status_code == 200:
+                cd = r2.json()
+                region_id = cd.get("region_id")
+                const_name = cd.get("name")
+                region_name = REGION_NAMES.get(region_id)
+                if region_name is None and region_id:
+                    r3 = SESSION.get(f"{arb_core.ESI}/universe/regions/{region_id}/",
+                                     headers=arb_core.HEADERS, timeout=15)
+                    region_name = (r3.json().get("name")
+                                   if r3.status_code == 200 else f"Region {region_id}")
+                info = {"region_id": region_id, "region": region_name,
+                        "constellation": const_name}
+    except requests.RequestException:
+        return None
+    with _TRACK_REGION_LOCK:
+        # Cache the miss ({}) too, so a transient outage isn't retried forever.
+        _TRACK_REGION_CACHE[str(system_id)] = info or {}
+        save_json(_TRACK_REGION_PATH, _TRACK_REGION_CACHE)
+    return info
 
 
 def _ensure_track_loaded(acct):
@@ -1699,16 +1743,29 @@ def _append_trail(acct, cid, entered_at, run_id, system_id, system_name, securit
             save_json(LOCATION_TRAIL_PATH, store)
 
 
+def _enrich_trail_regions(rows):
+    """Attach region/constellation to each trail row (cached forever). Kept out
+    of storage so old trails gain the attribute without a migration."""
+    for r in rows:
+        reg = _resolve_track_region(r.get("system_id"))
+        if reg:
+            r["region"] = reg.get("region")
+            r["constellation"] = reg.get("constellation")
+    return rows
+
+
 def _query_trail(acct, cid, run_id=None, since_ts=0.0):
     if pg_store.enabled():
-        return pg_store.location_trail_query(acct.account_id, cid, run_id, since_ts)
-    store = load_json(LOCATION_TRAIL_PATH, {})
-    rows = store.get(str(cid), [])
-    if run_id is not None:
-        rows = [r for r in rows if r.get("run_id") == run_id]
+        rows = pg_store.location_trail_query(acct.account_id, cid, run_id, since_ts)
     else:
-        rows = [r for r in rows if r.get("entered_at", 0) >= since_ts]
-    return sorted(rows, key=lambda r: r.get("entered_at", 0))
+        store = load_json(LOCATION_TRAIL_PATH, {})
+        rows = store.get(str(cid), [])
+        if run_id is not None:
+            rows = [r for r in rows if r.get("run_id") == run_id]
+        else:
+            rows = [r for r in rows if r.get("entered_at", 0) >= since_ts]
+        rows = sorted(rows, key=lambda r: r.get("entered_at", 0))
+    return _enrich_trail_regions(rows)
 
 
 def _annotate_trail(acct, cid, entered_at, scanned=None, cargo_isk=None, note=None):

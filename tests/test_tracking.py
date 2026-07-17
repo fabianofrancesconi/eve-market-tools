@@ -34,6 +34,8 @@ def _isolate(monkeypatch, tmp_path):
     monkeypatch.setattr(lp_web.pg_store, "enabled", lambda: False)
     monkeypatch.setattr(lp_web, "_TRACK_SESSIONS", {})
     monkeypatch.setattr(lp_web, "_TRACK_LOADED_ACCTS", set())
+    # Region enrichment runs on every trail read — keep it off the network.
+    monkeypatch.setattr(lp_web, "_resolve_track_region", lambda sid: None)
     # Never let a token refresh or an SSE bump hit anything real.
     monkeypatch.setattr(lp_web, "_access_token", lambda acct, cid=None: "AT")
     monkeypatch.setattr(lp_web._CHAR_PUBSUB, "bump", lambda key: None)
@@ -65,6 +67,67 @@ class TestTrailStore:
         lp_web._append_trail(acct, 1, 100.0, "run1", 1, "A", 0.5)
         lp_web._annotate_trail(acct, 1, 100.0, scanned=True)
         assert lp_web._query_trail(acct, 1, run_id="run1")[0]["scanned"] is True
+
+    def test_query_enriches_region(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        # Undo the _isolate stub: exercise the real enrichment against a fake
+        # resolver so query attaches region/constellation onto each row.
+        monkeypatch.setattr(lp_web, "_resolve_track_region",
+            lambda sid: {"region": "The Forge", "constellation": "Kimotoro"})
+        acct = _acct()
+        lp_web._append_trail(acct, 1, 100.0, "run1", 30000142, "Jita", 0.9)
+        row = lp_web._query_trail(acct, 1, run_id="run1")[0]
+        assert row["region"] == "The Forge"
+        assert row["constellation"] == "Kimotoro"
+
+
+class TestRegionResolver:
+    def _isolate_region(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(lp_web, "_TRACK_REGION_PATH", tmp_path / "regions.json")
+        monkeypatch.setattr(lp_web, "_TRACK_REGION_CACHE", {})
+
+    def _resp(self, payload):
+        m = MagicMock(); m.status_code = 200; m.json = lambda: payload
+        return m
+
+    def test_resolves_and_caches(self, monkeypatch, tmp_path):
+        self._isolate_region(monkeypatch, tmp_path)
+        calls = []
+        def _get(url, **kw):
+            calls.append(url)
+            if "/systems/" in url:
+                return self._resp({"constellation_id": 20000020})
+            if "/constellations/" in url:
+                return self._resp({"region_id": 10000002, "name": "Kimotoro"})
+            return self._resp({"name": "The Forge"})
+        monkeypatch.setattr(lp_web.SESSION, "get", _get)
+        info = lp_web._resolve_track_region(30000142)
+        assert info["region"] == "The Forge (Jita)"   # from REGION_NAMES, no region call
+        assert info["constellation"] == "Kimotoro"
+        assert info["region_id"] == 10000002
+        # Second call is served from cache — no further HTTP.
+        n = len(calls)
+        assert lp_web._resolve_track_region(30000142)["region"] == "The Forge (Jita)"
+        assert len(calls) == n
+
+    def test_unknown_region_falls_back_to_esi_name(self, monkeypatch, tmp_path):
+        self._isolate_region(monkeypatch, tmp_path)
+        def _get(url, **kw):
+            if "/systems/" in url:
+                return self._resp({"constellation_id": 20000999})
+            if "/constellations/" in url:
+                return self._resp({"region_id": 10000069, "name": "Adestus"})
+            return self._resp({"name": "Black Rise"})
+        monkeypatch.setattr(lp_web.SESSION, "get", _get)
+        info = lp_web._resolve_track_region(30003000)
+        assert info["region"] == "Black Rise"   # from ESI /regions/, not REGION_NAMES
+        assert info["constellation"] == "Adestus"
+
+    def test_none_on_network_error(self, monkeypatch, tmp_path):
+        self._isolate_region(monkeypatch, tmp_path)
+        def _boom(url, **kw): raise requests.RequestException("down")
+        monkeypatch.setattr(lp_web.SESSION, "get", _boom)
+        assert lp_web._resolve_track_region(30000142) is None
 
     def test_annotate_cargo_set_and_clear(self, monkeypatch, tmp_path):
         _isolate(monkeypatch, tmp_path)

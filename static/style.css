@@ -536,8 +536,11 @@
     font-variant-numeric:tabular-nums; }
   #track-table th:nth-child(6), #track-table td:nth-child(6) { width:126px; }
   #track-table th:nth-child(7), #track-table td:nth-child(7) { width:150px; }
-  #track-table .track-sys { font-weight:600; color:var(--fg); white-space:nowrap;
-    overflow:hidden; text-overflow:ellipsis; }
+  #track-table .track-sys { overflow:hidden; }
+  #track-table .track-sys-name { display:block; font-weight:600; color:var(--fg);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #track-table .track-sys-sub { display:block; font-size:11px; color:var(--dim);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   /* "You are here" — the live session's current system. */
   #track-table tr.track-here td { background:rgba(79,195,247,.10); }
   #track-table tr.track-here td:first-child { color:var(--cyan); font-weight:700; }

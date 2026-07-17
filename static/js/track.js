@@ -260,9 +260,14 @@ function renderTrail(){
     const r=x.r, band=secBand(r.security);
     const here = liveActive && x.last;
     const badge = here ? ` <span class="track-here-badge">▸ you are here</span>` : "";
+    // Region/constellation as a subtitle under the system name — resolved
+    // server-side, so old trails may lack it.
+    const sub = r.region
+      ? `<span class="track-sys-sub">${authEsc(r.region)}${r.constellation?` · ${authEsc(r.constellation)}`:""}</span>`
+      : "";
     return `<tr class="${here?'track-here':''}">
       <td>${here?'▸':(vi+1)}</td>
-      <td class="track-sys">${authEsc(r.system_name)}${badge}</td>
+      <td class="track-sys"><span class="track-sys-name">${authEsc(r.system_name)}${badge}</span>${sub}</td>
       <td class="${band?'sec-'+band:''}">${fmtSec(r.security)}</td>
       <td>${fmtClock(r.entered_at)}</td>
       <td>${fmtDwell(x.dwell)}${here?" · now":""}</td>

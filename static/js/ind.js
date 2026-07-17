@@ -551,12 +551,17 @@ function renderIndDetail(d, container){
   // with the run count (qty, cost and m3 you actually buy for N runs), with a
   // totals row so the cargo required is summed and obvious.
   const mvol=v=> v==null?"—":(v.toLocaleString(undefined,{maximumFractionDigits:v<10?2:1})+" m³");
+  // Material Efficiency rounds at the WHOLE-job level, so the batch shopping list
+  // is effectiveQty(base, ME, N) — NOT the per-run qty × N (see shared.js). Falls
+  // back to base_qty=eff_qty (ME already baked in) when base_qty is absent.
   let matTotCost=0, matTotVol=0, matHasVol=false;
   const sortedItems=[...d.required_items].sort((a,b)=>a.name.localeCompare(b.name));
+  const me=d.me_used||0;
+  const batchQty=m=>(m.base_qty!=null)?effectiveQty(m.base_qty, me, n):m.eff_qty*n;
   const mats=sortedItems.map(m=>{
-    const qtyBatch = m.eff_qty*n;
-    const costBatch = m.line_cost==null?null:m.line_cost*n;
-    const volBatch = (m.volume_each!=null)? m.eff_qty*m.volume_each*n : null;
+    const qtyBatch = batchQty(m);
+    const costBatch = m.unit_price==null?null:qtyBatch*m.unit_price;
+    const volBatch = (m.volume_each!=null)? qtyBatch*m.volume_each : null;
     if(costBatch!=null) matTotCost+=costBatch;
     if(volBatch!=null){ matTotVol+=volBatch; matHasVol=true; }
     return `<tr><td>${m.name}</td><td class="num">${qtyBatch.toLocaleString()}</td>`
@@ -568,10 +573,14 @@ function renderIndDetail(d, container){
     +`<td class="num">${matHasVol?mvol(matTotVol):"—"}</td></tr>`;
   const inVolRun=d.required_items.reduce((s,m)=>s+((m.volume_each!=null)?m.eff_qty*m.volume_each:0),0);
   const outVolRun=(d.product.volume_each!=null)?d.product.quantity*d.product.volume_each:null;
-  const inputBatch=inVolRun*n, outputBatch=outVolRun!=null?outVolRun*n:null;
-  const batchCost=d.total_cost!=null?d.total_cost*n:null;
-  const batchProfitL=d.profit_patient!=null?d.profit_patient*n:null;
-  const batchProfitI=d.profit_instant!=null?d.profit_instant*n:null;
+  const inputBatch=matHasVol?matTotVol:inVolRun*n, outputBatch=outVolRun!=null?outVolRun*n:null;
+  // Batch cost = batch materials (job-level ME rounding) + job & invention × N.
+  const jobPlusInvRun=(d.job_cost||0)+(d.invention?d.invention_cost||0:0);
+  const batchCost=d.total_cost!=null?matTotCost+jobPlusInvRun*n:null;
+  const batchRevL=d.revenue_patient!=null?d.revenue_patient*n:null;
+  const batchRevI=d.revenue_instant!=null?d.revenue_instant*n:null;
+  const batchProfitL=batchRevL!=null?batchRevL-batchCost:null;
+  const batchProfitI=batchRevI!=null?batchRevI-batchCost:null;
   const batchTime=d.build_time?d.build_time*n:null;
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   // Fee/tax breakdown — re-derives the ISK amounts folded into revenue_patient
@@ -1074,14 +1083,41 @@ function openTrackedBuild(id){
   if(card) card.scrollIntoView({block:"center", behavior:"smooth"});
 }
 
+// Batch economics for a detail blob `d` at run count `n`, applying EVE's
+// job-level Material Efficiency rounding to the material cost (not per-run × N).
+// Works for live, frozen and re-based (close-match) builds, and degrades to the
+// old per-run × N behaviour for snapshots saved before base_qty was recorded.
+function _batchEconomics(d, n){
+  n=Math.max(1, n||1);
+  const me=d.me_used||0;
+  let matCost=null;
+  if(Array.isArray(d.required_items) && d.required_items.some(m=>m.base_qty!=null)){
+    matCost=0;
+    for(const m of d.required_items){
+      if(m.unit_price==null) continue;
+      const q=(m.base_qty!=null)?effectiveQty(m.base_qty, me, n):m.eff_qty*n;
+      matCost+=q*m.unit_price;
+    }
+  }
+  const jobPlusInvRun=(d.job_cost||0)+(d.invention?(d.invention_cost||0):0);
+  // matCost known → rebuild total from parts; else fall back to per-run × N.
+  const cost=(matCost!=null)?matCost+jobPlusInvRun*n
+           :(d.total_cost!=null?d.total_cost*n:null);
+  const revL=d.revenue_patient!=null?d.revenue_patient*n:null;
+  const revI=d.revenue_instant!=null?d.revenue_instant*n:null;
+  const profitL=(revL!=null&&cost!=null)?revL-cost
+              :(d.profit_patient!=null?d.profit_patient*n:null);
+  const profitI=(revI!=null&&cost!=null)?revI-cost
+              :(d.profit_instant!=null?d.profit_instant*n:null);
+  return {cost, profitL, profitI, matCost, time:d.build_time?d.build_time*n:null};
+}
+
 function _buildCardHtml(b, linked){
   const s=b.snapshot||{}, n=Math.max(1, b.runs||1);
   const isk=v=>v===null||v===undefined?"—":fmtISK(v);
   const st=_buildStatus(b);
-  const batchCost=s.total_cost!=null?s.total_cost*n:null;
-  const batchProfitL=s.profit_patient!=null?s.profit_patient*n:null;
-  const batchProfitI=s.profit_instant!=null?s.profit_instant*n:null;
-  const batchTime=s.build_time?s.build_time*n:null;
+  const be=_batchEconomics(s, n);
+  const batchCost=be.cost, batchProfitL=be.profitL, batchProfitI=be.profitI, batchTime=be.time;
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   const when=b.created_at?new Date(b.created_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"";
   // Status line: warning if no job yet, live countdown while building, ETA/finish otherwise.
@@ -1139,12 +1175,16 @@ function _buildDetailHtml(b){
   const isk=v=>v===null||v===undefined?"—":fmtISK(v);
   const mvol=v=> v==null?"—":(v.toLocaleString(undefined,{maximumFractionDigits:v<10?2:1})+" m³");
   if(!d.required_items) return `<div class="ind-build-detail"><span class="ind-build-warn">Snapshot has no material breakdown.</span></div>`;
+  // Job-level ME rounding for the batch shopping list (see shared.js/effectiveQty),
+  // with a per-run × N fallback for snapshots saved before base_qty was recorded.
   let matTotCost=0, matTotVol=0, matHasVol=false;
+  const me=d.me_used||0;
+  const batchQty=m=>(m.base_qty!=null)?effectiveQty(m.base_qty, me, n):m.eff_qty*n;
   const sortedItems=[...d.required_items].sort((a,b)=>a.name.localeCompare(b.name));
   const mats=sortedItems.map(m=>{
-    const qtyBatch=m.eff_qty*n;
-    const costBatch=m.line_cost==null?null:m.line_cost*n;
-    const volBatch=(m.volume_each!=null)?m.eff_qty*m.volume_each*n:null;
+    const qtyBatch=batchQty(m);
+    const costBatch=m.unit_price==null?null:qtyBatch*m.unit_price;
+    const volBatch=(m.volume_each!=null)?qtyBatch*m.volume_each:null;
     if(costBatch!=null) matTotCost+=costBatch;
     if(volBatch!=null){ matTotVol+=volBatch; matHasVol=true; }
     return `<tr><td>${m.name}</td><td class="num">${qtyBatch.toLocaleString()}</td>`
@@ -1155,9 +1195,8 @@ function _buildDetailHtml(b){
     +`<td class="num"></td><td class="num"></td><td class="num">${isk(matTotCost)}</td>`
     +`<td class="num">${matHasVol?mvol(matTotVol):"—"}</td></tr>`;
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
-  const batchCost=d.total_cost!=null?d.total_cost*n:null;
-  const batchProfitL=d.profit_patient!=null?d.profit_patient*n:null;
-  const batchProfitI=d.profit_instant!=null?d.profit_instant*n:null;
+  const be=_batchEconomics(d, n);
+  const batchCost=be.cost, batchProfitL=be.profitL, batchProfitI=be.profitI;
   return `<div class="ind-build-detail">
     <div class="ind-d-grid" style="max-width:none">
       <div class="ind-d-sub">Per run — ${fmtNum(d.product.quantity)}× ${d.product.name} (frozen)</div>

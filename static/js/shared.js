@@ -55,6 +55,18 @@ function startResize(e,key,ctx){
 function pctToFrac(v){ const n=parseFloat(v); return isNaN(n)?"":String(n/100); }
 function fracToPct(v){ const n=parseFloat(v); return isNaN(n)?"":String(+(n*100).toFixed(4)); }
 
+// Units of a material consumed by an N-run job after Material Efficiency.
+// MUST mirror ind_core.effective_qty: EVE applies ME to the WHOLE job and
+// rounds up ONCE, with a floor of one unit per run. Rounding base*runs*(1-ME/100)
+// to 2 dp first absorbs float noise (matches the in-game numbers). This is used
+// to rescale the batch shopping list live when the run count changes, so it must
+// agree with the server's frozen eff_qty_batch to the unit.
+function effectiveQty(baseQty, me, runs){
+  runs = Math.max(1, runs||1);
+  const raw = Math.round(baseQty * runs * (1 - (me||0) / 100.0) * 100) / 100;
+  return Math.max(runs, Math.ceil(raw));
+}
+
 // ── Shared utils ─────────────────────────────────────────────────────────
 function fmtISK(n){
   if(n===null||n===undefined) return "-";

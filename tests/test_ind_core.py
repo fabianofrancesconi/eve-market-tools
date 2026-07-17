@@ -336,6 +336,27 @@ class TestManufacturingCost:
         assert c["missing_price"] is True
         assert c["material_cost"] == pytest.approx(500.0)  # only material 34 priced
 
+    def test_batch_material_cost_uses_whole_job_me_rounding(self):
+        # EVE rounds ME at the WHOLE-job level, not per run. With base_qty=7 and
+        # ME=10%, one run consumes ceil(6.3)=7, but a 10-run job consumes
+        # ceil(63)=63 — NOT 7*10=70. (base_qty=1 wouldn't show it: the per-run
+        # floor max(runs, …) forces `runs` units either way.) material_cost_batch
+        # must be 63-based, not 70.
+        bp = _bp(materials=[(34, 7)])   # 7 units/run of material 34 @ 5.0
+        c = ind_core.manufacturing_cost(bp, _prices(), _ADJUSTED,
+                                        job_rate=0.06, me=10, runs=10)
+        assert c["lines"][0]["eff_qty"] == 7            # per-run (unchanged)
+        assert c["lines"][0]["eff_qty_batch"] == 63     # whole-job rounding
+        assert c["material_cost"] == pytest.approx(35.0)         # per-run 7*5
+        assert c["material_cost_batch"] == pytest.approx(315.0)  # 63*5, not 350
+        assert c["lines"][0]["line_cost_batch"] == pytest.approx(315.0)
+
+    def test_batch_defaults_to_single_run(self):
+        # runs=1 (default): batch fields equal per-run fields.
+        c = ind_core.manufacturing_cost(_bp(), _prices(), _ADJUSTED, job_rate=0.06, me=10)
+        assert c["material_cost_batch"] == pytest.approx(c["material_cost"])
+        assert c["lines"][0]["eff_qty_batch"] == c["lines"][0]["eff_qty"]
+
 
 # ---------------------------------------------------------------------------
 # build_time
@@ -403,6 +424,22 @@ class TestEvaluateIndustry:
         assert self._row(skill_profile={3380: 1})["buildable"] is True
         assert self._row(skill_profile={})["buildable"] is False
 
+    def test_batch_profit_and_cargo_use_whole_job_me_rounding(self):
+        # base_qty 7 @ 5.0, ME 10%, 10 runs. Whole-job materials = 63 units = 315
+        # ISK (not 7*10*5 = 350). Job cost is linear: EIV = 7*4 = 28, job_cost =
+        # 28*0.06 = 1.68, ×10 = 16.8. Batch operating cost = 315 + 16.8 = 331.8.
+        bp = _bp(materials=[(34, 7)])
+        params = _params(runs=10, me=10, volumes={34: 0.01, 165: 2500.0},
+                         daily_vols={165: 50})
+        r = ind_core.evaluate_industry([bp], _prices(), _ADJUSTED, params)[0]
+        assert r["material_cost"] == pytest.approx(35.0)   # per-run 7*5
+        # revenue/run patient = 2000*(1-0.05-0.02) = 1860 ; batch rev = 18600
+        assert r["total_profit_patient"] == pytest.approx(18600.0 - 331.8)
+        # instant rev/run = 1800*0.95 = 1710 ; batch = 17100 - 331.8
+        assert r["total_profit_instant"] == pytest.approx(17100.0 - 331.8)
+        # input cargo = 63 units * 0.01 = 0.63 m³ (not 70*0.01 = 0.7)
+        assert r["input_volume"] == pytest.approx(0.63)
+
     def test_sorted_by_isk_per_hour_patient_none_last(self):
         cheap = _bp(blueprint_id=2, product_id=999, product_name="Junk")
         rows = ind_core.evaluate_industry(
@@ -448,6 +485,35 @@ class TestBuildIndustryDetail:
         assert trit["line_cost_batch"] == pytest.approx(50_000.0)
         assert trit["line_volume_batch"] == pytest.approx(100.0)  # 100*0.01*100
         assert d["output_volume_batch"] == pytest.approx(250_000.0)
+
+    def test_batch_shopping_list_uses_whole_job_me_rounding(self):
+        # base_qty 7, ME 10%, 10 runs -> batch qty 63 (not 70), cost 315, vol 0.63.
+        bp = _bp(materials=[(34, 7)])
+        params = _params(runs=10, me=10, adjusted=_ADJUSTED)
+        names = {34: "Tritanium", 165: "Test Frigate"}
+        d = ind_core.build_industry_detail(bp, _prices(), names, _VOLUMES, params)
+        line = next(x for x in d["required_items"] if x["type_id"] == 34)
+        assert line["eff_qty"] == 7
+        assert line["eff_qty_batch"] == 63
+        assert line["line_cost_batch"] == pytest.approx(315.0)
+        assert line["line_volume_batch"] == pytest.approx(0.63)
+        assert d["input_volume_batch"] == pytest.approx(0.63)
+        # Batch total cost = 315 materials + job (28*0.06=1.68)*10 = 16.8 -> 331.8
+        assert d["material_cost_batch"] == pytest.approx(315.0)
+        assert d["total_cost_batch"] == pytest.approx(331.8)
+        assert d["profit_patient_batch"] == pytest.approx(2000 * (1 - 0.07) * 10 - 331.8)
+
+    def test_detail_batch_matches_evaluate_batch(self):
+        # The detail panel and the scan must agree on batch economics.
+        bp = _bp(materials=[(34, 1)])
+        params = _params(runs=37, me=7, adjusted=_ADJUSTED, volumes=_VOLUMES,
+                         daily_vols={165: 50})
+        d = ind_core.build_industry_detail(bp, _prices(), {}, _VOLUMES, params)
+        row = ind_core.evaluate_industry([bp], _prices(), _ADJUSTED, params)[0]
+        assert d["total_cost_batch"] == pytest.approx(
+            row["material_cost"] and (d["material_cost_batch"] + d["job_cost"] * 37))
+        assert d["profit_patient_batch"] == pytest.approx(row["total_profit_patient"])
+        assert d["profit_instant_batch"] == pytest.approx(row["total_profit_instant"])
 
     def test_exposes_tax_and_broker_rates(self):
         # detail panel re-derives ISK fee/tax amounts client-side from these rates

@@ -678,39 +678,55 @@ def effective_qty(base_qty, me, runs=1):
     return max(runs, math.ceil(raw))
 
 
-def manufacturing_cost(bp, prices, adjusted, job_rate, me):
+def manufacturing_cost(bp, prices, adjusted, job_rate, me, runs=1):
     """Per-run input economics for a manufacturing blueprint.
 
       prices    {type_id: {"sell_min", "buy_max", ...}}  -- live market (lp_core)
       adjusted  {type_id: adjusted_price}                -- ESI /markets/prices/
       job_rate  installation-cost fraction of EIV (the user's manual rate)
       me        blueprint Material Efficiency 0..10
+      runs      batch size N (for the *_batch aggregates; per-run figures ignore it)
 
     Returns material_cost (ME-adjusted, bought at sell_min), EIV (BASE qty x
     adjusted_price -- NOT market, NOT ME-adjusted, per CCP's job-cost formula),
     job_cost (= EIV x job_rate), the per-line breakdown, and a missing_price flag
-    when any input has no sell order to price against."""
-    lines, material_cost, eiv, missing = [], 0.0, 0.0, False
+    when any input has no sell order to price against.
+
+    EVE applies ME to the WHOLE job and rounds ONCE, so an N-run batch consumes
+    ceil(base*N*(1-ME)) of each material -- NOT the per-run ceil times N. The
+    *_batch fields carry that job-level rounding; multiplying the per-run
+    material_cost by N would over-buy (e.g. base 1, ME 10%, 100 runs: per-run
+    ceil(0.9)=1 -> 100 units, but the job really eats ceil(90)=90)."""
+    n = max(1, int(runs))
+    lines = []
+    material_cost = material_cost_batch = eiv = 0.0
+    missing = False
     for mid, base_qty in bp.get("materials", []):
         eff = effective_qty(base_qty, me)
+        eff_batch = effective_qty(base_qty, me, runs=n)
         unit = (prices.get(mid) or {}).get("sell_min")
         adj = adjusted.get(mid)
         line_cost = (eff * unit) if unit else None
+        line_cost_batch = (eff_batch * unit) if unit else None
         if line_cost is None:
             missing = True
         else:
             material_cost += line_cost
+            material_cost_batch += line_cost_batch
         if adj:
             eiv += base_qty * adj
         lines.append({
             "type_id": mid,
             "base_qty": base_qty,
             "eff_qty": eff,
+            "eff_qty_batch": eff_batch,
             "unit_price": unit,
             "line_cost": line_cost,
+            "line_cost_batch": line_cost_batch,
         })
     return {
         "material_cost": material_cost,
+        "material_cost_batch": material_cost_batch,
         "eiv": eiv,
         "job_cost": eiv * job_rate,
         "lines": lines,
@@ -994,7 +1010,7 @@ def evaluate_industry(candidates, prices, adjusted, params):
         else:
             bp_me, bp_te = me, te
             bp_is_bpo, bp_max_runs = False, 0
-        cost = manufacturing_cost(bp, prices, adjusted, job_rate, bp_me)
+        cost = manufacturing_cost(bp, prices, adjusted, job_rate, bp_me, runs=n)
 
         # Blueprint economics differ by tech tier (assuming you own nothing):
         #   T2 — you can't buy the blueprint (BPCs are contract-only); you invent
@@ -1012,6 +1028,10 @@ def evaluate_industry(candidates, prices, adjusted, params):
         # BPO buy-in is NOT here — that's capital, recovered via payback.
         operating_cost = cost["material_cost"] + cost["job_cost"] + invention_cost
         total_cost = operating_cost
+        # Batch operating cost uses the job-level ME rounding (material_cost_batch),
+        # not material_cost*N — job cost and invention are linear so scale by N.
+        operating_cost_batch = (cost["material_cost_batch"]
+                                + cost["job_cost"] * n + invention_cost * n)
 
         p = prices.get(pid, {})
         ask, bid = p.get("sell_min"), p.get("buy_max")
@@ -1020,6 +1040,11 @@ def evaluate_industry(candidates, prices, adjusted, params):
         profit_patient = (rev_patient - operating_cost) if rev_patient is not None else None
         profit_instant = (rev_instant - operating_cost) if rev_instant is not None else None
         profit_best = _best(profit_patient, profit_instant)
+        # Batch profit off the batch cost (revenue is linear in N).
+        batch_profit_patient = (None if rev_patient is None
+                                else rev_patient * n - operating_cost_batch)
+        batch_profit_instant = (None if rev_instant is None
+                                else rev_instant * n - operating_cost_batch)
         margin = lambda pr: (pr / operating_cost) if (pr is not None and operating_cost > 0) else None
         # Runs of profit needed to recoup the BPO purchase (T1 only).
         payback_runs = (math.ceil(bp_buyin / profit_best)
@@ -1035,6 +1060,9 @@ def evaluate_industry(candidates, prices, adjusted, params):
 
         in_vol = sum(line["eff_qty"] * volumes[line["type_id"]]
                      for line in cost["lines"] if volumes.get(line["type_id"]) is not None)
+        # Batch input cargo uses job-level ME rounding, not in_vol*N.
+        in_vol_batch = sum(line["eff_qty_batch"] * volumes[line["type_id"]]
+                           for line in cost["lines"] if volumes.get(line["type_id"]) is not None)
         out_vol_each = volumes.get(pid)
         out_vol = (out_qty * out_vol_each) if out_vol_each is not None else None
         dv = daily_vols.get(pid)
@@ -1073,9 +1101,9 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "isk_per_hour_instant": iph(profit_instant),
             "isk_per_hour_best": iph(profit_best),
             "runs": n,
-            "total_profit_patient": None if profit_patient is None else profit_patient * n,
-            "total_profit_instant": None if profit_instant is None else profit_instant * n,
-            "input_volume": in_vol * n,
+            "total_profit_patient": batch_profit_patient,
+            "total_profit_instant": batch_profit_instant,
+            "input_volume": in_vol_batch,
             "output_volume": None if out_vol is None else out_vol * n,
             # Per-run building blocks so the UI can rescale batch columns live
             # (profit×N, cargo, days-to-sell) when the run count changes.
@@ -1111,29 +1139,38 @@ def build_industry_detail(bp, prices, names, volumes, params):
     volumes = volumes or {}
     names = names or {}
 
+    # runs=n so the *_batch fields carry EVE's job-level ME rounding (see
+    # manufacturing_cost) rather than a per-run figure the client would ×N.
     cost = manufacturing_cost(bp, prices, adjusted=params.get("adjusted", {}),
-                              job_rate=job_rate, me=me)
+                              job_rate=job_rate, me=me, runs=n)
     pid = bp["product_id"]
     out_qty = bp.get("out_qty") or 1
 
     required = []
     input_volume = 0.0
+    input_volume_batch = 0.0
     for line in cost["lines"]:
         tid = line["type_id"]
         vol_each = volumes.get(tid)
         line_vol = (line["eff_qty"] * vol_each) if vol_each is not None else None
         if line_vol is not None:
             input_volume += line_vol
+        eff_qty_batch = line["eff_qty_batch"]
+        line_cost_batch = line["line_cost_batch"]
+        line_vol_batch = (eff_qty_batch * vol_each) if vol_each is not None else None
+        if line_vol_batch is not None:
+            input_volume_batch += line_vol_batch
         required.append({
             "type_id": tid,
             "name": names.get(tid, str(tid)),
             "base_qty": line["base_qty"],
             "eff_qty": line["eff_qty"],
+            "eff_qty_batch": eff_qty_batch,
             "unit_price": line["unit_price"],
             "line_cost": line["line_cost"],
-            "line_cost_batch": None if line["line_cost"] is None else line["line_cost"] * n,
+            "line_cost_batch": line_cost_batch,
             "volume_each": vol_each,
-            "line_volume_batch": None if line_vol is None else line_vol * n,
+            "line_volume_batch": line_vol_batch,
         })
 
     inv = bp.get("invention")
@@ -1142,6 +1179,10 @@ def build_industry_detail(bp, prices, names, volumes, params):
     bp_buyin = None if inv else bpo_price
     bp_source = "invention" if inv else ("market" if bpo_price else "none")
     operating_cost = cost["material_cost"] + cost["job_cost"] + invention_cost
+    # Batch cost uses job-level ME rounding (material_cost_batch); job + invention
+    # are linear in N. Batch profit is off this, not per-run profit × N.
+    operating_cost_batch = (cost["material_cost_batch"]
+                            + cost["job_cost"] * n + invention_cost * n)
     p = prices.get(pid, {})
     ask, bid = p.get("sell_min"), p.get("buy_max")
     rev_patient = (out_qty * ask * (1 - sales_tax - broker)) if ask else None
@@ -1149,6 +1190,10 @@ def build_industry_detail(bp, prices, names, volumes, params):
     profit_patient = None if rev_patient is None else rev_patient - operating_cost
     profit_instant = None if rev_instant is None else rev_instant - operating_cost
     profit_best = _best(profit_patient, profit_instant)
+    batch_profit_patient = (None if rev_patient is None
+                            else rev_patient * n - operating_cost_batch)
+    batch_profit_instant = (None if rev_instant is None
+                            else rev_instant * n - operating_cost_batch)
     payback_runs = (math.ceil(bp_buyin / profit_best)
                     if (bp_buyin and profit_best and profit_best > 0) else None)
     payback_runs_patient = (math.ceil(bp_buyin / profit_patient)
@@ -1179,6 +1224,8 @@ def build_industry_detail(bp, prices, names, volumes, params):
         "payback_runs_patient": payback_runs_patient,
         "payback_runs_instant": payback_runs_instant,
         "total_cost": operating_cost,
+        "total_cost_batch": operating_cost_batch,
+        "material_cost_batch": cost["material_cost_batch"],
         "missing_price": cost["missing_price"],
         "ask": ask,
         "bid": bid,
@@ -1188,14 +1235,16 @@ def build_industry_detail(bp, prices, names, volumes, params):
         "revenue_instant": rev_instant,
         "profit_patient": profit_patient,
         "profit_instant": profit_instant,
+        "profit_patient_batch": batch_profit_patient,
+        "profit_instant_batch": batch_profit_instant,
         "build_time": build_time(bp.get("base_time"), te,
                                  params.get("skill_profile"),
                                  params.get("skills_level", 0)),
         "me_used": me,
         "te_used": te,
         "runs": n,
-        # cargo for the whole batch
-        "input_volume_batch": input_volume * n,
+        # cargo for the whole batch (job-level ME rounding, not per-run × N)
+        "input_volume_batch": input_volume_batch,
         "output_volume_batch": None if out_vol is None else out_vol * n,
         "invention": _invention_detail(bp, prices, names, params),
     }

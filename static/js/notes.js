@@ -147,6 +147,7 @@ function _onDrop(e, targetFolderId){
 function _esc(s){ const d=document.createElement("span"); d.textContent=s; return d.innerHTML; }
 
 function selectNote(id){
+  if(id!==NOTES.active) _flushActiveNote();   // save the outgoing note first
   NOTES.active=id;
   renderNotesTree();
   const n=NOTES.items.find(x=>x.id===id);
@@ -170,11 +171,29 @@ function _scheduleNoteSave(id){
   NOTES.saveTimer=setTimeout(()=>_saveActiveNote(id), 2000);
 }
 
+// Persist the note whose body the editor is CURRENTLY showing. The debounce
+// timer must not read #note-body after the editor has been swapped to another
+// note, or it would write that other note's text into `id` — so we only commit
+// the textarea when `id` is still the active (displayed) note. If the editor
+// already moved on, the switch itself flushed the old note (see
+// _flushActiveNote), so there is nothing to lose here.
 function _saveActiveNote(id){
   const n=NOTES.items.find(x=>x.id===id); if(!n) return;
   const bodyEl=$("#note-body");
-  if(bodyEl) n.body=bodyEl.value;
+  if(bodyEl && NOTES.active===id) n.body=bodyEl.value;
   _persistNote(n);
+}
+
+// Commit the in-editor text of the active note NOW and cancel any pending
+// debounce. Called before the editor is pointed at a different note (selectNote,
+// addNote) so an in-flight edit is never dropped or misattributed.
+function _flushActiveNote(){
+  if(NOTES.saveTimer){ clearTimeout(NOTES.saveTimer); NOTES.saveTimer=null; }
+  const id=NOTES.active;
+  if(id==null) return;
+  const n=NOTES.items.find(x=>x.id===id); if(!n || n.kind==="folder") return;
+  const bodyEl=$("#note-body");
+  if(bodyEl && bodyEl.value!==n.body){ n.body=bodyEl.value; _persistNote(n); }
 }
 
 async function _persistNote(n){

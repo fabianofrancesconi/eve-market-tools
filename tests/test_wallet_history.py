@@ -194,12 +194,17 @@ class TestCompactSeries:
     def test_mixed_ages(self):
         """Series with points in all age buckets is properly segmented."""
         now = time.time()
+        # The daily bucket keys on int(ts // 86400), so the two "same day" points
+        # must land in the same epoch-day bucket regardless of now's time-of-day.
+        # Anchor them to a shared day ~100 days back rather than offsetting from now
+        # (an offset can straddle a UTC midnight and split the pair into two days).
+        day_100_ago = int((now - 100 * 86400) // 86400)
         series = [
-            [now - 400 * 86400, 1.0],   # >365d: discard
-            [now - 100 * 86400, 2.0],   # 90-365d: daily
-            [now - 100 * 86400 + 3600, 4.0],  # same day as above
-            [now - 10 * 86400, 3.0],    # 7-90d: hourly
-            [now - 100, 4.0],           # <7d: keep
+            [now - 400 * 86400, 1.0],        # >365d: discard
+            [day_100_ago * 86400 + 100, 2.0],   # 90-365d: daily
+            [day_100_ago * 86400 + 3700, 4.0],  # same day bucket as above
+            [now - 10 * 86400, 3.0],         # 7-90d: hourly
+            [now - 100, 4.0],                # <7d: keep
         ]
         result, changed = lp_web._compact_series(series, now)
         assert changed

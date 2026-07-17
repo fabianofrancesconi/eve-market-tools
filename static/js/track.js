@@ -66,7 +66,10 @@ function fmtSec(sec){ return sec==null? "—" : sec.toFixed(1); }
 // Cargo (ISK) input helpers: the field is a plain integer with thousands commas
 // for readability. stripCargo() gives back the bare digits (or "" when blank)
 // for the API; fmtCargoInput() re-adds the commas for display.
-function stripCargo(v){ return String(v==null?"":v).replace(/[^\d]/g, ""); }
+// A fetched cargo value is a float (e.g. 55798397.52), so drop anything from the
+// decimal point on BEFORE removing separators — otherwise the fractional digits
+// glue onto the integer and 55798397.52 shows as 5,579,839,752 (100× too big).
+function stripCargo(v){ return String(v==null?"":v).split(".")[0].replace(/[^\d]/g, ""); }
 function fmtCargoInput(v){
   const d=stripCargo(v);
   return d ? Number(d).toLocaleString("en-US") : "";

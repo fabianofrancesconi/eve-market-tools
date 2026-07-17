@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.110.2"
+__version__ = "1.111.0"
 
 import argparse
 import base64
@@ -1186,6 +1186,15 @@ def do_ind_builds_link(q):
             if f in q:
                 v = q.get(f, [None])[0]
                 b[f] = None if (v is None or v == "" or v == "null") else v
+        if "runs" in q:
+            # Accepting a close-match job (different run count than tracked)
+            # re-bases the frozen batch onto the real number of runs started.
+            v = q.get("runs", [None])[0]
+            try:
+                if v not in (None, "", "null"):
+                    b["runs"] = max(1, int(v))
+            except (TypeError, ValueError):
+                pass
         if "done_at" in q:
             v = q.get("done_at", [None])[0]
             try:

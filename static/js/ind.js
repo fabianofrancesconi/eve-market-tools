@@ -949,6 +949,19 @@ function _findJobForBuild(b, claimed){
   return cands.find(j=>!claimed.has(String(j.job_id))) || null;
 }
 
+// Same blueprint but a DIFFERENT run count than tracked (e.g. tracked 30×,
+// started 32× in EVE). Used to suggest a close match the user can accept with
+// one click. Prefers the unclaimed job whose run count is nearest to the
+// tracked value so several concurrent batches each pick the sensible neighbour.
+function _findCloseJobForBuild(b, claimed){
+  const jobs=(AUTH.data&&AUTH.data.jobs)||[];
+  const cands=jobs.filter(j=>j.activity_id===1 && j.blueprint_type_id===b.blueprint_id
+    && j.runs!=null && j.runs!==b.runs && !claimed.has(String(j.job_id)));
+  if(!cands.length) return null;
+  return cands.slice().sort((x,y)=>
+    Math.abs(x.runs-b.runs)-Math.abs(y.runs-b.runs))[0];
+}
+
 // Set of active manufacturing job ids, as STRINGS. job_id round-trips through
 // the server as a string (JSON→str), but ESI hands it back as a number in the
 // same session — so comparisons must normalise to one type or a reloaded build
@@ -1036,7 +1049,10 @@ function renderIndBuilds(){
     if(!IND.builds.length){ box.classList.add("hidden"); box.innerHTML=""; }
     else {
       box.classList.remove("hidden");
-      const rows=IND.builds.map(b=>_buildCardHtml(b)).join("");
+      // Jobs already linked to a build must not be offered as a close match to
+      // an awaiting one. Collect the linked ids (as strings) up front.
+      const linked=new Set(IND.builds.filter(b=>b.job_id!=null).map(b=>String(b.job_id)));
+      const rows=IND.builds.map(b=>_buildCardHtml(b, linked)).join("");
       box.innerHTML=`
         <div class="ind-builds-head static">Tracked builds <span class="chip-count">(${IND.builds.length})</span></div>
         <div class="ind-builds-list">${rows}</div>`;
@@ -1058,7 +1074,7 @@ function openTrackedBuild(id){
   if(card) card.scrollIntoView({block:"center", behavior:"smooth"});
 }
 
-function _buildCardHtml(b){
+function _buildCardHtml(b, linked){
   const s=b.snapshot||{}, n=Math.max(1, b.runs||1);
   const isk=v=>v===null||v===undefined?"—":fmtISK(v);
   const st=_buildStatus(b);
@@ -1071,7 +1087,21 @@ function _buildCardHtml(b){
   // Status line: warning if no job yet, live countdown while building, ETA/finish otherwise.
   let statusLine="";
   if(st.key==="awaiting"){
-    statusLine=`<span class="ind-build-warn">No matching in-game job yet — start ${n.toLocaleString()}× run(s) of this blueprint in EVE${AUTH.loggedIn?" and it'll link automatically":"; log in with EVE to link"}.</span>`;
+    // If a running job for this blueprint exists with a different run count,
+    // offer it as a one-click close match instead of only nagging.
+    const close=AUTH.loggedIn ? _findCloseJobForBuild(b, linked||new Set()) : null;
+    if(close){
+      const cn=close.runs;
+      statusLine=`<span class="ind-build-warn">No exact match — but a running `
+        +`<b>${cn.toLocaleString()}×</b> job of this blueprint`
+        +`${close.character_name?" ("+close.character_name+")":""} is in progress `
+        +`(you tracked ${n.toLocaleString()}×).</span> `
+        +`<button class="ind-build-linkclose" data-job="${close.job_id}" `
+        +`data-runs="${cn}" title="Link this build to that job and re-base it onto ${cn.toLocaleString()} run(s)">`
+        +`Link to ${cn.toLocaleString()}× job</button>`;
+    } else {
+      statusLine=`<span class="ind-build-warn">No matching in-game job yet — start ${n.toLocaleString()}× run(s) of this blueprint in EVE${AUTH.loggedIn?" and it'll link automatically":"; log in with EVE to link"}.</span>`;
+    }
   } else if(st.key==="building"){
     const end=b.job_end?Date.parse(b.job_end):null;
     statusLine=end && isFinite(end)
@@ -1164,5 +1194,23 @@ function _wireBuildCard(box, b){
     else IND.buildsExpanded.add(b.id);
     renderIndBuilds();
   };
+  const lc=card.querySelector(".ind-build-linkclose");
+  if(lc) lc.onclick=()=>acceptCloseJob(b.id, lc.dataset.job, parseInt(lc.dataset.runs,10));
+}
+
+// User accepted a close-match suggestion: link the build to the picked job and
+// re-base its tracked run count onto the job's real runs, so the batch economics
+// (cost/profit/time = per-run × runs) reflect what was actually started.
+function acceptCloseJob(buildId, jobId, jobRuns){
+  const b=IND.builds.find(x=>x.id===buildId);
+  if(!b) return;
+  const job=((AUTH.data&&AUTH.data.jobs)||[]).find(j=>String(j.job_id)===String(jobId));
+  if(!job) return;   // stale card — job no longer active; a reconcile will refresh
+  b.job_id=job.job_id;
+  b.job_end=job.end;
+  b.char_name=job.character_name;
+  if(jobRuns && jobRuns>0) b.runs=jobRuns;
+  _patchBuildLink(b, {job_id:job.job_id, job_end:job.end, char_name:job.character_name, runs:b.runs});
+  renderIndBuilds();
 }
 

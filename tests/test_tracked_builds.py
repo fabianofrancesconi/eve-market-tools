@@ -160,6 +160,33 @@ class TestLink:
         res = lp_web.do_ind_builds_link({"id": ["nope"], "job_id": ["1"]})
         assert res["ok"] is False
 
+    def test_link_rebases_runs_on_close_match(self, monkeypatch, tmp_path):
+        """Accepting a close-match job (tracked 30×, started 32×) re-bases the
+        build's run count onto the real number of runs started."""
+        import json
+        _bind(monkeypatch, tmp_path, _acct())
+        b = lp_web.do_ind_builds_save(
+            {"runs": ["30"], "snapshot": [json.dumps(_snapshot())]})["build"]
+        lp_web.do_ind_builds_link({
+            "id": [b["id"]], "job_id": ["999"], "runs": ["32"]})
+        stored = lp_web.do_ind_builds_list({})["builds"][0]
+        assert stored["job_id"] == "999"
+        assert stored["runs"] == 32
+
+    def test_link_runs_floors_to_one_and_ignores_bad(self, monkeypatch, tmp_path):
+        import json
+        _bind(monkeypatch, tmp_path, _acct())
+        b = lp_web.do_ind_builds_save(
+            {"runs": ["30"], "snapshot": [json.dumps(_snapshot())]})["build"]
+        lp_web.do_ind_builds_link({"id": [b["id"]], "runs": ["0"]})
+        assert lp_web.do_ind_builds_list({})["builds"][0]["runs"] == 1
+        lp_web.do_ind_builds_link({"id": [b["id"]], "runs": ["oops"]})
+        # A bad value leaves the prior run count untouched.
+        assert lp_web.do_ind_builds_list({})["builds"][0]["runs"] == 1
+        # A blank/null value is a no-op too.
+        lp_web.do_ind_builds_link({"id": [b["id"]], "runs": ["null"]})
+        assert lp_web.do_ind_builds_list({})["builds"][0]["runs"] == 1
+
     def test_link_clears_done_at(self, monkeypatch, tmp_path):
         """The self-heal path (a build wrongly marked done whose job is still
         running) patches done_at back to null — verify the server clears it."""

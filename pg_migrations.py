@@ -135,6 +135,10 @@ MIGRATIONS = [
         ALTER TABLE mono_location_trail
             ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE;
     """),
+    (9, "timestamp of the last ESI cargo scan per trail row (v1.123+)", """
+        ALTER TABLE mono_location_trail
+            ADD COLUMN IF NOT EXISTS cargo_scanned_at DOUBLE PRECISION;
+    """),
 ]
 
 

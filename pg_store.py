@@ -485,24 +485,29 @@ def location_trail_query(account_id, character_id, run_id=None, since_ts=0.0):
         if run_id is not None:
             rows = conn.execute(
                 "SELECT entered_at, run_id, system_id, system_name, security, "
-                "scanned, cargo_isk, note, hidden FROM mono_location_trail WHERE account_id=%s "
+                "scanned, cargo_isk, note, hidden, cargo_scanned_at "
+                "FROM mono_location_trail WHERE account_id=%s "
                 "AND character_id=%s AND run_id=%s ORDER BY entered_at",
                 (account_id, character_id, run_id)).fetchall()
         else:
             rows = conn.execute(
                 "SELECT entered_at, run_id, system_id, system_name, security, "
-                "scanned, cargo_isk, note, hidden FROM mono_location_trail WHERE account_id=%s "
+                "scanned, cargo_isk, note, hidden, cargo_scanned_at "
+                "FROM mono_location_trail WHERE account_id=%s "
                 "AND character_id=%s AND entered_at>=%s ORDER BY entered_at",
                 (account_id, character_id, since_ts)).fetchall()
     return [{"entered_at": r[0], "run_id": r[1], "system_id": r[2],
              "system_name": r[3], "security": r[4], "scanned": r[5],
-             "cargo_isk": r[6], "note": r[7] or "", "hidden": bool(r[8])} for r in rows]
+             "cargo_isk": r[6], "note": r[7] or "", "hidden": bool(r[8]),
+             "cargo_scanned_at": r[9]} for r in rows]
 
 
 def location_trail_annotate(account_id, character_id, entered_at,
-                            scanned=None, cargo_isk=None, note=None, hidden=None):
-    """Update the scanned flag, cargo_isk, note and/or hidden of one trail entry.
-    A cargo_isk of "" (empty) clears it back to NULL."""
+                            scanned=None, cargo_isk=None, note=None, hidden=None,
+                            cargo_scanned_at=None):
+    """Update the scanned flag, cargo_isk, note, hidden and/or cargo_scanned_at of
+    one trail entry. A cargo_isk of "" (empty) clears it back to NULL; passing
+    cargo_scanned_at="" likewise clears the scan timestamp."""
     sets, params = [], []
     if scanned is not None:
         sets.append("scanned=%s")
@@ -516,6 +521,9 @@ def location_trail_annotate(account_id, character_id, entered_at,
     if hidden is not None:
         sets.append("hidden=%s")
         params.append(bool(hidden))
+    if cargo_scanned_at is not None:
+        sets.append("cargo_scanned_at=%s")
+        params.append(cargo_scanned_at if cargo_scanned_at != "" else None)
     if not sets:
         return
     params += [account_id, character_id, entered_at]

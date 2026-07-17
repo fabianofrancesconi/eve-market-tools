@@ -161,7 +161,8 @@ class Exploration:
                 store.setdefault(str(cid), []).append(
                     {"entered_at": entered_at, "run_id": run_id, "system_id": system_id,
                      "system_name": system_name, "security": security,
-                     "scanned": False, "note": "", "hidden": False})
+                     "scanned": False, "note": "", "hidden": False,
+                     "cargo_scanned_at": None})
                 save_json(self._h.LOCATION_TRAIL_PATH, store)
 
     def _enrich_trail_regions(self, rows):
@@ -188,11 +189,12 @@ class Exploration:
         return self._h._enrich_trail_regions(rows)
 
     def _annotate_trail(self, acct, cid, entered_at, scanned=None, cargo_isk=None,
-                        note=None, hidden=None):
+                        note=None, hidden=None, cargo_scanned_at=None):
         if pg_store.enabled():
             pg_store.location_trail_annotate(acct.account_id, cid, entered_at,
                                              scanned=scanned, cargo_isk=cargo_isk,
-                                             note=note, hidden=hidden)
+                                             note=note, hidden=hidden,
+                                             cargo_scanned_at=cargo_scanned_at)
             return
         with self._h._TRAIL_RECORD_LOCK:
             store = load_json(self._h.LOCATION_TRAIL_PATH, {})
@@ -206,6 +208,9 @@ class Exploration:
                         r["note"] = str(note)
                     if hidden is not None:
                         r["hidden"] = bool(hidden)
+                    if cargo_scanned_at is not None:
+                        r["cargo_scanned_at"] = (cargo_scanned_at
+                                                 if cargo_scanned_at != "" else None)
                     break
             save_json(self._h.LOCATION_TRAIL_PATH, store)
 
@@ -620,7 +625,9 @@ class Exploration:
                 cargo_isk = float(raw)
             except (TypeError, ValueError):
                 cargo_isk = ""
-        self._h._annotate_trail(acct, cid, entered_at, cargo_isk=cargo_isk)
+        # A hand-typed value isn't an ESI scan — clear any stale "as of" timestamp.
+        self._h._annotate_trail(acct, cid, entered_at, cargo_isk=cargo_isk,
+                                cargo_scanned_at="")
         self._h._CHAR_PUBSUB.bump(id(acct))
         return {"ok": True}
 
@@ -660,16 +667,16 @@ class Exploration:
         except requests.RequestException:
             return {"error": "Couldn't reach ESI to fetch cargo."}
 
+        now = time.time()
         ship_item_id = ship.get("ship_item_id")
         cargo = sso_core.cargo_items_in_ship(assets, ship_item_id)
         if not cargo:
             # Empty hold is a legitimate result: record 0 so the column shows it.
-            self._h._annotate_trail(acct, cid, entered_at, cargo_isk=0.0)
+            self._h._annotate_trail(acct, cid, entered_at, cargo_isk=0.0,
+                                    cargo_scanned_at=now)
             self._h._CHAR_PUBSUB.bump(id(acct))
             return {"ok": True, "total": 0.0, "items": [],
-                    "ship_name": ship.get("ship_name"),
-                    "stale_hint": "ESI assets are cached ~1h; a freshly looted hold "
-                                  "may still read empty."}
+                    "ship_name": ship.get("ship_name"), "cargo_scanned_at": now}
 
         tids = list(cargo)
         prices = self._h.fetch_prices(tids, self._h.SESSION)
@@ -688,10 +695,11 @@ class Exploration:
                           "priced": unit is not None})
         items.sort(key=lambda i: i["value"], reverse=True)
 
-        self._h._annotate_trail(acct, cid, entered_at, cargo_isk=total)
+        self._h._annotate_trail(acct, cid, entered_at, cargo_isk=total,
+                                cargo_scanned_at=now)
         self._h._CHAR_PUBSUB.bump(id(acct))
         return {"ok": True, "total": total, "items": items,
-                "ship_name": ship.get("ship_name"),
+                "ship_name": ship.get("ship_name"), "cargo_scanned_at": now,
                 "unpriced": [i["name"] for i in items if not i["priced"]]}
 
     def do_track_note(self, q):

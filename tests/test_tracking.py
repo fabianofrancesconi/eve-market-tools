@@ -398,9 +398,11 @@ class TestJournalHandlers:
         assert out["total"] == 100 * 5.0 + 10 * 100.0    # buy_max preferred
         assert out["ship_name"] == "Heron"
         assert {i["name"] for i in out["items"]} == {"Tritanium", "Pyerite"}
-        # The trail row now carries the computed value.
+        assert out["cargo_scanned_at"] > 0
+        # The trail row now carries the computed value and the scan timestamp.
         row = lp_web._query_trail(acct, 1, run_id=run_id)[0]
         assert row["cargo_isk"] == out["total"]
+        assert row["cargo_scanned_at"] == out["cargo_scanned_at"]
 
     def test_cargo_fetch_empty_hold_records_zero(self, monkeypatch, tmp_path):
         _isolate(monkeypatch, tmp_path)
@@ -414,6 +416,24 @@ class TestJournalHandlers:
         out = lp_web.do_track_cargo_fetch({"entered_at": ["100.0"]})
         assert out["ok"] is True and out["total"] == 0.0
         assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["cargo_isk"] == 0.0
+        assert out["cargo_scanned_at"] > 0
+
+    def test_manual_cargo_edit_clears_scan_timestamp(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = self._cargo_acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._append_trail(acct, 1, 100.0, run_id, 30000142, "Jita", 0.9)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_ship",
+                            lambda t, c, s: {"ship_item_id": 500, "ship_name": "Heron"})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_assets", lambda t, c, s: [])
+        lp_web.do_track_cargo_fetch({"entered_at": ["100.0"]})
+        assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["cargo_scanned_at"] > 0
+        # A hand-typed value must clear the "scanned" stamp — it's no longer an ESI scan.
+        lp_web.do_track_cargo({"entered_at": ["100.0"], "cargo_isk": ["12345"]})
+        row = lp_web._query_trail(acct, 1, run_id=run_id)[0]
+        assert row["cargo_isk"] == 12345.0
+        assert row["cargo_scanned_at"] is None
 
     def test_cargo_fetch_unpriced_item_listed(self, monkeypatch, tmp_path):
         _isolate(monkeypatch, tmp_path)

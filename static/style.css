@@ -561,6 +561,9 @@
   #track-table tr:hover .track-cargo-fetch { opacity:1; }
   .track-cargo-fetch:hover { color:var(--fg); }
   .track-cargo-fetch:disabled { cursor:default; color:var(--dim2); }
+  /* "scanned HH:MM" stamp under a value filled by an ESI cargo fetch. */
+  .track-cargo-scanat { display:block; margin-top:2px; font-size:10.5px;
+    color:var(--dim2); font-variant-numeric:tabular-nums; }
   /* ISK change vs the previous system — shown under the input when both have a
      value. Green for a gain, red for a loss. */
   .track-cargo-delta { display:block; margin-top:2px; font-size:11px;

@@ -295,13 +295,22 @@ function renderTrail(){
     const cargoVal = fmtCargoInput(x.eff);
     const cargoCls = "track-cargo-input" + (x.inherited ? " inherited" : "");
     const delta = x.delta ? `<span class="track-cargo-delta ${x.delta>0?'pos':'neg'}" title="Change vs the previous system">${x.delta>0?'+':'−'}${fmtISK(Math.abs(x.delta))}</span>` : "";
+    // "scanned HH:MM" under the value when it came from an ESI cargo fetch (own row
+    // only — a carried-forward value belongs to an earlier system's scan). If the
+    // scan hit items with no market price, flag it (⚠) so the total isn't trusted blindly.
+    const unpriced = (TRACK.unpricedByRow||{})[r.entered_at];
+    const scanTip = unpriced
+      ? `Scanned ${fmtClock(r.cargo_scanned_at)} — ESI assets cached ~1h. No market price for: ${unpriced.join(", ")}`
+      : `ESI cargo scanned at this time (assets are cached ~1h)`;
+    const scanAt = (!x.inherited && r.cargo_scanned_at)
+      ? `<span class="track-cargo-scanat" title="${authEsc(scanTip)}">scanned ${fmtClock(r.cargo_scanned_at)}${unpriced?" ⚠":""}</span>` : "";
     return `<tr class="${here?'track-here':''}" title="${here?'You are here':''}">
       <td>${here?'▸':(vi+1)}</td>
       <td class="track-sys"><span class="track-sys-name">${authEsc(r.system_name)}</span>${sub}</td>
       <td class="${band?'sec-'+band:''}">${fmtSec(r.security)}</td>
       <td>${fmtClock(r.entered_at)}</td>
       <td>${fmtDwell(x.dwell)}${here?" · now":""}</td>
-      <td class="track-cargo num"><input type="text" inputmode="numeric" placeholder="—" class="${cargoCls}" data-at="${r.entered_at}" value="${cargoVal}"><button class="track-cargo-fetch" type="button" data-at="${r.entered_at}" title="Fetch this ship's cargo from ESI and value it at Jita (assets are cached ~1h)">⟳</button>${delta}</td>
+      <td class="track-cargo num"><input type="text" inputmode="numeric" placeholder="—" class="${cargoCls}" data-at="${r.entered_at}" value="${cargoVal}"><button class="track-cargo-fetch" type="button" data-at="${r.entered_at}" title="Fetch this ship's cargo from ESI and value it at Jita (assets are cached ~1h)">⟳</button>${delta}${scanAt}</td>
       <td class="track-note">${noteBtnHtml(r)}</td>
       <td class="track-hide"><button class="track-hide-btn" type="button" data-at="${r.entered_at}" title="Hide this system from the journal">✕</button></td>
     </tr>`;
@@ -359,6 +368,10 @@ function renderTrail(){
   });
 
   // "⟳ Fetch": pull the real cargo from ESI, value it at Jita, fill this row.
+  // Success is shown inline (the value + a "scanned HH:MM" stamp) — no popup. Only
+  // errors (e.g. missing scopes) interrupt. Unpriced items (datacores, BPCs with no
+  // market price) are recorded per-row so the stamp can flag that the total may
+  // understate the haul.
   tb.querySelectorAll(".track-cargo-fetch").forEach(btn=>{
     btn.onclick=async ()=>{
       btn.disabled=true; const glyph=btn.textContent; btn.textContent="…";
@@ -368,12 +381,9 @@ function renderTrail(){
           body:JSON.stringify({entered_at:+btn.dataset.at})});
         const j=await r.json();
         if(j.error){ alert(j.error); return; }
-        const n=(j.items||[]).length;
-        const unpriced=(j.unpriced&&j.unpriced.length)
-          ? `\n(no market price for: ${j.unpriced.join(", ")})` : "";
-        alert(`${j.ship_name||"Ship"}: ${n} item type${n===1?"":"s"} · ${fmtISK(j.total)} ISK`
-          + `\n${j.stale_hint||"ESI assets are cached ~1h, so a freshly looted hold may lag."}`
-          + unpriced);
+        TRACK.unpricedByRow = TRACK.unpricedByRow || {};
+        if(j.unpriced && j.unpriced.length) TRACK.unpricedByRow[+btn.dataset.at] = j.unpriced;
+        else delete TRACK.unpricedByRow[+btn.dataset.at];
         if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
       }catch(e){ alert("Cargo fetch failed."); }
       finally{ btn.disabled=false; btn.textContent=glyph; }

@@ -67,135 +67,17 @@ def _get_pool():
 
 
 def _ensure_schema(pool):
-    """Create the monolith's tables once. Names are ``mono_*``-prefixed so they
-    can't collide with the redesign branch's own tables in a shared database."""
+    """Bring the monolith's schema up to date by running any pending migrations.
+
+    The actual DDL lives in :mod:`pg_migrations` as an ordered, version-tracked
+    list; this just runs it once per process. Table names are ``mono_*``-prefixed
+    so they can't collide with the redesign branch's own tables in a shared
+    database."""
     global _schema_ready
     if _schema_ready:
         return
-    with pool.connection() as conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_kv ("
-            "key TEXT PRIMARY KEY, "
-            "value JSONB NOT NULL, "
-            "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_user_settings ("
-            "character_id BIGINT PRIMARY KEY, "
-            "settings_json JSONB NOT NULL, "
-            "updated_at DOUBLE PRECISION NOT NULL)")
-        # ── multi-user model (v1.81+) ──────────────────────────────────────
-        # An account is a set of linked EVE characters; a browser session
-        # (cookie) points at one account. Settings are per-account.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_accounts ("
-            "account_id BIGINT PRIMARY KEY, "        # = the first linked char id
-            "data JSONB NOT NULL, "                  # {characters:[...], active_char_id}
-            "updated_at DOUBLE PRECISION NOT NULL)")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_char_account ("
-            "character_id BIGINT PRIMARY KEY, "      # reverse index: char -> account
-            "account_id BIGINT NOT NULL)")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_sessions ("
-            "sid TEXT PRIMARY KEY, "
-            "account_id BIGINT NOT NULL, "
-            "created_at DOUBLE PRECISION NOT NULL, "
-            "last_seen DOUBLE PRECISION NOT NULL)")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_account_settings ("
-            "account_id BIGINT PRIMARY KEY, "
-            "settings_json JSONB NOT NULL, "
-            "updated_at DOUBLE PRECISION NOT NULL)")
-        # ── replica-safe counters (v1.82+) ─────────────────────────────────
-        # One row per (account, character) instead of a single read-modify-write
-        # JSON blob, so concurrent writers (e.g. >1 replica) don't clobber each
-        # other. Updates take a row lock (SELECT … FOR UPDATE) via with_*().
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_delivered_jobs ("
-            "account_id BIGINT NOT NULL, "
-            "character_id BIGINT NOT NULL, "
-            "data JSONB NOT NULL, "
-            "updated_at DOUBLE PRECISION NOT NULL, "
-            "PRIMARY KEY (account_id, character_id))")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_order_state ("
-            "account_id BIGINT NOT NULL, "
-            "character_id BIGINT NOT NULL, "
-            "prev JSONB NOT NULL, "
-            "sales JSONB NOT NULL, "
-            "PRIMARY KEY (account_id, character_id))")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_order_events ("
-            "account_id BIGINT NOT NULL, "
-            "event_id TEXT NOT NULL, "
-            "character_id BIGINT NOT NULL, "
-            "ts DOUBLE PRECISION NOT NULL, "
-            "dismissed BOOLEAN NOT NULL DEFAULT FALSE, "
-            "data JSONB NOT NULL, "
-            "PRIMARY KEY (account_id, event_id))")
-        # ── notes tree (v1.87+) ────────────────────────────────────────────
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_notes ("
-            "id TEXT NOT NULL, "
-            "account_id BIGINT NOT NULL, "
-            "parent_id TEXT, "
-            "kind TEXT NOT NULL DEFAULT 'note', "
-            "title TEXT NOT NULL DEFAULT '', "
-            "body TEXT NOT NULL DEFAULT '', "
-            "pos INTEGER NOT NULL DEFAULT 0, "
-            "created_at DOUBLE PRECISION NOT NULL, "
-            "updated_at DOUBLE PRECISION NOT NULL, "
-            "PRIMARY KEY (account_id, id))")
-        # ── wallet history (v1.88+) ───────────────────────────────────────
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_wallet_history ("
-            "account_id BIGINT NOT NULL, "
-            "character_id BIGINT NOT NULL, "
-            "ts DOUBLE PRECISION NOT NULL, "
-            "balance DOUBLE PRECISION NOT NULL, "
-            "PRIMARY KEY (account_id, character_id, ts))")
-        # ── exploration location trail (v1.101+) ──────────────────────────
-        # One row per system the character entered while tracking, grouped into
-        # runs (a run = one Start…Stop&Finish trip). scanned / cargo_isk are
-        # optional per-entry user annotations. entered_at is the row key within
-        # a (account, character).
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_location_trail ("
-            "account_id BIGINT NOT NULL, "
-            "character_id BIGINT NOT NULL, "
-            "entered_at DOUBLE PRECISION NOT NULL, "
-            "run_id TEXT NOT NULL, "
-            "system_id BIGINT NOT NULL, "
-            "system_name TEXT NOT NULL, "
-            "security DOUBLE PRECISION, "
-            "scanned BOOLEAN NOT NULL DEFAULT FALSE, "
-            "cargo_isk DOUBLE PRECISION, "
-            "note TEXT NOT NULL DEFAULT '', "
-            "PRIMARY KEY (account_id, character_id, entered_at))")
-        # Per-system note added after the trail table shipped — backfill it on
-        # databases that predate the column (CREATE IF NOT EXISTS won't add it).
-        conn.execute(
-            "ALTER TABLE mono_location_trail "
-            "ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT ''")
-        # Per-system manual hide (v1.108+) — user-hidden systems drop out of the
-        # journal but stay stored so they can be revealed again.
-        conn.execute(
-            "ALTER TABLE mono_location_trail "
-            "ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE")
-        # ── exploration session journal (v1.101+) ─────────────────────────
-        # One row per exploration trip (run). The trail rows above are joined
-        # to a session by run_id. name/notes/cargo_value are user annotations.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS mono_exploration_sessions ("
-            "account_id BIGINT NOT NULL, "
-            "character_id BIGINT NOT NULL, "
-            "run_id TEXT NOT NULL, "
-            "name TEXT NOT NULL DEFAULT '', "
-            "started_at DOUBLE PRECISION NOT NULL, "
-            "ended_at DOUBLE PRECISION, "
-            "notes TEXT NOT NULL DEFAULT '', "
-            "cargo_value DOUBLE PRECISION, "
-            "PRIMARY KEY (account_id, character_id, run_id))")
+    import pg_migrations
+    pg_migrations.run(pool)
     _schema_ready = True
 
 

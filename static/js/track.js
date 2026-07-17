@@ -256,6 +256,11 @@ function renderTrail(){
   // "You are here": the last row of a live, active session is the system the
   // pilot is currently sitting in (dwell still counting up).
   const liveActive = isLive && TRACK.state==="active";
+  // The ▸ marker only appears when the last row is shown for a live session —
+  // reveal its legend under exactly the same condition.
+  const hasHere = liveActive && shown.length>0 && shown[shown.length-1].last;
+  const legend=$("#track-here-legend");
+  if(legend) legend.classList.toggle("hidden", !hasHere);
   tb.innerHTML=shown.map((x,vi)=>{
     const r=x.r, band=secBand(r.security);
     // The ▸ in the # column marks the current system; no text badge needed.

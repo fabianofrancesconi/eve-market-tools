@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.106.0"
+__version__ = "1.106.1"
 
 import argparse
 import base64
@@ -1729,18 +1729,36 @@ def _persist_track_sessions(acct):
     _acct_kv_save(acct, "location_tracking", LOCATION_TRACK_PATH, blob)
 
 
-def _append_trail(acct, cid, entered_at, run_id, system_id, system_name, security):
+def _append_trail(acct, cid, entered_at, run_id, system_id, system_name, security,
+                  carry_cargo=None):
+    """Append one system-entry to a character's trail. carry_cargo seeds the new
+    row's cargo_isk (the previous system's value carried forward while exploring)
+    — it's editable and counts in the session total until the user overrides it."""
     if pg_store.enabled():
         pg_store.location_trail_append(acct.account_id, cid, entered_at, run_id,
-                                       system_id, system_name, security)
+                                       system_id, system_name, security,
+                                       cargo_isk=carry_cargo)
     else:
         with _TRAIL_RECORD_LOCK:
             store = load_json(LOCATION_TRAIL_PATH, {})
             store.setdefault(str(cid), []).append(
                 {"entered_at": entered_at, "run_id": run_id, "system_id": system_id,
                  "system_name": system_name, "security": security,
-                 "scanned": False, "note": ""})
+                 "scanned": False, "note": "", "cargo_isk": carry_cargo})
             save_json(LOCATION_TRAIL_PATH, store)
+
+
+def _last_trail_cargo(acct, cid, run_id):
+    """The most recent system's cargo_isk in this run, or None — used to carry
+    the value forward to the next system. Avoids enriching the whole trail."""
+    if pg_store.enabled():
+        return pg_store.location_trail_last_cargo(acct.account_id, cid, run_id)
+    store = load_json(LOCATION_TRAIL_PATH, {})
+    rows = [r for r in store.get(str(cid), []) if r.get("run_id") == run_id]
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r.get("entered_at", 0))
+    return rows[-1].get("cargo_isk")
 
 
 def _enrich_trail_regions(rows):
@@ -1959,8 +1977,11 @@ def _poll_location_once(acct, cid):
                 run_id = s.get("run_id") if s else None
             if sysid and sysid != last and run_id:
                 info = _resolve_track_system(sysid)
+                # Carry the previous system's cargo value forward — a smart
+                # default for exploration; the user overrides it per system.
+                carry = _last_trail_cargo(acct, cid, run_id)
                 _append_trail(acct, cid, now, run_id, sysid,
-                              info["name"], info["sec"])
+                              info["name"], info["sec"], carry_cargo=carry)
                 with _TRACK_LOCK:
                     s = _TRACK_SESSIONS.get(cid)
                     if s:

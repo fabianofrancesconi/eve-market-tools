@@ -428,6 +428,36 @@ class TestPollTick:
         rows = lp_web._query_trail(acct, 1, run_id=run_id)
         assert len(rows) == 1 and rows[0]["system_id"] == 30000142
 
+    def test_cargo_carries_forward_to_next_system(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        # System A, then set its cargo, then jump to system B.
+        self._mock_esi(monkeypatch, online=True, system_id=30000142)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._poll_location_once(acct, 1)
+        a_at = lp_web._query_trail(acct, 1, run_id=run_id)[0]["entered_at"]
+        lp_web._annotate_trail(acct, 1, a_at, cargo_isk=42.0)
+        self._mock_esi(monkeypatch, online=True, system_id=30000144)
+        lp_web._poll_location_once(acct, 1)
+        rows = lp_web._query_trail(acct, 1, run_id=run_id)
+        assert len(rows) == 2
+        # B inherits A's cargo as an editable default.
+        assert rows[1]["system_id"] == 30000144
+        assert rows[1]["cargo_isk"] == 42.0
+
+    def test_cargo_carry_none_when_prev_unset(self, monkeypatch, tmp_path):
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        self._mock_esi(monkeypatch, online=True, system_id=30000142)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._poll_location_once(acct, 1)
+        self._mock_esi(monkeypatch, online=True, system_id=30000144)
+        lp_web._poll_location_once(acct, 1)
+        rows = lp_web._query_trail(acct, 1, run_id=run_id)
+        assert rows[1]["cargo_isk"] is None
+
     def test_no_duplicate_on_same_system(self, monkeypatch, tmp_path):
         _isolate(monkeypatch, tmp_path)
         acct = _acct()

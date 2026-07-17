@@ -521,20 +521,18 @@
      and stays left-packed next to its header — a compact log, not a table
      sprawled across the viewport with values floating far from their headers.
      System is the one flexible column; a max-width keeps it from running away. */
-  /* width:auto overrides the global `table { width:100% }` so the table doesn't
-     sprawl full-viewport (which spreads columns and floats values from their
-     headers). A min-width gives it a comfortable size, and the System column
-     (width:100% below) soaks up the slack so the rest stay content-tight. */
-  #track-table { border-collapse:collapse; width:auto; min-width:min(620px, 100%); }
+  /* width:auto overrides the global `table { width:100% }` so the table sizes to
+     its content and stays left-packed, rather than sprawling full-viewport
+     (which spreads the columns and floats values away from their headers). */
+  #track-table { border-collapse:collapse; width:auto; }
   #track-table th { text-align:left; color:var(--dim); font-weight:600; font-size:12px;
-    padding:7px 22px; border-bottom:2px solid var(--line); white-space:nowrap; }
-  #track-table td { padding:8px 22px; border-bottom:1px solid var(--line); font-size:13px;
+    padding:7px 20px; border-bottom:2px solid var(--line); white-space:nowrap; }
+  #track-table td { padding:8px 20px; border-bottom:1px solid var(--line); font-size:13px;
     vertical-align:middle; white-space:nowrap; }
   /* # column: narrow, right-aligned, dim. */
   #track-table th:first-child, #track-table td:first-child { padding-right:6px;
     text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
-  /* System is the flexible column — it absorbs the min-width slack. */
-  #track-table th:nth-child(2), #track-table td.track-sys { width:100%; }
+  #track-table .track-sys { max-width:340px; }
   #track-table .track-sys-name { display:block; font-weight:600; color:var(--fg);
     overflow:hidden; text-overflow:ellipsis; }
   #track-table .track-sys-sub { display:block; font-size:11px; color:var(--dim);

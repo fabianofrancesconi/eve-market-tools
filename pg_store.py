@@ -569,15 +569,27 @@ def wallet_history_compact(account_id, now=None):
 # ── exploration location trail ───────────────────────────────────────────────
 
 def location_trail_append(account_id, character_id, entered_at, run_id,
-                          system_id, system_name, security):
-    """Append one system-entry to a character's trail. Ignores duplicates."""
+                          system_id, system_name, security, cargo_isk=None):
+    """Append one system-entry to a character's trail. Ignores duplicates.
+    cargo_isk seeds the row (carried forward from the previous system)."""
     with _get_pool().connection() as conn:
         conn.execute(
             "INSERT INTO mono_location_trail (account_id, character_id, entered_at, "
-            "run_id, system_id, system_name, security) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "run_id, system_id, system_name, security, cargo_isk) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
             "ON CONFLICT DO NOTHING",
             (account_id, character_id, entered_at, run_id, system_id,
-             system_name, security))
+             system_name, security, cargo_isk))
+
+
+def location_trail_last_cargo(account_id, character_id, run_id):
+    """cargo_isk of the most recently entered system in a run, or None."""
+    with _get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT cargo_isk FROM mono_location_trail WHERE account_id=%s "
+            "AND character_id=%s AND run_id=%s ORDER BY entered_at DESC LIMIT 1",
+            (account_id, character_id, run_id)).fetchone()
+    return row[0] if row else None
 
 
 def location_trail_query(account_id, character_id, run_id=None, since_ts=0.0):

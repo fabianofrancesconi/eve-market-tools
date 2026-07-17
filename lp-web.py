@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.107.0"
+__version__ = "1.107.1"
 
 import argparse
 import base64
@@ -2056,11 +2056,12 @@ def _session_summary(acct, cid, rec, live_run_id):
     """A session record enriched with derived trail stats for the journal list."""
     rows = _query_trail(acct, cid, run_id=rec["run_id"])
     scanned = sum(1 for r in rows if r.get("scanned"))
-    # Cargo value is now per-system: the session total is the sum of each row's
-    # cargo_isk. Fall back to the legacy session-level cargo_value for old
-    # sessions that predate per-system tracking and have no per-row cargo.
+    # Per-system cargo carries forward as a running haul total, so the session
+    # value is the LAST system's value (what's currently in the hold), not the
+    # sum. Rows are chronological; take the most recent non-null. Fall back to
+    # the legacy session-level cargo_value for old sessions without per-row cargo.
     row_cargo = [r.get("cargo_isk") for r in rows if r.get("cargo_isk") is not None]
-    cargo_value = sum(row_cargo) if row_cargo else rec.get("cargo_value")
+    cargo_value = row_cargo[-1] if row_cargo else rec.get("cargo_value")
     return {
         "run_id": rec["run_id"],
         "name": rec.get("name") or _default_session_name(rows, rec.get("started_at")),

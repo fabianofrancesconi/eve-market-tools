@@ -184,7 +184,10 @@ function renderSessionList(){
   wrap.innerHTML=TRACK.sessions.map(s=>{
     const sel=s.run_id===TRACK.selRunId?" active":"";
     const live=s.is_live?`<span class="exp-live-dot"></span>`:"";
-    const stats=`${s.systems} sys${s.cargo_value!=null?` · ${fmtISK(s.cargo_value)} ISK`:""}`;
+    // Total duration: end→now for a live/ongoing session, else end−start.
+    const endTs=s.ended_at || (Date.now()/1000);
+    const dur=(s.started_at!=null)? fmtDwell(endTs-s.started_at) : null;
+    const stats=`${s.systems} sys${dur?` · ${dur}`:""}${s.cargo_value!=null?` · ${fmtISK(s.cargo_value)} ISK`:""}`;
     return `<button class="exp-session-item${sel}" type="button" data-run="${authEsc(s.run_id)}">
       <span class="exp-session-item-name">${live}${authEsc(s.name)}</span>
       <span class="exp-session-item-meta">${fmtDay(s.started_at)} · ${stats}</span>
@@ -311,7 +314,7 @@ function renderTrail(){
       const digits=stripCargo(inp.value);       // server wants a bare number / blank
       await fetch("/api/track/cargo",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({entered_at:+inp.dataset.at, cargo_isk:digits})});
-      // Re-pull so the session total (sum of rows) reflects the edit.
+      // Re-pull so the session total (latest system's value) reflects the edit.
       if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
     };
   });

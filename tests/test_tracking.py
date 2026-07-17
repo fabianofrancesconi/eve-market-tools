@@ -299,7 +299,9 @@ class TestJournalHandlers:
         assert out["session"]["jumps"] == 1
         assert len(out["trail"]) == 2
 
-    def test_session_cargo_is_sum_of_rows(self, monkeypatch, tmp_path):
+    def test_session_cargo_is_latest_row_value(self, monkeypatch, tmp_path):
+        # Cargo carries forward as a running haul total, so the session value is
+        # the most recent system's value — not the sum of every row.
         _isolate(monkeypatch, tmp_path)
         acct = _acct()
         monkeypatch.setattr(lp_web, "require_account", lambda: acct)
@@ -307,9 +309,22 @@ class TestJournalHandlers:
         lp_web._append_trail(acct, 1, 100.0, run_id, 1, "A", 0.5)
         lp_web._append_trail(acct, 1, 200.0, run_id, 2, "B", 0.4)
         lp_web._annotate_trail(acct, 1, 100.0, cargo_isk=30_000_000.0)
-        lp_web._annotate_trail(acct, 1, 200.0, cargo_isk=12_000_000.0)
+        lp_web._annotate_trail(acct, 1, 200.0, cargo_isk=42_000_000.0)
         out = lp_web.do_track_session({"run_id": [run_id]})
         assert out["session"]["cargo_value"] == 42_000_000.0
+
+    def test_session_cargo_latest_ignores_trailing_blank(self, monkeypatch, tmp_path):
+        # A later system with no value entered doesn't reset the total to None —
+        # the latest *entered* value stands.
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+        run_id = lp_web.do_track_start({})["run_id"]
+        lp_web._append_trail(acct, 1, 100.0, run_id, 1, "A", 0.5)
+        lp_web._append_trail(acct, 1, 200.0, run_id, 2, "B", 0.4)
+        lp_web._annotate_trail(acct, 1, 100.0, cargo_isk=30_000_000.0)
+        out = lp_web.do_track_session({"run_id": [run_id]})
+        assert out["session"]["cargo_value"] == 30_000_000.0
 
     def test_session_cargo_falls_back_to_legacy_session_value(self, monkeypatch, tmp_path):
         """Old sessions with no per-row cargo still show their session-level value."""

@@ -525,7 +525,7 @@
      sprawl full-viewport (which spreads columns and floats values from their
      headers). A min-width gives it a comfortable size, and the System column
      (width:100% below) soaks up the slack so the rest stay content-tight. */
-  #track-table { border-collapse:collapse; width:auto; min-width:min(1000px, 100%); }
+  #track-table { border-collapse:collapse; width:auto; min-width:min(620px, 100%); }
   #track-table th { text-align:left; color:var(--dim); font-weight:600; font-size:12px;
     padding:7px 22px; border-bottom:2px solid var(--line); white-space:nowrap; }
   #track-table td { padding:8px 22px; border-bottom:1px solid var(--line); font-size:13px;

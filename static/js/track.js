@@ -8,7 +8,7 @@
 
 const TRACK = { state:"stopped", pauseReason:null, liveRunId:null, online:null,
                 error:null, scopeOk:true, sessions:[], selRunId:null,
-                detail:null, trail:[], minDwell:0 };
+                detail:null, trail:[], minDwell:0, showHidden:false };
 const TRACK_MIN_LS = "eve-track-min-dwell";  // {sec} — a local view preference
 
 function loadTrackMinDwell(){
@@ -246,7 +246,8 @@ function renderTrail(){
   });
   const min=TRACK.minDwell||0;
   const shown=withDwell.filter(x=>(isLive&&x.last) || x.dwell>=min);
-  const hidden=withDwell.length-shown.length;
+  const hiddenRows=withDwell.filter(x=>!((isLive&&x.last) || x.dwell>=min));
+  const hidden=hiddenRows.length;
 
   tbl.classList.toggle("hidden", shown.length===0);
   const cap=$("#track-table-caption");
@@ -270,8 +271,23 @@ function renderTrail(){
     </tr>`;
   }).join("");
 
+  // "N short stops hidden" — click to reveal the hidden systems (name + dwell)
+  // as a compact chip list, so a filtered route still shows every system flown.
   const note=$("#track-hidden-note");
-  if(note) note.textContent=(min>0 && hidden>0)? `${hidden} short stop${hidden===1?"":"s"} hidden` : "";
+  if(note){
+    if(min>0 && hidden>0){
+      const chips=hiddenRows.map(x=>{
+        const band=secBand(x.r.security);
+        return `<span class="track-hidden-chip ${band?'sec-'+band:''}">${authEsc(x.r.system_name)} <span class="track-hidden-dwell">${fmtDwell(x.dwell)}</span></span>`;
+      }).join("");
+      note.innerHTML=`<button class="track-hidden-toggle" type="button">${hidden} short stop${hidden===1?"":"s"} hidden ${TRACK.showHidden?"▾":"▸"}</button>`
+        + (TRACK.showHidden? `<div class="track-hidden-list">${chips}</div>` : "");
+      const tgl=note.querySelector(".track-hidden-toggle");
+      if(tgl) tgl.onclick=()=>{ TRACK.showHidden=!TRACK.showHidden; renderTrail(); };
+    } else {
+      note.innerHTML="";
+    }
+  }
 
   tb.querySelectorAll(".track-cargo input").forEach(inp=>{
     // Re-group the digits with commas as the user types, keeping the caret near

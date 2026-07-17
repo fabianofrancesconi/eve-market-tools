@@ -17,11 +17,17 @@ function _computeTradeability(rows, dayField, weight){
   if(!loaded.length){ rows.forEach(r=>r.tradeability=null); return; }
   const sortedVols=[...loaded.map(r=>r.daily_vol)].sort((a,b)=>a-b);
   const sortedDays=[...loaded.map(r=>{const d=r[dayField]; return d===null?Infinity:d;})].sort((a,b)=>a-b);
+  // lower_bound / upper_bound on an ascending array: count of elements strictly
+  // less than v, and count strictly greater than v (n - upper_bound).
   const bisect=(arr,v)=>{let lo=0,hi=arr.length;while(lo<hi){const m=(lo+hi)>>1;if(arr[m]<v)lo=m+1;else hi=m;}return lo;};
+  const bisectRight=(arr,v)=>{let lo=0,hi=arr.length;while(lo<hi){const m=(lo+hi)>>1;if(arr[m]<=v)lo=m+1;else hi=m;}return lo;};
   const pctRank=(sorted,v,higherBetter)=>{
     const n=sorted.length; if(n<=1) return 100;
-    const pos=bisect(sorted,v);
-    const beats=higherBetter? pos : n-pos-(sorted[pos]===v?1:0);
+    // "Beaten" = strictly worse peers. Higher-better: those below v (= lower_bound).
+    // Lower-better: those above v (= n - upper_bound). Using upper_bound discounts
+    // ALL tied peers, not just one — the old `-(sorted[pos]===v?1:0)` only removed
+    // a single tie, inflating the score when several offers shared a value.
+    const beats=higherBetter? bisect(sorted,v) : n-bisectRight(sorted,v);
     return beats/(n-1)*100;
   };
   for(const r of rows){

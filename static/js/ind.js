@@ -15,9 +15,13 @@ let IND_FILL_TOKEN = 0;
 
 const fmtDur = s => {
   if(s===null||s===undefined) return "—";
-  const d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.round((s%3600)/60);
+  // Round to whole minutes FIRST, then split — rounding the minute component on
+  // its own could yield 60 (e.g. 3599s → "60m", 7199s → "1h 60m").
+  let mins=Math.round(s/60);
+  const d=Math.floor(mins/1440); mins-=d*1440;
+  const h=Math.floor(mins/60); mins-=h*60;
   if(d>0) return `${d}d ${h}h`;
-  return h>0 ? `${h}h ${m}m` : `${m}m`;
+  return h>0 ? `${h}h ${mins}m` : `${mins}m`;
 };
 const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
 const fmtDaysSell = v => (v===null||v===undefined) ? "—" : (v<1 ? "<1 d" : v.toFixed(1)+" d");

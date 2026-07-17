@@ -475,7 +475,13 @@ def _mean_daily_volume(history, days=HISTORY_DAYS):
     """Average daily volume over the last `days` CALENDAR days. ESI history
     omits days with zero trades, so we fill gaps with 0 to get the true daily
     rate.  Mean (not median) because median-with-zeros collapses to 0 for
-    items that trade sporadically.  None when there's no usable history."""
+    items that trade sporadically.  None when there's no usable history.
+
+    Note: dividing by the full window intentionally treats an in-window day with
+    no ESI entry as a zero-trade day — that's what makes a sporadic trader read
+    as low-volume rather than as its burst rate. A brand-new item (fewer than
+    `days` days old) is therefore slightly understated, but that can't be told
+    apart from a sparse trader using only in-window history, so we accept it."""
     if not history:
         return None
     last_date = datetime.strptime(history[-1]["date"], "%Y-%m-%d")

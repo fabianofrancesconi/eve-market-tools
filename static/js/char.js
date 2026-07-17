@@ -813,7 +813,10 @@ function updateMyLpBadge(){
     badge.textContent=asOf?`🔒 from character · as of ${asOf}`:"🔒 from character";
     badge.classList.remove("hidden");
   } else if(AUTH.loggedIn){
-    // No LP with this corp — let the user type a manual budget.
+    // No LP with this corp — let the user type a manual budget. Clear any value
+    // carried over from a previously-selected corp that WAS locked to its LP,
+    // otherwise a scan would silently reuse the old corp's budget.
+    if(inp.classList.contains("locked")) inp.value="";
     inp.readOnly=false; inp.classList.remove("locked");
     inp.title="No LP found for this corp — enter a manual budget.";
     badge.textContent="0 LP with this corp";

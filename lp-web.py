@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.118.0"
+__version__ = "1.119.0"
 
 import argparse
 import base64
@@ -174,6 +174,11 @@ _ARB_ROUTE_CACHE: dict = {}
 _ARB_CACHES_LOADED = False
 _ARB_CACHE_LOCK = threading.Lock()
 
+# Cap on cross-station spreads that get (expensive) station/route resolution,
+# taken by ISK opportunity. When exceeded the scan reports how many were dropped
+# rather than silently truncating.
+ARB_ENRICH_CAP = 500
+
 
 def _ensure_arb_caches():
     global _ARB_STATION_CACHE, _ARB_VOLUME_CACHE, _ARB_SYSTEM_CACHE, _ARB_ROUTE_CACHE, _ARB_CACHES_LOADED
@@ -182,6 +187,22 @@ def _ensure_arb_caches():
             _ARB_STATION_CACHE, _ARB_VOLUME_CACHE, _ARB_SYSTEM_CACHE, _ARB_ROUTE_CACHE = \
                 arb_core.load_lookup_cache(CACHE_DIR)
             _ARB_CACHES_LOADED = True
+
+
+def _persist_arb_caches(_attempts=3):
+    """Serialize the shared arb lookup caches to disk, tolerating a concurrent
+    scan mutating them. dict() over a dict that another thread grows can raise
+    RuntimeError; since these are disposable disk caches, retry a few times and
+    skip this round if it keeps racing rather than failing the scan."""
+    for _ in range(_attempts):
+        try:
+            snapshot = (dict(_ARB_STATION_CACHE), dict(_ARB_VOLUME_CACHE),
+                        dict(_ARB_SYSTEM_CACHE), dict(_ARB_ROUTE_CACHE))
+        except RuntimeError:
+            continue   # mutated mid-copy — try again
+        arb_core.save_lookup_cache(CACHE_DIR, *snapshot)
+        return True
+    return False
 
 
 # ── LP scanner helpers ──────────────────────────────────────────────────────
@@ -2245,13 +2266,20 @@ def do_arb_scan(q, emit=None):
                if r["isk_opportunity"] >= min_isk]
 
     if cross_station:
-        # Enrich all results (capped) then filter to Jita-leg deals within max_jumps.
-        # round_trip=True so jumps counts the haul both ways.
+        # Enrich the top ARB_ENRICH_CAP results (by ISK opportunity) then filter
+        # to Jita-leg deals within max_jumps. round_trip=True so jumps counts the
+        # haul both ways. The cap bounds route-resolution cost; when it actually
+        # drops spreads, say so — a valid Jita-leg deal ranked past the cap by
+        # gross opportunity would otherwise vanish with no indication.
+        capped = len(results) > ARB_ENRICH_CAP
+        cap_note = (f" (top {ARB_ENRICH_CAP:,} by ISK opportunity; "
+                    f"{len(results) - ARB_ENRICH_CAP:,} lower-ranked spreads not resolved)"
+                    if capped else "")
         _emit({"type": "progress", "pct": 87,
                "msg": f"Found {len(results):,} cross-station spreads — resolving stations…",
-               "sub": f"Filtering to Jita legs ≤{max_jumps} jumps round-trip"})
+               "sub": f"Filtering to Jita legs ≤{max_jumps} jumps round-trip{cap_note}"})
         enriched = arb_core.enrich_locations(
-            results[:500], round_trip=True, route_flag=route_flag,
+            results[:ARB_ENRICH_CAP], round_trip=True, route_flag=route_flag,
             session=SESSION, station_cache=_ARB_STATION_CACHE, route_cache=_ARB_ROUTE_CACHE,
         )
         from_jita = arb_core.filter_from_jita(enriched, max_jumps)
@@ -2287,10 +2315,12 @@ def do_arb_scan(q, emit=None):
         vol = arb_core.resolve_volume(r["type_id"], _ARB_VOLUME_CACHE, SESSION)
         r["total_volume"] = vol * r["flippable_qty"] if vol is not None else None
 
-    arb_core.save_lookup_cache(
-        CACHE_DIR, _ARB_STATION_CACHE, _ARB_VOLUME_CACHE,
-        _ARB_SYSTEM_CACHE, _ARB_ROUTE_CACHE,
-    )
+    # Persist the shared lookup dicts. Another concurrent scan mutates these same
+    # module globals via enrich_*/resolve_volume, so serializing (or even shallow-
+    # copying) one while it grows can raise "dict changed size during iteration".
+    # These are best-effort disk caches, so snapshot with a short retry and, if it
+    # keeps racing, skip this round rather than aborting the scan with an error.
+    _persist_arb_caches()
 
     _emit({"type": "progress", "pct": 97, "msg": "Formatting results…", "sub": ""})
 

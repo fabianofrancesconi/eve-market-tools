@@ -23,6 +23,7 @@ import hashlib
 import json
 import secrets
 import time
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from lp_core import ESI, HEADERS, USER_AGENT, load_json, save_json
@@ -259,17 +260,31 @@ def fetch_ship(token, character_id, session):
     return r.json()
 
 
+def _http_date_to_epoch(value):
+    """RFC-7231 HTTP date (e.g. a Last-Modified header) -> epoch seconds, or None."""
+    if not value:
+        return None
+    try:
+        return parsedate_to_datetime(value).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_assets(token, character_id, session):
-    """[{item_id, type_id, quantity, location_id, location_flag, is_singleton, ...},
-    …] — every asset the character owns, across all locations. Requires
-    esi-assets.read_assets.v1. Paginated (X-Pages). Note: ESI caches assets ~1h and
-    only refreshes on server-side asset changes, so freshly looted items lag."""
-    out, page = [], 1
+    """([{item_id, type_id, quantity, location_id, location_flag, is_singleton, ...},
+    …], last_modified) — every asset the character owns, across all locations, plus
+    the epoch of ESI's Last-Modified header (when CCP last refreshed the asset data,
+    NOT when we fetched it). Requires esi-assets.read_assets.v1. Paginated (X-Pages).
+    Note: ESI caches assets ~1h and only refreshes on server-side asset changes, so
+    freshly looted items lag — last_modified reflects that real data age."""
+    out, page, last_modified = [], 1, None
     while page <= 100:
         r = session.get(f"{ESI}/characters/{character_id}/assets/",
                         params={"page": page},
                         headers=_auth_headers(token), timeout=30)
         r.raise_for_status()
+        if page == 1:
+            last_modified = _http_date_to_epoch(r.headers.get("Last-Modified"))
         batch = r.json()
         if not batch:
             break
@@ -277,7 +292,7 @@ def fetch_assets(token, character_id, session):
         if page >= int(r.headers.get("X-Pages", 1)):
             break
         page += 1
-    return out
+    return out, last_modified
 
 
 # location_flags that count as "cargo" the pilot is hauling. Fitted modules,

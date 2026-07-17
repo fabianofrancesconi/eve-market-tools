@@ -638,7 +638,9 @@ class Exploration:
 
         Requires esi-assets.read_assets.v1 + esi-location.read_ship_type.v1. ESI
         caches assets ~1h and only refreshes on server-side changes, so freshly
-        looted items may lag — the response flags this via `stale_hint`."""
+        looted items may lag. The recorded `cargo_scanned_at` is ESI's Last-Modified
+        (when CCP last refreshed the asset data), NOT our fetch time — that's the
+        honest "as of" age; it falls back to the fetch time if the header is absent."""
         acct = self._h.require_account()
         cid = self._h._track_target_cid(acct, q)
         entered_at = float(q.get("entered_at", ["0"])[0] or 0)
@@ -657,7 +659,7 @@ class Exploration:
         try:
             token = self._h._access_token(acct, cid)
             ship = sso_core.fetch_ship(token, cid, self._h.SESSION)
-            assets = sso_core.fetch_assets(token, cid, self._h.SESSION)
+            assets, last_modified = sso_core.fetch_assets(token, cid, self._h.SESSION)
         except LPError as e:
             return {"error": str(e)}
         except requests.HTTPError as e:
@@ -667,16 +669,17 @@ class Exploration:
         except requests.RequestException:
             return {"error": "Couldn't reach ESI to fetch cargo."}
 
-        now = time.time()
+        # ESI's Last-Modified is the true data age; fall back to now if it's absent.
+        scanned_at = last_modified or time.time()
         ship_item_id = ship.get("ship_item_id")
         cargo = sso_core.cargo_items_in_ship(assets, ship_item_id)
         if not cargo:
             # Empty hold is a legitimate result: record 0 so the column shows it.
             self._h._annotate_trail(acct, cid, entered_at, cargo_isk=0.0,
-                                    cargo_scanned_at=now)
+                                    cargo_scanned_at=scanned_at)
             self._h._CHAR_PUBSUB.bump(id(acct))
             return {"ok": True, "total": 0.0, "items": [],
-                    "ship_name": ship.get("ship_name"), "cargo_scanned_at": now}
+                    "ship_name": ship.get("ship_name"), "cargo_scanned_at": scanned_at}
 
         tids = list(cargo)
         prices = self._h.fetch_prices(tids, self._h.SESSION)
@@ -696,10 +699,10 @@ class Exploration:
         items.sort(key=lambda i: i["value"], reverse=True)
 
         self._h._annotate_trail(acct, cid, entered_at, cargo_isk=total,
-                                cargo_scanned_at=now)
+                                cargo_scanned_at=scanned_at)
         self._h._CHAR_PUBSUB.bump(id(acct))
         return {"ok": True, "total": total, "items": items,
-                "ship_name": ship.get("ship_name"), "cargo_scanned_at": now,
+                "ship_name": ship.get("ship_name"), "cargo_scanned_at": scanned_at,
                 "unpriced": [i["name"] for i in items if not i["priced"]]}
 
     def do_track_note(self, q):

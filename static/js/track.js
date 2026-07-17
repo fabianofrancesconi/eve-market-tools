@@ -37,6 +37,23 @@ function fmtDay(ts){
   if(!ts) return "";
   return new Date(ts*1000).toLocaleDateString([], {day:"2-digit", month:"short"});
 }
+// Compact "as of" label for a cargo scan: HH:MM, prefixed with the date when the
+// reading isn't from today (an ESI-cached value can be hours/days old), plus the
+// age in parentheses so its staleness is obvious at a glance.
+function fmtScanAge(ts){
+  if(!ts) return "—";
+  const d=new Date(ts*1000), now=new Date();
+  const sameDay = d.toDateString()===now.toDateString();
+  const clock = fmtClock(ts);
+  const stamp = sameDay ? clock : `${fmtDay(ts)} ${clock}`;
+  const secs=Math.max(0, Math.round(now.getTime()/1000 - ts));
+  let age;
+  if(secs<90) age="just now";
+  else if(secs<5400) age=`${Math.round(secs/60)}m ago`;
+  else if(secs<86400) age=`${Math.round(secs/3600)}h ago`;
+  else age=`${Math.round(secs/86400)}d ago`;
+  return `${stamp} · ${age}`;
+}
 // EVE security-status → the sec-band buckets the Arbitrage table already styles.
 function secBand(sec){
   if(sec==null) return "";
@@ -295,15 +312,17 @@ function renderTrail(){
     const cargoVal = fmtCargoInput(x.eff);
     const cargoCls = "track-cargo-input" + (x.inherited ? " inherited" : "");
     const delta = x.delta ? `<span class="track-cargo-delta ${x.delta>0?'pos':'neg'}" title="Change vs the previous system">${x.delta>0?'+':'−'}${fmtISK(Math.abs(x.delta))}</span>` : "";
-    // "scanned HH:MM" under the value when it came from an ESI cargo fetch (own row
-    // only — a carried-forward value belongs to an earlier system's scan). If the
-    // scan hit items with no market price, flag it (⚠) so the total isn't trusted blindly.
+    // "as of <when>" under the value when it came from an ESI cargo fetch (own row
+    // only — a carried-forward value belongs to an earlier system's scan). The time
+    // is ESI's Last-Modified (when CCP last refreshed the assets), not the fetch
+    // click — the honest data age. If the scan hit items with no market price, flag
+    // it (⚠) so the total isn't trusted blindly.
     const unpriced = (TRACK.unpricedByRow||{})[r.entered_at];
-    const scanTip = unpriced
-      ? `Scanned ${fmtClock(r.cargo_scanned_at)} — ESI assets cached ~1h. No market price for: ${unpriced.join(", ")}`
-      : `ESI cargo scanned at this time (assets are cached ~1h)`;
+    const scanTip = "EVE asset data as of this time (ESI Last-Modified; assets are "
+      + "cached ~1h, so this may lag what's physically in the hold)."
+      + (unpriced ? ` No market price for: ${unpriced.join(", ")}.` : "");
     const scanAt = (!x.inherited && r.cargo_scanned_at)
-      ? `<span class="track-cargo-scanat" title="${authEsc(scanTip)}">scanned ${fmtClock(r.cargo_scanned_at)}${unpriced?" ⚠":""}</span>` : "";
+      ? `<span class="track-cargo-scanat" title="${authEsc(scanTip)}">as of ${fmtScanAge(r.cargo_scanned_at)}${unpriced?" ⚠":""}</span>` : "";
     return `<tr class="${here?'track-here':''}" title="${here?'You are here':''}">
       <td>${here?'▸':(vi+1)}</td>
       <td class="track-sys"><span class="track-sys-name">${authEsc(r.system_name)}</span>${sub}</td>

@@ -553,6 +553,12 @@
   #track-table td.track-cargo { padding:4px 10px; }
   #track-table td.track-cargo input { width:110px; text-align:right; background:var(--panel2);
     color:var(--fg); border:1px solid var(--line2); border-radius:4px; padding:3px 6px; font-size:12.5px; }
+  /* ISK change vs the previous system — shown under the input when both have a
+     value. Green for a gain, red for a loss. */
+  .track-cargo-delta { display:block; margin-top:2px; font-size:11px;
+    font-variant-numeric:tabular-nums; }
+  .track-cargo-delta.pos { color:var(--green2); }
+  .track-cargo-delta.neg { color:var(--red); }
   #track-table td.track-note { padding:4px 10px; }
   /* Cute per-system note button: an emoji chip when empty, a filled pill that
      previews the note text when set. Opens the note modal on click. */

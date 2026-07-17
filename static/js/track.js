@@ -242,7 +242,11 @@ function renderTrail(){
   const withDwell=rows.map((r,i)=>{
     const last=i+1>=rows.length;
     const nextTs=last? endTs : rows[i+1].entered_at;
-    return {r, last, dwell:Math.max(0,nextTs-r.entered_at)};
+    // ISK delta vs the previous system — only when both have a value entered.
+    // Cargo carries forward, so this reads as what was gained/lost there.
+    const prev=i>0? rows[i-1].cargo_isk : null;
+    const delta=(r.cargo_isk!=null && prev!=null) ? r.cargo_isk-prev : null;
+    return {r, last, delta, dwell:Math.max(0,nextTs-r.entered_at)};
   });
   const min=TRACK.minDwell||0;
   const shown=withDwell.filter(x=>(isLive&&x.last) || x.dwell>=min);
@@ -276,7 +280,7 @@ function renderTrail(){
       <td class="${band?'sec-'+band:''}">${fmtSec(r.security)}</td>
       <td>${fmtClock(r.entered_at)}</td>
       <td>${fmtDwell(x.dwell)}${here?" · now":""}</td>
-      <td class="track-cargo num"><input type="text" inputmode="numeric" placeholder="—" data-at="${r.entered_at}" value="${fmtCargoInput(r.cargo_isk)}"></td>
+      <td class="track-cargo num"><input type="text" inputmode="numeric" placeholder="—" data-at="${r.entered_at}" value="${fmtCargoInput(r.cargo_isk)}">${x.delta?`<span class="track-cargo-delta ${x.delta>0?'pos':'neg'}" title="Change vs the previous system">${x.delta>0?'+':'−'}${fmtISK(Math.abs(x.delta))}</span>`:""}</td>
       <td class="track-note">${noteBtnHtml(r)}</td>
     </tr>`;
   }).join("");

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.114.0"
+__version__ = "1.115.0"
 
 import argparse
 import base64
@@ -793,6 +793,13 @@ def do_auth_logout(q):
 _JOBS_TRACK_LOCK = threading.Lock()
 
 
+# Guards the file-mode order-events store's read-modify-write. do_char_data fans
+# per-character fetches out across a thread pool, so two threads can otherwise
+# load the whole JSON, each write back only its own char's keys, and the later
+# write clobbers the other's _prev_<cid> snapshot — silently dropping sale/fill
+# events. Postgres mode is already atomic via pg_store.with_order_state.
+_ORDER_EVENTS_LOCK = threading.Lock()
+
 ORDER_EVENT_EXPIRY = 7 * 24 * 3600  # auto-expire after 1 week
 
 
@@ -1031,18 +1038,19 @@ def _track_order_changes(acct, cid, current_orders, names):
             return events, new_prev, new_sales, (events, new_sales)
         return pg_store.with_order_state(acct.account_id, cid, mutate)
 
-    store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
-    char_key, prev_key, sales_key = str(cid), f"_prev_{cid}", f"_sales_{cid}"
-    now = time.time()
-    events = [e for e in store.get(char_key, [])
-              if now - e["ts"] < ORDER_EVENT_EXPIRY and not e.get("dismissed")]
-    new_events, new_prev, new_sales = _compute_order_deltas(
-        store.get(prev_key, {}), store.get(sales_key, {}), current_orders, names, char_name)
-    events.extend(new_events)
-    store[prev_key] = new_prev
-    store[char_key] = events
-    store[sales_key] = new_sales
-    _acct_kv_save(acct, "order_events", ORDER_EVENTS_PATH, store)
+    with _ORDER_EVENTS_LOCK:
+        store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
+        char_key, prev_key, sales_key = str(cid), f"_prev_{cid}", f"_sales_{cid}"
+        now = time.time()
+        events = [e for e in store.get(char_key, [])
+                  if now - e["ts"] < ORDER_EVENT_EXPIRY and not e.get("dismissed")]
+        new_events, new_prev, new_sales = _compute_order_deltas(
+            store.get(prev_key, {}), store.get(sales_key, {}), current_orders, names, char_name)
+        events.extend(new_events)
+        store[prev_key] = new_prev
+        store[char_key] = events
+        store[sales_key] = new_sales
+        _acct_kv_save(acct, "order_events", ORDER_EVENTS_PATH, store)
     return events, new_sales
 
 
@@ -1070,15 +1078,16 @@ def _dismiss_order_event(acct, event_id):
     if pg_store.enabled():
         pg_store.order_events_dismiss(acct.account_id, event_id)
         return
-    store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
-    for key, val in store.items():
-        if key.startswith("_prev_") or key.startswith("_sales_"):
-            continue
-        if isinstance(val, list):
-            for e in val:
-                if event_id == "all" or e.get("id") == event_id:
-                    e["dismissed"] = True
-    _acct_kv_save(acct, "order_events", ORDER_EVENTS_PATH, store)
+    with _ORDER_EVENTS_LOCK:
+        store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
+        for key, val in store.items():
+            if key.startswith("_prev_") or key.startswith("_sales_"):
+                continue
+            if isinstance(val, list):
+                for e in val:
+                    if event_id == "all" or e.get("id") == event_id:
+                        e["dismissed"] = True
+        _acct_kv_save(acct, "order_events", ORDER_EVENTS_PATH, store)
 
 
 # ── Tracked builds ───────────────────────────────────────────────────────────
@@ -1522,6 +1531,15 @@ def do_char_data(q):
         rt = r.get("runs_tracked") or {}
         combined_runs["total_runs"] += rt.get("total_runs", 0)
         combined_runs["total_jobs"] += rt.get("total_jobs", 0)
+        # Merge each character's per-product breakdown so the combined bundle's
+        # by_product (what the client actually renders) isn't left empty.
+        for pid, prod in (rt.get("by_product") or {}).items():
+            agg = combined_runs["by_product"].setdefault(
+                pid, {"name": prod.get("name", "?"), "runs": 0, "jobs": 0})
+            agg["runs"] += prod.get("runs", 0)
+            agg["jobs"] += prod.get("jobs", 0)
+            if agg.get("name", "?") == "?" and prod.get("name"):
+                agg["name"] = prod["name"]
         exp = r.get("market_orders_expires")
         if exp and (combined_orders_expires is None or exp > combined_orders_expires):
             combined_orders_expires = exp

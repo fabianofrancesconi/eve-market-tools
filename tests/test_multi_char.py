@@ -433,3 +433,35 @@ class TestCombinedCharData:
         assert out["active_char_id"] == 1
         assert out["combined_jobs"] == []
         assert out["combined_orders"] == []
+
+    def test_combined_runs_tracked_merges_by_product(self, monkeypatch):
+        """The combined bundle must sum each character's per-product delivered
+        runs — the client renders combined_runs_tracked.by_product, which used to
+        be left empty because only the scalar totals were aggregated."""
+        acct = _acct({1: "Main", 2: "Alt"}, active=1)
+        _use_account(acct)
+
+        def fake_fetch(a, cid):
+            if cid == 1:
+                return {"character_id": 1, "name": "Main", "wallet": 0.0,
+                        "runs_tracked": {"total_runs": 30, "total_jobs": 2,
+                                         "since": 1.0, "by_product": {
+                            "587": {"name": "Rifter", "runs": 20, "jobs": 1},
+                            "588": {"name": "Punisher", "runs": 10, "jobs": 1}}}}
+            return {"character_id": 2, "name": "Alt", "wallet": 0.0,
+                    "runs_tracked": {"total_runs": 5, "total_jobs": 1,
+                                     "since": 1.0, "by_product": {
+                        "587": {"name": "Rifter", "runs": 5, "jobs": 1}}}}
+        monkeypatch.setattr(lp_web, "_fetch_one_char_data", fake_fetch)
+
+        out = lp_web.do_char_data({})
+        combined = out["combined_runs_tracked"]
+        assert combined["total_runs"] == 35
+        assert combined["total_jobs"] == 3
+        # Rifter delivered by both chars is summed; Punisher only by Main.
+        assert combined["by_product"]["587"]["runs"] == 25
+        assert combined["by_product"]["587"]["jobs"] == 2
+        assert combined["by_product"]["587"]["name"] == "Rifter"
+        assert combined["by_product"]["588"]["runs"] == 10
+        # runs_tracked (what the client reads) mirrors the combined bundle.
+        assert out["runs_tracked"]["by_product"]["587"]["runs"] == 25

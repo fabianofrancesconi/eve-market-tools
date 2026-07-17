@@ -354,6 +354,66 @@ class TestDismissOrderEvent:
         assert lp_web._get_order_events(_acct()) == []
 
 
+class TestConcurrentTracking:
+    """The file-mode order-events store is a read-modify-write over one JSON
+    file. do_char_data fetches a multi-character account across a thread pool, so
+    two characters' _track_order_changes calls race. Without a lock, each thread
+    loads the whole store, writes back only its own char's keys, and the later
+    write clobbers the other char's _prev_<cid> baseline — silently dropping that
+    character's future sale/fill detection. _ORDER_EVENTS_LOCK serialises them."""
+
+    def test_read_modify_write_holds_the_lock(self, monkeypatch, tmp_path):
+        """Deterministic proof the load→mutate→save critical section runs under
+        _ORDER_EVENTS_LOCK. A final-state assertion can't reliably show the race
+        (the clobber is transient and self-heals across syncs), so instead we
+        assert the lock is held at the moment the store is loaded and saved — the
+        exact window where an unlocked second thread would clobber the first."""
+        evpath = tmp_path / "ev.json"
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
+        acct = _acct({1: "Main"})
+        held_during = {"load": None, "save": None}
+
+        real_load, real_save = lp_web._acct_kv_load, lp_web._acct_kv_save
+
+        def spy_load(a, key, path, default):
+            if key == "order_events":
+                held_during["load"] = lp_web._ORDER_EVENTS_LOCK.locked()
+            return real_load(a, key, path, default)
+
+        def spy_save(a, key, path, data):
+            if key == "order_events":
+                held_during["save"] = lp_web._ORDER_EVENTS_LOCK.locked()
+            return real_save(a, key, path, data)
+
+        monkeypatch.setattr(lp_web, "_acct_kv_load", spy_load)
+        monkeypatch.setattr(lp_web, "_acct_kv_save", spy_save)
+
+        orders = [{"order_id": 100, "type_id": 34, "type_name": "Tritanium",
+                   "volume_remain": 1000, "volume_total": 1000, "price": 5.0,
+                   "is_buy_order": False}]
+        lp_web._track_order_changes(acct, 1, orders, {})
+
+        assert held_during["load"] is True, "store loaded outside the lock"
+        assert held_during["save"] is True, "store saved outside the lock"
+
+    def test_dismiss_also_holds_the_lock(self, monkeypatch, tmp_path):
+        evpath = tmp_path / "ev.json"
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
+        now = time.time()
+        lp_web.save_json(evpath, {"1": [{"id": "a", "ts": now, "dismissed": False}]})
+        held = {"save": None}
+        real_save = lp_web._acct_kv_save
+
+        def spy_save(a, key, path, data):
+            if key == "order_events":
+                held["save"] = lp_web._ORDER_EVENTS_LOCK.locked()
+            return real_save(a, key, path, data)
+
+        monkeypatch.setattr(lp_web, "_acct_kv_save", spy_save)
+        lp_web._dismiss_order_event(_acct(), "all")
+        assert held["save"] is True, "dismiss saved outside the lock"
+
+
 class TestMaxSpreadClientSide:
     """The max_spread filter was moved from backend to frontend (v1.72.0).
     Verify the backend no longer filters by max_spread."""

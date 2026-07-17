@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.119.0"
+__version__ = "1.120.0"
 
 import argparse
 import base64
@@ -598,6 +598,13 @@ _BG_REFRESH_INTERVAL = 300  # 5 minutes
 _BG_NEXT_SYNC_TS = 0.0
 
 
+def _snapshot_accounts():
+    """A stable list of the currently-registered accounts, taken under the
+    registry lock so a concurrent login/logout can't mutate _ACCOUNTS mid-copy."""
+    with _REGISTRY_LOCK:
+        return list(_ACCOUNTS.values())
+
+
 def _bg_char_refresh_loop():
     """Background loop: periodically refresh all active accounts' ESI data
     so wallet history accumulates even when no browser is open. Runs on a fixed
@@ -608,7 +615,11 @@ def _bg_char_refresh_loop():
     while True:
         _BG_NEXT_SYNC_TS = time.time() + _BG_REFRESH_INTERVAL
         try:
-            accounts = list(_ACCOUNTS.values())
+            # Snapshot under the registry lock: a concurrent login/logout mutates
+            # _ACCOUNTS, and iterating it bare can raise "dict changed size during
+            # iteration" — swallowed below, but it would skip the whole refresh
+            # cycle for every account that tick (a wallet-history gap).
+            accounts = _snapshot_accounts()
             for acct in accounts:
                 with acct.lock:
                     char_ids = list(acct.characters.keys())

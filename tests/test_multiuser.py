@@ -214,6 +214,39 @@ class TestSessions:
         _acct(pg, 100, "Main")
         assert pg.char_account.get(100) == 100
 
+    def test_snapshot_accounts_survives_concurrent_mutation(self, pg):
+        """The background refresh loop snapshots _ACCOUNTS under the registry
+        lock. Hammering _ACCOUNTS from another thread while snapshotting must
+        never raise 'dict changed size during iteration' (which would skip a
+        whole refresh cycle → wallet-history gap)."""
+        import threading
+        for i in range(50):
+            _acct(pg, 1000 + i, f"C{i}")
+        stop = threading.Event()
+        errors = []
+
+        def churn():
+            i = 5000
+            while not stop.is_set():
+                with lp_web._REGISTRY_LOCK:
+                    lp_web._ACCOUNTS[i] = object()
+                    lp_web._ACCOUNTS.pop(i - 1, None)
+                i += 1
+
+        def snap():
+            try:
+                for _ in range(2000):
+                    assert isinstance(lp_web._snapshot_accounts(), list)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        t = threading.Thread(target=churn)
+        t.start()
+        snap()
+        stop.set()
+        t.join()
+        assert not errors, f"_snapshot_accounts raced: {errors[:3]}"
+
 
 # ── Per-account isolation ─────────────────────────────────────────────────────
 

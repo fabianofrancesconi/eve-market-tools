@@ -407,7 +407,6 @@ function renderTrail(){
         if(j.unpriced && j.unpriced.length) TRACK.unpricedByRow[+btn.dataset.at] = j.unpriced;
         else delete TRACK.unpricedByRow[+btn.dataset.at];
         if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
-        openCargoModal(j);
       }catch(e){ alert("Cargo fetch failed."); }
       finally{ btn.disabled=false; btn.textContent=glyph; }
     };
@@ -451,30 +450,6 @@ function openNoteModal(enteredAt){
   ta.focus();
 }
 function closeNoteModal(){ $("#trackNoteModal").classList.add("hidden"); }
-
-// Show what's behind a fetched cargo value: every item, sorted by ISK (server
-// already sorts highest-first), so a total inflated by one mispriced/joke-order
-// line is immediately obvious. Unit is the per-item Jita value (buy_max, else
-// sell_min); "unpriced" items count as 0 and are flagged.
-function openCargoModal(j){
-  const modal=$("#trackCargoModal"); if(!modal) return;
-  const items=j.items||[];
-  $("#track-cargo-title").textContent=`Cargo — ${j.ship_name||"ship"}`;
-  $("#track-cargo-sub").textContent=`${items.length} item type${items.length===1?"":"s"} · total ${fmtISK(j.total||0)} ISK`;
-  const rows=items.map(it=>{
-    const cls=it.priced?"":" track-cargo-bd-unpriced";
-    const unit=it.priced?`${fmtISK(it.unit)} ISK`:"unpriced";
-    return `<tr class="${cls.trim()}"><td>${authEsc(it.name)}</td>`+
-           `<td class="num">${(it.qty||0).toLocaleString()}</td>`+
-           `<td class="num">${unit}</td>`+
-           `<td class="num">${fmtISK(it.value||0)} ISK</td></tr>`;
-  }).join("");
-  $("#track-cargo-body").innerHTML=items.length
-    ? `<table class="track-cargo-bd-table"><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Value</th></tr></thead><tbody>${rows}</tbody></table>`
-    : `<p class="sw-hint">Empty hold.</p>`;
-  modal.classList.remove("hidden");
-}
-function closeCargoModal(){ const m=$("#trackCargoModal"); if(m) m.classList.add("hidden"); }
 async function saveNoteModal(){
   const ta=$("#track-note-text");
   const at=+ta.dataset.at;
@@ -537,9 +512,4 @@ document.addEventListener("DOMContentLoaded", ()=>{
     if(e.key==="Enter" && (e.ctrlKey||e.metaKey)){ e.preventDefault(); saveNoteModal(); }
     else if(e.key==="Escape"){ e.preventDefault(); closeNoteModal(); }
   });
-
-  // Cargo breakdown modal (shown after a ⟳ fetch).
-  b("#track-cargo-close", closeCargoModal);
-  const cargoModal=$("#trackCargoModal");
-  if(cargoModal) cargoModal.addEventListener("click", e=>{ if(e.target.id==="trackCargoModal") closeCargoModal(); });
 });

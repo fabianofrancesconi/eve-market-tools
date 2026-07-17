@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.110.1"
+__version__ = "1.110.2"
 
 import argparse
 import base64
@@ -2572,6 +2572,7 @@ def do_ind_detail(q):
     station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
     if station_id not in TRADE_HUBS:
         station_id = JITA_STATION_ID
+    region_id = TRADE_HUBS[station_id]["region_id"]
     params = _ind_params(q)
     with acct.lock:
         ind_cid = acct.active_char_id
@@ -2610,7 +2611,6 @@ def do_ind_detail(q):
         type_ids.update(dc for dc, _ in bp["invention"]["datacores"])
     refresh_prices = q.get("refresh_prices", ["0"])[0] in ("1", "true", "on")
     if refresh_prices:
-        region_id = TRADE_HUBS[station_id]["region_id"]
         prices = fetch_prices_esi(type_ids, SESSION, station_id=station_id,
                                   region_id=region_id, cache_dir=CACHE_DIR,
                                   refresh=True)
@@ -2621,7 +2621,6 @@ def do_ind_detail(q):
     params["bpo_prices"] = {}
     bp_market = None
     if not bp.get("invention"):
-        region_id = TRADE_HUBS[station_id]["region_id"]
         orders = arb_core.fetch_type_orders(region_id, bp["blueprint_id"], SESSION)
         loc = ind_core.cheapest_sell_location(orders)
         if loc:

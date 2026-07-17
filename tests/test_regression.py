@@ -1437,3 +1437,50 @@ class TestCharStreamClient:
 
     def test_char_stream_route_registered(self):
         assert '/api/char/stream' in lp_web.FRONTEND_SOURCE
+
+
+# ---------------------------------------------------------------------------
+# Industry detail: T2 (invention) blueprint with prices NOT refreshed
+# ---------------------------------------------------------------------------
+
+class TestIndDetailT2RegionId:
+    """v1.110.2: do_ind_detail assigned `region_id` only inside two branches —
+    `if refresh_prices:` and `if not bp.get("invention"):`. For a T2 item (which
+    IS invented, so the second branch is skipped) opened WITHOUT a price refresh,
+    neither branch ran, and the unconditional read of region_id for the region
+    name / history lookup blew up with UnboundLocalError. This exercises exactly
+    that path (T2 blueprint 700 from the ind_core SDE fixtures, refresh off)."""
+
+    def _build_sde(self, tmp_path):
+        from tests.test_ind_core import _fake_session
+        import ind_core
+        ind_core.build_sde_db(tmp_path, session=_fake_session())
+
+    def test_t2_detail_without_refresh_does_not_raise(self, tmp_path, monkeypatch):
+        self._build_sde(tmp_path)
+        monkeypatch.setattr(lp_web, "CACHE_DIR", tmp_path)
+        # A logged-in account is required; no owned BPs/skills needed here.
+        acct = lp_web.Account(42)
+        acct.characters[42] = {"character_id": 42, "name": "T", "scopes": [],
+                               "refresh_token": "x"}
+        acct.active_char_id = 42
+        _use_account(acct)
+
+        # Stub every network-touching helper so only the region_id code path runs.
+        monkeypatch.setattr(lp_web, "fetch_prices",
+                            lambda tids, *a, **k: {t: {"sell_min": 1.0, "buy_max": 1.0}
+                                                   for t in tids})
+        monkeypatch.setattr(lp_web.ind_core, "fetch_adjusted_prices",
+                            lambda *a, **k: {})
+        monkeypatch.setattr(lp_web, "resolve_names",
+                            lambda tids, *a, **k: {t: str(t) for t in tids})
+        monkeypatch.setattr(lp_web, "resolve_volumes",
+                            lambda tids, *a, **k: {t: 1.0 for t in tids})
+        monkeypatch.setattr(lp_web, "fetch_history_volumes",
+                            lambda tids, *a, **k: {list(tids)[0]: 100.0})
+
+        # Blueprint 700 makes T2 product 12005 (Ishtar) — it is invented, so the
+        # BPO region branch is skipped; refresh_prices defaults off.
+        detail = lp_web.do_ind_detail({"blueprint_id": ["700"]})
+        assert detail["region_name"] == lp_web.REGION_NAMES.get(10000002)
+        assert detail["esi_prices"] is False

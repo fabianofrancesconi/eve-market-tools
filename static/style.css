@@ -526,11 +526,11 @@
      centred far from their left-aligned headers. */
   #track-table { border-collapse:collapse; width:auto; }
   #track-table th { text-align:left; color:var(--dim); font-weight:600; font-size:12px;
-    padding:6px 14px; border-bottom:2px solid var(--line); white-space:nowrap; }
-  #track-table td { padding:6px 14px; border-bottom:1px solid var(--line); font-size:13px;
+    padding:7px 22px; border-bottom:2px solid var(--line); white-space:nowrap; }
+  #track-table td { padding:8px 22px; border-bottom:1px solid var(--line); font-size:13px;
     vertical-align:middle; white-space:nowrap; }
   /* # column: narrow, right-aligned, dim. */
-  #track-table th:first-child, #track-table td:first-child { padding-right:4px;
+  #track-table th:first-child, #track-table td:first-child { padding-right:6px;
     text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
   #track-table .track-sys { max-width:320px; }
   #track-table .track-sys-name { display:block; font-weight:600; color:var(--fg);
@@ -539,11 +539,10 @@
     overflow:hidden; text-overflow:ellipsis; }
   #track-table td:nth-child(4) { color:var(--dim); font-variant-numeric:tabular-nums; }
   #track-table td:nth-child(5) { font-variant-numeric:tabular-nums; }
-  /* "You are here" — the live session's current system. */
+  /* "You are here" — the live session's current system. The ▸ in the # column
+     (cyan + bold below) is the sole indicator; the row is also tinted. */
   #track-table tr.track-here td { background:rgba(79,195,247,.10); }
   #track-table tr.track-here td:first-child { color:var(--cyan); font-weight:700; }
-  .track-here-badge { color:var(--cyan); font-size:11px; font-weight:600; margin-left:8px;
-    text-transform:uppercase; letter-spacing:.04em; }
   .track-th-hint { display:inline-block; width:14px; height:14px; line-height:14px;
     text-align:center; border-radius:50%; background:var(--line2); color:var(--fg);
     font-size:10px; font-weight:700; cursor:help; }

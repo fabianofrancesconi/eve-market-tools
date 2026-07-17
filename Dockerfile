@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir requests "psycopg[binary,pool]>=3.2"
 
-COPY lp_core.py arb_core.py ind_core.py sso_core.py pg_store.py lp-web.py ./
+COPY lp_core.py arb_core.py ind_core.py sso_core.py pg_store.py pg_migrations.py exploration.py lp-web.py ./
 COPY static/ ./static/
 
 # Cache dir — mounted as a Railway volume in production so the SDE + JSON caches

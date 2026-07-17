@@ -553,6 +553,8 @@
   #track-table td.track-cargo { padding:4px 10px; }
   #track-table td.track-cargo input { width:110px; text-align:right; background:var(--panel2);
     color:var(--fg); border:1px solid var(--line2); border-radius:4px; padding:3px 6px; font-size:12.5px; }
+  /* Inherited (carried-forward) value: shown greyed until the user edits it. */
+  #track-table td.track-cargo input.inherited { color:var(--dim2); font-style:italic; }
   /* ISK change vs the previous system — shown under the input when both have a
      value. Green for a gain, red for a loss. */
   .track-cargo-delta { display:block; margin-top:2px; font-size:11px;
@@ -574,7 +576,19 @@
     background:var(--panel2); color:var(--fg); border:1px solid var(--line2);
     border-radius:6px; padding:8px 10px; font-size:13px; font-family:inherit;
     line-height:1.5; margin-bottom:12px; }
-  /* Session total cargo (sum of the per-system values) — read-only display. */
+  /* Manual per-system hide: a faint ✕ that only pops on row hover, so it stays
+     out of the way until wanted. */
+  #track-table td.track-hide { padding:4px 8px; text-align:center; }
+  .track-hide-btn { background:none; border:none; color:var(--dim2); cursor:pointer;
+    font-size:13px; line-height:1; padding:3px 5px; border-radius:4px; opacity:0;
+    transition:opacity .12s, color .12s, background .12s; }
+  #track-table tr:hover .track-hide-btn { opacity:1; }
+  .track-hide-btn:hover { color:var(--red); background:var(--panel2); }
+  /* Unhide (↺) button inside a hidden-system chip. */
+  .track-unhide-btn { background:none; border:none; color:var(--cyan); cursor:pointer;
+    font-size:12px; line-height:1; padding:0 2px; margin-left:2px; }
+  .track-unhide-btn:hover { color:var(--fg); }
+  /* Session total cargo (latest system's value) — read-only display. */
   .exp-cargo-total { flex-direction:row; align-items:center; gap:6px; }
   .exp-cargo-total b { color:var(--fg); font-size:14px; }
 

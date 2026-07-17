@@ -8,7 +8,8 @@
 
 const TRACK = { state:"stopped", pauseReason:null, liveRunId:null, online:null,
                 error:null, scopeOk:true, sessions:[], selRunId:null,
-                detail:null, trail:[], minDwell:0, showHidden:false };
+                detail:null, trail:[], minDwell:0, showHidden:false,
+                showManualHidden:false };
 const TRACK_MIN_LS = "eve-track-min-dwell";  // {sec} — a local view preference
 
 function loadTrackMinDwell(){
@@ -242,18 +243,30 @@ function renderTrail(){
   // last row; a finished session's last row uses ended_at). The filter only
   // hides short stops; the current live system is always shown.
   const endTs=(TRACK.detail && TRACK.detail.ended_at) ? TRACK.detail.ended_at : now;
+  // Cargo carries forward for display: a system with no value of its own shows
+  // the previous system's value greyed out (inherited) and editable. `eff` is
+  // the effective (shown) value; `inherited` flags a carried-not-typed value.
+  let carry=null;
   const withDwell=rows.map((r,i)=>{
     const last=i+1>=rows.length;
     const nextTs=last? endTs : rows[i+1].entered_at;
-    // ISK delta vs the previous system — only when both have a value entered.
-    // Cargo carries forward, so this reads as what was gained/lost there.
-    const prev=i>0? rows[i-1].cargo_isk : null;
-    const delta=(r.cargo_isk!=null && prev!=null) ? r.cargo_isk-prev : null;
-    return {r, last, delta, dwell:Math.max(0,nextTs-r.entered_at)};
+    const own=r.cargo_isk;
+    const inherited = own==null && carry!=null;
+    const eff = own!=null ? own : carry;
+    const prevEff = carry;                 // effective value of the previous row
+    // ISK delta vs the previous system's effective value — what changed here.
+    const delta=(eff!=null && prevEff!=null) ? eff-prevEff : null;
+    carry = eff;
+    return {r, last, eff, inherited, delta, dwell:Math.max(0,nextTs-r.entered_at)};
   });
   const min=TRACK.minDwell||0;
-  const shown=withDwell.filter(x=>(isLive&&x.last) || x.dwell>=min);
-  const hiddenRows=withDwell.filter(x=>!((isLive&&x.last) || x.dwell>=min));
+  // A row shows unless it's a manually-hidden system or a too-short stop. The
+  // live session's current system is always shown. Manual hides and short stops
+  // are tallied separately so each gets its own reveal control.
+  const isShown = x => (isLive&&x.last) || (!x.r.hidden && x.dwell>=min);
+  const shown=withDwell.filter(isShown);
+  const hiddenRows=withDwell.filter(x=>!isShown(x) && !x.r.hidden);   // short stops only
+  const manualHidden=withDwell.filter(x=>!isShown(x) && x.r.hidden);
   const hidden=hiddenRows.length;
 
   tbl.classList.toggle("hidden", shown.length===0);
@@ -277,36 +290,62 @@ function renderTrail(){
     const sub = r.region
       ? `<span class="track-sys-sub">${authEsc(r.region)}${r.constellation?` · ${authEsc(r.constellation)}`:""}</span>`
       : "";
+    // Inherited (carried-forward) values render greyed via .inherited; the value
+    // is a real editable default the user can overwrite to record this system.
+    const cargoVal = fmtCargoInput(x.eff);
+    const cargoCls = "track-cargo-input" + (x.inherited ? " inherited" : "");
+    const delta = x.delta ? `<span class="track-cargo-delta ${x.delta>0?'pos':'neg'}" title="Change vs the previous system">${x.delta>0?'+':'−'}${fmtISK(Math.abs(x.delta))}</span>` : "";
     return `<tr class="${here?'track-here':''}" title="${here?'You are here':''}">
       <td>${here?'▸':(vi+1)}</td>
       <td class="track-sys"><span class="track-sys-name">${authEsc(r.system_name)}</span>${sub}</td>
       <td class="${band?'sec-'+band:''}">${fmtSec(r.security)}</td>
       <td>${fmtClock(r.entered_at)}</td>
       <td>${fmtDwell(x.dwell)}${here?" · now":""}</td>
-      <td class="track-cargo num"><input type="text" inputmode="numeric" placeholder="—" data-at="${r.entered_at}" value="${fmtCargoInput(r.cargo_isk)}">${x.delta?`<span class="track-cargo-delta ${x.delta>0?'pos':'neg'}" title="Change vs the previous system">${x.delta>0?'+':'−'}${fmtISK(Math.abs(x.delta))}</span>`:""}</td>
+      <td class="track-cargo num"><input type="text" inputmode="numeric" placeholder="—" class="${cargoCls}" data-at="${r.entered_at}" value="${cargoVal}">${delta}</td>
       <td class="track-note">${noteBtnHtml(r)}</td>
+      <td class="track-hide"><button class="track-hide-btn" type="button" data-at="${r.entered_at}" title="Hide this system from the journal">✕</button></td>
     </tr>`;
   }).join("");
 
-  // "N short stops hidden" — click to reveal the hidden systems (name + dwell)
-  // as a compact chip list, so a filtered route still shows every system flown.
+  // Reveal controls, one per hidden bucket:
+  //  • "N short stops hidden" — filtered by the min-dwell slider (chips only).
+  //  • "N systems hidden" — manually hidden by the user; each chip has an
+  //    unhide (↺) button so they can bring a system back.
   const note=$("#track-hidden-note");
   if(note){
+    let html="";
     if(min>0 && hidden>0){
       const chips=hiddenRows.map(x=>{
         const band=secBand(x.r.security);
         return `<span class="track-hidden-chip ${band?'sec-'+band:''}">${authEsc(x.r.system_name)} <span class="track-hidden-dwell">${fmtDwell(x.dwell)}</span></span>`;
       }).join("");
-      note.innerHTML=`<button class="track-hidden-toggle" type="button">${hidden} short stop${hidden===1?"":"s"} hidden ${TRACK.showHidden?"▾":"▸"}</button>`
+      html+=`<button class="track-hidden-toggle" data-which="short" type="button">${hidden} short stop${hidden===1?"":"s"} hidden ${TRACK.showHidden?"▾":"▸"}</button>`
         + (TRACK.showHidden? `<div class="track-hidden-list">${chips}</div>` : "");
-      const tgl=note.querySelector(".track-hidden-toggle");
-      if(tgl) tgl.onclick=()=>{ TRACK.showHidden=!TRACK.showHidden; renderTrail(); };
-    } else {
-      note.innerHTML="";
     }
+    if(manualHidden.length){
+      const chips=manualHidden.map(x=>{
+        const band=secBand(x.r.security);
+        return `<span class="track-hidden-chip ${band?'sec-'+band:''}">${authEsc(x.r.system_name)} <button class="track-unhide-btn" type="button" data-at="${x.r.entered_at}" title="Unhide this system">↺</button></span>`;
+      }).join("");
+      html+=`<button class="track-hidden-toggle" data-which="manual" type="button">${manualHidden.length} system${manualHidden.length===1?"":"s"} hidden ${TRACK.showManualHidden?"▾":"▸"}</button>`
+        + (TRACK.showManualHidden? `<div class="track-hidden-list">${chips}</div>` : "");
+    }
+    note.innerHTML=html;
+    note.querySelectorAll(".track-hidden-toggle").forEach(tgl=>{
+      tgl.onclick=()=>{
+        if(tgl.dataset.which==="manual") TRACK.showManualHidden=!TRACK.showManualHidden;
+        else TRACK.showHidden=!TRACK.showHidden;
+        renderTrail();
+      };
+    });
+    note.querySelectorAll(".track-unhide-btn").forEach(btn=>{
+      btn.onclick=()=>setSystemHidden(+btn.dataset.at, false);
+    });
   }
 
   tb.querySelectorAll(".track-cargo input").forEach(inp=>{
+    // Editing an inherited (greyed) value promotes it to this system's own value.
+    inp.onfocus=()=>inp.classList.remove("inherited");
     // Re-group the digits with commas as the user types, keeping the caret near
     // the end (this is an append-heavy field, so a full re-place reads fine).
     inp.oninput=()=>{ inp.value=fmtCargoInput(inp.value); };
@@ -321,6 +360,16 @@ function renderTrail(){
   tb.querySelectorAll(".track-note-btn").forEach(btn=>{
     btn.onclick=()=>openNoteModal(+btn.dataset.at);
   });
+  tb.querySelectorAll(".track-hide-btn").forEach(btn=>{
+    btn.onclick=()=>setSystemHidden(+btn.dataset.at, true);
+  });
+}
+
+// Manually hide/unhide one system from the journal, then refresh.
+async function setSystemHidden(enteredAt, hidden){
+  await fetch("/api/track/hide",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({entered_at:enteredAt, hidden})});
+  if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
 }
 
 // A per-system note button: 📝 when empty, a filled chip previewing the note

@@ -177,6 +177,11 @@ def _ensure_schema(pool):
         conn.execute(
             "ALTER TABLE mono_location_trail "
             "ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT ''")
+        # Per-system manual hide (v1.108+) — user-hidden systems drop out of the
+        # journal but stay stored so they can be revealed again.
+        conn.execute(
+            "ALTER TABLE mono_location_trail "
+            "ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE")
         # ── exploration session journal (v1.101+) ─────────────────────────
         # One row per exploration trip (run). The trail rows above are joined
         # to a session by run_id. name/notes/cargo_value are user annotations.
@@ -569,27 +574,15 @@ def wallet_history_compact(account_id, now=None):
 # ── exploration location trail ───────────────────────────────────────────────
 
 def location_trail_append(account_id, character_id, entered_at, run_id,
-                          system_id, system_name, security, cargo_isk=None):
-    """Append one system-entry to a character's trail. Ignores duplicates.
-    cargo_isk seeds the row (carried forward from the previous system)."""
+                          system_id, system_name, security):
+    """Append one system-entry to a character's trail. Ignores duplicates."""
     with _get_pool().connection() as conn:
         conn.execute(
             "INSERT INTO mono_location_trail (account_id, character_id, entered_at, "
-            "run_id, system_id, system_name, security, cargo_isk) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+            "run_id, system_id, system_name, security) VALUES (%s,%s,%s,%s,%s,%s,%s) "
             "ON CONFLICT DO NOTHING",
             (account_id, character_id, entered_at, run_id, system_id,
-             system_name, security, cargo_isk))
-
-
-def location_trail_last_cargo(account_id, character_id, run_id):
-    """cargo_isk of the most recently entered system in a run, or None."""
-    with _get_pool().connection() as conn:
-        row = conn.execute(
-            "SELECT cargo_isk FROM mono_location_trail WHERE account_id=%s "
-            "AND character_id=%s AND run_id=%s ORDER BY entered_at DESC LIMIT 1",
-            (account_id, character_id, run_id)).fetchone()
-    return row[0] if row else None
+             system_name, security))
 
 
 def location_trail_query(account_id, character_id, run_id=None, since_ts=0.0):
@@ -599,24 +592,24 @@ def location_trail_query(account_id, character_id, run_id=None, since_ts=0.0):
         if run_id is not None:
             rows = conn.execute(
                 "SELECT entered_at, run_id, system_id, system_name, security, "
-                "scanned, cargo_isk, note FROM mono_location_trail WHERE account_id=%s "
+                "scanned, cargo_isk, note, hidden FROM mono_location_trail WHERE account_id=%s "
                 "AND character_id=%s AND run_id=%s ORDER BY entered_at",
                 (account_id, character_id, run_id)).fetchall()
         else:
             rows = conn.execute(
                 "SELECT entered_at, run_id, system_id, system_name, security, "
-                "scanned, cargo_isk, note FROM mono_location_trail WHERE account_id=%s "
+                "scanned, cargo_isk, note, hidden FROM mono_location_trail WHERE account_id=%s "
                 "AND character_id=%s AND entered_at>=%s ORDER BY entered_at",
                 (account_id, character_id, since_ts)).fetchall()
     return [{"entered_at": r[0], "run_id": r[1], "system_id": r[2],
              "system_name": r[3], "security": r[4], "scanned": r[5],
-             "cargo_isk": r[6], "note": r[7] or ""} for r in rows]
+             "cargo_isk": r[6], "note": r[7] or "", "hidden": bool(r[8])} for r in rows]
 
 
 def location_trail_annotate(account_id, character_id, entered_at,
-                            scanned=None, cargo_isk=None, note=None):
-    """Update the scanned flag, cargo_isk and/or note of one trail entry. A
-    cargo_isk of "" (empty) clears it back to NULL."""
+                            scanned=None, cargo_isk=None, note=None, hidden=None):
+    """Update the scanned flag, cargo_isk, note and/or hidden of one trail entry.
+    A cargo_isk of "" (empty) clears it back to NULL."""
     sets, params = [], []
     if scanned is not None:
         sets.append("scanned=%s")
@@ -627,6 +620,9 @@ def location_trail_annotate(account_id, character_id, entered_at,
     if note is not None:
         sets.append("note=%s")
         params.append(str(note))
+    if hidden is not None:
+        sets.append("hidden=%s")
+        params.append(bool(hidden))
     if not sets:
         return
     params += [account_id, character_id, entered_at]

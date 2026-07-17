@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.107.1"
+__version__ = "1.108.0"
 
 import argparse
 import base64
@@ -1729,36 +1729,18 @@ def _persist_track_sessions(acct):
     _acct_kv_save(acct, "location_tracking", LOCATION_TRACK_PATH, blob)
 
 
-def _append_trail(acct, cid, entered_at, run_id, system_id, system_name, security,
-                  carry_cargo=None):
-    """Append one system-entry to a character's trail. carry_cargo seeds the new
-    row's cargo_isk (the previous system's value carried forward while exploring)
-    — it's editable and counts in the session total until the user overrides it."""
+def _append_trail(acct, cid, entered_at, run_id, system_id, system_name, security):
     if pg_store.enabled():
         pg_store.location_trail_append(acct.account_id, cid, entered_at, run_id,
-                                       system_id, system_name, security,
-                                       cargo_isk=carry_cargo)
+                                       system_id, system_name, security)
     else:
         with _TRAIL_RECORD_LOCK:
             store = load_json(LOCATION_TRAIL_PATH, {})
             store.setdefault(str(cid), []).append(
                 {"entered_at": entered_at, "run_id": run_id, "system_id": system_id,
                  "system_name": system_name, "security": security,
-                 "scanned": False, "note": "", "cargo_isk": carry_cargo})
+                 "scanned": False, "note": "", "hidden": False})
             save_json(LOCATION_TRAIL_PATH, store)
-
-
-def _last_trail_cargo(acct, cid, run_id):
-    """The most recent system's cargo_isk in this run, or None — used to carry
-    the value forward to the next system. Avoids enriching the whole trail."""
-    if pg_store.enabled():
-        return pg_store.location_trail_last_cargo(acct.account_id, cid, run_id)
-    store = load_json(LOCATION_TRAIL_PATH, {})
-    rows = [r for r in store.get(str(cid), []) if r.get("run_id") == run_id]
-    if not rows:
-        return None
-    rows.sort(key=lambda r: r.get("entered_at", 0))
-    return rows[-1].get("cargo_isk")
 
 
 def _enrich_trail_regions(rows):
@@ -1786,11 +1768,12 @@ def _query_trail(acct, cid, run_id=None, since_ts=0.0):
     return _enrich_trail_regions(rows)
 
 
-def _annotate_trail(acct, cid, entered_at, scanned=None, cargo_isk=None, note=None):
+def _annotate_trail(acct, cid, entered_at, scanned=None, cargo_isk=None, note=None,
+                    hidden=None):
     if pg_store.enabled():
         pg_store.location_trail_annotate(acct.account_id, cid, entered_at,
                                          scanned=scanned, cargo_isk=cargo_isk,
-                                         note=note)
+                                         note=note, hidden=hidden)
         return
     with _TRAIL_RECORD_LOCK:
         store = load_json(LOCATION_TRAIL_PATH, {})
@@ -1802,6 +1785,8 @@ def _annotate_trail(acct, cid, entered_at, scanned=None, cargo_isk=None, note=No
                     r["cargo_isk"] = cargo_isk if cargo_isk != "" else None
                 if note is not None:
                     r["note"] = str(note)
+                if hidden is not None:
+                    r["hidden"] = bool(hidden)
                 break
         save_json(LOCATION_TRAIL_PATH, store)
 
@@ -1977,11 +1962,11 @@ def _poll_location_once(acct, cid):
                 run_id = s.get("run_id") if s else None
             if sysid and sysid != last and run_id:
                 info = _resolve_track_system(sysid)
-                # Carry the previous system's cargo value forward — a smart
-                # default for exploration; the user overrides it per system.
-                carry = _last_trail_cargo(acct, cid, run_id)
+                # New systems start with no cargo value of their own; the client
+                # shows the previous system's value as a greyed, editable
+                # placeholder (carry-forward is a display concern, not stored).
                 _append_trail(acct, cid, now, run_id, sysid,
-                              info["name"], info["sec"], carry_cargo=carry)
+                              info["name"], info["sec"])
                 with _TRACK_LOCK:
                     s = _TRACK_SESSIONS.get(cid)
                     if s:
@@ -2222,8 +2207,9 @@ def do_track_scanned(q):
 
 
 def do_track_cargo(q):
-    """Set (or clear) the cargo value looted in one system. Blank clears it back
-    to NULL; the session total is the sum of these per-system values."""
+    """Set (or clear) the cargo value in one system's hold. Blank clears it back
+    to NULL; the session total is the latest system's value (cargo carries
+    forward for display)."""
     acct = require_account()
     cid = _track_target_cid(acct, q)
     entered_at = float(q.get("entered_at", ["0"])[0] or 0)
@@ -2248,6 +2234,18 @@ def do_track_note(q):
     entered_at = float(q.get("entered_at", ["0"])[0] or 0)
     note = q.get("note", [""])[0] or ""
     _annotate_trail(acct, cid, entered_at, note=note)
+    _CHAR_PUBSUB.bump(id(acct))
+    return {"ok": True}
+
+
+def do_track_hide(q):
+    """Manually hide (or unhide) one system from the journal. Hidden systems are
+    kept in storage but filtered out of the trail unless the user reveals them."""
+    acct = require_account()
+    cid = _track_target_cid(acct, q)
+    entered_at = float(q.get("entered_at", ["0"])[0] or 0)
+    hidden = str(q.get("hidden", ["true"])[0]).lower() in ("1", "true", "yes", "on")
+    _annotate_trail(acct, cid, entered_at, hidden=hidden)
     _CHAR_PUBSUB.bump(id(acct))
     return {"ok": True}
 
@@ -3417,6 +3415,7 @@ _POST_ROUTES = {
     "/api/track/scanned": do_track_scanned,
     "/api/track/cargo": do_track_cargo,
     "/api/track/note": do_track_note,
+    "/api/track/hide": do_track_hide,
     "/api/track/session/update": do_track_session_update,
     "/api/track/session/delete": do_track_session_delete,
     "/api/ind/builds/save": do_ind_builds_save,

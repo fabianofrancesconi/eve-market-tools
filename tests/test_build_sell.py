@@ -325,6 +325,25 @@ class TestSummary:
         assert s["by_product"][0]["units_sold"] == 4
         assert s["by_product"][0]["realized_profit"] == 240.0
 
+    def test_summary_exposes_raw_fills_for_time_filter(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _save_build(runs=10)
+        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
+        orders0 = [_sell_order(700, 587, 10, 10, 160.0)]
+        lp_web._track_order_changes(acct, 1, orders0, {})
+        lp_web._reconcile_sell_builds(acct, orders0)
+        orders1 = [_sell_order(700, 587, 6, 10, 160.0)]  # 4 sold
+        lp_web._track_order_changes(acct, 1, orders1, {})
+        lp_web._reconcile_sell_builds(acct, orders1)
+        s = lp_web.do_ind_summary({})
+        sell = s["builds"][0]["sell"]
+        assert sell["cost_per_unit"] == 100.0
+        assert len(sell["fills"]) == 1
+        assert sell["fills"][0]["units"] == 4
+        assert sell["fills"][0]["net"] == 4 * 160.0
+        assert sell["fills"][0]["ts"] is not None
+
     def test_sold_build_no_capital(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build(runs=10)

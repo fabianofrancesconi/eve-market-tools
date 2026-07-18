@@ -34,6 +34,7 @@
     <button class="tab active" data-tab="lp">LP Store</button>
     <button class="tab" data-tab="arb">Arbitrage</button>
     <button class="tab" data-tab="ind">Industry</button>
+    <button class="tab hidden" id="sum-tab-btn" data-tab="sum">Summary</button>
     <button class="tab" data-tab="exp">Exploration</button>
     <button class="tab" data-tab="aby">Abyss</button>
     <button class="tab hidden" id="char-tab-btn" data-tab="char">Overview<span id="char-tab-badge" class="tab-badge hidden" title="New order sales / expiries"></span></button>
@@ -261,6 +262,15 @@
       <button id="char-login-btn" class="auth-btn primary-btn">Log in with EVE</button>
     </div>
     <div id="char-body" class="hidden"></div>
+  </div>
+  <!-- Summary tab: industry portfolio P&L across all tracked builds -->
+  <div id="sum-tablewrap" class="tablewrap hidden">
+    <div id="sum-empty" class="char-empty hidden">
+      <p>Log in with your EVE Online account to see the profit summary of your
+      tracked builds here.</p>
+      <button id="sum-login-btn" class="auth-btn primary-btn">Log in with EVE</button>
+    </div>
+    <div id="sum-body" class="hidden"></div>
   </div>
   <!-- Exploration tab -->
   <div id="exp-tablewrap" class="tablewrap hidden">
@@ -534,6 +544,7 @@
 <script src="/static/js/lp.js?v=__VERSION__"></script>
 <script src="/static/js/arb.js?v=__VERSION__"></script>
 <script src="/static/js/ind.js?v=__VERSION__"></script>
+<script src="/static/js/summary.js?v=__VERSION__"></script>
 <script src="/static/js/char.js?v=__VERSION__"></script>
 <script src="/static/js/track.js?v=__VERSION__"></script>
 <script src="/static/js/init.js?v=__VERSION__"></script>

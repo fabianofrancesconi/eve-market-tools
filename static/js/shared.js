@@ -237,9 +237,10 @@ function saveLS(){
 // ── Tab switching ─────────────────────────────────────────────────────────
 let ACTIVE_TAB = "lp";
 // Each tab has a clean URL so a refresh/bookmark reopens the same module.
-const TAB_PATH = { lp:"/", arb:"/arbitrage", ind:"/industry", char:"/character", notes:"/notes", exp:"/exploration", aby:"/abyss" };
+const TAB_PATH = { lp:"/", arb:"/arbitrage", ind:"/industry", sum:"/summary", char:"/character", notes:"/notes", exp:"/exploration", aby:"/abyss" };
 const PATH_TAB = { "/":"lp", "/lp":"lp", "/arbitrage":"arb", "/arb":"arb",
-                   "/industry":"ind", "/ind":"ind", "/character":"char", "/char":"char",
+                   "/industry":"ind", "/ind":"ind", "/summary":"sum", "/sum":"sum",
+                   "/character":"char", "/char":"char",
                    "/notes":"notes", "/exploration":"exp", "/exp":"exp",
                    "/abyss":"aby", "/aby":"aby" };
 function switchTab(tab, opts){
@@ -252,7 +253,7 @@ function switchTab(tab, opts){
     if(location.pathname !== p) history.pushState({tab}, "", p);
   }
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===tab));
-  $("#global-costs").classList.toggle("hidden", tab==="notes"||tab==="char"||tab==="exp"||tab==="aby");
+  $("#global-costs").classList.toggle("hidden", tab==="notes"||tab==="char"||tab==="exp"||tab==="aby"||tab==="sum");
   $("#lp-controls").classList.toggle("hidden", tab!=="lp");
   $("#arb-controls").classList.toggle("hidden", tab!=="arb");
   $("#lp-tablewrap").classList.toggle("hidden", tab!=="lp");
@@ -262,11 +263,13 @@ function switchTab(tab, opts){
   $("#exp-tablewrap").classList.toggle("hidden", tab!=="exp");
   $("#aby-tablewrap").classList.toggle("hidden", tab!=="aby");
   updateIndGate();
+  updateSumGate();
   if(tab!=="lp") closeDetail();
   setStatus("");
   document.title = tab==="lp" ? "EVE LP Store Scanner"
                 : tab==="arb" ? "EVE Arbitrage Scanner"
                 : tab==="char" ? "EVE Character Overview"
+                : tab==="sum" ? "EVE Industry Summary"
                 : tab==="notes" ? "EVE Notes"
                 : tab==="exp" ? "EVE Exploration Guide"
                 : tab==="aby" ? "EVE Abyssal Deadspace Guide" : "EVE Industry Planner";
@@ -277,6 +280,7 @@ function switchTab(tab, opts){
     if(!IND.buildsLoaded) loadIndBuilds(); else reconcileBuilds();
     renderIndTable(); renderIndStatus();
   }
+  if(tab==="sum" && AUTH.loggedIn && typeof loadSummary==="function") loadSummary();
   if(tab==="char" && AUTH.loggedIn){ renderCharData(); refreshCharData(); markCharEventsSeen(); }
   if(tab==="exp" && typeof expOnEnterTab==="function") expOnEnterTab();
   if(tab==="notes" && !NOTES.loaded) loadNotes();
@@ -290,6 +294,18 @@ function updateIndGate(){
   $("#ind-controls").classList.toggle("hidden", !show);
   $("#ind-tablewrap").classList.toggle("hidden", !show);
   $("#ind-empty").classList.toggle("hidden", !(ACTIVE_TAB==="ind" && !AUTH.loggedIn));
+}
+// The Summary tab is login-gated like Industry (it rolls up the character's
+// tracked builds). Its nav button only appears once logged in.
+function updateSumGate(){
+  const wrap=$("#sum-tablewrap");
+  if(!wrap) return;
+  wrap.classList.toggle("hidden", ACTIVE_TAB!=="sum");
+  const body=$("#sum-body"), empty=$("#sum-empty");
+  if(body) body.classList.toggle("hidden", !AUTH.loggedIn);
+  if(empty) empty.classList.toggle("hidden", AUTH.loggedIn);
+  const btn=$("#sum-tab-btn");
+  if(btn) btn.classList.toggle("hidden", !AUTH.loggedIn);
 }
 document.querySelectorAll(".tab").forEach(t=>{
   t.onclick = ()=>switchTab(t.dataset.tab);

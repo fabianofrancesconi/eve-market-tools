@@ -1615,8 +1615,14 @@ def do_ind_summary(q):
                 "started_at": sell.get("started_at"),
                 "closed_at": sell.get("closed_at"),
                 "qty_target": sell.get("qty_target"),
+                "cost_per_unit": sell.get("cost_per_unit"),
                 "needs_pick": sell.get("needs_pick", False),
                 "order_ids": sell.get("order_ids") or [],
+                # Raw fills (ts/units/net) so the client can time-filter the
+                # realized-profit total (this week / month / all).
+                "fills": [{"ts": e.get("ts"), "units": e.get("units"),
+                           "net": e.get("net")}
+                          for e in (sell.get("realized") or [])],
             } if sell else None,
             "realized": rz,
         })
@@ -3238,6 +3244,7 @@ def do_notes_delete(q):
 # Clean URLs the SPA uses for each tab — all serve the app shell so a refresh
 # or bookmark on any module reloads straight back into it.
 TAB_ROUTES = {"/lp", "/arbitrage", "/arb", "/industry", "/ind",
+              "/summary", "/sum",
               "/character", "/char", "/notes", "/exploration", "/exp",
               "/abyss", "/aby"}
 

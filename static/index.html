@@ -141,6 +141,15 @@
 </div>
 
 <!-- Industry controls -->
+<!-- Planner ⇄ Summary switch: the catalogue/planner vs the portfolio P&L roll-up
+     of everything you've tracked, built and sold. Kept above the scan-filter
+     controls so the toggle stays put when Summary mode hides those controls. -->
+<div id="ind-modebar" class="exp-modebar hidden">
+  <div class="exp-modeswitch">
+    <button class="ind-mode-btn active" data-mode="planner">Planner</button>
+    <button class="ind-mode-btn" data-mode="summary">Summary</button>
+  </div>
+</div>
 <div id="ind-controls" class="ctrlbar hidden">
   <!-- What & where -->
   <div class="ctrl-group">
@@ -244,14 +253,6 @@
     <button id="ind-login-btn" class="auth-btn primary-btn">Log in with EVE</button>
   </div>
   <div id="ind-tablewrap" class="tablewrap hidden">
-    <!-- Planner ⇄ Summary switch: the catalogue/planner vs the portfolio P&L
-         roll-up of everything you've tracked, built and sold. -->
-    <div id="ind-modebar" class="exp-modebar hidden">
-      <div class="exp-modeswitch">
-        <button class="ind-mode-btn active" data-mode="planner">Planner</button>
-        <button class="ind-mode-btn" data-mode="summary">Summary</button>
-      </div>
-    </div>
     <div id="ind-planner-view">
       <div id="ind-progress" class="hidden">
         <div class="prog-label" id="ind-prog-label">Initializing…</div>

@@ -1215,7 +1215,7 @@ function _buildDetailHtml(b){
   const be=_batchEconomics(d, n);
   const batchCost=be.cost, batchProfitL=be.profitL, batchProfitI=be.profitI;
   return `<div class="ind-build-detail">
-    <div class="ind-d-grid" style="max-width:none">
+    <div class="ind-d-grid">
       <div class="ind-d-sub">Per run — ${fmtNum(d.product.quantity)}× ${d.product.name} (frozen)</div>
       <span>Sell @ ask — list</span><b>${isk(d.ask)}</b>
       <span>Sell @ bid — instant</span><b>${isk(d.bid)}</b>

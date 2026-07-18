@@ -994,6 +994,18 @@
   .ind-build-eta, .ind-build-done { color:var(--dim); font-size:11.5px; margin-left:6px; }
   .ind-build-done { color:var(--green2,#4caf76); }
   .ind-build-detail { margin-top:10px; padding-top:8px; border-top:1px solid var(--line2); }
+  .ind-build-headcards { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  @media (max-width:720px){ .ind-build-headcards { grid-template-columns:repeat(2,1fr); } }
+  .ind-build-costline { display:flex; flex-wrap:wrap; gap:6px 20px; margin-top:8px;
+    font-size:11.5px; color:var(--dim); }
+  .ind-build-costline b { color:var(--fg); font-weight:600; margin-left:4px; }
+  .ind-build-mats { margin-top:10px; }
+  .ind-build-mats > summary { cursor:pointer; font-size:10.5px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.8px; color:var(--cyan); opacity:.7;
+    padding-bottom:2px; border-bottom:1px solid var(--line2); list-style:revert; }
+  .ind-build-mats > summary:hover { opacity:1; }
+  .ind-build-mats[open] > summary { margin-bottom:6px; }
+  .ind-build-mats > table { margin-top:0; }
 
   /* ── Notes tab ───────────────────────────────────────────────────── */
   #notes-tablewrap { display:flex; height:100%; overflow:hidden; }

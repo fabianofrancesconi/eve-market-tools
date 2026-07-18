@@ -1214,26 +1214,54 @@ function _buildDetailHtml(b){
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   const be=_batchEconomics(d, n);
   const batchCost=be.cost, batchProfitL=be.profitL, batchProfitI=be.profitI;
+  const qtyTot=(d.product&&d.product.quantity!=null)?d.product.quantity*n:null;
+  const sellL=(d.ask!=null&&qtyTot!=null)?d.ask*qtyTot:null;
+  const sellI=(d.bid!=null&&qtyTot!=null)?d.bid*qtyTot:null;
+  const matCostBatch=(be.matCost!=null)?be.matCost:(d.material_cost!=null?d.material_cost*n:null);
+  const jobCostBatch=(d.job_cost!=null)?d.job_cost*n:null;
+  const inventCostBatch=d.invention&&d.invention_cost!=null?d.invention_cost*n:null;
+  // Break-even sell price per unit — the price at which the sale exactly covers
+  // total cost, so anything above it is profit and below it is a loss. Instant
+  // sales pay sales tax only; list sales also pay the broker fee.
+  const stax=(d.sales_tax!=null)?d.sales_tax:0;
+  const bfee=(d.broker_fee!=null)?d.broker_fee:0;
+  const beI=(batchCost!=null&&qtyTot>0&&(1-stax)>0)?batchCost/(qtyTot*(1-stax)):null;
+  const beL=(batchCost!=null&&qtyTot>0&&(1-stax-bfee)>0)?batchCost/(qtyTot*(1-stax-bfee)):null;
   return `<div class="ind-build-detail">
-    <div class="ind-d-grid">
-      <div class="ind-d-sub">Per run — ${fmtNum(d.product.quantity)}× ${d.product.name} (frozen)</div>
-      <span>Sell @ ask — list</span><b>${isk(d.ask)}</b>
-      <span>Sell @ bid — instant</span><b>${isk(d.bid)}</b>
-      <span>Material cost</span><b>${isk(d.material_cost)}</b>
-      <span>Job install</span><b>${isk(d.job_cost)}</b>
-      ${d.invention?`<span>Invention cost</span><b>${isk(d.invention_cost)}</b>`:""}
-      <span>Total cost</span><b>${isk(d.total_cost)}</b>
-      <span>Profit — list</span><b class="${pn(d.profit_patient)}">${isk(d.profit_patient)}</b>
-      <span>Profit — instant</span><b class="${pn(d.profit_instant)}">${isk(d.profit_instant)}</b>
-      <div class="ind-d-sub">Batch — ${n.toLocaleString()} run(s)</div>
-      <span>Total cost</span><b>${isk(batchCost)}</b>
-      <span>Profit — list</span><b class="${pn(batchProfitL)}">${isk(batchProfitL)}</b>
-      <span>Profit — instant</span><b class="${pn(batchProfitI)}">${isk(batchProfitI)}</b>
+    <div class="ind-build-headcards">
+      <div class="ind-d-card">
+        <div class="ind-d-card-label">Sell — list</div>
+        <div class="ind-d-card-val">${isk(sellL)}</div>
+        <div class="ind-d-card-sub">${qtyTot!=null?qtyTot.toLocaleString()+"× @ ask "+isk(d.ask):""}</div>
+      </div>
+      <div class="ind-d-card">
+        <div class="ind-d-card-label">Sell — instant</div>
+        <div class="ind-d-card-val">${isk(sellI)}</div>
+        <div class="ind-d-card-sub">${qtyTot!=null?qtyTot.toLocaleString()+"× @ bid "+isk(d.bid):""}</div>
+      </div>
+      <div class="ind-d-card">
+        <div class="ind-d-card-label">Profit — list</div>
+        <div class="ind-d-card-val ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
+        <div class="ind-d-card-sub">${beL!=null?`break-even ${isk(beL)}/unit`:"anticipated, frozen"}</div>
+      </div>
+      <div class="ind-d-card">
+        <div class="ind-d-card-label">Profit — instant</div>
+        <div class="ind-d-card-val ${pn(batchProfitI)}">${isk(batchProfitI)}</div>
+        <div class="ind-d-card-sub">${beI!=null?`break-even ${isk(beI)}/unit`:"anticipated, frozen"}</div>
+      </div>
     </div>
-    <div class="ind-d-sub" style="margin-top:10px">Materials — ${n.toLocaleString()} run(s), at frozen prices</div>
-    <table class="ind-d-mats"><thead><tr><th>Material</th><th class="num">Qty</th>
-      <th class="num">Unit</th><th class="num">Total</th><th class="num">Cargo m³</th></tr></thead>
-      <tbody>${mats}${matTotal}</tbody></table>
+    <div class="ind-build-costline">
+      <span>Material cost <b>${isk(matCostBatch)}</b></span>
+      <span>Job install <b>${isk(jobCostBatch)}</b></span>
+      ${inventCostBatch!=null?`<span>Invention <b>${isk(inventCostBatch)}</b></span>`:""}
+      <span>Total cost <b>${isk(batchCost)}</b></span>
+    </div>
+    <details class="ind-build-mats">
+      <summary>Materials — ${n.toLocaleString()} run(s), at frozen prices</summary>
+      <table class="ind-d-mats"><thead><tr><th>Material</th><th class="num">Qty</th>
+        <th class="num">Unit</th><th class="num">Total</th><th class="num">Cargo m³</th></tr></thead>
+        <tbody>${mats}${matTotal}</tbody></table>
+    </details>
   </div>`;
 }
 

@@ -172,20 +172,31 @@ function renderJournal(){
 
 function renderLiveControls(){
   const active=TRACK.state==="active", paused=TRACK.state==="paused", stopped=TRACK.state==="stopped";
+  // Pause/Resume/Stop act on the ONE live session, so they belong to that
+  // session — we only surface them when it's the one on screen. Viewing a past
+  // session shows no controls (Resume appears only on the session that's
+  // actually paused). Start is the exception: it creates a session, so it shows
+  // whenever nothing is live, regardless of what's selected.
+  const viewingLive = !stopped && TRACK.liveRunId!=null && TRACK.selRunId===TRACK.liveRunId;
   const btn=(id,show)=>{ const el=$(id); if(el) el.classList.toggle("hidden", !show); };
   btn("#track-start", stopped);
-  btn("#track-pause", active);
-  btn("#track-resume", paused);
-  btn("#track-stop", !stopped);
+  btn("#track-pause", viewingLive && active);
+  btn("#track-resume", viewingLive && paused);
+  btn("#track-stop", viewingLive && !stopped);
 
   const st=$("#exp-live-status");
   if(st){
     if(stopped) st.textContent="No live session — start one to log your route.";
-    else if(active) st.textContent=`● Live${TRACK.online===false?" (waiting for pilot to come online…)":""}`;
-    else if(paused) st.textContent=TRACK.pauseReason==="auto"
+    else if(viewingLive && active) st.textContent=`● Live${TRACK.online===false?" (waiting for pilot to come online…)":""}`;
+    else if(viewingLive && paused) st.textContent=TRACK.pauseReason==="auto"
       ? "⏸ Auto-paused — pilot offline. Resumes automatically when you're back in game."
       : "⏸ Paused.";
-    st.className="track-status"+(active?" track-live":"");
+    // A live/paused session exists but a different session is on screen: point the
+    // pilot back to it rather than showing controls that would act on the unseen one.
+    else st.textContent=active
+      ? "● A live session is running — select it in the list to pause or stop it."
+      : "⏸ A session is paused — select it in the list to resume it.";
+    st.className="track-status"+((viewingLive&&active)?" track-live":"");
   }
   const err=$("#track-error");
   const msg=TRACK.error || (!TRACK.scopeOk && !stopped
@@ -203,7 +214,12 @@ function renderSessionList(){
   }
   wrap.innerHTML=TRACK.sessions.map(s=>{
     const sel=s.run_id===TRACK.selRunId?" active":"";
-    const live=s.is_live?`<span class="exp-live-dot"></span>`:"";
+    // The live session's dot mirrors the mode-button dot: green while active,
+    // yellow while paused — so a paused session reads as paused everywhere, not
+    // green in the list and yellow up top.
+    const live=s.is_live
+      ? `<span class="exp-live-dot${TRACK.state==="paused"?" exp-live-dot-paused":""}"></span>`
+      : "";
     // Total duration: end→now for a live/ongoing session, else end−start.
     const endTs=s.ended_at || (Date.now()/1000);
     const dur=(s.started_at!=null)? fmtDwell(endTs-s.started_at) : null;

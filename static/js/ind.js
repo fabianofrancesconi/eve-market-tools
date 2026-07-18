@@ -1040,7 +1040,34 @@ function reconcileBuilds(){
     }
   });
   renderIndBuilds();
+  // Fills/auto-links accrue server-side during the background refresh, so when
+  // any build is actively selling, re-pull the frozen list to reflect the latest
+  // realized profit + order linkage. Fresh jobs arriving is the natural trigger.
+  if(IND.builds.some(b=>b.sell && b.sell.started_at && !b.sell.closed_at)) refreshSellingBuilds();
   return changed;
+}
+
+// Re-fetch tracked builds (to surface server-accrued sale fills) without
+// clobbering local job-linkage in flight: replace only the sell state + realized
+// history, keep the client's live job fields. Skipped if nothing is selling.
+let _refreshingSelling=false;
+function refreshSellingBuilds(){
+  if(_refreshingSelling) return;
+  _refreshingSelling=true;
+  fetch("/api/ind/builds").then(r=>r.json()).then(res=>{
+    _refreshingSelling=false;
+    const fresh=(res&&res.builds)||[];
+    const byId=Object.fromEntries(fresh.map(b=>[b.id,b]));
+    let changed=false;
+    IND.builds.forEach(b=>{
+      const f=byId[b.id];
+      if(!f) return;
+      if(JSON.stringify(b.sell||null)!==JSON.stringify(f.sell||null)){
+        b.sell=f.sell; changed=true;
+      }
+    });
+    if(changed) renderIndBuilds();
+  }).catch(()=>{ _refreshingSelling=false; });
 }
 
 function _patchBuildLink(b, fields){
@@ -1063,6 +1090,60 @@ function _buildStatus(b){
   if(b.done_at) return {key:"done", label:"✓ Done"};
   if(b.job_id!=null && _activeJobIdSet().has(String(b.job_id))) return {key:"building", label:"⏳ Building"};
   return {key:"awaiting", label:"⚠ No matching job"};
+}
+
+// Explicit lifecycle stage for the stepper: planned → building → built →
+// listed → sold. Mirrors the server's _build_stage but refines building/built
+// against live jobs (the server can't see them). "planned" collapses the
+// awaiting/building split from _buildStatus down to the pre-job stage.
+const _BUILD_STAGES=["planned","building","built","listed","sold"];
+const _STAGE_LABEL={planned:"Planned",building:"Building",built:"Built",listed:"Listed",sold:"Sold"};
+function _buildStage(b){
+  const sell=b.sell||null;
+  if(sell&&sell.closed_at) return "sold";
+  if(sell&&sell.started_at) return "listed";
+  const st=_buildStatus(b);
+  if(st.key==="done") return "built";
+  if(st.key==="building") return "building";
+  return "planned";
+}
+
+// Total units this batch yields (product qty per run × runs) and the frozen
+// cost basis per produced unit — used by the sell panel + realized math.
+function _buildUnits(b){
+  const per=((b.snapshot||{}).product||{}).quantity;
+  return per==null?null:per*Math.max(1,b.runs||1);
+}
+function _buildCostPerUnit(b){
+  const cost=_batchEconomics(b.snapshot||{}, b.runs||1).cost;
+  const units=_buildUnits(b);
+  return (cost==null||!units)?null:cost/units;
+}
+
+// Realized sale totals accrued server-side: units sold, net revenue after
+// sales tax, frozen cost of those units, and profit.
+function _buildRealized(b){
+  const sell=b.sell||{};
+  const entries=sell.realized||[];
+  const units=entries.reduce((s,e)=>s+(e.units||0),0);
+  const net=entries.reduce((s,e)=>s+(e.net||0),0);
+  const cpu=sell.cost_per_unit;
+  const cost=(cpu!=null)?units*cpu:null;
+  return {units, net, cost, profit:(cost!=null)?net-cost:null};
+}
+
+// Break-even sell price per unit (revenue exactly covers total batch cost).
+// Instant sale pays sales tax only; a list order also pays the broker fee.
+function _buildBreakEven(b){
+  const d=b.snapshot||{};
+  const cost=_batchEconomics(d, b.runs||1).cost;
+  const units=_buildUnits(b);
+  const stax=d.sales_tax||0, bfee=d.broker_fee||0;
+  if(cost==null||!units) return {list:null, instant:null};
+  return {
+    instant:(1-stax)>0?cost/(units*(1-stax)):null,
+    list:(1-stax-bfee)>0?cost/(units*(1-stax-bfee)):null,
+  };
 }
 
 // Render the tracked-builds section in the Industry tab. Always expanded — no
@@ -1169,7 +1250,10 @@ function _buildCardHtml(b, linked){
   }
   const expanded=IND.buildsExpanded.has(b.id);
   const detail=expanded?_buildDetailHtml(b):"";
-  return `<div class="ind-build-card ${st.key}" data-id="${b.id}">
+  const stage=_buildStage(b);
+  const stepper=_buildStepperHtml(stage);
+  const sellBlock=_buildSellHtml(b, stage);
+  return `<div class="ind-build-card ${st.key} stage-${stage}" data-id="${b.id}">
     <div class="ind-build-row">
       <span class="ind-build-status ${st.key}">${st.label}</span>
       <span class="ind-build-name">${b.product_name||"?"}</span>
@@ -1184,9 +1268,99 @@ function _buildCardHtml(b, linked){
       <button class="ind-build-toggle" title="Show the full frozen snapshot">${expanded?"▲ Hide":"▼ Details"}</button>
       <button class="ind-build-del" title="Stop tracking this build">✕</button>
     </div>
+    ${stepper}
     <div class="ind-build-substatus">${statusLine}</div>
+    ${sellBlock}
     ${detail}
   </div>`;
+}
+
+// The lifecycle stepper: planned → building → built → listed → sold, with the
+// current stage highlighted and everything up to it marked done. The stage that
+// needs the user (built → "list it in game"; listed with needs_pick) is styled
+// as "active" so the card reads as a guided flow, not just a status label.
+function _buildStepperHtml(stage){
+  const idx=_BUILD_STAGES.indexOf(stage);
+  const dots=_BUILD_STAGES.map((s,i)=>{
+    const cls=i<idx?"done":(i===idx?"active":"todo");
+    return `<span class="ind-step ${cls}"><i class="ind-step-dot"></i>${_STAGE_LABEL[s]}</span>`;
+  }).join(`<i class="ind-step-sep"></i>`);
+  return `<div class="ind-build-stepper">${dots}</div>`;
+}
+
+// Proposed list price for a built batch: the current ask if we have one, else
+// the frozen ask, floored at break-even so a nudge never proposes a loss.
+function _buildProposedPrice(b){
+  const d=b.snapshot||{};
+  const be=_buildBreakEven(b).list;
+  const ask=d.ask;
+  if(ask==null) return be;
+  return (be!=null)?Math.max(ask, be):ask;
+}
+
+// The sell section of a card. Built-but-unlisted → a "Sell" nudge with the
+// proposed price + copy. Listed/sold → live realized profit and the unsold
+// remainder; needs_pick surfaces the character's open sell orders to link.
+function _buildSellHtml(b, stage){
+  const isk=v=>v===null||v===undefined?"—":fmtISK(v);
+  if(stage==="built"){
+    const price=_buildProposedPrice(b);
+    const units=_buildUnits(b);
+    const be=_buildBreakEven(b);
+    return `<div class="ind-sell ind-sell-nudge" data-id="${b.id}">
+      <span class="ind-sell-head">Ready to sell</span>
+      <span class="ind-sell-price">Propose <b>${isk(price)}</b>/unit${units!=null?` · ${units.toLocaleString()} unit(s)`:""}</span>
+      <span class="ind-sell-be" title="Selling below this loses money">break-even ${isk(be.list)}/unit</span>
+      <button class="ind-sell-copy" title="Copy the proposed price to paste into EVE's sell order">⧉ Copy price</button>
+      <button class="ind-sell-start" title="List this in-game at that price, then start tracking the sale here">Start tracking sale ▸</button>
+      <div class="ind-sell-hint">EVE has no API to place orders — list it in-game, then this auto-links the order and tracks your real profit.</div>
+    </div>`;
+  }
+  if(stage==="listed"||stage==="sold"){
+    const rz=_buildRealized(b);
+    const sell=b.sell||{};
+    const target=sell.qty_target||_buildUnits(b)||0;
+    const cpu=sell.cost_per_unit;
+    const remain=Math.max(0, target-rz.units);
+    const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
+    // Projected profit on the unsold remainder at the frozen list price.
+    const d=b.snapshot||{};
+    const stax=d.sales_tax||0, bfee=d.broker_fee||0;
+    const projRemain=(d.ask!=null&&cpu!=null)?remain*(d.ask*(1-stax-bfee)-cpu):null;
+    let pick="";
+    if(sell.needs_pick){
+      pick=`<div class="ind-sell-pick" data-id="${b.id}">
+        <span class="ind-sell-warn">Several open sell orders match ${b.product_name||"this item"} — pick the one to track:</span>
+        <span class="ind-sell-pick-list"></span></div>`;
+    }
+    const closed=stage==="sold";
+    return `<div class="ind-sell ind-sell-live" data-id="${b.id}">
+      <div class="ind-sell-cards">
+        <div class="ind-sell-card">
+          <div class="ind-sell-card-label">${closed?"Sold":"Sold so far"}</div>
+          <div class="ind-sell-card-val">${rz.units.toLocaleString()} / ${target.toLocaleString()}</div>
+          <div class="ind-sell-card-sub">${closed?"complete":`${remain.toLocaleString()} left`}</div>
+        </div>
+        <div class="ind-sell-card">
+          <div class="ind-sell-card-label">Realized profit</div>
+          <div class="ind-sell-card-val ${pn(rz.profit)}">${isk(rz.profit)}</div>
+          <div class="ind-sell-card-sub">net ${isk(rz.net)} − cost ${isk(rz.cost)}</div>
+        </div>
+        <div class="ind-sell-card">
+          <div class="ind-sell-card-label">Remainder (proj.)</div>
+          <div class="ind-sell-card-val ${pn(projRemain)}">${remain>0?isk(projRemain):"—"}</div>
+          <div class="ind-sell-card-sub">${remain>0?`${remain.toLocaleString()} @ frozen ask`:"nothing left"}</div>
+        </div>
+      </div>
+      ${pick}
+      <div class="ind-sell-foot">
+        ${closed?`<span class="ind-sell-done">✓ Fully sold${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'}):""}</span>`
+          :`<span class="ind-sell-watching">⏳ Watching your sell order${(sell.order_ids||[]).length?" (linked)":"…"}</span>`}
+        <button class="ind-sell-cancel" title="Stop tracking this sale (keeps the build)">Stop tracking sale</button>
+      </div>
+    </div>`;
+  }
+  return "";
 }
 
 // The full frozen breakdown, mirroring the detail panel's materials + batch math
@@ -1297,6 +1471,89 @@ function _wireBuildCard(box, b){
   if(lc) lc.onclick=()=>acceptCloseJob(b.id, lc.dataset.job, parseInt(lc.dataset.runs,10));
   const now=card.querySelector(".ind-build-now");
   if(now) now.onclick=()=>compareBuildToNow(b, now);
+  _wireSellCard(card, b);
+}
+
+// Wire the sell-section buttons (copy price, start tracking, cancel, pick-order).
+function _wireSellCard(card, b){
+  const copy=card.querySelector(".ind-sell-copy");
+  if(copy) copy.onclick=()=>{
+    const price=_buildProposedPrice(b);
+    if(price==null) return;
+    const txt=String(Math.round(price*100)/100);
+    const done=()=>{ copy.textContent="✓ Copied"; setTimeout(()=>{copy.textContent="⧉ Copy price";},1200); };
+    if(navigator.clipboard&&navigator.clipboard.writeText)
+      navigator.clipboard.writeText(txt).then(done).catch(()=>fallbackCopy(txt,done));
+    else fallbackCopy(txt, done);
+  };
+  const start=card.querySelector(".ind-sell-start");
+  if(start) start.onclick=()=>startSellTracking(b, start);
+  const cancel=card.querySelector(".ind-sell-cancel");
+  if(cancel) cancel.onclick=()=>{
+    if(confirm(`Stop tracking the sale of ${b.product_name||"this build"}? (The build itself stays.)`))
+      cancelSellTracking(b);
+  };
+  const pick=card.querySelector(".ind-sell-pick");
+  if(pick) _renderSellPickList(pick, b);
+}
+
+// Begin sell-tracking a built batch. Optionally asks for a partial quantity, then
+// flips the card to the live realized-profit view; the background refresh will
+// auto-link the in-game order and accrue fills.
+function startSellTracking(b, btn){
+  const units=_buildUnits(b);
+  let qty=units;
+  const ans=prompt(`How many units are you listing for sale?\n(Enter for all ${units!=null?units.toLocaleString():""}.)`, units!=null?String(units):"");
+  if(ans===null) return;                        // cancelled
+  const parsed=parseInt(ans,10);
+  if(!isNaN(parsed) && parsed>0) qty=parsed;
+  if(btn){ btn.disabled=true; btn.textContent="Starting…"; }
+  const body={id:b.id};
+  if(qty!=null) body.qty_target=String(qty);
+  fetch("/api/ind/builds/sell/start",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(body)}).then(r=>r.json()).then(res=>{
+    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); }
+    else if(btn){ btn.disabled=false; btn.textContent=res&&res.error?("⚠ "+res.error):"⚠ Failed"; }
+  }).catch(()=>{ if(btn){ btn.disabled=false; btn.textContent="⚠ Failed"; } });
+}
+
+function cancelSellTracking(b){
+  fetch("/api/ind/builds/sell/cancel",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:b.id})}).then(r=>r.json()).then(()=>{
+    if(b.sell) delete b.sell; renderIndBuilds();
+  }).catch(()=>{});
+}
+
+// The needs_pick case: list the character's open sell orders for this product so
+// the user links the right one. Reads AUTH.data.market_orders (already fetched).
+function _renderSellPickList(pickEl, b){
+  const slot=pickEl.querySelector(".ind-sell-pick-list");
+  if(!slot) return;
+  const orders=((AUTH.data&&AUTH.data.market_orders)||[])
+    .filter(o=>!o.is_buy_order && o.type_id===b.product_type_id);
+  if(!orders.length){ slot.textContent="No open sell orders found — refreshing…"; return; }
+  slot.innerHTML=orders.map(o=>{
+    const price=(o.price!=null)?fmtISK(o.price):"?";
+    const rem=(o.volume_remain!=null)?o.volume_remain.toLocaleString():"?";
+    return `<button class="ind-sell-pickbtn" data-order="${o.order_id}" title="Track this order">`
+      +`${price}/u · ${rem} left${o.character_name?" · "+o.character_name:""}</button>`;
+  }).join("");
+  slot.querySelectorAll(".ind-sell-pickbtn").forEach(btn=>{
+    btn.onclick=()=>linkSellOrder(b, btn.dataset.order);
+  });
+}
+
+function linkSellOrder(b, orderId){
+  fetch("/api/ind/builds/sell/link",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:b.id, order_id:String(orderId)})}).then(r=>r.json()).then(res=>{
+    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); }
+  }).catch(()=>{});
+}
+
+// Swap a freshly-returned build record into IND.builds in place (preserving order).
+function _replaceBuild(build){
+  const i=IND.builds.findIndex(x=>x.id===build.id);
+  if(i>=0) IND.builds[i]=build; else IND.builds.unshift(build);
 }
 
 // Fetch current market prices for a tracked build and compare its frozen values

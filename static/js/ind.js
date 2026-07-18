@@ -3,7 +3,7 @@
 // ══════════════════════════════════════════════════════════════════════════
 let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es:null,
            groupsLoaded:false, profiles:[], profilesCleared:false,
-           favorites:new Set(), hidden:new Set(),
+           favorites:new Set(), favoritesCleared:false, hidden:new Set(),
            timers:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{}, detailRuns:1,
            fillTotal:0, fillDone:0, tradeWeight:0.5,
@@ -364,6 +364,10 @@ function wireIndRows(tbody, ordered){
 
 function toggleFavorite(bp){
   if(IND.favorites.has(bp)) IND.favorites.delete(bp); else IND.favorites.add(bp);
+  // Track a *deliberate* empty list so the server-side guard can tell an
+  // intentional "removed my last favorite" from a boot-race empty default
+  // (which must never overwrite the stored list). See _preserve_favorites.
+  IND.favoritesCleared = IND.favorites.size===0;
   saveIndPrefs();
   renderIndTable();
 }

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.128.2"
+__version__ = "1.128.3"
 
 import argparse
 import base64
@@ -2452,6 +2452,49 @@ def _preserve_profiles(incoming, stored):
     return incoming
 
 
+def _favorites_list(blob):
+    """The Industry favorites (watchlisted blueprint_ids) inside a settings blob,
+    as a list. Client stores them under ind.favorites as a JSON string; be
+    lenient about a raw list or missing/garbage values."""
+    try:
+        raw = ((blob or {}).get("ind") or {}).get("favorites")
+    except AttributeError:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        try:
+            v = json.loads(raw)
+            return v if isinstance(v, list) else []
+        except (ValueError, TypeError):
+            return []
+    return []
+
+
+def _preserve_favorites(incoming, stored):
+    """Same defence as _preserve_profiles, for the Industry favorites/watchlist.
+    Favorites also live only inside the wholesale settings blob, so the identical
+    cold-start race (server not yet synced + this browser has no local cache →
+    client holds the empty default IND.favorites) can push [] over a durable
+    list. Keep the stored favorites when the incoming blob has none, unless the
+    client explicitly signalled a deliberate clear (ind.favorites_cleared=="1",
+    set only when the user removes their last favorite)."""
+    if _favorites_list(incoming):
+        return incoming  # client sent real favorites — trust it
+    cleared = str(((incoming or {}).get("ind") or {}).get("favorites_cleared", "")) == "1"
+    if cleared:
+        return incoming  # user genuinely emptied the list
+    stored_favorites = _favorites_list(stored)
+    if not stored_favorites:
+        return incoming  # nothing to protect
+    ind = incoming.get("ind")
+    if not isinstance(ind, dict):
+        ind = {}
+        incoming["ind"] = ind
+    ind["favorites"] = json.dumps(stored_favorites)
+    return incoming
+
+
 def do_settings_sync(q):
     """Persist the full client-side settings blob for the account, remotely, so
     every browser the user logs in from converges on the same view. No-op when
@@ -2464,8 +2507,11 @@ def do_settings_sync(q):
         data = json.loads(blob)
     except json.JSONDecodeError:
         raise LPError("Invalid settings payload.")
-    # Never let a sync blank out saved build locations by accident (see helper).
-    data = _preserve_profiles(data, load_account_settings(acct))
+    # Never let a sync blank out saved build locations or favorites by accident
+    # (a cold-start race can push empty defaults — see the helpers).
+    stored = load_account_settings(acct)
+    data = _preserve_profiles(data, stored)
+    data = _preserve_favorites(data, stored)
     save_account_settings(acct, data)
     return {"ok": True, "synced": True}
 

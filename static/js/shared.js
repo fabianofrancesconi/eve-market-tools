@@ -174,6 +174,10 @@ function settingsBlob(){
       // default, so the server-side guard doesn't restore the old list.
       profiles_cleared:(IND.profiles.length===0 && IND.profilesCleared)?'1':'0',
       favorites:JSON.stringify([...IND.favorites]),
+      // Like profiles_cleared: signals an empty favorites list is intentional
+      // (user removed their last one) vs. a boot-race default, so the server
+      // guard doesn't restore the stored list over a genuine clear.
+      favorites_cleared:(IND.favorites.size===0 && IND.favoritesCleared)?'1':'0',
       sort_key:IND.sort.key,sort_dir:IND.sort.dir,
       col_order:JSON.stringify(IND.colOrder),col_widths:JSON.stringify(IND.colw),
       col_vis:JSON.stringify(IND.colVis),

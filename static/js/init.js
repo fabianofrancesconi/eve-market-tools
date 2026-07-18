@@ -152,7 +152,8 @@ async function loadSettings(){
       if(ind.profiles){ try{ IND.profiles=JSON.parse(ind.profiles)||[]; }catch(e){} }
       renderIndProfiles();
       if(ind.profile) $("#ind-profile").value=ind.profile;
-      if(ind.favorites){ try{ IND.favorites=new Set(JSON.parse(ind.favorites)||[]); }catch(e){} }
+      if(ind.favorites){ try{ IND.favorites=new Set(JSON.parse(ind.favorites)||[]);
+        if(IND.favorites.size) IND.favoritesCleared=false; }catch(e){} }
       if(ind.hidden_bps){ try{ IND.hidden=new Set(JSON.parse(ind.hidden_bps)||[]); }catch(e){} }
       if(ind.sections){ try{
         const sec=typeof ind.sections==="string"?JSON.parse(ind.sections):ind.sections;

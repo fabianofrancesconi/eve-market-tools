@@ -191,11 +191,11 @@ function renderLiveControls(){
     else if(viewingLive && paused) st.textContent=TRACK.pauseReason==="auto"
       ? "⏸ Auto-paused — pilot offline. Resumes automatically when you're back in game."
       : "⏸ Paused.";
-    // A live/paused session exists but a different session is on screen: point the
-    // pilot back to it rather than showing controls that would act on the unseen one.
-    else st.textContent=active
-      ? "● A live session is running — select it in the list to pause or stop it."
-      : "⏸ A session is paused — select it in the list to resume it.";
+    // A live/paused session exists but a different (past) session is on screen.
+    // Just state the live session's condition — the coloured dot beside it in the
+    // list is the cue to click through to its controls; an imperative here reads as
+    // if it applied to the session being viewed.
+    else st.textContent=active ? "● Live session in progress." : "⏸ Live session paused.";
     st.className="track-status"+((viewingLive&&active)?" track-live":"");
   }
   const err=$("#track-error");

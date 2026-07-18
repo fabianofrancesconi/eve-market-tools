@@ -1271,6 +1271,369 @@ def do_ind_builds_link(q):
     return {"ok": found}
 
 
+# ── Tracked-build sell tracking (realized profit) ────────────────────────────
+# Once a build's manufacturing job is done, the user lists the product for sale
+# in-game (ESI is read-only — we can't place the order ourselves). They hit
+# "Sell" here, which freezes the per-unit cost basis and starts watching their
+# open sell orders. A new sell order for the product's type_id is auto-linked
+# (or the user picks one when several match); as it fills, each sale is accrued
+# from the same order-diff engine that powers sale notifications, giving a live
+# realized profit = net sale revenue − frozen craft cost of the units sold.
+_TRACKED_BUILDS_LOCK = threading.Lock()
+
+# An order issued up to this long *before* the user clicked "Sell" is still
+# accepted as the auto-match — covers listing the order first and clicking Sell
+# a moment later. A wider window only risks grabbing a pre-existing order, and
+# only when it's the single sell order for that item (else it's needs_pick).
+_SELL_MATCH_MARGIN = 3600
+
+
+def _parse_iso_ts(s):
+    """Unix timestamp for an ESI ISO-8601 string, or None if unparseable."""
+    if not s:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _build_units_produced(b):
+    """Total units this batch yields: product quantity per run × run count."""
+    d = b.get("snapshot") or {}
+    per_run = (d.get("product") or {}).get("quantity")
+    if per_run is None:
+        return None
+    return per_run * max(1, int(b.get("runs") or 1))
+
+
+def _build_batch_cost(b):
+    """Frozen total craft cost for the whole batch, mirroring the client's
+    _batchEconomics: material cost uses job-level ME rounding, job + invention
+    are linear in the run count. Falls back to total_cost × runs for snapshots
+    saved before per-material base_qty was recorded."""
+    d = b.get("snapshot") or {}
+    n = max(1, int(b.get("runs") or 1))
+    me = d.get("me_used") or 0
+    items = d.get("required_items")
+    mat_cost = None
+    if isinstance(items, list) and any(m.get("base_qty") is not None for m in items):
+        mat_cost = 0.0
+        for m in items:
+            up = m.get("unit_price")
+            if up is None:
+                continue
+            bq = m.get("base_qty")
+            qty = (ind_core.effective_qty(bq, me, n) if bq is not None
+                   else (m.get("eff_qty") or 0) * n)
+            mat_cost += qty * up
+    job_plus_inv = (d.get("job_cost") or 0) + (
+        (d.get("invention_cost") or 0) if d.get("invention") else 0)
+    if mat_cost is not None:
+        return mat_cost + job_plus_inv * n
+    if d.get("total_cost") is not None:
+        return d["total_cost"] * n
+    return None
+
+
+def _build_cost_per_unit(b):
+    """Frozen craft cost of one produced unit — the cost basis for a sale."""
+    cost = _build_batch_cost(b)
+    units = _build_units_produced(b)
+    if cost is None or not units:
+        return None
+    return cost / units
+
+
+def _build_realized(b):
+    """Realized sale totals from the accrued fill events: units sold, net
+    revenue after sales tax, the frozen cost of those units, and profit."""
+    sell = b.get("sell") or {}
+    entries = sell.get("realized") or []
+    units = sum(e.get("units", 0) for e in entries)
+    net = sum(e.get("net", 0) for e in entries)
+    cpu = sell.get("cost_per_unit")
+    cost_of_sold = units * cpu if cpu is not None else None
+    profit = (net - cost_of_sold) if cost_of_sold is not None else None
+    return {"units": units, "net": net, "cost_of_sold": cost_of_sold,
+            "profit": profit}
+
+
+def _build_stage(b):
+    """Lifecycle stage derived purely from stored fields (no live-job lookup, so
+    it works server-side): planned → building → built → listed → sold. The
+    client refines building/built against live ESI jobs for the card stepper."""
+    sell = b.get("sell") or {}
+    if sell.get("closed_at"):
+        return "sold"
+    if sell.get("started_at"):
+        return "listed"
+    if b.get("done_at"):
+        return "built"
+    if b.get("job_id") is not None:
+        return "building"
+    return "planned"
+
+
+def do_ind_builds_sell_start(q):
+    """Begin sell-tracking a built batch: freeze the per-unit cost basis and the
+    target quantity, then start watching for the in-game sell order. Preserves
+    any realized fills if called again (e.g. to adjust the target)."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    build_id = q.get("id", [""])[0]
+    if not build_id:
+        return {"error": "missing id"}
+    with _TRACKED_BUILDS_LOCK:
+        builds = _load_tracked_builds(acct)
+        b = next((x for x in builds if x.get("id") == build_id), None)
+        if not b:
+            return {"error": "unknown build"}
+        units = _build_units_produced(b)
+        try:
+            qt = int(q.get("qty_target", [""])[0])
+        except (TypeError, ValueError):
+            qt = None
+        if not qt or qt <= 0:
+            qt = units
+        sell = b.get("sell") or {}
+        sell.update({
+            "started_at": sell.get("started_at") or time.time(),
+            "qty_target": qt,
+            "cost_per_unit": _build_cost_per_unit(b),
+            "order_ids": sell.get("order_ids") or [],
+            "needs_pick": sell.get("needs_pick", False),
+            "realized": sell.get("realized") or [],
+            "closed_at": None,
+        })
+        b["sell"] = sell
+        _save_tracked_builds(acct, builds)
+    return {"ok": True, "build": b}
+
+
+def do_ind_builds_sell_link(q):
+    """Manually link an in-game sell order to a build (the needs_pick path)."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    build_id = q.get("id", [""])[0]
+    order_id = q.get("order_id", [""])[0]
+    if not build_id or not order_id:
+        return {"error": "missing id"}
+    with _TRACKED_BUILDS_LOCK:
+        builds = _load_tracked_builds(acct)
+        b = next((x for x in builds if x.get("id") == build_id), None)
+        if not b or not b.get("sell"):
+            return {"error": "not selling"}
+        sell = b["sell"]
+        ids = [str(o) for o in (sell.get("order_ids") or [])]
+        if str(order_id) not in ids:
+            ids.append(str(order_id))
+        sell["order_ids"] = ids
+        sell["needs_pick"] = False
+        _save_tracked_builds(acct, builds)
+    return {"ok": True, "build": b}
+
+
+def do_ind_builds_sell_unlink(q):
+    """Detach a linked order from a build (mis-link recovery)."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    build_id = q.get("id", [""])[0]
+    order_id = q.get("order_id", [""])[0]
+    if not build_id or not order_id:
+        return {"error": "missing id"}
+    with _TRACKED_BUILDS_LOCK:
+        builds = _load_tracked_builds(acct)
+        b = next((x for x in builds if x.get("id") == build_id), None)
+        if not b or not b.get("sell"):
+            return {"error": "not selling"}
+        sell = b["sell"]
+        sell["order_ids"] = [o for o in (sell.get("order_ids") or [])
+                             if str(o) != str(order_id)]
+        _save_tracked_builds(acct, builds)
+    return {"ok": True, "build": b}
+
+
+def do_ind_builds_sell_cancel(q):
+    """Abandon sell-tracking a build — drops the sell state (and its accrued
+    realized history) so the card returns to its plain built view."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    build_id = q.get("id", [""])[0]
+    if not build_id:
+        return {"error": "missing id"}
+    with _TRACKED_BUILDS_LOCK:
+        builds = _load_tracked_builds(acct)
+        b = next((x for x in builds if x.get("id") == build_id), None)
+        if b and b.pop("sell", None) is not None:
+            _save_tracked_builds(acct, builds)
+    return {"ok": True}
+
+
+def _reconcile_sell_builds(acct, current_orders):
+    """Wire the character's live sell orders + detected fills into any builds in
+    the 'selling' state. Auto-links a single new matching order (flags needs_pick
+    when several match), then accrues each fill's net revenue against the frozen
+    cost basis, deduped by event id so a re-run never double-counts. Closes a
+    build once its target quantity has sold. Idempotent — safe to run every
+    sweep and across the per-character thread pool (guarded by the lock)."""
+    if not acct:
+        return
+    with _TRACKED_BUILDS_LOCK:
+        builds = _load_tracked_builds(acct)
+        selling = [b for b in builds
+                   if (b.get("sell") or {}).get("started_at")
+                   and not (b.get("sell") or {}).get("closed_at")]
+        if not selling:
+            return
+        # Orders already claimed by any build must not be auto-linked twice.
+        linked_ids = {str(o) for b in builds
+                      for o in (b.get("sell") or {}).get("order_ids") or []}
+        # All active (non-dismissed) sale/fill events for the account, keyed by
+        # order — a 7-day window so an order linked *after* its fill still accrues.
+        events_by_order = {}
+        for ev in _get_order_events(acct):
+            if ev.get("is_buy_order"):
+                continue
+            events_by_order.setdefault(str(ev.get("order_id")), []).append(ev)
+
+        changed = False
+        for b in selling:
+            sell = b["sell"]
+            pid = b.get("product_type_id")
+            started = sell.get("started_at") or 0
+            # Auto-match: a new sell order for this product, issued around/after
+            # the user hit Sell, not already linked elsewhere.
+            if not sell.get("order_ids"):
+                cands = [o for o in current_orders
+                         if not o.get("is_buy_order")
+                         and o.get("type_id") == pid
+                         and str(o.get("order_id")) not in linked_ids
+                         and (_parse_iso_ts(o.get("issued")) or 0)
+                         >= started - _SELL_MATCH_MARGIN]
+                if len(cands) == 1:
+                    oid = str(cands[0]["order_id"])
+                    sell["order_ids"] = [oid]
+                    sell["needs_pick"] = False
+                    linked_ids.add(oid)
+                    changed = True
+                elif len(cands) > 1 and not sell.get("needs_pick"):
+                    sell["needs_pick"] = True
+                    changed = True
+            # Accrue fills for the linked order(s).
+            realized = sell.setdefault("realized", [])
+            seen = {e.get("event_id") for e in realized}
+            stax = (b.get("snapshot") or {}).get("sales_tax") or 0
+            for oid in sell.get("order_ids") or []:
+                for ev in events_by_order.get(str(oid), []):
+                    if ev.get("expired"):
+                        continue  # lapsed unsold — not a sale
+                    evid = ev.get("id")
+                    sold = ev.get("sold") or 0
+                    if evid in seen or sold <= 0:
+                        continue
+                    price = ev.get("price") or 0
+                    realized.append({
+                        "event_id": evid, "ts": ev.get("ts"),
+                        "order_id": ev.get("order_id"), "units": sold,
+                        "price": price, "gross": sold * price,
+                        "net": sold * price * (1 - stax),
+                    })
+                    seen.add(evid)
+                    changed = True
+            # Close out once the target quantity has sold.
+            if not sell.get("closed_at"):
+                total = sum(e.get("units", 0) for e in realized)
+                qt = sell.get("qty_target")
+                if qt and total >= qt:
+                    sell["closed_at"] = time.time()
+                    changed = True
+        if changed:
+            _save_tracked_builds(acct, builds)
+
+
+def do_ind_summary(q):
+    """Portfolio roll-up across every tracked build: realized profit (net sale
+    revenue − frozen cost of units sold), capital still in flight (frozen cost of
+    builds not yet sold), and a per-product breakdown. The client adds the
+    live-price "ready to realize" projection and renders the needs-action queue
+    off the per-build fields returned here."""
+    acct = current_account()
+    if not acct:
+        return {"builds": []}
+    builds = _load_tracked_builds(acct)
+    realized_profit = realized_net = 0.0
+    capital_in_flight = 0.0
+    by_product = {}
+    out = []
+    for b in builds:
+        stage = _build_stage(b)
+        batch_cost = _build_batch_cost(b)
+        rz = _build_realized(b)
+        # Capital in flight = frozen cost of units not yet sold (everything for
+        # builds still in the pipeline; the unsold remainder once selling).
+        if stage != "sold" and batch_cost is not None:
+            cpu = _build_cost_per_unit(b)
+            unsold_cost = batch_cost
+            if cpu is not None and rz["units"]:
+                unsold_cost = max(0.0, batch_cost - rz["units"] * cpu)
+            capital_in_flight += unsold_cost
+        if rz["profit"] is not None:
+            realized_profit += rz["profit"]
+        realized_net += rz["net"]
+        pid = b.get("product_type_id")
+        if pid is not None:
+            agg = by_product.setdefault(pid, {
+                "type_id": pid, "name": b.get("product_name", "?"),
+                "realized_profit": 0.0, "units_sold": 0, "builds": 0})
+            agg["builds"] += 1
+            agg["units_sold"] += rz["units"]
+            if rz["profit"] is not None:
+                agg["realized_profit"] += rz["profit"]
+        sell = b.get("sell") or {}
+        out.append({
+            "id": b.get("id"),
+            "product_type_id": pid,
+            "product_name": b.get("product_name", "?"),
+            "blueprint_id": b.get("blueprint_id"),
+            "runs": b.get("runs"),
+            "created_at": b.get("created_at"),
+            "done_at": b.get("done_at"),
+            "stage": stage,
+            "batch_cost": batch_cost,
+            "units_produced": _build_units_produced(b),
+            "cost_per_unit": _build_cost_per_unit(b),
+            "ask": (b.get("snapshot") or {}).get("ask"),
+            "bid": (b.get("snapshot") or {}).get("bid"),
+            "sales_tax": (b.get("snapshot") or {}).get("sales_tax"),
+            "broker_fee": (b.get("snapshot") or {}).get("broker_fee"),
+            "sell": {
+                "started_at": sell.get("started_at"),
+                "closed_at": sell.get("closed_at"),
+                "qty_target": sell.get("qty_target"),
+                "needs_pick": sell.get("needs_pick", False),
+                "order_ids": sell.get("order_ids") or [],
+            } if sell else None,
+            "realized": rz,
+        })
+    breakdown = sorted(by_product.values(),
+                       key=lambda p: p["realized_profit"], reverse=True)
+    return {
+        "builds": out,
+        "totals": {
+            "realized_profit": realized_profit,
+            "realized_net": realized_net,
+            "capital_in_flight": capital_in_flight,
+            "count": len(out),
+        },
+        "by_product": breakdown,
+    }
+
+
 _CHAR_DATA_CACHE = {}  # {cid: (timestamp, result)}
 _CHAR_DATA_TTL = 120   # seconds
 _CHAR_DATA_SIG = {}    # {cid: signature of the last-seen character-owned state}
@@ -1517,6 +1880,12 @@ def _fetch_one_char_data_uncached(acct, cid):
     last_sales = {}
     if not orders_error:
         _, last_sales = _track_order_changes(acct, cid, orders_out, names)
+        # Fold this character's live sell orders + detected fills into any
+        # tracked builds in the selling state (auto-link + accrue realized P&L).
+        try:
+            _reconcile_sell_builds(acct, orders_out)
+        except Exception:
+            pass
     for o in orders_out:
         sale = last_sales.get(str(o.get("order_id")))
         if sale:
@@ -2882,6 +3251,7 @@ _GET_ROUTES = {
     "/api/ind/detail": do_ind_detail,
     "/api/ind/bpo-search": do_ind_bpo_search,
     "/api/ind/builds": do_ind_builds_list,
+    "/api/ind/summary": do_ind_summary,
     "/api/auth/login": do_auth_login,
     "/api/auth/switch": do_auth_switch,
     "/api/char/data": do_char_data,
@@ -2917,6 +3287,10 @@ _POST_ROUTES = {
     "/api/ind/builds/save": do_ind_builds_save,
     "/api/ind/builds/delete": do_ind_builds_delete,
     "/api/ind/builds/link": do_ind_builds_link,
+    "/api/ind/builds/sell/start": do_ind_builds_sell_start,
+    "/api/ind/builds/sell/link": do_ind_builds_sell_link,
+    "/api/ind/builds/sell/unlink": do_ind_builds_sell_unlink,
+    "/api/ind/builds/sell/cancel": do_ind_builds_sell_cancel,
 }
 
 # Session cookie + the endpoints reachable without one (multi-user mode). The app

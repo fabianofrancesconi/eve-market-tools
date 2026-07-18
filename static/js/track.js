@@ -10,14 +10,13 @@ const TRACK = { state:"stopped", pauseReason:null, liveRunId:null, online:null,
                 error:null, scopeOk:true, sessions:[], selRunId:null,
                 detail:null, trail:[], minDwell:0, showHidden:false,
                 showManualHidden:false };
-const TRACK_MIN_LS = "eve-track-min-dwell";  // {sec} — a local view preference
-
+// Min-dwell journey filter — server-authoritative ('track_min_dwell' pref).
 function loadTrackMinDwell(){
-  try{ TRACK.minDwell = Math.max(0, +JSON.parse(localStorage.getItem(TRACK_MIN_LS)||"0") || 0); }
-  catch(_){ TRACK.minDwell = 0; }
+  const v = (typeof getPref==="function") ? getPref('track_min_dwell', 0) : 0;
+  TRACK.minDwell = Math.max(0, +v || 0);
 }
 function saveTrackMinDwell(){
-  try{ localStorage.setItem(TRACK_MIN_LS, JSON.stringify(TRACK.minDwell)); }catch(_){}
+  if(typeof setPref==="function") setPref('track_min_dwell', TRACK.minDwell);
 }
 
 function fmtDwell(sec){

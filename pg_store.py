@@ -240,6 +240,98 @@ def all_account_ids():
         return [r[0] for r in conn.execute("SELECT account_id FROM mono_accounts").fetchall()]
 
 
+# ── row-per-setting store (v1.129+) ──────────────────────────────────────────
+# Every user-touchable preference is a single row, so two changes made seconds
+# apart (a favorites toggle, a filter tweak, a column resize) each write only
+# their own row and can never clobber one another. Favorites and build-location
+# profiles get their own tables for the same reason. This replaces the old
+# whole-document settings blob (and the fragile _preserve_* guards it needed).
+
+def prefs_get_all(account_id):
+    """Every stored preference for an account as ``{key: value}``."""
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT key, value FROM mono_prefs WHERE account_id = %s",
+            (account_id,)).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def pref_set(account_id, key, value):
+    """Upsert one preference row. Only this key's row is written."""
+    from psycopg.types.json import Jsonb
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_prefs (account_id, key, value, updated_at) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (account_id, key) DO UPDATE SET "
+            "value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+            (account_id, key, Jsonb(value), time.time()))
+
+
+def pref_delete(account_id, key):
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "DELETE FROM mono_prefs WHERE account_id = %s AND key = %s",
+            (account_id, key))
+
+
+def favorites_list(account_id):
+    """The account's favorited blueprint ids (watchlist), oldest-added first."""
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT blueprint_id FROM mono_favorites WHERE account_id = %s "
+            "ORDER BY added_at, blueprint_id", (account_id,)).fetchall()
+    return [r[0] for r in rows]
+
+
+def favorite_add(account_id, blueprint_id):
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_favorites (account_id, blueprint_id, added_at) "
+            "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (account_id, blueprint_id, time.time()))
+
+
+def favorite_remove(account_id, blueprint_id):
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "DELETE FROM mono_favorites WHERE account_id = %s AND blueprint_id = %s",
+            (account_id, blueprint_id))
+
+
+def profiles_list(account_id):
+    """The account's build-location profiles, in display order."""
+    with _get_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT profile_id, name, system_index, role_bonus, facility_tax, "
+            "scc_surcharge, pos FROM mono_profiles WHERE account_id = %s "
+            "ORDER BY pos, profile_id", (account_id,)).fetchall()
+    return [{"profile_id": r[0], "name": r[1], "system_index": r[2],
+             "role_bonus": r[3], "facility_tax": r[4], "scc_surcharge": r[5],
+             "pos": r[6]} for r in rows]
+
+
+def profile_upsert(account_id, profile_id, name, system_index, role_bonus,
+                   facility_tax, scc_surcharge, pos):
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO mono_profiles (account_id, profile_id, name, system_index, "
+            "role_bonus, facility_tax, scc_surcharge, pos) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (account_id, profile_id) DO UPDATE SET "
+            "name=EXCLUDED.name, system_index=EXCLUDED.system_index, "
+            "role_bonus=EXCLUDED.role_bonus, facility_tax=EXCLUDED.facility_tax, "
+            "scc_surcharge=EXCLUDED.scc_surcharge, pos=EXCLUDED.pos",
+            (account_id, profile_id, name, system_index, role_bonus,
+             facility_tax, scc_surcharge, pos))
+
+
+def profile_delete(account_id, profile_id):
+    with _get_pool().connection() as conn:
+        conn.execute(
+            "DELETE FROM mono_profiles WHERE account_id = %s AND profile_id = %s",
+            (account_id, profile_id))
+
+
 # ── replica-safe counters: delivered jobs + order events ─────────────────────
 # The read-modify-write is done inside one transaction holding a row lock, so
 # two concurrent workers (even on separate replicas) can't lose an update.

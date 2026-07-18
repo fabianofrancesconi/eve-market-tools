@@ -31,6 +31,9 @@ class FakePG:
         self.delivered_jobs = {}   # (aid, cid) -> data
         self.order_state = {}      # (aid, cid) -> (prev, sales)
         self.order_events = {}     # (aid, event_id) -> {ts, dismissed, data}
+        self.prefs = {}            # (aid, key) -> value
+        self.favorites = {}        # (aid, bp) -> added_at
+        self.profiles = {}         # (aid, pid) -> row dict
 
     def enabled(self):
         return True
@@ -98,6 +101,37 @@ class FakePG:
 
     def all_account_ids(self):
         return list(self.accounts)
+
+    # row-per-setting store
+    def prefs_get_all(self, aid):
+        return {k: v for (a, k), v in self.prefs.items() if a == aid}
+
+    def pref_set(self, aid, key, value):
+        self.prefs[(aid, key)] = value
+
+    def pref_delete(self, aid, key):
+        self.prefs.pop((aid, key), None)
+
+    def favorites_list(self, aid):
+        return [bp for (a, bp) in self.favorites if a == aid]
+
+    def favorite_add(self, aid, bp):
+        self.favorites.setdefault((aid, bp), time.time())
+
+    def favorite_remove(self, aid, bp):
+        self.favorites.pop((aid, bp), None)
+
+    def profiles_list(self, aid):
+        rows = [r for (a, _p), r in self.profiles.items() if a == aid]
+        return sorted(rows, key=lambda r: (r.get("pos", 0), r.get("profile_id", "")))
+
+    def profile_upsert(self, aid, pid, name, si, rb, ft, scc, pos):
+        self.profiles[(aid, pid)] = {"profile_id": pid, "name": name,
+            "system_index": si, "role_bonus": rb, "facility_tax": ft,
+            "scc_surcharge": scc, "pos": pos}
+
+    def profile_delete(self, aid, pid):
+        self.profiles.pop((aid, pid), None)
 
     # replica-safe counters
     def with_delivered_jobs(self, aid, cid, mutate):
@@ -254,10 +288,21 @@ class TestIsolation:
     def test_settings_isolated_per_account(self, pg):
         a1 = _acct(pg, 1, "A")
         a2 = _acct(pg, 2, "B")
-        lp_web.save_account_settings(a1, {"active_tab": "lp"})
-        lp_web.save_account_settings(a2, {"active_tab": "ind"})
-        assert lp_web.load_account_settings(a1) == {"active_tab": "lp"}
-        assert lp_web.load_account_settings(a2) == {"active_tab": "ind"}
+        lp_web.pref_set(a1, "active_tab", "lp")
+        lp_web.pref_set(a2, "active_tab", "ind")
+        assert lp_web.prefs_all(a1) == {"active_tab": "lp"}
+        assert lp_web.prefs_all(a2) == {"active_tab": "ind"}
+
+    def test_favorites_and_profiles_isolated_per_account(self, pg):
+        a1 = _acct(pg, 1, "A")
+        a2 = _acct(pg, 2, "B")
+        lp_web.favorite_set(a1, 23560, True)
+        lp_web.favorite_set(a2, 587, True)
+        assert lp_web.favorites_all(a1) == [23560]
+        assert lp_web.favorites_all(a2) == [587]
+        lp_web.profile_upsert(a1, {"profile_id": "p1", "name": "Sotiyo"})
+        assert [p["name"] for p in lp_web.profiles_all(a1)] == ["Sotiyo"]
+        assert lp_web.profiles_all(a2) == []
 
     def test_counters_isolated_per_account(self, pg):
         a1 = _acct(pg, 1, "A")

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.128.3"
+__version__ = "1.129.0"
 
 import argparse
 import base64
@@ -23,7 +23,6 @@ import json
 import math
 import os
 import secrets
-import sqlite3
 import sys
 import threading
 import time
@@ -83,9 +82,6 @@ _RETRY = Retry(total=3, connect=3, read=3, backoff_factor=0.3,
 SESSION.mount("https://", HTTPAdapter(max_retries=_RETRY))
 SESSION.mount("http://", HTTPAdapter(max_retries=_RETRY))
 CACHE_DIR = default_cache_dir()
-SETTINGS_PATH = CACHE_DIR / "lp_web_settings.json"
-ARB_SETTINGS_PATH = CACHE_DIR / "arb_settings.json"
-IND_SETTINGS_PATH = CACHE_DIR / "ind_settings.json"
 JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-run counter
 ORDER_EVENTS_PATH = CACHE_DIR / "order_events.json"  # market order sale/fill events
 IND_BUILDS_PATH = CACHE_DIR / "ind_tracked_builds.json"  # frozen build-batch snapshots
@@ -93,7 +89,9 @@ WALLET_HISTORY_PATH = CACHE_DIR / "wallet_history.json"  # ISK balance time-seri
 LOCATION_TRAIL_PATH = CACHE_DIR / "location_trail.json"  # exploration system trail
 LOCATION_TRACK_PATH = CACHE_DIR / "location_tracking.json"  # live-session state
 EXPLORATION_SESSIONS_PATH = CACHE_DIR / "exploration_sessions.json"  # session journal
-USER_SETTINGS_DB_PATH = CACHE_DIR / "user_settings.sqlite"  # per-character synced settings
+PREFS_PATH = CACHE_DIR / "prefs.json"            # row-per-setting store, file mode
+FAVORITES_PATH = CACHE_DIR / "favorites.json"    # industry watchlist, file mode
+PROFILES_PATH = CACHE_DIR / "profiles.json"      # build-location profiles, file mode
 LP_LAST_SCAN_PATH = CACHE_DIR / "lp_last_scan.json"
 IND_LAST_SCAN_PATH = CACHE_DIR / "ind_last_scan.json"
 REFRESHED_CORPS = set()
@@ -205,43 +203,148 @@ def _persist_arb_caches(_attempts=3):
     return False
 
 
-# ── LP scanner helpers ──────────────────────────────────────────────────────
+# ── Settings service (server-authoritative, row-per-setting) ─────────────────
+#
+# The server owns every user-touchable preference. There is no "whole settings
+# blob" the browser can push: each change writes exactly one thing — one pref
+# key, one favorite, one build-location profile — so two edits made seconds
+# apart never clobber each other, and a stale/booting browser can never overwrite
+# the durable copy. The browser only ever READS the authoritative state on load
+# and PATCHES individual keys as the user acts.
+#
+# Three stores, all account-scoped:
+#   * prefs      — a flat {dotted-key: JSON-value} map (filters, columns, toggles,
+#                  selected market/corp/category, tab, exploration recents, …)
+#   * favorites  — the Industry watchlist (a set of blueprint ids)
+#   * profiles   — build-location profiles (a small ordered list of dicts)
+#
+# Postgres (the Railway deploy) keeps each in its own table (mono_prefs /
+# mono_favorites / mono_profiles), keyed by account_id. Local no-login dev keeps
+# each in a single JSON file. Both are reached only through the helpers below,
+# which take an Account (None ⇒ nothing to store).
 
-# Durable user state (settings blobs, delivered-jobs counter, order events,
-# tokens, per-character synced settings) goes to Postgres when DATABASE_URL is
-# set (the Railway deploy), else to the original cache-dir files/SQLite — see
-# pg_store. Disposable caches (SDE, ESI responses) always stay on disk.
-
-# In multi-user (Postgres) mode the per-tool settings blobs and the per-field
-# /api/prefs endpoints are obsolete: the client pushes its full settings blob to
-# the account row via /api/settings/sync (the single source of truth), so these
-# become no-ops there and only the local file store remains for no-login dev.
-
-def load_settings():
-    return {} if pg_store.enabled() else load_json(SETTINGS_PATH, {})
-
-
-def save_settings(d):
-    if not pg_store.enabled():
-        save_json(SETTINGS_PATH, d)
-
-
-def load_arb_settings():
-    return {} if pg_store.enabled() else load_json(ARB_SETTINGS_PATH, {})
-
-
-def save_arb_settings(d):
-    if not pg_store.enabled():
-        save_json(ARB_SETTINGS_PATH, d)
-
-
-def load_ind_settings():
-    return {} if pg_store.enabled() else load_json(IND_SETTINGS_PATH, {})
+# File-mode (no DATABASE_URL, local dev) keeps each store in one JSON file, so a
+# write is read-modify-write. The threaded server can run several of these at once
+# (e.g. the character refresh pushes tax/broker for several tools together), and
+# without a lock two writes for DIFFERENT keys both read the same base and the
+# last save_json wins — silently dropping the other key. This lock serialises the
+# whole read-modify-write so file mode keeps the same "no key clobbers another"
+# guarantee Postgres gets for free from its per-row upserts.
+_SETTINGS_FILE_LOCK = threading.Lock()
 
 
-def save_ind_settings(d):
-    if not pg_store.enabled():
-        save_json(IND_SETTINGS_PATH, d)
+def _acct_id(acct):
+    return acct.account_id if (acct and acct.account_id is not None) else None
+
+
+def _require_acct_id(acct):
+    """The account_id for a write, or raise so the caller returns a clean 400
+    instead of silently discarding the change. The auth gate guarantees a
+    logged-in account here in Postgres mode, so this only trips on a genuinely
+    unpersistable account (never a normal request)."""
+    aid = _acct_id(acct)
+    if aid is None:
+        raise LPError("No account to save settings to — please log in again.")
+    return aid
+
+
+def prefs_all(acct):
+    """Every stored preference for the account as a flat {key: value} map."""
+    if pg_store.enabled():
+        aid = _acct_id(acct)
+        return pg_store.prefs_get_all(aid) if aid is not None else {}
+    return load_json(PREFS_PATH, {})
+
+
+def pref_set(acct, key, value):
+    """Set (or, when value is None, delete) one preference. One row written."""
+    if pg_store.enabled():
+        aid = _require_acct_id(acct)
+        if value is None:
+            pg_store.pref_delete(aid, key)
+        else:
+            pg_store.pref_set(aid, key, value)
+        return
+    with _SETTINGS_FILE_LOCK:
+        d = load_json(PREFS_PATH, {})
+        if value is None:
+            d.pop(key, None)
+        else:
+            d[key] = value
+        save_json(PREFS_PATH, d)
+
+
+def favorites_all(acct):
+    if pg_store.enabled():
+        aid = _acct_id(acct)
+        return pg_store.favorites_list(aid) if aid is not None else []
+    return load_json(FAVORITES_PATH, [])
+
+
+def favorite_set(acct, blueprint_id, present):
+    """Add (present=True) or remove one favorited blueprint. One row touched."""
+    bp = int(blueprint_id)
+    if pg_store.enabled():
+        aid = _require_acct_id(acct)
+        (pg_store.favorite_add if present else pg_store.favorite_remove)(aid, bp)
+        return
+    with _SETTINGS_FILE_LOCK:
+        favs = load_json(FAVORITES_PATH, [])
+        has = bp in favs
+        if present and not has:
+            favs.append(bp)
+        elif not present and has:
+            favs = [f for f in favs if f != bp]
+        save_json(FAVORITES_PATH, favs)
+
+
+# The fields of a build-location profile, in table-column order.
+_PROFILE_FIELDS = ("name", "system_index", "role_bonus", "facility_tax",
+                   "scc_surcharge")
+
+
+def profiles_all(acct):
+    if pg_store.enabled():
+        aid = _acct_id(acct)
+        return pg_store.profiles_list(aid) if aid is not None else []
+    return load_json(PROFILES_PATH, [])
+
+
+def profile_upsert(acct, profile):
+    """Create/replace one build-location profile (identified by profile_id)."""
+    pid = str(profile.get("profile_id") or "").strip()
+    if not pid:
+        raise LPError("Missing profile_id.")
+    name = str(profile.get("name") or "")
+    # Coerce numerics defensively: a non-numeric value is a bad request (400),
+    # not an unhandled 500 from float()/int() blowing up mid-handler.
+    try:
+        nums = {k: float(profile.get(k) or 0) for k in _PROFILE_FIELDS if k != "name"}
+        pos = int(profile.get("pos") or 0)
+    except (TypeError, ValueError):
+        raise LPError("Invalid build-location profile: numeric field expected.")
+    if pg_store.enabled():
+        aid = _require_acct_id(acct)
+        pg_store.profile_upsert(aid, pid, name, nums["system_index"],
+                                nums["role_bonus"], nums["facility_tax"],
+                                nums["scc_surcharge"], pos)
+        return
+    with _SETTINGS_FILE_LOCK:
+        rows = [p for p in load_json(PROFILES_PATH, []) if p.get("profile_id") != pid]
+        rows.append({"profile_id": pid, "name": name, "pos": pos, **nums})
+        rows.sort(key=lambda p: (p.get("pos", 0), p.get("profile_id", "")))
+        save_json(PROFILES_PATH, rows)
+
+
+def profile_delete(acct, profile_id):
+    pid = str(profile_id)
+    if pg_store.enabled():
+        aid = _require_acct_id(acct)
+        pg_store.profile_delete(aid, pid)
+        return
+    with _SETTINGS_FILE_LOCK:
+        rows = [p for p in load_json(PROFILES_PATH, []) if p.get("profile_id") != pid]
+        save_json(PROFILES_PATH, rows)
 
 
 # ── Account-scoped durable blobs (counters, order events, last scan) ──────────
@@ -272,56 +375,6 @@ def _save_last_scan(acct, tag, blob):
     key, path = (("lp_last_scan", LP_LAST_SCAN_PATH) if tag == "lp"
                  else ("ind_last_scan", IND_LAST_SCAN_PATH))
     _acct_kv_save(acct, key, path, blob)
-
-
-# ── Per-character synced settings ────────────────────────────────────────────
-# Full client-side settings blob, keyed by EVE character_id, so the same
-# character sees identical settings (columns, filters, tabs, ...) on any
-# device. Only used once a character is logged in via SSO; unauthenticated
-# use keeps the file-based settings above (single local "device").
-
-def _user_settings_conn():
-    USER_SETTINGS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(USER_SETTINGS_DB_PATH)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS user_settings ("
-        "character_id INTEGER PRIMARY KEY, settings_json TEXT NOT NULL, "
-        "updated_at REAL NOT NULL)"
-    )
-    return conn
-
-
-def load_user_settings(character_id):
-    """Return the synced settings dict for `character_id`, or None if this
-    character has never synced settings from any device yet."""
-    if pg_store.enabled():
-        return pg_store.user_settings_get(character_id)
-    conn = _user_settings_conn()
-    try:
-        row = conn.execute(
-            "SELECT settings_json FROM user_settings WHERE character_id = ?",
-            (character_id,),
-        ).fetchone()
-    finally:
-        conn.close()
-    return json.loads(row[0]) if row else None
-
-
-def save_user_settings(character_id, data):
-    if pg_store.enabled():
-        pg_store.user_settings_set(character_id, data, time.time())
-        return
-    conn = _user_settings_conn()
-    try:
-        conn.execute(
-            "INSERT INTO user_settings (character_id, settings_json, updated_at) "
-            "VALUES (?, ?, ?) ON CONFLICT(character_id) DO UPDATE SET "
-            "settings_json = excluded.settings_json, updated_at = excluded.updated_at",
-            (character_id, json.dumps(data), time.time()),
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 # ── EVE SSO helpers ───────────────────────────────────────────────────────────
@@ -541,6 +594,83 @@ def _migrate_counters():
     pg_store.kv_set("counters_migrated", True)
 
 
+def _explode_settings_blob(blob):
+    """Split one legacy whole-account settings blob into the three row-per-setting
+    shapes: (prefs {dotted-key: value}, favorites [bp_id], profiles [dict]).
+
+    The old blob nested per-tool sections under ``arb`` / ``ind`` (as dicts, with
+    some values themselves JSON strings). We flatten those to dotted keys
+    (``arb.region``, ``ind.station``, …) to match the new pref-key scheme, and
+    lift ``ind.favorites`` / ``ind.profiles`` out into their own stores. The
+    ``*_cleared`` guard flags and the transient ``_server_synced`` / ``_logged_in``
+    markers are dropped — they only existed to patch the old whole-blob races."""
+    prefs, favorites, profiles = {}, [], []
+    _DROP = {"profiles_cleared", "favorites_cleared", "_server_synced",
+             "_logged_in"}
+
+    def _as_list(v):
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            try:
+                p = json.loads(v)
+                return p if isinstance(p, list) else []
+            except (ValueError, TypeError):
+                return []
+        return []
+
+    for k, v in (blob or {}).items():
+        if k in _DROP:
+            continue
+        if k in ("arb", "ind") and isinstance(v, dict):
+            for sk, sv in v.items():
+                if k == "ind" and sk == "favorites":
+                    favorites = [int(x) for x in _as_list(sv)]
+                    continue
+                if k == "ind" and sk == "profiles":
+                    profiles = _as_list(sv)
+                    continue
+                if sk in _DROP:
+                    continue
+                prefs[f"{k}.{sk}"] = sv
+        else:
+            prefs[k] = v
+    return prefs, favorites, profiles
+
+
+def _migrate_settings_to_rows():
+    """One-time: explode every account's legacy whole-blob settings row into the
+    row-per-setting tables (prefs / favorites / profiles), so existing users keep
+    their filters, columns, watchlist and build locations after the redesign.
+    The old mono_account_settings row is left untouched (harmless dead data)."""
+    if pg_store.kv_get("settings_rows_migrated"):
+        return
+    migrated = 0
+    for aid in pg_store.all_account_ids():
+        blob = pg_store.account_settings_get(aid)
+        if not blob:
+            continue
+        prefs, favorites, profiles = _explode_settings_blob(blob)
+        for key, value in prefs.items():
+            if value is not None:
+                pg_store.pref_set(aid, key, value)
+        for bp in favorites:
+            pg_store.favorite_add(aid, bp)
+        for i, p in enumerate(profiles):
+            if not isinstance(p, dict):
+                continue
+            pid = str(p.get("profile_id") or f"legacy-{i}")
+            pg_store.profile_upsert(
+                aid, pid, str(p.get("name") or ""),
+                float(p.get("system_index") or 0), float(p.get("role_bonus") or 0),
+                float(p.get("facility_tax") or 0), float(p.get("scc_surcharge") or 0), i)
+        migrated += 1
+    if migrated:
+        print(f"[settings] migrated whole-blob settings → rows for {migrated} "
+              f"account(s)", file=sys.stderr)
+    pg_store.kv_set("settings_rows_migrated", True)
+
+
 def _startup_restore():
     """On boot: legacy mode loads the single file-backed account; multi-user mode
     runs the one-time legacy→account migration (sessions load lazily per cookie)."""
@@ -548,6 +678,7 @@ def _startup_restore():
         try:
             _migrate_legacy_auth()
             _migrate_counters()
+            _migrate_settings_to_rows()
         except Exception as e:  # noqa: BLE001
             print(f"[auth] legacy migration skipped: {type(e).__name__}: {e}",
                   file=sys.stderr)
@@ -2160,16 +2291,9 @@ def do_scan(q):
     if station_id not in TRADE_HUBS:
         station_id = JITA_STATION_ID
 
-    s = load_settings()
-    s.update({
-        "corp": corp_arg,
-        "lp": str(int(lp)),
-        "max_spread": str(max_spread) if max_spread is not None else "",
-        "tax": str(tax),
-        "broker": str(broker),
-        "station": str(station_id),
-    })
-    save_settings(s)
+    # Scan no longer persists settings as a side effect: the browser writes each
+    # LP/cost/market field to the server the moment the user changes it, so the
+    # authoritative copy is always current before a scan even runs.
 
     if corp_id_arg:
         corp_id = int(corp_id_arg)
@@ -2383,147 +2507,87 @@ def get_npc_corps():
     return NPC_CORPS
 
 
-def load_account_settings(acct):
-    """The full per-account settings blob (searches/filters/columns/…), or None
-    if this account has never synced yet. Server-authoritative and identical
-    across every browser/device the user logs in from."""
-    if acct is None or not acct.characters:
-        return None
-    if pg_store.enabled():
-        return pg_store.account_settings_get(acct.account_id)
-    # Legacy single-user mode keys the blob by the active character.
-    return load_user_settings(acct.active_char_id) if acct.active_char_id else None
+def read_settings(acct):
+    """The full authoritative settings state for the account: the flat pref map
+    plus the favorites and build-location lists from their own tables. This is
+    what the browser loads on boot and applies as-is — it never merges against
+    anything local. Empty (not None) for a brand-new or logged-out account."""
+    return {
+        "prefs": prefs_all(acct),
+        "favorites": favorites_all(acct),
+        "profiles": profiles_all(acct),
+    }
 
 
-def save_account_settings(acct, data):
-    if acct is None or not acct.characters:
-        return
-    if pg_store.enabled():
-        pg_store.account_settings_set(acct.account_id, data, time.time())
-    elif acct.active_char_id:
-        save_user_settings(acct.active_char_id, data)
+def do_settings(q):
+    """GET /api/settings — return the authoritative server-side settings."""
+    return read_settings(current_account())
 
 
-def _profiles_list(blob):
-    """The build-location profiles inside a settings blob, as a list (best
-    effort). The client stores them under ind.profiles as a JSON string, but be
-    lenient about a raw list or missing/garbage values."""
-    try:
-        raw = ((blob or {}).get("ind") or {}).get("profiles")
-    except AttributeError:
-        return []
-    if isinstance(raw, list):
-        return raw
-    if isinstance(raw, str):
-        try:
-            v = json.loads(raw)
-            return v if isinstance(v, list) else []
-        except (ValueError, TypeError):
-            return []
-    return []
-
-
-def _preserve_profiles(incoming, stored):
-    """Defend the user's saved build locations against being silently wiped by a
-    settings sync. Build-location profiles live only inside the wholesale
-    settings blob, which the client snapshots from its live state and pushes to
-    the account row. A boot/cold-start race (e.g. the /api/settings fetch failing
-    right after a deploy) can leave the client holding its empty default
-    (IND.profiles = []) and push that over a durable copy — which is how saved
-    build locations kept vanishing after an update.
-
-    So: if the incoming blob has no profiles but the stored one does, keep the
-    stored profiles — UNLESS the client explicitly signalled that the user
-    cleared them (ind.profiles_cleared == "1", set only by the wizard's delete
-    button), in which case an empty list is intentional and honoured."""
-    if _profiles_list(incoming):
-        return incoming  # client sent real profiles — trust it
-    cleared = str(((incoming or {}).get("ind") or {}).get("profiles_cleared", "")) == "1"
-    if cleared:
-        return incoming  # user genuinely emptied the list
-    stored_profiles = _profiles_list(stored)
-    if not stored_profiles:
-        return incoming  # nothing to protect
-    ind = incoming.get("ind")
-    if not isinstance(ind, dict):
-        ind = {}
-        incoming["ind"] = ind
-    ind["profiles"] = json.dumps(stored_profiles)
-    return incoming
-
-
-def _favorites_list(blob):
-    """The Industry favorites (watchlisted blueprint_ids) inside a settings blob,
-    as a list. Client stores them under ind.favorites as a JSON string; be
-    lenient about a raw list or missing/garbage values."""
-    try:
-        raw = ((blob or {}).get("ind") or {}).get("favorites")
-    except AttributeError:
-        return []
-    if isinstance(raw, list):
-        return raw
-    if isinstance(raw, str):
-        try:
-            v = json.loads(raw)
-            return v if isinstance(v, list) else []
-        except (ValueError, TypeError):
-            return []
-    return []
-
-
-def _preserve_favorites(incoming, stored):
-    """Same defence as _preserve_profiles, for the Industry favorites/watchlist.
-    Favorites also live only inside the wholesale settings blob, so the identical
-    cold-start race (server not yet synced + this browser has no local cache →
-    client holds the empty default IND.favorites) can push [] over a durable
-    list. Keep the stored favorites when the incoming blob has none, unless the
-    client explicitly signalled a deliberate clear (ind.favorites_cleared=="1",
-    set only when the user removes their last favorite)."""
-    if _favorites_list(incoming):
-        return incoming  # client sent real favorites — trust it
-    cleared = str(((incoming or {}).get("ind") or {}).get("favorites_cleared", "")) == "1"
-    if cleared:
-        return incoming  # user genuinely emptied the list
-    stored_favorites = _favorites_list(stored)
-    if not stored_favorites:
-        return incoming  # nothing to protect
-    ind = incoming.get("ind")
-    if not isinstance(ind, dict):
-        ind = {}
-        incoming["ind"] = ind
-    ind["favorites"] = json.dumps(stored_favorites)
-    return incoming
-
-
-def do_settings_sync(q):
-    """Persist the full client-side settings blob for the account, remotely, so
-    every browser the user logs in from converges on the same view. No-op when
-    unauthenticated."""
-    acct = current_account()
-    if acct is None or not acct.characters:
-        return {"ok": True, "synced": False}
-    blob = q.get("blob", ["{}"])[0]
-    try:
-        data = json.loads(blob)
-    except json.JSONDecodeError:
-        raise LPError("Invalid settings payload.")
-    # Never let a sync blank out saved build locations or favorites by accident
-    # (a cold-start race can push empty defaults — see the helpers).
-    stored = load_account_settings(acct)
-    data = _preserve_profiles(data, stored)
-    data = _preserve_favorites(data, stored)
-    save_account_settings(acct, data)
-    return {"ok": True, "synced": True}
+# A JSON value small enough to store as one pref. Reject oversized values so a
+# bug/abuse can't stuff megabytes into a single row.
+_MAX_PREF_BYTES = 64 * 1024
 
 
 def do_prefs(q):
-    s = load_settings()
-    for k in ("sort_key", "sort_dir", "col_widths", "col_order", "col_layout_v",
-              "hide_illiquid", "hide_unaffordable", "active_tab", "trade_weight"):
-        if k in q:
-            s[k] = q[k][0]
-    save_settings(s)
+    """POST /api/prefs — set preference keys, each in its own row.
+
+    The body carries ``patch`` as a JSON-encoded object ``{key: value, ...}``.
+    Values are stored with their JSON type intact (a string stays a string, a
+    list stays a list); a null value deletes the key. Every key is an
+    independent row, so several keys set at once — or two requests racing — can
+    never clobber one another. This is what kills the old "one save overwrote a
+    different change" bug: there is no shared blob to overwrite."""
+    acct = current_account()
+    raw = q.get("patch", [None])[0]
+    if raw is None:
+        raise LPError("Missing prefs patch.")
+    try:
+        patch = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        raise LPError("Invalid prefs patch.")
+    if not isinstance(patch, dict):
+        raise LPError("Prefs patch must be an object.")
+    for key, value in patch.items():
+        if value is not None and len(json.dumps(value)) > _MAX_PREF_BYTES:
+            raise LPError(f"Preference '{key}' is too large.")
+        pref_set(acct, str(key), value)
     return {"ok": True}
+
+
+def do_favorites(q):
+    """POST /api/favorites — add/remove one watchlisted blueprint. One row."""
+    acct = current_account()
+    bp = q.get("blueprint_id", [None])[0]
+    if bp is None:
+        raise LPError("Missing blueprint_id.")
+    on = str(q.get("on", ["1"])[0]) in ("1", "true", "on", "True")
+    favorite_set(acct, int(bp), on)
+    return {"ok": True, "favorites": favorites_all(acct)}
+
+
+def do_profiles_save(q):
+    """POST /api/profiles/save — create/replace one build-location profile."""
+    acct = current_account()
+    raw = q.get("profile", [None])[0]
+    try:
+        profile = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        raise LPError("Invalid profile payload.")
+    if not isinstance(profile, dict):
+        raise LPError("Profile must be an object.")
+    profile_upsert(acct, profile)
+    return {"ok": True, "profiles": profiles_all(acct)}
+
+
+def do_profiles_delete(q):
+    """POST /api/profiles/delete — remove one build-location profile."""
+    acct = current_account()
+    pid = q.get("profile_id", [None])[0]
+    if pid is None:
+        raise LPError("Missing profile_id.")
+    profile_delete(acct, str(pid))
+    return {"ok": True, "profiles": profiles_all(acct)}
 
 
 def do_detail(q):
@@ -2596,16 +2660,6 @@ def do_history(q):
 
 # ── Arbitrage scanner ───────────────────────────────────────────────────────
 
-def do_arb_prefs(q):
-    s = load_arb_settings()
-    for k in ("region", "sales_tax", "cross_station", "min_isk", "max_jumps",
-              "avoid_lowsec", "route_flag"):
-        if k in q:
-            s[k] = q[k][0]
-    save_arb_settings(s)
-    return {"ok": True}
-
-
 def _parse_arb_params(q):
     """Parse the arb-scan query params with defaults. Each `... or <default>`
     guards a present-but-empty field (e.g. "sales_tax=") which would otherwise
@@ -2637,17 +2691,8 @@ def do_arb_scan(q, emit=None):
     avoid_lowsec = ap["avoid_lowsec"]
     route_flag = ap["route_flag"]
 
-    s = load_arb_settings()
-    s.update({
-        "region": str(region),
-        "sales_tax": str(sales_tax),
-        "cross_station": "1" if cross_station else "0",
-        "min_isk": str(min_isk) if min_isk else "",
-        "max_jumps": str(max_jumps),
-        "avoid_lowsec": "1" if avoid_lowsec else "0",
-        "route_flag": route_flag,
-    })
-    save_arb_settings(s)
+    # Arb settings are persisted by the browser per-field on change (server is
+    # authoritative), so the scan doesn't write them back here.
 
     _ensure_arb_caches()
 
@@ -2806,22 +2851,6 @@ def do_arb_scan(q, emit=None):
 # broad scan while still covering everything worth looking at.
 IND_HISTORY_TOP_N = 80
 
-_IND_PREF_KEYS = ("profiles", "profile", "market_group", "job_rate",
-                  "sales_tax", "broker", "station",
-                  "buildable_only", "include_unbuildable", "hide_t2",
-                  "sort_key", "sort_dir", "min_tradeability", "favorites",
-                  "hidden_bps", "col_order", "col_widths", "col_vis")
-
-
-def do_ind_prefs(q):
-    s = load_ind_settings()
-    for k in _IND_PREF_KEYS:
-        if k in q:
-            s[k] = q[k][0]
-    save_ind_settings(s)
-    return {"ok": True}
-
-
 def do_ind_groups(q):
     """Top-level market groups for the category dropdown (builds the SDE first
     if needed)."""
@@ -2931,12 +2960,9 @@ def do_ind_scan(q, emit=None):
     if ind_bp_me_te:
         params["owned_me_te"] = ind_bp_me_te
 
-    if not favorites_only and not owned_only:
-        s = load_ind_settings()
-        for k in _IND_PREF_KEYS:
-            if k in q:
-                s[k] = q[k][0]
-        save_ind_settings(s)
+    # Industry filters/columns are persisted by the browser per-field on change
+    # (server-authoritative), so the scan no longer writes settings as a side
+    # effect.
 
     _emit({"type": "progress", "pct": 4, "msg": "Loading blueprint database…", "sub": ""})
     ind_core.load_sde_industry(
@@ -3312,6 +3338,7 @@ _GET_ROUTES = {
     "/api/track/sessions": do_track_sessions,
     "/api/track/session": do_track_session,
     "/api/notes": do_notes_list,
+    "/api/settings": do_settings,
     # /api/auth/status and /api/auth/logout are handled explicitly in do_GET so
     # they can refresh / clear the session cookie.
 }
@@ -3320,9 +3347,9 @@ _GET_ROUTES = {
 # (Routes needing the raw body or the current account stay inline in do_POST.)
 _POST_ROUTES = {
     "/api/prefs": do_prefs,
-    "/api/arb/prefs": do_arb_prefs,
-    "/api/ind/prefs": do_ind_prefs,
-    "/api/settings/sync": do_settings_sync,
+    "/api/favorites": do_favorites,
+    "/api/profiles/save": do_profiles_save,
+    "/api/profiles/delete": do_profiles_delete,
     "/api/notes/save": do_notes_save,
     "/api/notes/delete": do_notes_delete,
     "/api/track/start": do_track_start,
@@ -3635,19 +3662,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(_FAVICON_SVG)))
                 self.end_headers()
                 self.wfile.write(_FAVICON_SVG)
-            elif parsed.path == "/api/settings":
-                acct = current_account()
-                synced = load_account_settings(acct)
-                if synced is not None:
-                    synced["_server_synced"] = True
-                    self._send_json(synced)
-                else:
-                    merged = load_settings()
-                    merged["arb"] = load_arb_settings()
-                    merged["ind"] = load_ind_settings()
-                    merged["_server_synced"] = False
-                    merged["_logged_in"] = bool(acct and acct.characters)
-                    self._send_json(merged)
             elif parsed.path == "/api/last-scan":
                 acct = current_account()
                 lp_data = _load_last_scan(acct, "lp")
@@ -3734,6 +3748,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "not found"}, 404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+        except LPError as e:
+            # A user-facing / bad-request error is a 400, matching do_GET (and so
+            # a rejected settings write surfaces cleanly instead of as a 500).
+            self._send_json({"error": str(e)}, 400)
         except Exception as e:  # noqa: BLE001
             try:
                 self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)

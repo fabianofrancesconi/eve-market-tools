@@ -27,15 +27,14 @@ function setSyncCountdown(secs){
 }
 // ── Overview-tab notification badge ─────────────────────────────────────────
 // The nav badge counts order-activity events (sales/expiries) the user hasn't
-// looked at yet. Seen event ids are remembered in localStorage so the badge
-// stays cleared across reloads and only re-appears for genuinely new events.
-const CHAR_EVENTS_SEEN_KEY = "char-events-seen";
+// looked at yet. Seen event ids are server-authoritative (one 'char_events_seen'
+// pref) so dismissing the badge on one device clears it everywhere.
 function _loadSeenEvents(){
-  try{ return new Set(JSON.parse(localStorage.getItem(CHAR_EVENTS_SEEN_KEY))||[]); }
-  catch(e){ return new Set(); }
+  const v = (typeof getPref==="function") ? getPref('char_events_seen', []) : [];
+  return new Set(Array.isArray(v) ? v : []);
 }
 function _saveSeenEvents(set){
-  try{ localStorage.setItem(CHAR_EVENTS_SEEN_KEY, JSON.stringify([...set])); }catch(e){}
+  if(typeof setPref==="function") setPref('char_events_seen', [...set]);
 }
 // Mark every current event as seen and clear the badge (called on tab open).
 function markCharEventsSeen(){
@@ -243,7 +242,15 @@ async function _doRefreshCharData(force){
     const fee=3.0-0.3*d.broker_relations_level;
     $("#g-broker").value=fee.toFixed(2);
   }
-  saveLS(); recalcIndProfits();
+  // Persist the derived global costs (server-authoritative) to the keys each tool
+  // reads them from. Fractions for LP/arb, whole-percent for the ind section
+  // (mirrors how the fields were stored in the old blob).
+  setPref('tax', pctToFrac($("#g-tax").value));
+  setPref('broker', pctToFrac($("#g-broker").value));
+  setPref('arb.sales_tax', pctToFrac($("#g-tax").value));
+  setPref('ind.sales_tax', $("#g-tax").value);
+  setPref('ind.broker', $("#g-broker").value);
+  recalcIndProfits();
   // Display the server-defined countdown that came with this data.
   setSyncCountdown(d.next_sync_in);
   const prevLp=$("#lp").value;
@@ -918,9 +925,10 @@ function renderIndProfiles(){
 }
 function applyIndProfile(){
   const i=$("#ind-profile").value;
+  setPref('ind.profile', i);
   if(i!==""&&IND.profiles[i]){
     $("#ind-jobrate").value=structEffectiveRate(IND.profiles[i]).toFixed(2);
-    saveIndPrefs();
+    setPref('ind.job_rate', $("#ind-jobrate").value);
     recalcIndProfits();
   }
 }
@@ -947,10 +955,21 @@ function openStructWizard(idx){
   $("#sw-name").focus();
 }
 function closeStructWizard(){ $("#indStructModal").classList.add("hidden"); }
+// Build-location profiles live in their own server table (one row each), so a
+// save/delete of one profile never rewrites the others. Each profile carries a
+// stable profile_id; the #ind-profile dropdown still selects by array index.
+// The id must be globally unique so it can never collide with an existing row
+// (including the migration's "legacy-<i>" ids) and overwrite a different
+// profile — prefer crypto.randomUUID, with a random+time fallback for old envs.
+function _newProfileId(){
+  if(typeof crypto!=="undefined" && crypto.randomUUID) return "p-"+crypto.randomUUID();
+  return "p-" + Math.random().toString(36).slice(2) + "-" + Math.random().toString(36).slice(2);
+}
 function saveStructWizard(){
   const name=$("#sw-name").value.trim();
   if(!name){ $("#sw-name").focus(); return; }
-  const p={ name,
+  const existing = IND_EDIT_IDX!=null ? IND.profiles[IND_EDIT_IDX] : null;
+  const p={ profile_id: (existing && existing.profile_id) || _newProfileId(), name,
     system_index:+$("#sw-index").value||0,
     role_bonus:+$("#sw-bonus").value||0,
     facility_tax:+$("#sw-facility").value||0,
@@ -958,38 +977,44 @@ function saveStructWizard(){
   let idx;
   if(IND_EDIT_IDX!=null){ IND.profiles[IND_EDIT_IDX]=p; idx=IND_EDIT_IDX; }
   else { IND.profiles.push(p); idx=IND.profiles.length-1; }
-  IND.profilesCleared=false;  // list is non-empty again
+  p.pos = idx;
   renderIndProfiles();
   $("#ind-profile").value=String(idx);
   $("#ind-jobrate").value=structEffectiveRate(p).toFixed(2);
-  saveIndPrefs();
+  setPref('ind.profile', $("#ind-profile").value);
+  setPref('ind.job_rate', $("#ind-jobrate").value);
+  saveProfile(p);
   closeStructWizard();
 }
 function deleteStruct(){
   if(IND_EDIT_IDX==null) return;
-  IND.profiles.splice(IND_EDIT_IDX,1);
-  // A delete that empties the list is a deliberate clear — mark it so the sync
-  // tells the server this empty list is intentional (not a boot-race default).
-  if(IND.profiles.length===0) IND.profilesCleared=true;
+  const [removed] = IND.profiles.splice(IND_EDIT_IDX,1);
   renderIndProfiles();
   $("#ind-profile").value="";
-  saveIndPrefs();
+  setPref('ind.profile', "");
+  if(removed && removed.profile_id) deleteProfile(removed.profile_id);
   closeStructWizard();
 }
 
+// Persist the Industry scan/filter fields. Each is its own server key, so a
+// change to one (e.g. the category) never disturbs another (columns, sort, …).
 function saveIndPrefs(){
-  const obj=Object.fromEntries(indParams({
-    profiles: JSON.stringify(IND.profiles),
-    profile:  $("#ind-profile").value,
-    sort_key: IND.sort.key,
-    sort_dir: String(IND.sort.dir),
-    hidden_bps: JSON.stringify([...IND.hidden]),
-    col_order: JSON.stringify(IND.colOrder),
-    col_widths: JSON.stringify(IND.colw),
-    col_vis: JSON.stringify(IND.colVis),
-    ind_trade_weight: String(IND.tradeWeight),
-  }));
-  postPrefs('/api/ind/prefs',obj); saveLS();
+  setPref('ind.market_group', $("#ind-group").value);
+  setPref('ind.station', $("#ind-station").value);
+  setPref('ind.job_rate', $("#ind-jobrate").value);
+  setPref('ind.buildable_only', $("#ind-buildable").checked?'1':'0');
+  setPref('ind.include_unbuildable', $("#ind-unobtainable").checked?'1':'0');
+  setPref('ind.hide_t2', $("#ind-hidet2").checked?'1':'0');
+  setPref('ind.hide_bpc', $("#ind-hidebpc").checked?'1':'0');
+  setPref('ind.min_tradeability', $("#ind-mintrade").value);
+  setPref('ind.profile', $("#ind-profile").value);
+  setPref('ind.sort_key', IND.sort.key);
+  setPref('ind.sort_dir', IND.sort.dir);
+  setPref('ind.hidden_bps', [...IND.hidden]);
+  setPref('ind.col_order', IND.colOrder);
+  setPref('ind.col_widths', IND.colw);
+  setPref('ind.col_vis', IND.colVis);
+  setPref('ind.ind_trade_weight', IND.tradeWeight);
 }
 
 // wiring
@@ -1041,18 +1066,16 @@ function recalcIndProfits(){
   renderIndTable();
   if(IND.openDetail) renderIndDetail(IND.openDetail);
 }
-["#ind-group","#ind-station"].forEach(sel=>{
-  const el=$(sel); if(!el) return;
-  el.addEventListener("change", saveIndPrefs);
-});
-["#ind-jobrate"].forEach(sel=>{
-  const el=$(sel); if(!el) return;
-  el.addEventListener("change", ()=>{ saveIndPrefs(); recalcIndProfits(); });
-});
-["#ind-buildable","#ind-unobtainable","#ind-hidet2","#ind-hidebpc"].forEach(sel=>$(sel).addEventListener("change", saveIndPrefs));
-$("#ind-hidebpc").addEventListener("change", renderIndTable);
+// Each Industry control persists only its own server key.
+$("#ind-group").addEventListener("change", ()=>setPref('ind.market_group', $("#ind-group").value));
+$("#ind-station").addEventListener("change", ()=>setPref('ind.station', $("#ind-station").value));
+$("#ind-jobrate").addEventListener("change", ()=>{ setPref('ind.job_rate', $("#ind-jobrate").value); recalcIndProfits(); });
+$("#ind-buildable").addEventListener("change", ()=>setPref('ind.buildable_only', $("#ind-buildable").checked?'1':'0'));
+$("#ind-unobtainable").addEventListener("change", ()=>setPref('ind.include_unbuildable', $("#ind-unobtainable").checked?'1':'0'));
+$("#ind-hidet2").addEventListener("change", ()=>setPref('ind.hide_t2', $("#ind-hidet2").checked?'1':'0'));
+$("#ind-hidebpc").addEventListener("change", ()=>{ setPref('ind.hide_bpc', $("#ind-hidebpc").checked?'1':'0'); renderIndTable(); });
 // Min-tradeability is a client-side filter — re-render immediately (no rescan).
-$("#ind-mintrade").addEventListener("input", ()=>{ saveIndPrefs(); renderIndTable(); });
+$("#ind-mintrade").addEventListener("input", ()=>{ setPref('ind.min_tradeability', $("#ind-mintrade").value); renderIndTable(); });
 // Industry tradeability balance presets
 function syncIndBalanceButtons(){
   document.querySelectorAll(".ind-balance-btn").forEach(b=>
@@ -1064,7 +1087,7 @@ document.querySelectorAll(".ind-balance-btn").forEach(b=>{
     syncIndBalanceButtons();
     computeIndTradeability();
     renderIndTable();
-    saveIndPrefs();
+    setPref('ind.ind_trade_weight', IND.tradeWeight);
   };
 });
 syncIndBalanceButtons();

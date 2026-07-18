@@ -234,16 +234,21 @@ const ABY_FACTIONS = [
 ];
 
 // ── State ────────────────────────────────────────────────────────────────────
+// Server-authoritative: seeded by loadSettings via abyApplyStored(), persisted
+// as one 'aby_state' pref (tier/weather/faction) so the selection follows the
+// account across devices.
 const ABY = {tier:3, weather:"electrical", faction:"triglavian"};
-try {
-  const saved = JSON.parse(localStorage.getItem("aby-state") || "null");
-  if(saved){
-    if(Number.isInteger(saved.tier) && saved.tier>=0 && saved.tier<=6) ABY.tier = saved.tier;
-    if(ABY_WEATHER.some(w=>w.key===saved.weather)) ABY.weather = saved.weather;
-    if(ABY_FACTIONS.some(f=>f.key===saved.faction)) ABY.faction = saved.faction;
-  }
-} catch(e){}
-function abySave(){ try { localStorage.setItem("aby-state", JSON.stringify(ABY)); } catch(e){} }
+function abyApplyStored(saved){
+  try {
+    if(saved && typeof saved==="string") saved = JSON.parse(saved);
+    if(saved){
+      if(Number.isInteger(saved.tier) && saved.tier>=0 && saved.tier<=6) ABY.tier = saved.tier;
+      if(ABY_WEATHER.some(w=>w.key===saved.weather)) ABY.weather = saved.weather;
+      if(ABY_FACTIONS.some(f=>f.key===saved.faction)) ABY.faction = saved.faction;
+    }
+  } catch(e){}
+}
+function abySave(){ if(typeof setPref==="function") setPref('aby_state', {tier:ABY.tier, weather:ABY.weather, faction:ABY.faction}); }
 
 function abyEsc(s){ return s==null?"":String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 

@@ -30,7 +30,8 @@ import pg_store
 
 _TABLES = ("mono_kv", "mono_user_settings", "mono_accounts",
            "mono_char_account", "mono_sessions", "mono_account_settings",
-           "mono_delivered_jobs", "mono_order_state", "mono_order_events")
+           "mono_delivered_jobs", "mono_order_state", "mono_order_events",
+           "mono_prefs", "mono_favorites", "mono_profiles")
 
 
 @pytest.fixture(autouse=True)
@@ -143,6 +144,49 @@ class TestUserSettingsLegacyRead:
         # Written by the pre-multiuser code / read during migration.
         pg_store.user_settings_set(42, {"col_order": ["name"]}, time.time())
         assert pg_store.user_settings_get(42) == {"col_order": ["name"]}
+
+
+class TestPrefsRows:
+    def test_pref_roundtrip_and_isolation(self):
+        assert pg_store.prefs_get_all(1) == {}
+        pg_store.pref_set(1, "active_tab", "lp")
+        pg_store.pref_set(1, "arb.max_jumps", "8")
+        pg_store.pref_set(2, "active_tab", "ind")
+        assert pg_store.prefs_get_all(1) == {"active_tab": "lp", "arb.max_jumps": "8"}
+        assert pg_store.prefs_get_all(2) == {"active_tab": "ind"}
+
+    def test_pref_delete_and_json_types(self):
+        pg_store.pref_set(1, "col_vis", {"ask": False})
+        pg_store.pref_set(1, "trade_weight", 0.75)
+        assert pg_store.prefs_get_all(1) == {"col_vis": {"ask": False}, "trade_weight": 0.75}
+        pg_store.pref_delete(1, "trade_weight")
+        assert pg_store.prefs_get_all(1) == {"col_vis": {"ask": False}}
+
+
+class TestFavoritesRows:
+    def test_add_remove_and_order(self):
+        assert pg_store.favorites_list(1) == []
+        pg_store.favorite_add(1, 23560)
+        pg_store.favorite_add(1, 587)
+        pg_store.favorite_add(1, 23560)  # idempotent
+        assert set(pg_store.favorites_list(1)) == {23560, 587}
+        pg_store.favorite_remove(1, 23560)
+        assert pg_store.favorites_list(1) == [587]
+        assert pg_store.favorites_list(2) == []
+
+
+class TestProfilesRows:
+    def test_upsert_list_delete(self):
+        assert pg_store.profiles_list(1) == []
+        pg_store.profile_upsert(1, "p1", "Sotiyo", 4.2, 3, 1, 4, 0)
+        pg_store.profile_upsert(1, "p2", "Azbel", 3.1, 2, 1, 4, 1)
+        rows = pg_store.profiles_list(1)
+        assert [r["name"] for r in rows] == ["Sotiyo", "Azbel"]
+        assert rows[0]["system_index"] == 4.2
+        pg_store.profile_upsert(1, "p1", "Sotiyo XL", 5.0, 3, 1, 4, 0)  # replace
+        assert pg_store.profiles_list(1)[0]["name"] == "Sotiyo XL"
+        pg_store.profile_delete(1, "p1")
+        assert [r["profile_id"] for r in pg_store.profiles_list(1)] == ["p2"]
 
 
 class TestDeliveredJobs:

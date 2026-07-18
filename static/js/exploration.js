@@ -513,16 +513,14 @@ const EXP_PRIMER_HTML = `
 
 let EXP = { selected: null, recent: [] };
 
-// Cap recents at 10 on load too — a legacy/oversized blob shouldn't overflow.
+// Cap recents at 10. Seeded from the server by loadSettings (s.exp_recent); the
+// server is authoritative, so there's no localStorage copy.
 const EXP_RECENT_MAX = 10;
-try { EXP.recent = (JSON.parse(localStorage.getItem("exp-recent")) || []).slice(0, EXP_RECENT_MAX); } catch(e) { EXP.recent = []; }
 
 function expSaveRecent(){
   EXP.recent = EXP.recent.slice(0, EXP_RECENT_MAX);
-  try { localStorage.setItem("exp-recent", JSON.stringify(EXP.recent)); } catch(e){}
-  // Also push into the server-synced settings blob so recents follow the
-  // logged-in character across browsers/devices (loadSettings restores them).
-  if(typeof saveLS==="function") saveLS();
+  // Recent lookups are one server key, so every device converges on the same list.
+  if(typeof setPref==="function") setPref('exp_recent', EXP.recent);
 }
 
 // A glyph + label per site type — gives every "card" a game-y suit icon.
@@ -852,13 +850,16 @@ expRenderBrowse();
 // The module has two modes sharing the sidebar+content layout: Guides (static
 // site walkthroughs) and Journal (live tracking + session history). The Journal
 // lives here so tracking is one click from any guide and never interrupts the
-// background poll. The last-used mode is remembered locally.
+// background poll. The last-used mode is server-authoritative (getPref/setPref),
+// seeded once settings have loaded via expApplyStoredMode().
 let EXP_MODE = "guides";
-try { EXP_MODE = localStorage.getItem("exp-mode") || "guides"; } catch(e){}
+function expApplyStoredMode(){
+  if(typeof getPref==="function") expSetMode(getPref('exp_mode', 'guides'));
+}
 
 function expSetMode(mode){
   EXP_MODE = (mode==="journal") ? "journal" : "guides";
-  try { localStorage.setItem("exp-mode", EXP_MODE); } catch(e){}
+  if(typeof setPref==="function") setPref('exp_mode', EXP_MODE);
   const journal = EXP_MODE==="journal";
   document.querySelectorAll(".exp-mode-btn").forEach(b=>
     b.classList.toggle("active", b.dataset.mode===EXP_MODE));
@@ -880,7 +881,7 @@ function expApplyAuth(){
 
 // switchTab() calls this whenever the Exploration tab is opened.
 function expOnEnterTab(){
-  expSetMode(EXP_MODE);
+  expApplyStoredMode();
 }
 
 (function(){

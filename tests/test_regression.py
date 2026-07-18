@@ -336,9 +336,7 @@ class TestApiScanEndpoint:
         }]
         q = {"corp_id": ["1000"], "lp": ["10000"], "tax": ["0.08"],
              "broker": ["0.03"], "station": ["60003760"]}
-        with patch.object(lp_web, "load_settings", return_value={}), \
-             patch.object(lp_web, "save_settings"), \
-             patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
+        with patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
              patch.object(lp_web, "get_offers", return_value=fake_offers), \
              patch.object(lp_web, "load_json", return_value={}), \
              patch.object(lp_web, "fetch_prices", return_value={}), \
@@ -367,9 +365,7 @@ class TestApiScanEndpoint:
         }]
         q = {"corp_id": ["2000"], "lp": ["10000"], "tax": ["0.08"],
              "broker": ["0.03"], "station": ["60003760"]}
-        with patch.object(lp_web, "load_settings", return_value={}), \
-             patch.object(lp_web, "save_settings"), \
-             patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
+        with patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
              patch.object(lp_web, "get_offers", return_value=fake_offers), \
              patch.object(lp_web, "load_json", return_value={}), \
              patch.object(lp_web, "fetch_prices", return_value={}), \
@@ -396,9 +392,7 @@ class TestApiScanEndpoint:
         }]
         q = {"corp_id": ["1000"], "lp": ["10000"], "tax": ["0.08"],
              "broker": ["0.03"], "station": ["60003760"]}
-        with patch.object(lp_web, "load_settings", return_value={}), \
-             patch.object(lp_web, "save_settings"), \
-             patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
+        with patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
              patch.object(lp_web, "get_offers", return_value=fake_offers), \
              patch.object(lp_web, "load_json", return_value={}), \
              patch.object(lp_web, "fetch_prices", return_value={}), \
@@ -515,91 +509,149 @@ class TestApiSettingsEndpoint:
         data, status = http_get(f"{base}/api/settings")
         assert status == 200
 
-    def test_returns_dict(self, tmp_server):
+    def test_returns_settings_shape(self, tmp_server):
+        """The authoritative settings response always carries the three stores."""
         base, _ = tmp_server
         data, _ = http_get(f"{base}/api/settings")
         assert isinstance(data, dict)
+        assert "prefs" in data and "favorites" in data and "profiles" in data
 
-    def test_arb_key_present(self, tmp_server):
-        """Merged settings must always include the arb sub-object."""
-        base, _ = tmp_server
+    def test_reflects_stored_prefs(self, tmp_server, monkeypatch, tmp_path):
+        base, cache = tmp_server
+        monkeypatch.setattr(lp_web, "PREFS_PATH", cache / "prefs.json")
+        # File mode: whatever is in the pref store comes back on the GET.
+        lp_web.pref_set(lp_web._LEGACY_ACCOUNT, "active_tab", "ind")
         data, _ = http_get(f"{base}/api/settings")
-        assert "arb" in data
+        assert data["prefs"]["active_tab"] == "ind"
 
-    def test_not_logged_in_reports_unsynced(self, tmp_server, monkeypatch):
+    def test_invalid_patch_returns_400_not_500(self, tmp_server):
+        """A bad request to a POST settings endpoint is a 400 (LPError), not a
+        500 — do_POST must map LPError like do_GET does."""
         base, _ = tmp_server
-        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "characters", {})
-        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "active_char_id", None)
-        data, _ = http_get(f"{base}/api/settings")
-        assert data["_server_synced"] is False
-        assert data["_logged_in"] is False
-
-    def test_logged_in_without_prior_sync_falls_back_to_files(self, tmp_server, monkeypatch, tmp_path):
-        base, _ = tmp_server
-        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "characters", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
-        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "active_char_id", 42)
-        data, _ = http_get(f"{base}/api/settings")
-        assert data["_server_synced"] is False
-        assert data["_logged_in"] is True
-
-    def test_logged_in_with_prior_sync_returns_synced_blob(self, tmp_server, monkeypatch, tmp_path):
-        base, _ = tmp_server
-        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "characters", {42: {"character_id": 42, "name": "T", "scopes": [], "refresh_token": "x"}})
-        monkeypatch.setattr(lp_web._LEGACY_ACCOUNT, "active_char_id", 42)
-        lp_web.save_user_settings(42, {"active_tab": "ind"})
-        data, _ = http_get(f"{base}/api/settings")
-        assert data["_server_synced"] is True
-        assert data["active_tab"] == "ind"
+        data, status = http_post_json(f"{base}/api/prefs", {"patch": "not json"})
+        assert status == 400
+        assert "error" in data
 
 
 # ---------------------------------------------------------------------------
-# Per-character settings sync (SQLite)
+# Row-per-setting store: prefs / favorites / profiles (server-authoritative)
 # ---------------------------------------------------------------------------
 
-class TestUserSettingsSync:
-    def test_roundtrip(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        lp_web.save_user_settings(7, {"col_order": ["name", "ask"]})
-        assert lp_web.load_user_settings(7) == {"col_order": ["name", "ask"]}
-
-    def test_missing_character_returns_none(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        assert lp_web.load_user_settings(999) is None
-
-    def test_save_overwrites_previous_blob(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        lp_web.save_user_settings(7, {"active_tab": "lp"})
-        lp_web.save_user_settings(7, {"active_tab": "arb"})
-        assert lp_web.load_user_settings(7) == {"active_tab": "arb"}
-
-    def test_settings_are_isolated_per_character(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        lp_web.save_user_settings(1, {"active_tab": "lp"})
-        lp_web.save_user_settings(2, {"active_tab": "ind"})
-        assert lp_web.load_user_settings(1) == {"active_tab": "lp"}
-        assert lp_web.load_user_settings(2) == {"active_tab": "ind"}
-
-    def test_sync_without_login_is_a_noop(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        _use_account(None)
-        result = lp_web.do_settings_sync({"blob": ['{"active_tab":"lp"}']})
-        assert result == {"ok": True, "synced": False}
-        assert not (tmp_path / "user_settings.sqlite").exists()
-
-    def test_sync_while_logged_in_persists_blob(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
+class TestSettingsStore:
+    def _setup(self, tmp_path):
+        lp_web.CACHE_DIR = tmp_path
+        lp_web.PREFS_PATH = tmp_path / "prefs.json"
+        lp_web.FAVORITES_PATH = tmp_path / "favorites.json"
+        lp_web.PROFILES_PATH = tmp_path / "profiles.json"
         _use_account(_acct({42: "T"}, active=42))
-        result = lp_web.do_settings_sync({"blob": ['{"active_tab":"ind","col_widths":{"name":120}}']})
-        assert result == {"ok": True, "synced": True}
-        assert lp_web.load_user_settings(42) == {"active_tab": "ind", "col_widths": {"name": 120}}
 
-    def test_sync_rejects_invalid_json(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(lp_web, "USER_SETTINGS_DB_PATH", tmp_path / "user_settings.sqlite")
-        _use_account(_acct({42: "T"}, active=42))
+    def test_pref_roundtrip_keeps_json_types(self, tmp_path):
+        self._setup(tmp_path)
+        lp_web.do_prefs({"patch": [json.dumps({"trade_weight": 0.75,
+                                               "col_vis": {"ask": False}})]})
+        stored = lp_web.prefs_all(lp_web.current_account())
+        assert stored["trade_weight"] == 0.75
+        assert stored["col_vis"] == {"ask": False}
+
+    def test_independent_patches_do_not_clobber(self, tmp_path):
+        """The whole point of the redesign: two separate patches (as if from two
+        rapid user actions) each set their own key; neither erases the other."""
+        self._setup(tmp_path)
+        lp_web.do_prefs({"patch": [json.dumps({"ind.favorites_removed": 1})]})
+        lp_web.do_prefs({"patch": [json.dumps({"arb.max_jumps": "8"})]})
+        lp_web.do_prefs({"patch": [json.dumps({"corp": "Sisters of EVE"})]})
+        stored = lp_web.prefs_all(lp_web.current_account())
+        assert stored["arb.max_jumps"] == "8"
+        assert stored["corp"] == "Sisters of EVE"
+        assert stored["ind.favorites_removed"] == 1
+
+    def test_invalid_patch_rejected(self, tmp_path):
+        self._setup(tmp_path)
         with pytest.raises(LPError):
-            lp_web.do_settings_sync({"blob": ["not json"]})
+            lp_web.do_prefs({"patch": ["not json"]})
+
+    def test_favorites_add_and_remove(self, tmp_path):
+        self._setup(tmp_path)
+        lp_web.do_favorites({"blueprint_id": ["23560"], "on": ["1"]})
+        lp_web.do_favorites({"blueprint_id": ["587"], "on": ["1"]})
+        assert set(lp_web.favorites_all(lp_web.current_account())) == {23560, 587}
+        lp_web.do_favorites({"blueprint_id": ["23560"], "on": ["0"]})
+        assert lp_web.favorites_all(lp_web.current_account()) == [587]
+
+    def test_profile_save_and_delete(self, tmp_path):
+        self._setup(tmp_path)
+        lp_web.do_profiles_save({"profile": [json.dumps(
+            {"profile_id": "p1", "name": "Sotiyo", "system_index": 4.2,
+             "role_bonus": 3, "facility_tax": 1, "scc_surcharge": 4})]})
+        profs = lp_web.profiles_all(lp_web.current_account())
+        assert len(profs) == 1 and profs[0]["name"] == "Sotiyo"
+        assert profs[0]["system_index"] == 4.2
+        lp_web.do_profiles_delete({"profile_id": ["p1"]})
+        assert lp_web.profiles_all(lp_web.current_account()) == []
+
+    def test_settings_endpoint_bundles_all_three(self, tmp_path):
+        self._setup(tmp_path)
+        lp_web.do_prefs({"patch": [json.dumps({"active_tab": "ind"})]})
+        lp_web.do_favorites({"blueprint_id": ["999"], "on": ["1"]})
+        out = lp_web.do_settings({})
+        assert out["prefs"]["active_tab"] == "ind"
+        assert out["favorites"] == [999]
+        assert out["profiles"] == []
+
+    def test_profile_non_numeric_field_is_bad_request(self, tmp_path):
+        """A non-numeric profile field is a clean LPError (400), not a 500."""
+        self._setup(tmp_path)
+        with pytest.raises(LPError):
+            lp_web.do_profiles_save({"profile": [json.dumps(
+                {"profile_id": "p1", "name": "X", "system_index": "abc"})]})
+
+    def test_file_mode_concurrent_pref_writes_keep_every_key(self, tmp_path):
+        """The file-mode store must not lose keys when many setPref-equivalent
+        writes for DIFFERENT keys run concurrently (the lost-write race)."""
+        import threading as _t
+        self._setup(tmp_path)
+        acct = lp_web.current_account()
+        keys = [f"k{i}" for i in range(40)]
+        barrier = _t.Barrier(len(keys))
+
+        def w(k):
+            barrier.wait()
+            lp_web.pref_set(acct, k, k)
+
+        threads = [_t.Thread(target=w, args=(k,)) for k in keys]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        stored = lp_web.prefs_all(acct)
+        missing = [k for k in keys if stored.get(k) != k]
+        assert not missing, f"lost keys under concurrency: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# Legacy whole-blob → row-per-setting migration
+# ---------------------------------------------------------------------------
+
+class TestSettingsBlobExplode:
+    def test_flattens_sections_and_lifts_lists(self):
+        blob = {
+            "corp": "SoE", "active_tab": "ind",
+            "arb": {"region": "10000002", "max_jumps": "8"},
+            "ind": {"station": "60003760",
+                    "favorites": "[23560, 587]",
+                    "profiles": [{"profile_id": "p1", "name": "Sotiyo"}],
+                    "favorites_cleared": "0"},
+            "_server_synced": True,
+        }
+        prefs, favorites, profiles = lp_web._explode_settings_blob(blob)
+        assert prefs["corp"] == "SoE"
+        assert prefs["arb.region"] == "10000002"
+        assert prefs["ind.station"] == "60003760"
+        assert "_server_synced" not in prefs
+        assert "ind.favorites_cleared" not in prefs
+        assert "ind.favorites" not in prefs and "ind.profiles" not in prefs
+        assert favorites == [23560, 587]
+        assert profiles == [{"profile_id": "p1", "name": "Sotiyo"}]
 
 
 # ---------------------------------------------------------------------------
@@ -794,9 +846,7 @@ class TestDualModeComparison:
         }]
         q = {"corp_id": ["1000"], "lp": ["5000"], "tax": ["0.045"],
              "broker": ["0.015"], "station": ["60003760"]}
-        with patch.object(lp_web, "load_settings", return_value={}), \
-             patch.object(lp_web, "save_settings"), \
-             patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
+        with patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
              patch.object(lp_web, "get_offers", return_value=fake_offers), \
              patch.object(lp_web, "load_json", return_value={}), \
              patch.object(lp_web, "fetch_prices", return_value={}), \
@@ -821,24 +871,27 @@ class TestDualModeComparison:
 # ---------------------------------------------------------------------------
 
 class TestColumnReorder:
-    def test_do_prefs_persists_col_order(self):
-        # col_order must be on the do_prefs whitelist so it survives a reload.
-        saved = {}
-        with patch.object(lp_web, "load_settings", return_value={}), \
-             patch.object(lp_web, "save_settings", side_effect=lambda d: saved.update(d)):
-            lp_web.do_prefs({"col_order": ['["name","ask","bid"]'],
-                             "col_layout_v": ["6"]})
-        assert saved["col_order"] == '["name","ask","bid"]'
-        assert saved["col_layout_v"] == "6"
+    def test_do_prefs_persists_col_order(self, tmp_path):
+        # A prefs patch persists each key as its own row and preserves JSON types.
+        lp_web.CACHE_DIR = tmp_path
+        lp_web.PREFS_PATH = tmp_path / "prefs.json"
+        _use_account(_acct({42: "T"}, active=42))
+        lp_web.do_prefs({"patch": [json.dumps(
+            {"col_order": ["name", "ask", "bid"], "col_layout_v": 6})]})
+        stored = lp_web.prefs_all(lp_web.current_account())
+        assert stored["col_order"] == ["name", "ask", "bid"]
+        assert stored["col_layout_v"] == 6
 
-    def test_do_prefs_ignores_unknown_keys(self):
-        # The whitelist must not let arbitrary keys into settings.
-        saved = {}
-        with patch.object(lp_web, "load_settings", return_value={}), \
-             patch.object(lp_web, "save_settings", side_effect=lambda d: saved.update(d)):
-            lp_web.do_prefs({"col_order": ['["name"]'], "evil": ["1"]})
-        assert "col_order" in saved
-        assert "evil" not in saved
+    def test_do_prefs_null_value_deletes_key(self, tmp_path):
+        # A null in the patch removes that key's row (and nothing else).
+        lp_web.CACHE_DIR = tmp_path
+        lp_web.PREFS_PATH = tmp_path / "prefs.json"
+        _use_account(_acct({42: "T"}, active=42))
+        lp_web.do_prefs({"patch": [json.dumps({"corp": "X", "market": "Jita"})]})
+        lp_web.do_prefs({"patch": [json.dumps({"corp": None})]})
+        stored = lp_web.prefs_all(lp_web.current_account())
+        assert "corp" not in stored
+        assert stored["market"] == "Jita"
 
     def test_headers_are_draggable(self):
         # Each <th> opts into HTML5 drag-and-drop.
@@ -906,8 +959,8 @@ class TestColumnFormatterRowContext:
 
     def test_col_order_persisted_and_restored(self):
         html = lp_web.FRONTEND_SOURCE
-        # Saved with the widths via POST...
-        assert "col_order:JSON.stringify(STATE.colOrder)" in html
+        # Saved as its own pref key (server-authoritative, no whole-blob push)...
+        assert "setPref('col_order', STATE.colOrder)" in html
         # ...and restored on load, guarded by the layout version.
         assert "if(s.col_order && s.col_layout_v==COL_LAYOUT_VERSION){" in html
 
@@ -1036,56 +1089,42 @@ class TestIndustryLoginRequired:
 
 
 class TestIndustryRoutes:
-    def test_settings_includes_ind_key(self, tmp_server):
+    def test_settings_includes_store_shape(self, tmp_server):
         base, _ = tmp_server
         body, status = http_get(f"{base}/api/settings")
         assert status == 200
-        assert "ind" in body  # JS reads s.ind; missing key would break loadSettings
+        assert "prefs" in body and "favorites" in body and "profiles" in body
 
     def test_ind_prefs_roundtrip(self, tmp_server, tmp_path, monkeypatch):
-        base, _ = tmp_server
-        monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
-        body, status = http_post_json(
-            f"{base}/api/ind/prefs", {"job_rate": "6", "profile": "2", "hide_t2": "1"})
+        # Industry prefs are dotted keys in the shared pref store now.
+        base, cache = tmp_server
+        monkeypatch.setattr(lp_web, "PREFS_PATH", cache / "prefs.json")
+        body, status = http_post_json(f"{base}/api/prefs", {"patch": json.dumps(
+            {"ind.job_rate": "6", "ind.profile": "2", "ind.hide_t2": "1"})})
         assert status == 200 and body["ok"] is True
-        saved = json.loads((tmp_path / "ind.json").read_text())
-        assert saved["job_rate"] == "6"
-        assert saved["hide_t2"] == "1"
-
-    def test_ind_prefs_me_te_skills_not_persisted(self, tmp_server, tmp_path, monkeypatch):
-        # ME/TE/skills level are no longer user-settable — they're always the
-        # real (0 = unresearched/untrained) baseline, overridden per-blueprint
-        # with the logged-in character's own data. Nothing to persist.
-        base, _ = tmp_server
-        monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
-        body, status = http_post_json(
-            f"{base}/api/ind/prefs", {"me": "10", "te": "20", "skills_level": "5"})
-        assert status == 200 and body["ok"] is True
-        saved = json.loads((tmp_path / "ind.json").read_text())
-        assert "me" not in saved and "te" not in saved and "skills_level" not in saved
+        saved = lp_web.prefs_all(lp_web._LEGACY_ACCOUNT)
+        assert saved["ind.job_rate"] == "6"
+        assert saved["ind.hide_t2"] == "1"
 
     def test_ind_prefs_persists_col_order(self, tmp_server, tmp_path, monkeypatch):
         # The industry column order must survive a reload, like the LP store.
-        base, _ = tmp_server
-        monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
-        order = '["_fav","product_name","_timer","tech_level"]'
+        base, cache = tmp_server
+        monkeypatch.setattr(lp_web, "PREFS_PATH", cache / "prefs.json")
+        order = ["_fav", "product_name", "_timer", "tech_level"]
         body, status = http_post_json(
-            f"{base}/api/ind/prefs", {"col_order": order})
+            f"{base}/api/prefs", {"patch": json.dumps({"ind.col_order": order})})
         assert status == 200 and body["ok"] is True
-        saved = json.loads((tmp_path / "ind.json").read_text())
-        assert saved["col_order"] == order
+        assert lp_web.prefs_all(lp_web._LEGACY_ACCOUNT)["ind.col_order"] == order
 
     def test_ind_prefs_persists_col_widths_and_vis(self, tmp_server, tmp_path, monkeypatch):
-        base, _ = tmp_server
-        monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
-        widths = '{"product_name":260}'
-        vis = '{"ask":false}'
-        body, status = http_post_json(
-            f"{base}/api/ind/prefs", {"col_widths": widths, "col_vis": vis})
+        base, cache = tmp_server
+        monkeypatch.setattr(lp_web, "PREFS_PATH", cache / "prefs.json")
+        body, status = http_post_json(f"{base}/api/prefs", {"patch": json.dumps(
+            {"ind.col_widths": {"product_name": 260}, "ind.col_vis": {"ask": False}})})
         assert status == 200 and body["ok"] is True
-        saved = json.loads((tmp_path / "ind.json").read_text())
-        assert saved["col_widths"] == widths
-        assert saved["col_vis"] == vis
+        saved = lp_web.prefs_all(lp_web._LEGACY_ACCOUNT)
+        assert saved["ind.col_widths"] == {"product_name": 260}
+        assert saved["ind.col_vis"] == {"ask": False}
 
     def test_ind_columns_reorderable(self):
         html = lp_web.FRONTEND_SOURCE
@@ -1095,8 +1134,8 @@ class TestIndustryRoutes:
         # Rendering is scoped to visible columns, which are built on the order.
         assert "function indVisCols(){ return indOrderedCols()" in html
         assert "thead.innerHTML=\"<tr>\"+vc.map" in html
-        # Order is saved and restored.
-        assert "col_order: JSON.stringify(IND.colOrder)" in html
+        # Order is saved (its own pref key) and restored.
+        assert "setPref('ind.col_order', IND.colOrder)" in html
         assert "if(ind.col_order){ try{" in html
 
     def test_ind_columns_resizable_and_toggleable(self):
@@ -1109,9 +1148,9 @@ class TestIndustryRoutes:
         assert 'id="indColPickerBtn"' in html
         assert 'id="indColPicker"' in html
         assert "IND.colVis[cb.dataset.k]=cb.checked" in html
-        # Widths/visibility ride along with the rest of the industry prefs.
-        assert "col_widths: JSON.stringify(IND.colw)" in html
-        assert "col_vis: JSON.stringify(IND.colVis)" in html
+        # Widths/visibility persist as their own pref keys.
+        assert "setPref('ind.col_widths', IND.colw)" in html
+        assert "setPref('ind.col_vis', IND.colVis)" in html
 
     def test_ind_search_has_clear_button(self):
         html = lp_web.FRONTEND_SOURCE
@@ -1126,14 +1165,13 @@ class TestIndustryRoutes:
         assert 'owned_only:"1"' in html or "owned_only" in html
 
     def test_hidden_bps_pref_persisted(self, tmp_server, tmp_path, monkeypatch):
-        """hidden_bps is stored via /api/ind/prefs."""
-        base, _ = tmp_server
-        monkeypatch.setattr(lp_web, "IND_SETTINGS_PATH", tmp_path / "ind.json")
+        """hidden_bps is stored as its own dotted pref key."""
+        base, cache = tmp_server
+        monkeypatch.setattr(lp_web, "PREFS_PATH", cache / "prefs.json")
         body, status = http_post_json(
-            f"{base}/api/ind/prefs", {"hidden_bps": "[681,682]"})
+            f"{base}/api/prefs", {"patch": json.dumps({"ind.hidden_bps": [681, 682]})})
         assert status == 200
-        saved = json.loads((tmp_path / "ind.json").read_text())
-        assert saved["hidden_bps"] == "[681,682]"
+        assert lp_web.prefs_all(lp_web._LEGACY_ACCOUNT)["ind.hidden_bps"] == [681, 682]
 
     def test_ind_section_chips_in_html(self):
         """The industry tab has collapsible section chips."""
@@ -1407,18 +1445,25 @@ class TestSSOCallbackXSS:
 # ---------------------------------------------------------------------------
 
 class TestSettingsPersistenceGate:
-    """v1.91.1: saveLS() snapshots DOM fields; if it runs before loadSettings()
-    has applied stored values (e.g. a warm-cache character-data refresh firing
-    during boot), it must NOT persist — otherwise the account's saved corp gets
-    overwritten with an empty string, and the LP search field opens blank."""
+    """setPref() must not push to the server before loadSettings() has applied
+    the authoritative state — otherwise applying the fetched values into the DOM
+    (or a boot-time refresh) would echo defaults straight back over the server."""
 
-    def test_savels_is_gated_until_settings_applied(self):
+    def test_setpref_is_gated_until_settings_applied(self):
         src = lp_web.FRONTEND_SOURCE
-        assert "let _settingsApplied=false;" in src
-        # saveLS bails out early while settings haven't been applied yet.
-        assert "if(!_settingsApplied) return;" in src
-        # loadSettings flips the gate once the DOM reflects stored settings.
+        assert "let _settingsReady = false;" in src
+        # setPref writes the in-memory mirror but sends nothing while not ready.
+        assert "if(!_settingsReady) return;" in src
+        # loadSettings opens the gate once the server response is applied.
         assert "markSettingsApplied()" in src
+
+    def test_no_localstorage_settings_blob(self):
+        """The old localStorage settings cache is gone — the server is the sole
+        source of truth, so nothing writes the whole-settings blob locally."""
+        src = lp_web.FRONTEND_SOURCE
+        assert "localStorage.setItem(LS_KEY" not in src
+        assert "settingsBlob(" not in src
+        assert "suppressServerSync" not in src
 
 
 # ---------------------------------------------------------------------------

@@ -142,101 +142,98 @@ function persistAllScans(){
 document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden") persistAllScans(); });
 window.addEventListener("beforeunload", persistAllScans);
 
-// ── localStorage + server-synced persistence ────────────────────────────────
-const LS_KEY='eve-scanner';
-function settingsBlob(){
-  return {
-    corp:$("#corp").value,lp:$("#lp").value,
-    maxspread:$("#maxspread").value,tax:pctToFrac($("#g-tax").value),broker:pctToFrac($("#g-broker").value),
-    market:$("#market").value,
-    sort_key:STATE.sort.key,sort_dir:STATE.sort.dir,
-    col_widths:STATE.colw,col_order:STATE.colOrder,col_layout_v:COL_LAYOUT_VERSION,col_vis:STATE.colVis,
-    hide_illiquid:STATE.hideIlliquid?'1':'0',
-    hide_unaffordable:STATE.hideUnaffordable?'1':'0',
-    trade_weight:STATE.tradeWeight,
-    active_tab:ACTIVE_TAB,
-    exp_recent:(typeof EXP!=="undefined"&&EXP.recent)?EXP.recent:[],
-    arb:{region:$("#arb-region").value,cross_station:$("#arb-cross").value,
-      sales_tax:pctToFrac($("#g-tax").value),min_isk:$("#arb-minisk").value,
-      max_jumps:$("#arb-maxjumps").value,route_flag:$("#arb-route").value,
-      avoid_lowsec:ARB.avoidLowsec?'1':'0'},
-    ind:{market_group:$("#ind-group").value,station:$("#ind-station").value,
-      job_rate:$("#ind-jobrate").value,
-      sales_tax:$("#g-tax").value,broker:$("#g-broker").value,
-      buildable_only:$("#ind-buildable").checked?'1':'0',
-      include_unbuildable:$("#ind-unobtainable").checked?'1':'0',
-      hide_t2:$("#ind-hidet2").checked?'1':'0',
-      hide_bpc:$("#ind-hidebpc").checked?'1':'0',
-      min_tradeability:$("#ind-mintrade").value,
-      profiles:JSON.stringify(IND.profiles),profile:$("#ind-profile").value,
-      // Signals to the server that an empty profiles list is intentional (the
-      // user deleted their last build location) vs. an accidental boot-race
-      // default, so the server-side guard doesn't restore the old list.
-      profiles_cleared:(IND.profiles.length===0 && IND.profilesCleared)?'1':'0',
-      favorites:JSON.stringify([...IND.favorites]),
-      // Like profiles_cleared: signals an empty favorites list is intentional
-      // (user removed their last one) vs. a boot-race default, so the server
-      // guard doesn't restore the stored list over a genuine clear.
-      favorites_cleared:(IND.favorites.size===0 && IND.favoritesCleared)?'1':'0',
-      sort_key:IND.sort.key,sort_dir:IND.sort.dir,
-      col_order:JSON.stringify(IND.colOrder),col_widths:JSON.stringify(IND.colw),
-      col_vis:JSON.stringify(IND.colVis),
-      sections:JSON.stringify(IND.sections),
-      ind_trade_weight:String(IND.tradeWeight)}
-  };
-}
-// Debounced push of the full settings blob to the server so every device the
-// logged-in character uses converges on the same columns/filters/etc. Cheap
-// no-op server-side when nobody is logged in.
-let _settingsSyncTimer=null;
-let _pendingBlob=null;
-function _postSettings(blob){
-  // keepalive lets the POST survive a page navigation / tab close.
-  return fetch('/api/settings/sync',{method:'POST',keepalive:true,
+// ── Server-authoritative settings ────────────────────────────────────────────
+// The server owns every user preference. The browser NEVER pushes a whole
+// snapshot of its state and NEVER overwrites the server: each change sends only
+// the one key it touched (setPref), and the server merges it into its own row.
+// On boot loadSettings() pulls the authoritative state and applies it. There is
+// no localStorage settings cache and no "which copy wins" logic — the server
+// always wins, so opening the app on another machine just shows the same thing.
+//
+// SETTINGS mirrors the server's prefs map in memory purely so a change to one
+// field can be sent without re-reading the DOM for the others; it is seeded from
+// the server on load and updated as the user acts. It is NEVER the source of
+// truth — the server is.
+const SETTINGS = { prefs:{}, favorites:[], profiles:[] };
+
+// Per-key debounce: each distinct pref key coalesces its own rapid edits (e.g.
+// typing in a number field) on an independent timer, so a burst of changes to
+// DIFFERENT keys all get sent — one never cancels another. Values are stored
+// with their JSON type intact; passing null deletes the key.
+const _prefTimers = {};
+function _sendPref(key, value){
+  const patch = {}; patch[key] = value;
+  return fetch('/api/prefs', { method:'POST', keepalive:true,
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({blob:JSON.stringify(blob)})}).catch(()=>{});
+    body: JSON.stringify({ patch: JSON.stringify(patch) }) }).catch(()=>{});
 }
-function syncSettingsToServer(blob){
-  _pendingBlob=blob;
-  clearTimeout(_settingsSyncTimer);
-  _settingsSyncTimer=setTimeout(()=>{ _pendingBlob=null; _postSettings(blob); }, 800);
+// setPref(key, value): the single funnel for persisting a preference. Updates the
+// in-memory mirror immediately, then debounces the server write for that key.
+// Set _settingsReady false during boot so applying stored values back into the
+// DOM doesn't echo them straight back to the server.
+//
+// No-op when the value is unchanged from what's already stored: idempotent
+// callers (e.g. the character refresh re-deriving tax/broker from skills on every
+// poll) then neither spam the server nor overwrite an identical stored value.
+let _settingsReady = false;
+function setPref(key, value, opts){
+  if(value===undefined) value=null;
+  const cur = key in SETTINGS.prefs ? SETTINGS.prefs[key] : null;
+  if(JSON.stringify(cur)===JSON.stringify(value)) return;   // unchanged → nothing to do
+  if(value===null) delete SETTINGS.prefs[key]; else SETTINGS.prefs[key]=value;
+  if(!_settingsReady) return;
+  const delay = (opts && opts.immediate) ? 0 : 400;
+  clearTimeout(_prefTimers[key]);
+  _prefTimers[key] = setTimeout(()=>{ delete _prefTimers[key]; _sendPref(key, value); }, delay);
 }
-// Push any debounced change to the server immediately when the page is being
-// hidden/closed, so opening another browser never shows a stale view. The server
-// is the source of truth (see loadSettings); localStorage is only a paint cache.
-function flushSettings(){
-  if(_pendingBlob==null) return;
-  const blob=_pendingBlob; _pendingBlob=null;
-  clearTimeout(_settingsSyncTimer);
-  _postSettings(blob);
+function getPref(key, dflt){
+  const v = SETTINGS.prefs[key];
+  return v===undefined ? dflt : v;
 }
-window.addEventListener('pagehide',flushSettings);
-document.addEventListener('visibilitychange',()=>{
-  if(document.visibilityState==='hidden') flushSettings();
+// Flush any pending debounced pref writes immediately (page hide/close) so
+// another device never opens to a stale view.
+function flushPrefs(){
+  for(const key in _prefTimers){
+    clearTimeout(_prefTimers[key]); delete _prefTimers[key];
+    _sendPref(key, SETTINGS.prefs[key]===undefined ? null : SETTINGS.prefs[key]);
+  }
+}
+window.addEventListener('pagehide', flushPrefs);
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='hidden') flushPrefs();
 });
-// Guard against persisting a half-initialised view. saveLS snapshots the current
-// DOM fields (corp, LP, filters, …); if it runs before loadSettings() has applied
-// the stored values — e.g. a warm-cache character-data refresh firing during boot
-// calls saveLS() while #corp is still blank — it would clobber the account's saved
-// corp with an empty string. loadSettings() flips this true once the DOM reflects
-// stored state, so early boot-time saves are dropped instead of overwriting.
-let _settingsApplied=false;
-function markSettingsApplied(){ _settingsApplied=true; }
-// When logged in but the server didn't return its authoritative settings blob
-// (e.g. a post-deploy cold start where the session/DB pool isn't warm yet),
-// loadSettings sets this so saveLS won't PUSH this session's possibly-default
-// DOM over the durable Postgres copy. localStorage is still written (it's only
-// a local paint cache), and a later reload — once the server is warm — restores
-// and re-enables syncing. This is what stopped Industry filters/selection from
-// silently reverting to defaults after a redeploy.
-let _serverSyncSuppressed=false;
-function suppressServerSync(){ _serverSyncSuppressed=true; }
-function saveLS(){
-  if(!_settingsApplied) return;
-  const blob=settingsBlob();
-  try{ localStorage.setItem(LS_KEY,JSON.stringify(blob)); }catch(e){}
-  if(!_serverSyncSuppressed) syncSettingsToServer(blob);
+
+// Favorites (Industry watchlist) — each toggle is its own server row. Keep the
+// in-memory mirror in step with the write so SETTINGS never drifts from truth.
+function setFavorite(bp, on){
+  bp = +bp;
+  const i = SETTINGS.favorites.indexOf(bp);
+  if(on && i<0) SETTINGS.favorites.push(bp);
+  else if(!on && i>=0) SETTINGS.favorites.splice(i,1);
+  fetch('/api/favorites', { method:'POST', keepalive:true,
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ blueprint_id: bp, on: on?1:0 }) }).catch(()=>{});
 }
+// Build-location profiles — each save/delete targets one profile row. The
+// server echoes the full authoritative list back, so adopt it as the mirror.
+function saveProfile(profile){
+  const i = SETTINGS.profiles.findIndex(p=>p.profile_id===profile.profile_id);
+  if(i>=0) SETTINGS.profiles[i]=profile; else SETTINGS.profiles.push(profile);
+  return fetch('/api/profiles/save', { method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ profile: JSON.stringify(profile) }) })
+    .then(r=>r.json()).then(j=>{ if(j&&j.profiles) SETTINGS.profiles=j.profiles; return j; })
+    .catch(()=>null);
+}
+function deleteProfile(profileId){
+  SETTINGS.profiles = SETTINGS.profiles.filter(p=>p.profile_id!==profileId);
+  return fetch('/api/profiles/delete', { method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ profile_id: profileId }) })
+    .then(r=>r.json()).then(j=>{ if(j&&j.profiles) SETTINGS.profiles=j.profiles; return j; })
+    .catch(()=>null);
+}
+function markSettingsApplied(){ _settingsReady=true; }
 
 // ── Tab switching ─────────────────────────────────────────────────────────
 let ACTIVE_TAB = "lp";
@@ -275,7 +272,7 @@ function switchTab(tab, opts){
                 : tab==="notes" ? "EVE Notes"
                 : tab==="exp" ? "EVE Exploration Guide"
                 : tab==="aby" ? "EVE Abyssal Deadspace Guide" : "EVE Industry Planner";
-  postPrefs('/api/prefs',{active_tab:tab}); saveLS();
+  setPref('active_tab', tab);
   if(tab==="aby" && typeof abyInit==="function") abyInit();
   if(tab==="ind" && AUTH.loggedIn){
     if(!IND.groupsLoaded) loadIndGroups();

@@ -172,16 +172,16 @@ function scanArb(){
   };
 }
 
+// Each arb field is its own server key (dotted "arb.*"), so a change to one
+// never disturbs another — nor any LP/Industry setting.
 function saveArbPrefs(){
-  postPrefs('/api/arb/prefs',{
-    region:       $("#arb-region").value,
-    cross_station: $("#arb-cross").value,
-    sales_tax:    pctToFrac($("#g-tax").value),
-    min_isk:      $("#arb-minisk").value||"",
-    max_jumps:    $("#arb-maxjumps").value||"6",
-    route_flag:   $("#arb-route").value,
-    avoid_lowsec: ARB.avoidLowsec?"1":"0",
-  }); saveLS();
+  setPref('arb.region', $("#arb-region").value);
+  setPref('arb.cross_station', $("#arb-cross").value);
+  setPref('arb.sales_tax', pctToFrac($("#g-tax").value));
+  setPref('arb.min_isk', $("#arb-minisk").value||"");
+  setPref('arb.max_jumps', $("#arb-maxjumps").value||"6");
+  setPref('arb.route_flag', $("#arb-route").value);
+  setPref('arb.avoid_lowsec', ARB.avoidLowsec?"1":"0");
 }
 function updateArbJumpsVisibility(){
   const cross=$("#arb-cross").value==="1";

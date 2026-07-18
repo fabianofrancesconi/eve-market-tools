@@ -139,6 +139,29 @@ MIGRATIONS = [
         ALTER TABLE mono_location_trail
             ADD COLUMN IF NOT EXISTS cargo_scanned_at DOUBLE PRECISION;
     """),
+    (10, "row-per-setting store: prefs, favorites, build-location profiles (v1.129+)", """
+        CREATE TABLE IF NOT EXISTS mono_prefs (
+            account_id BIGINT NOT NULL,
+            key TEXT NOT NULL,
+            value JSONB NOT NULL,
+            updated_at DOUBLE PRECISION NOT NULL,
+            PRIMARY KEY (account_id, key));
+        CREATE TABLE IF NOT EXISTS mono_favorites (
+            account_id BIGINT NOT NULL,
+            blueprint_id BIGINT NOT NULL,
+            added_at DOUBLE PRECISION NOT NULL,
+            PRIMARY KEY (account_id, blueprint_id));
+        CREATE TABLE IF NOT EXISTS mono_profiles (
+            account_id BIGINT NOT NULL,
+            profile_id TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            system_index DOUBLE PRECISION NOT NULL DEFAULT 0,
+            role_bonus DOUBLE PRECISION NOT NULL DEFAULT 0,
+            facility_tax DOUBLE PRECISION NOT NULL DEFAULT 0,
+            scc_surcharge DOUBLE PRECISION NOT NULL DEFAULT 0,
+            pos INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (account_id, profile_id));
+    """),
 ]
 
 

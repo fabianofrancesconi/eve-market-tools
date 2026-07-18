@@ -244,8 +244,8 @@ class TestHtmlMarketDropdown:
             assert str(sid).encode() in body, f"station {sid} missing from HTML"
 
     def test_market_in_savels(self, tmp_server):
-        """saveLS() must snapshot the market field so it persists across reloads."""
-        assert 'market:$("#market").value' in lp_web.FRONTEND_SOURCE
+        """The market field must be persisted (as its own pref) across reloads."""
+        assert "setPref('market', $(\"#market\").value)" in lp_web.FRONTEND_SOURCE
 
     def test_market_in_loadsettings(self, tmp_server):
         """loadSettings() must restore the market field on page load."""

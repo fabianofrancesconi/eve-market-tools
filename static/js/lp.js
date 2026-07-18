@@ -338,12 +338,25 @@ function renderLPStatus(){
     +`<span class="ts">offers ${fmtTs(d.offers_fetched_at)} · prices ${fmtTs(d.scanned_at)}${trade}</span>`);
 }
 
+// Persist the core LP scan inputs (corp / LP / market / spread / costs). Each is
+// its own server key, so this only ever touches LP fields — never Industry, Arb,
+// or another device's unrelated settings.
+function saveLPCore(){
+  setPref('corp', $("#corp").value);
+  setPref('lp', $("#lp").value);
+  setPref('market', $("#market").value);
+  setPref('maxspread', $("#maxspread").value);
+  setPref('tax', pctToFrac($("#g-tax").value));
+  setPref('broker', pctToFrac($("#g-broker").value));
+}
 function saveLPSort(){
-  const s=STATE.sort;
-  postPrefs('/api/prefs',{sort_key:s.key,sort_dir:s.dir}); saveLS();
+  setPref('sort_key', STATE.sort.key);
+  setPref('sort_dir', STATE.sort.dir);
 }
 function saveLPColWidths(){
-  postPrefs('/api/prefs',{col_widths:JSON.stringify(STATE.colw),col_order:JSON.stringify(STATE.colOrder),col_layout_v:String(COL_LAYOUT_VERSION)}); saveLS();
+  setPref('col_widths', STATE.colw);
+  setPref('col_order', STATE.colOrder);
+  setPref('col_layout_v', COL_LAYOUT_VERSION);
 }
 
 // ── Column picker ─────────────────────────────────────────────────────────
@@ -353,7 +366,7 @@ function saveLPColWidths(){
   function renderPicker(){
     picker.innerHTML=COLS.map(c=>`<label><input type="checkbox" data-k="${c.k}"${STATE.colVis[c.k]!==false?' checked':''}> ${c.t}</label>`).join("");
     picker.querySelectorAll("input").forEach(cb=>{
-      cb.onchange=()=>{ STATE.colVis[cb.dataset.k]=cb.checked; renderTable(); saveLS(); };
+      cb.onchange=()=>{ STATE.colVis[cb.dataset.k]=cb.checked; renderTable(); setPref('col_vis', STATE.colVis); };
     });
   }
   btn.onclick=e=>{
@@ -707,7 +720,7 @@ function _corpItems(){ return _corpDrop.querySelectorAll(".corp-drop-item"); }
 function _corpSelect(name){
   _corpInput.value=name; _corpClose();
   if(typeof updateMyLpBadge==="function") updateMyLpBadge();  // lock LP budget to this corp's character LP
-  saveLS(); clearTimeout(lpScanTimer); scan(false);
+  saveLPCore(); clearTimeout(lpScanTimer); scan(false);
 }
 
 function _corpOpen(q){
@@ -741,7 +754,7 @@ function _corpHighlight(idx){
 _corpInput.addEventListener("input",e=>_corpOpen(e.target.value));
 _corpInput.addEventListener("change",()=>{
   if(typeof updateMyLpBadge==="function") updateMyLpBadge();
-  saveLS(); clearTimeout(lpScanTimer); scan(false);
+  saveLPCore(); clearTimeout(lpScanTimer); scan(false);
 });
 _corpInput.addEventListener("blur",()=>setTimeout(_corpClose,150));
 _corpInput.addEventListener("keydown",e=>{
@@ -750,7 +763,7 @@ _corpInput.addEventListener("keydown",e=>{
   else if(e.key==="ArrowUp"){ e.preventDefault(); _corpHighlight(_corpHi-1); }
   else if(e.key==="Enter"){
     if(_corpHi>=0&&items[_corpHi]){ _corpSelect(items[_corpHi].textContent); }
-    else{ _corpClose(); if(typeof updateMyLpBadge==="function") updateMyLpBadge(); saveLS(); clearTimeout(lpScanTimer); scan(false); }
+    else{ _corpClose(); if(typeof updateMyLpBadge==="function") updateMyLpBadge(); saveLPCore(); clearTimeout(lpScanTimer); scan(false); }
   }
   else if(e.key==="Escape"){ _corpClose(); }
 });
@@ -759,21 +772,21 @@ let lpScanTimer;
 function scheduleScan(delay=800){ clearTimeout(lpScanTimer); lpScanTimer=setTimeout(()=>scan(false),delay); }
 ["#lp","#market"].forEach(sel=>{
   const el=$(sel); if(!el) return;
-  el.addEventListener("change",()=>{ saveLS(); scheduleScan(800); });
-  if(sel!=="#market") el.addEventListener("input",()=>{ saveLS(); scheduleScan(800); });
+  el.addEventListener("change",()=>{ saveLPCore(); scheduleScan(800); });
+  if(sel!=="#market") el.addEventListener("input",()=>{ saveLPCore(); scheduleScan(800); });
 });
 {const el=$("#maxspread"); if(el){
-  el.addEventListener("change",()=>{ saveLS(); if(STATE.rows.length) renderTable(); else scheduleScan(800); });
-  el.addEventListener("input",()=>{ saveLS(); if(STATE.rows.length) renderTable(); else scheduleScan(800); });
+  el.addEventListener("change",()=>{ saveLPCore(); if(STATE.rows.length) renderTable(); else scheduleScan(800); });
+  el.addEventListener("input",()=>{ saveLPCore(); if(STATE.rows.length) renderTable(); else scheduleScan(800); });
 }}
 $("#toggleIlliquid").onchange=()=>{
   STATE.hideIlliquid=$("#toggleIlliquid").checked;
-  postPrefs('/api/prefs',{hide_illiquid:STATE.hideIlliquid?'1':'0'}); saveLS();
+  setPref('hide_illiquid', STATE.hideIlliquid?'1':'0');
   renderTable();
 };
 $("#toggleAffordable").onchange=()=>{
   STATE.hideUnaffordable=$("#toggleAffordable").checked;
-  postPrefs('/api/prefs',{hide_unaffordable:STATE.hideUnaffordable?'1':'0'}); saveLS();
+  setPref('hide_unaffordable', STATE.hideUnaffordable?'1':'0');
   renderTable();
 };
 $("#lp-search").addEventListener("input", ()=>{
@@ -795,7 +808,7 @@ document.querySelectorAll(".balance-btn").forEach(b=>{
   b.onclick=()=>{
     STATE.tradeWeight=parseFloat(b.dataset.w);
     syncBalanceButtons();
-    postPrefs('/api/prefs',{trade_weight:String(STATE.tradeWeight)}); saveLS();
+    setPref('trade_weight', STATE.tradeWeight);
     renderTable();
   };
 });

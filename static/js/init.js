@@ -27,59 +27,39 @@ async function restoreLastScans(){
 }
 
 updateArbJumpsVisibility();  // reflect default cross-station selection before settings load
-// Fetch the settings row, retrying briefly when the server says we're logged in
-// but hasn't produced its synced blob yet. That window is a cold start right
-// after a deploy (session/DB pool still warming): the durable Postgres copy
-// exists but the first request can come back _server_synced:false. Retrying a
-// couple of times avoids treating that transient miss as "no saved settings"
-// and clobbering the real copy with this session's defaults.
-async function _fetchSettings(){
-  for(let attempt=0; attempt<3; attempt++){
-    let r=null;
-    try{ r=await (await fetch("/api/settings")).json(); }catch(e){}
-    // Authoritative answer, or genuinely-logged-out: accept it as final.
-    if(r && (r._server_synced || !r._logged_in)) return r;
-    // Logged in but no synced blob yet — give the server a moment and re-ask.
-    await new Promise(res=>setTimeout(res, 400*(attempt+1)));
-    // Last attempt returns whatever we last saw (may still be unsynced).
-    if(attempt===2) return r;
+// Rebuild the nested {…, arb:{…}, ind:{…}} shape the apply block below expects
+// from the server's flat dotted-key pref map. e.g. "arb.region" → s.arb.region,
+// "corp" → s.corp. Favorites/profiles come from their own server lists, not the
+// pref map, and are surfaced under s.ind for the existing apply code.
+function _nestPrefs(prefs){
+  const s={};
+  for(const k in prefs){
+    const dot=k.indexOf(".");
+    if(dot<0){ s[k]=prefs[k]; continue; }
+    const sec=k.slice(0,dot), sub=k.slice(dot+1);
+    (s[sec]||(s[sec]={}))[sub]=prefs[k];
   }
-  return null;
+  return s;
 }
 async function loadSettings(){
-  const server=await _fetchSettings();
-  let s=null;
-  if(server && server._server_synced){
-    // This character has synced settings from some device before — that's
-    // the cross-device source of truth, takes priority over this browser's
-    // local copy.
-    s=server;
-  } else if(server && server._logged_in){
-    // Logged in, but the server still didn't hand us its synced blob after
-    // retries. Two cases look identical here:
-    //   • a genuinely new character (no durable row yet), or
-    //   • a cold-start hiccup where the durable row exists but the request
-    //     came back unsynced.
-    // Disambiguate with localStorage: if THIS browser has a cached blob, the
-    // account has synced before, so a bare unsynced reply is the hiccup — paint
-    // from local and SUPPRESS pushing, so we never overwrite the durable copy
-    // with this session's defaults (a reload once the server is warm restores
-    // the real settings). If there's no local cache, it's a fresh character
-    // with nothing to protect, so allow normal syncing to seed the server.
-    let local=null;
-    try{ local=JSON.parse(localStorage.getItem(LS_KEY)); }catch(e){}
-    if(local && Object.keys(local).length){
-      s=local;
-      suppressServerSync();
-    }
-  } else {
-    // Not logged in (or the fetch failed outright): fall back to this browser's
-    // local settings, or the server's file-based single-device blob. Nothing to
-    // seed — the _logged_in cases are handled above.
-    try{ s=JSON.parse(localStorage.getItem(LS_KEY)); }catch(e){}
-    if(!s) s=server;
+  // The server is the sole source of truth. Fetch it once and apply it as-is;
+  // no retry/merge/localStorage dance — if the fetch fails we simply keep the
+  // built-in defaults and DON'T persist them (markSettingsApplied stays off).
+  let server=null;
+  try{ server=await (await fetch("/api/settings")).json(); }catch(e){}
+  const gotSettings = !!(server && server.prefs);
+  if(gotSettings){
+    SETTINGS.prefs = server.prefs || {};
+    SETTINGS.favorites = server.favorites || [];
+    SETTINGS.profiles = server.profiles || [];
   }
-  if(s && Object.keys(s).length){
+  // Build the shape the field-application block was written against. Profiles
+  // and favorites are JSON-stringified under ind.* only so the existing parsing
+  // (which expects strings there) keeps working unchanged.
+  const s = _nestPrefs(SETTINGS.prefs);
+  (s.ind||(s.ind={})).profiles = JSON.stringify(SETTINGS.profiles);
+  s.ind.favorites = JSON.stringify(SETTINGS.favorites);
+  if(gotSettings){
       if(s.corp) $("#corp").value=s.corp;
       if(s.lp && !AUTH.loggedIn) $("#lp").value=s.lp;
       if(s.market) $("#market").value=s.market;
@@ -152,22 +132,27 @@ async function loadSettings(){
       if(ind.profiles){ try{ IND.profiles=JSON.parse(ind.profiles)||[]; }catch(e){} }
       renderIndProfiles();
       if(ind.profile) $("#ind-profile").value=ind.profile;
-      if(ind.favorites){ try{ IND.favorites=new Set(JSON.parse(ind.favorites)||[]);
-        if(IND.favorites.size) IND.favoritesCleared=false; }catch(e){} }
-      if(ind.hidden_bps){ try{ IND.hidden=new Set(JSON.parse(ind.hidden_bps)||[]); }catch(e){} }
+      if(ind.favorites){ try{ IND.favorites=new Set(JSON.parse(ind.favorites)||[]); }catch(e){} }
+      if(ind.hidden_bps){ try{
+        const hb=typeof ind.hidden_bps==="string"?JSON.parse(ind.hidden_bps):ind.hidden_bps;
+        if(Array.isArray(hb)) IND.hidden=new Set(hb);
+      }catch(e){} }
       if(ind.sections){ try{
         const sec=typeof ind.sections==="string"?JSON.parse(ind.sections):ind.sections;
         if(sec&&typeof sec==="object") Object.assign(IND.sections, sec);
       }catch(e){} }
-      // Exploration recent lookups — server-synced so every device converges.
+      // Exploration recent lookups — server-authoritative so every device converges.
       if(s.exp_recent!==undefined && typeof EXP!=="undefined"){ try{
         const er=typeof s.exp_recent==="string"?JSON.parse(s.exp_recent):s.exp_recent;
         if(Array.isArray(er)){
           EXP.recent=er.slice(0,10);
-          try{ localStorage.setItem("exp-recent", JSON.stringify(EXP.recent)); }catch(e){}
           expRenderRecent();
         }
       }catch(e){} }
+      // View modes (Industry Planner/Summary, Exploration Guides/Journal) and the
+      // Abyss selections are all server-authoritative now.
+      if(typeof IND!=="undefined" && (s.ind_mode==="summary"||s.ind_mode==="planner")) IND.mode=s.ind_mode;
+      if(typeof abyApplyStored==="function") abyApplyStored(s.aby_state);
       // Restore the last-used tab saved server-side. A tab URL overrides this
       // just below; don't re-push history for either.
       if(s.active_tab==="arb") switchTab("arb", {url:false});
@@ -187,19 +172,12 @@ async function loadSettings(){
   // arrives, so we skip the auto-scan here to avoid using a stale budget.
   if(typeof updateMyLpBadge==="function" && AUTH.data) updateMyLpBadge();
   const _skipLpScan = AUTH.loggedIn && !AUTH.data;
-  // The DOM now reflects the stored settings, so it's safe to let saveLS()
-  // persist again — any earlier boot-time save (e.g. from a character-data
-  // refresh) was dropped to avoid clobbering the saved corp with a blank field.
-  //
-  // But ONLY open the gate if we actually loaded a settings state. If the
-  // /api/settings fetch failed (e.g. the cold-start window right after a deploy)
-  // AND localStorage was empty, the restore block above was skipped and the
-  // DOM/JS still hold empty defaults (blank corp, IND.profiles=[]). Opening the
-  // gate then lets the next saveLS() push those defaults over the durable account
-  // copy — which is exactly how saved build locations vanished after an update.
-  // Keep the gate shut for this session instead; a reload re-attempts the load.
-  const _settingsLoaded = !!server || !!(s && Object.keys(s).length);
-  if(_settingsLoaded) markSettingsApplied();
+  // Open the write gate only once we've applied a real server response. While
+  // the gate is shut, setPref() updates its in-memory mirror but sends nothing —
+  // so applying the fetched values back into the DOM never echoes to the server,
+  // and a failed fetch can't push our built-in defaults over the durable copy.
+  // A later reload re-attempts the load.
+  if(gotSettings) markSettingsApplied();
   // Restore last scan results from server cache, then auto-scan if the LP tab
   // is active and a corp is set.
   restoreLastScans().then(restored=>{

@@ -2,15 +2,15 @@
 // INDUSTRY TAB
 // ══════════════════════════════════════════════════════════════════════════
 let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es:null,
-           groupsLoaded:false, profiles:[], profilesCleared:false,
-           favorites:new Set(), favoritesCleared:false, hidden:new Set(),
+           groupsLoaded:false, profiles:[],
+           favorites:new Set(), hidden:new Set(),
            timers:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{}, detailRuns:1,
            fillTotal:0, fillDone:0, tradeWeight:0.5,
            builds:[], buildsLoaded:false, buildsExpanded:new Set(),
            mode:"planner",
            sections:{fav:true, owned:true, hidden:false, all:true, builds:true}};
-try { IND.mode = localStorage.getItem("ind-mode")==="summary" ? "summary" : "planner"; } catch(e){}
+// IND.mode is seeded from server prefs by loadSettings (getPref 'ind_mode').
 // Bumped whenever a scan starts or a new fill begins, so an in-flight background
 // tradeability fill from a previous scan knows to abandon itself.
 let IND_FILL_TOKEN = 0;
@@ -71,7 +71,7 @@ function indSetColgroup(){
 }
 
 let IND_RESIZING=false;
-const _IND_RESIZE_CTX={get resizing(){return IND_RESIZING;},set resizing(v){IND_RESIZING=v;},tblSel:'#ind-tbl',get colw(){return IND.colw;},setCg:indSetColgroup,save(){saveIndPrefs();}};
+const _IND_RESIZE_CTX={get resizing(){return IND_RESIZING;},set resizing(v){IND_RESIZING=v;},tblSel:'#ind-tbl',get colw(){return IND.colw;},setCg:indSetColgroup,save(){setPref('ind.col_widths', IND.colw);}};
 function startIndResize(e,key){ startResize(e,key,_IND_RESIZE_CTX); }
 
 // ── Industry column drag-to-reorder (mirrors the LP store) ─────────────────
@@ -91,7 +91,7 @@ function reorderIndCols(srcKey,dstKey,after){
   if(after) to+=1;
   order.splice(to,0,srcKey);
   IND.colOrder=order;
-  saveIndPrefs();
+  setPref('ind.col_order', IND.colOrder);
   renderIndTable();
 }
 function wireIndColDrag(th){
@@ -132,7 +132,7 @@ function wireIndColDrag(th){
   function renderPicker(){
     picker.innerHTML=IND_COLS.map(c=>`<label><input type="checkbox" data-k="${c.k}"${IND.colVis[c.k]!==false?' checked':''}> ${c.t}</label>`).join("");
     picker.querySelectorAll("input").forEach(cb=>{
-      cb.onchange=()=>{ IND.colVis[cb.dataset.k]=cb.checked; renderIndTable(); saveIndPrefs(); };
+      cb.onchange=()=>{ IND.colVis[cb.dataset.k]=cb.checked; renderIndTable(); setPref('ind.col_vis', IND.colVis); };
     });
   }
   btn.onclick=e=>{
@@ -210,7 +210,8 @@ function renderIndTable(){
       const k=th.dataset.k;
       if(IND.sort.key===k) IND.sort.dir*=-1;
       else IND.sort={key:k, dir:k==="product_name"?1:-1};
-      saveIndPrefs();
+      setPref('ind.sort_key', IND.sort.key);
+      setPref('ind.sort_dir', IND.sort.dir);
       renderIndTable();
     };
   });
@@ -256,7 +257,7 @@ function renderIndTable(){
     if(rest.length) ch+=chip("all","All Items",rest.length);
     chips.innerHTML=ch;
     chips.querySelectorAll(".ind-chip").forEach(el=>{
-      el.onclick=()=>{ const k=el.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); saveLS(); };
+      el.onclick=()=>{ const k=el.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); setPref('ind.sections', IND.sections); };
     });
   } else { chips.innerHTML=""; }
 
@@ -339,7 +340,7 @@ function wireIndRows(tbody, ordered){
   // Section header click toggles collapse
   tbody.querySelectorAll("tr.ind-section").forEach(tr=>{
     if(tr._wired) return; tr._wired=true;
-    tr.onclick=()=>{ const k=tr.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); saveLS(); };
+    tr.onclick=()=>{ const k=tr.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); setPref('ind.sections', IND.sections); };
   });
   tbody.querySelectorAll("tr[data-ridx]").forEach(tr=>{
     if(tr._wired) return; tr._wired=true;
@@ -363,17 +364,16 @@ function wireIndRows(tbody, ordered){
 }
 
 function toggleFavorite(bp){
-  if(IND.favorites.has(bp)) IND.favorites.delete(bp); else IND.favorites.add(bp);
-  // Track a *deliberate* empty list so the server-side guard can tell an
-  // intentional "removed my last favorite" from a boot-race empty default
-  // (which must never overwrite the stored list). See _preserve_favorites.
-  IND.favoritesCleared = IND.favorites.size===0;
-  saveIndPrefs();
+  const on = !IND.favorites.has(bp);
+  if(on) IND.favorites.add(bp); else IND.favorites.delete(bp);
+  // Each favorite is its own server row, so adding/removing one is a single-row
+  // write that can't affect any other favorite (or setting). No blob, no guards.
+  setFavorite(bp, on);
   renderIndTable();
 }
 function toggleHidden(bp){
   if(IND.hidden.has(bp)) IND.hidden.delete(bp); else IND.hidden.add(bp);
-  saveIndPrefs();
+  setPref('ind.hidden_bps', [...IND.hidden]);
   renderIndTable();
 }
 
@@ -1079,10 +1079,10 @@ function refreshSellingBuilds(){
 // ── Industry Planner ⇄ Summary mode ──────────────────────────────────────────
 // The Industry tab has two modes sharing one tablewrap: the Planner (blueprint
 // catalogue + tracked-build cards) and the Summary (portfolio P&L of everything
-// crafted and sold — summary.js). The last-used mode is remembered locally.
+// crafted and sold — summary.js). The last-used mode is server-authoritative.
 function indSetMode(mode){
   IND.mode = (mode==="summary") ? "summary" : "planner";
-  try { localStorage.setItem("ind-mode", IND.mode); } catch(e){}
+  if(typeof setPref==="function") setPref('ind_mode', IND.mode);
   indApplyMode();
 }
 

@@ -8,7 +8,9 @@ let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es
            colw:{}, colVis:{}, detailRuns:1,
            fillTotal:0, fillDone:0, tradeWeight:0.5,
            builds:[], buildsLoaded:false, buildsExpanded:new Set(),
+           mode:"planner",
            sections:{fav:true, owned:true, hidden:false, all:true, builds:true}};
+try { IND.mode = localStorage.getItem("ind-mode")==="summary" ? "summary" : "planner"; } catch(e){}
 // Bumped whenever a scan starts or a new fill begins, so an in-flight background
 // tradeability fill from a previous scan knows to abandon itself.
 let IND_FILL_TOKEN = 0;
@@ -1069,6 +1071,39 @@ function refreshSellingBuilds(){
     if(changed) renderIndBuilds();
   }).catch(()=>{ _refreshingSelling=false; });
 }
+
+// ── Industry Planner ⇄ Summary mode ──────────────────────────────────────────
+// The Industry tab has two modes sharing one tablewrap: the Planner (blueprint
+// catalogue + tracked-build cards) and the Summary (portfolio P&L of everything
+// crafted and sold — summary.js). The last-used mode is remembered locally.
+function indSetMode(mode){
+  IND.mode = (mode==="summary") ? "summary" : "planner";
+  try { localStorage.setItem("ind-mode", IND.mode); } catch(e){}
+  indApplyMode();
+}
+
+// Reflect IND.mode into the DOM: toggle the two views + the mode buttons, hide
+// the scan-filter controls bar in Summary mode, and (re)load the roll-up on
+// entry. Safe to call whenever the Industry tab or auth state changes.
+function indApplyMode(){
+  const summary = IND.mode==="summary";
+  document.querySelectorAll(".ind-mode-btn").forEach(b=>
+    b.classList.toggle("active", b.dataset.mode===IND.mode));
+  const planV=$("#ind-planner-view"), sumV=$("#ind-summary-view");
+  if(planV) planV.classList.toggle("hidden", summary);
+  if(sumV) sumV.classList.toggle("hidden", !summary);
+  // The scan-filter controls belong to the Planner only.
+  const ctrls=$("#ind-controls");
+  if(ctrls && ACTIVE_TAB==="ind" && AUTH.loggedIn) ctrls.classList.toggle("hidden", summary);
+  if(summary && typeof loadSummary==="function") loadSummary();
+}
+
+(function(){
+  if(!document.querySelectorAll) return;
+  document.querySelectorAll(".ind-mode-btn").forEach(b=>{
+    b.onclick=()=>indSetMode(b.dataset.mode);
+  });
+})();
 
 function _patchBuildLink(b, fields){
   const body=Object.assign({id:b.id}, fields);

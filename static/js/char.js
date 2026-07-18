@@ -79,15 +79,13 @@ function renderAuthChip(){
   $("#char-tab-btn").classList.toggle("hidden", !AUTH.loggedIn);
   $("#char-empty").classList.toggle("hidden", AUTH.loggedIn);
   $("#char-body").classList.toggle("hidden", !AUTH.loggedIn);
-  const sumBtn=$("#sum-tab-btn");
-  if(sumBtn) sumBtn.classList.toggle("hidden", !AUTH.loggedIn);
   if(typeof expApplyAuth==="function") expApplyAuth();
   if(AUTH.loggedIn){
     const active=AUTH.characters.find(c=>c.character_id===AUTH.activeCharId);
     $("#chip-name").textContent=(active?active.name:AUTH.name)||"Capsuleer";
     renderCharDropdown();
   }
-  if((ACTIVE_TAB==="char"||ACTIVE_TAB==="sum") && !AUTH.loggedIn) switchTab("ind");
+  if(ACTIVE_TAB==="char" && !AUTH.loggedIn) switchTab("ind");
   else updateIndGate();
 }
 function renderCharDropdown(){
@@ -256,8 +254,9 @@ async function _doRefreshCharData(force){
     if(IND.buildsLoaded) reconcileBuilds(); else if(typeof loadIndBuilds==="function") loadIndBuilds();
   }
   // Fresh sale fills accrue server-side each refresh; re-pull the portfolio
-  // roll-up when the Summary tab is open so its totals stay live.
-  if(ACTIVE_TAB==="sum" && typeof loadSummary==="function") loadSummary();
+  // roll-up when the Industry tab's Summary mode is showing so its totals stay live.
+  if(ACTIVE_TAB==="ind" && typeof IND!=="undefined" && IND.mode==="summary"
+     && typeof loadSummary==="function") loadSummary();
   // Corp field was locked during the char-data fetch; unlock now that data
   // arrived. Clear the loading spinner on both fields — updateMyLpBadge() above
   // has already set the LP budget, and renderCharData() restored the corp value.

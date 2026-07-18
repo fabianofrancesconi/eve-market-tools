@@ -456,12 +456,12 @@
   /* ── Exploration journal (live tracking + session history) ──────── */
   .exp-modebar { display:flex; align-items:center; padding:10px 16px 0; }
   .exp-modeswitch { display:flex; gap:4px; }
-  .exp-mode-btn { padding:7px 16px; border:none; background:none; cursor:pointer;
+  .exp-mode-btn, .ind-mode-btn { padding:7px 16px; border:none; background:none; cursor:pointer;
     color:var(--dim); font-size:13.5px; font-weight:600; border-radius:6px 6px 0 0;
     border-bottom:2px solid transparent; margin-bottom:-2px; transition:all .15s;
     display:flex; align-items:center; gap:6px; }
-  .exp-mode-btn:hover { color:var(--fg); background:var(--panel2); }
-  .exp-mode-btn.active { color:var(--cyan); border-bottom-color:var(--cyan); background:var(--panel2); }
+  .exp-mode-btn:hover, .ind-mode-btn:hover { color:var(--fg); background:var(--panel2); }
+  .exp-mode-btn.active, .ind-mode-btn.active { color:var(--cyan); border-bottom-color:var(--cyan); background:var(--panel2); }
   .exp-live-dot { width:8px; height:8px; border-radius:50%; background:var(--green2);
     display:inline-block; box-shadow:0 0 6px var(--green2); }
   .exp-live-dot.exp-live-dot-paused { background:var(--yellow); box-shadow:0 0 6px var(--yellow); }

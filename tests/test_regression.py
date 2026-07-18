@@ -1484,3 +1484,6 @@ class TestIndDetailT2RegionId:
         detail = lp_web.do_ind_detail({"blueprint_id": ["700"]})
         assert detail["region_name"] == lp_web.REGION_NAMES.get(10000002)
         assert detail["esi_prices"] is False
+        # station_id is exposed so tracked-build snapshots can re-price against
+        # the same hub when comparing frozen values to current prices.
+        assert detail["station_id"] == lp_web.JITA_STATION_ID

@@ -599,12 +599,15 @@ function renderIndDetail(d, container){
   // backing the Character tab KPI — broken out per product there.
   const prodTrack=(AUTH.loggedIn && AUTH.data && AUTH.data.runs_tracked)
     ? AUTH.data.runs_tracked.by_product[String(d.product.type_id)] : null;
-  // Break-even sell price: instant sale only pays sales tax (no broker fee), so
-  // qty*price*(1-sales_tax) = total_cost solved for price. Surfaced only when
-  // the instant sale is currently unprofitable.
+  // Break-even sell price per unit: the price that makes revenue exactly cover
+  // total cost, solving qty*price*(1-fees) = total_cost. An instant sale to buy
+  // orders pays sales tax only; a list (sell) order also pays the broker fee.
   const minPriceInstant=(d.profit_instant!=null && d.profit_instant<0
       && d.total_cost!=null && qty>0 && d.sales_tax!=null && d.sales_tax<1)
     ? d.total_cost/(qty*(1-d.sales_tax)) : null;
+  const listFee=(d.sales_tax||0)+(d.broker_fee||0);
+  const minPriceList=(d.total_cost!=null && qty>0 && listFee<1)
+    ? d.total_cost/(qty*(1-listFee)) : null;
   const tier=d.product.tech_level?("T"+d.product.tech_level):"";
   const esiOwned = !!d.owned_me_te;
   const isBpo = esiOwned && (d.owned_me_te.is_bpo || d.owned_me_te.max_runs===-1);
@@ -772,6 +775,7 @@ function renderIndDetail(d, container){
             <div class="ind-d-card-label">Profit — sell (list)</div>
             <div class="ind-d-card-val ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
             <div class="ind-d-card-sub">${qtyBatchTot.toLocaleString()}× @ ask ${isk(d.ask)} − tax ${fmtPct1(d.sales_tax)} − broker ${fmtPct1(d.broker_fee)} − cost ${isk(batchCost)} = ${isk(batchProfitL)}</div>
+            ${minPriceList!=null?`<div class="ind-d-card-sub ind-d-card-warn">Break-even sell: ${isk(minPriceList)}/unit</div>`:""}
           </div>
           <div class="ind-d-card">
             <div class="ind-d-card-label">Fees &amp; taxes</div>
@@ -1233,21 +1237,23 @@ function _buildDetailHtml(b){
         <div class="ind-d-card-label">Sell — list</div>
         <div class="ind-d-card-val">${isk(sellL)}</div>
         <div class="ind-d-card-sub">${qtyTot!=null?qtyTot.toLocaleString()+"× @ ask "+isk(d.ask):""}</div>
+        <div class="ind-d-card-sub ind-d-card-warn">${beL!=null?`break-even ${isk(beL)}/unit`:""}</div>
       </div>
       <div class="ind-d-card">
         <div class="ind-d-card-label">Sell — instant</div>
         <div class="ind-d-card-val">${isk(sellI)}</div>
         <div class="ind-d-card-sub">${qtyTot!=null?qtyTot.toLocaleString()+"× @ bid "+isk(d.bid):""}</div>
+        <div class="ind-d-card-sub ind-d-card-warn">${beI!=null?`break-even ${isk(beI)}/unit`:""}</div>
       </div>
       <div class="ind-d-card">
         <div class="ind-d-card-label">Profit — list</div>
         <div class="ind-d-card-val ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
-        <div class="ind-d-card-sub">${beL!=null?`break-even ${isk(beL)}/unit`:"anticipated, frozen"}</div>
+        <div class="ind-d-card-sub">anticipated, frozen</div>
       </div>
       <div class="ind-d-card">
         <div class="ind-d-card-label">Profit — instant</div>
         <div class="ind-d-card-val ${pn(batchProfitI)}">${isk(batchProfitI)}</div>
-        <div class="ind-d-card-sub">${beI!=null?`break-even ${isk(beI)}/unit`:"anticipated, frozen"}</div>
+        <div class="ind-d-card-sub">anticipated, frozen</div>
       </div>
     </div>
     <div class="ind-build-costline">
@@ -1255,6 +1261,10 @@ function _buildDetailHtml(b){
       <span>Job install <b>${isk(jobCostBatch)}</b></span>
       ${inventCostBatch!=null?`<span>Invention <b>${isk(inventCostBatch)}</b></span>`:""}
       <span>Total cost <b>${isk(batchCost)}</b></span>
+    </div>
+    <div class="ind-build-nowrow">
+      <button class="ind-build-now" data-id="${b.id}" title="Fetch the current market prices and compare them against the frozen snapshot">↻ Compare to prices now</button>
+      <span class="ind-build-nowout"></span>
     </div>
     <details class="ind-build-mats">
       <summary>Materials — ${n.toLocaleString()} run(s), at frozen prices</summary>
@@ -1280,6 +1290,45 @@ function _wireBuildCard(box, b){
   };
   const lc=card.querySelector(".ind-build-linkclose");
   if(lc) lc.onclick=()=>acceptCloseJob(b.id, lc.dataset.job, parseInt(lc.dataset.runs,10));
+  const now=card.querySelector(".ind-build-now");
+  if(now) now.onclick=()=>compareBuildToNow(b, now);
+}
+
+// Fetch current market prices for a tracked build and compare its frozen sell
+// value against what the batch would fetch right now. Only market prices move —
+// the snapshot's frozen job rate / taxes / broker are replayed so the delta is
+// purely price movement, not a settings change.
+function compareBuildToNow(b, btn){
+  const d=b.snapshot||{}, n=Math.max(1, b.runs||1);
+  const out=btn.parentElement.querySelector(".ind-build-nowout");
+  btn.disabled=true; const label=btn.textContent; btn.textContent="Fetching…";
+  const isk=v=>v===null||v===undefined?"—":fmtISK(v);
+  const p=new URLSearchParams({
+    blueprint_id:String(d.blueprint_id),
+    station:String(d.station_id||""),
+    job_rate:String(((d.job_rate||0)*100)),
+    sales_tax:String(((d.sales_tax||0)*100)),
+    broker:String(((d.broker_fee||0)*100)),
+    runs:"1", refresh_prices:"1",
+  });
+  fetch("/api/ind/detail?"+p).then(r=>r.json()).then(fresh=>{
+    btn.disabled=false; btn.textContent=label;
+    if(!fresh||fresh.error){ out.textContent="⚠ "+((fresh&&fresh.error)||"fetch failed"); return; }
+    const qtyTot=(d.product&&d.product.quantity!=null)?d.product.quantity*n:null;
+    const thenL=(d.ask!=null&&qtyTot!=null)?d.ask*qtyTot:null;
+    const nowL=(fresh.ask!=null&&qtyTot!=null)?fresh.ask*qtyTot:null;
+    const thenI=(d.bid!=null&&qtyTot!=null)?d.bid*qtyTot:null;
+    const nowI=(fresh.bid!=null&&qtyTot!=null)?fresh.bid*qtyTot:null;
+    const delta=(then,now_)=>{
+      if(then==null||now_==null) return "";
+      const diff=now_-then, cls=diff>0?"pos":(diff<0?"neg":"");
+      const pct=then?` (${diff>0?"+":""}${(diff/then*100).toFixed(1)}%)`:"";
+      return ` <b class="${cls}">${diff>0?"+":""}${isk(diff)}${pct}</b>`;
+    };
+    out.innerHTML=`<span class="ind-build-nowlbl">now vs frozen —</span>`
+      +` list ${isk(nowL)}${delta(thenL,nowL)} ·`
+      +` instant ${isk(nowI)}${delta(thenI,nowI)}`;
+  }).catch(()=>{ btn.disabled=false; btn.textContent=label; out.textContent="⚠ fetch failed"; });
 }
 
 // User accepted a close-match suggestion: link the build to the picked job and

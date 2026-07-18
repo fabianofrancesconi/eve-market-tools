@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.126.0"
+__version__ = "1.127.0"
 
 import argparse
 import base64
@@ -2742,6 +2742,7 @@ def do_ind_detail(q):
     names = resolve_names(type_ids, SESSION, CACHE_DIR)
     detail = ind_core.build_industry_detail(bp, prices, names, volumes, params)
     detail["product"]["tech_level"] = bp.get("tech_level")
+    detail["station_id"] = station_id
     detail["station_name"] = TRADE_HUBS[station_id]["name"]
     detail["region_name"] = REGION_NAMES.get(region_id, f"region {region_id}")
     detail["bp_market"] = bp_market

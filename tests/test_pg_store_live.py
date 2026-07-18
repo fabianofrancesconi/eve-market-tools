@@ -312,7 +312,7 @@ class TestLpWebIntegration:
         a1.characters[1] = {"character_id": 1, "name": "A"}
         a2.characters[2] = {"character_id": 2, "name": "B"}
         a1.active_char_id, a2.active_char_id = 1, 2
-        lp.save_account_settings(a1, {"active_tab": "lp"})
-        lp.save_account_settings(a2, {"active_tab": "ind"})
-        assert lp.load_account_settings(a1) == {"active_tab": "lp"}
-        assert lp.load_account_settings(a2) == {"active_tab": "ind"}
+        lp.pref_set(a1, "active_tab", "lp")
+        lp.pref_set(a2, "active_tab", "ind")
+        assert lp.prefs_all(a1) == {"active_tab": "lp"}
+        assert lp.prefs_all(a2) == {"active_tab": "ind"}

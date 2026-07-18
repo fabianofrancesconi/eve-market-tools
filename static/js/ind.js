@@ -1231,6 +1231,7 @@ function _buildDetailHtml(b){
   const bfee=(d.broker_fee!=null)?d.broker_fee:0;
   const beI=(batchCost!=null&&qtyTot>0&&(1-stax)>0)?batchCost/(qtyTot*(1-stax)):null;
   const beL=(batchCost!=null&&qtyTot>0&&(1-stax-bfee)>0)?batchCost/(qtyTot*(1-stax-bfee)):null;
+  const frozen=b.created_at?`frozen ${new Date(b.created_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'})}`:"frozen";
   return `<div class="ind-build-detail">
     <div class="ind-build-headcards">
       <div class="ind-d-card">
@@ -1238,22 +1239,26 @@ function _buildDetailHtml(b){
         <div class="ind-d-card-val">${isk(sellL)}</div>
         <div class="ind-d-card-sub">${qtyTot!=null?qtyTot.toLocaleString()+"× @ ask "+isk(d.ask):""}</div>
         <div class="ind-d-card-sub ind-d-card-warn">${beL!=null?`break-even ${isk(beL)}/unit`:""}</div>
+        <div class="ind-d-card-now" data-k="sellL"></div>
       </div>
       <div class="ind-d-card">
         <div class="ind-d-card-label">Sell — instant</div>
         <div class="ind-d-card-val">${isk(sellI)}</div>
         <div class="ind-d-card-sub">${qtyTot!=null?qtyTot.toLocaleString()+"× @ bid "+isk(d.bid):""}</div>
         <div class="ind-d-card-sub ind-d-card-warn">${beI!=null?`break-even ${isk(beI)}/unit`:""}</div>
+        <div class="ind-d-card-now" data-k="sellI"></div>
       </div>
       <div class="ind-d-card">
         <div class="ind-d-card-label">Profit — list</div>
         <div class="ind-d-card-val ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
-        <div class="ind-d-card-sub">anticipated, frozen</div>
+        <div class="ind-d-card-sub">${frozen}</div>
+        <div class="ind-d-card-now" data-k="profitL"></div>
       </div>
       <div class="ind-d-card">
         <div class="ind-d-card-label">Profit — instant</div>
         <div class="ind-d-card-val ${pn(batchProfitI)}">${isk(batchProfitI)}</div>
-        <div class="ind-d-card-sub">anticipated, frozen</div>
+        <div class="ind-d-card-sub">${frozen}</div>
+        <div class="ind-d-card-now" data-k="profitI"></div>
       </div>
     </div>
     <div class="ind-build-costline">
@@ -1294,12 +1299,13 @@ function _wireBuildCard(box, b){
   if(now) now.onclick=()=>compareBuildToNow(b, now);
 }
 
-// Fetch current market prices for a tracked build and compare its frozen sell
-// value against what the batch would fetch right now. Only market prices move —
-// the snapshot's frozen job rate / taxes / broker are replayed so the delta is
-// purely price movement, not a settings change.
+// Fetch current market prices for a tracked build and compare its frozen values
+// against what the batch would fetch right now, filling the "now" slot in each
+// card (per-unit and total). Only market prices move — the snapshot's frozen job
+// rate / taxes / broker are replayed so the delta is purely price movement.
 function compareBuildToNow(b, btn){
   const d=b.snapshot||{}, n=Math.max(1, b.runs||1);
+  const card=btn.closest(".ind-build-detail");
   const out=btn.parentElement.querySelector(".ind-build-nowout");
   btn.disabled=true; const label=btn.textContent; btn.textContent="Fetching…";
   const isk=v=>v===null||v===undefined?"—":fmtISK(v);
@@ -1315,19 +1321,40 @@ function compareBuildToNow(b, btn){
     btn.disabled=false; btn.textContent=label;
     if(!fresh||fresh.error){ out.textContent="⚠ "+((fresh&&fresh.error)||"fetch failed"); return; }
     const qtyTot=(d.product&&d.product.quantity!=null)?d.product.quantity*n:null;
-    const thenL=(d.ask!=null&&qtyTot!=null)?d.ask*qtyTot:null;
-    const nowL=(fresh.ask!=null&&qtyTot!=null)?fresh.ask*qtyTot:null;
-    const thenI=(d.bid!=null&&qtyTot!=null)?d.bid*qtyTot:null;
-    const nowI=(fresh.bid!=null&&qtyTot!=null)?fresh.bid*qtyTot:null;
-    const delta=(then,now_)=>{
-      if(then==null||now_==null) return "";
-      const diff=now_-then, cls=diff>0?"pos":(diff<0?"neg":"");
-      const pct=then?` (${diff>0?"+":""}${(diff/then*100).toFixed(1)}%)`:"";
-      return ` <b class="${cls}">${diff>0?"+":""}${isk(diff)}${pct}</b>`;
+    // Frozen cost is held fixed; current profit = current revenue − frozen cost.
+    const cost=_batchEconomics(d, n).cost;
+    const stax=d.sales_tax||0, bfee=d.broker_fee||0;
+    const revL=(fresh.ask!=null&&qtyTot!=null)?fresh.ask*qtyTot*(1-stax-bfee):null;
+    const revI=(fresh.bid!=null&&qtyTot!=null)?fresh.bid*qtyTot*(1-stax):null;
+    const vals={
+      sellL:{then:d.ask, now:fresh.ask, tot:qtyTot},
+      sellI:{then:d.bid, now:fresh.bid, tot:qtyTot},
+      profitL:{thenT:d.profit_patient!=null?d.profit_patient*n:null,
+               nowT:(revL!=null&&cost!=null)?revL-cost:null},
+      profitI:{thenT:d.profit_instant!=null?d.profit_instant*n:null,
+               nowT:(revI!=null&&cost!=null)?revI-cost:null},
     };
-    out.innerHTML=`<span class="ind-build-nowlbl">now vs frozen —</span>`
-      +` list ${isk(nowL)}${delta(thenL,nowL)} ·`
-      +` instant ${isk(nowI)}${delta(thenI,nowI)}`;
+    const arrow=diff=>diff>0?"▲":(diff<0?"▼":"");
+    const clsOf=diff=>diff>0?"pos":(diff<0?"neg":"");
+    Object.keys(vals).forEach(k=>{
+      const slot=card.querySelector(`.ind-d-card-now[data-k="${k}"]`);
+      if(!slot) return;
+      const v=vals[k];
+      let nowT, thenT, nowU, thenU;
+      if(v.tot!=null){ nowU=v.now; thenU=v.then;
+        nowT=(v.now!=null)?v.now*v.tot:null; thenT=(v.then!=null)?v.then*v.tot:null; }
+      else { nowT=v.nowT; thenT=v.thenT;
+        nowU=(v.nowT!=null&&qtyTot)?v.nowT/qtyTot:null;
+        thenU=(v.thenT!=null&&qtyTot)?v.thenT/qtyTot:null; }
+      if(nowT==null){ slot.innerHTML=`<span class="ind-build-nowlbl">now</span> —`; return; }
+      const diff=(thenT!=null)?nowT-thenT:null;
+      const cls=diff!=null?clsOf(diff):"";
+      const pct=(thenT)?` ${arrow(diff)}${Math.abs(diff/thenT*100).toFixed(1)}%`:"";
+      slot.innerHTML=`<span class="ind-build-nowlbl">now</span> `
+        +`<b>${isk(nowT)}</b>${nowU!=null?` <span class="ind-d-card-nowunit">(${isk(nowU)}/u)</span>`:""}`
+        +(diff!=null?` <span class="${cls}">${diff>0?"+":""}${isk(diff)}${pct}</span>`:"");
+    });
+    out.innerHTML=`<span class="ind-build-nowlbl">prices as of now</span>`;
   }).catch(()=>{ btn.disabled=false; btn.textContent=label; out.textContent="⚠ fetch failed"; });
 }
 

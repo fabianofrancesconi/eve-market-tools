@@ -994,8 +994,18 @@
   .ind-build-eta, .ind-build-done { color:var(--dim); font-size:11.5px; margin-left:6px; }
   .ind-build-done { color:var(--green2,#4caf76); }
   .ind-build-detail { margin-top:10px; padding-top:8px; border-top:1px solid var(--line2); }
-  .ind-build-headcards { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  .ind-build-headcards { display:grid; grid-template-columns:repeat(4,1fr); gap:10px;
+    align-items:stretch; }
   @media (max-width:720px){ .ind-build-headcards { grid-template-columns:repeat(2,1fr); } }
+  /* Cards stretch to equal height so each card's "now" slot lines up in a row. */
+  .ind-build-headcards .ind-d-card { display:flex; flex-direction:column; }
+  .ind-d-card-now { margin-top:auto; padding-top:6px; font-size:11px; color:var(--fg);
+    border-top:1px dashed var(--line2); }
+  .ind-d-card-now:empty { display:none; }
+  .ind-d-card-now b { font-weight:700; }
+  .ind-d-card-now .pos { color:var(--green2,#4caf76); }
+  .ind-d-card-now .neg { color:var(--red); }
+  .ind-d-card-nowunit { color:var(--dim); }
   .ind-build-costline { display:flex; flex-wrap:wrap; gap:6px 20px; margin-top:8px;
     font-size:11.5px; color:var(--dim); }
   .ind-build-costline b { color:var(--fg); font-weight:600; margin-left:4px; }

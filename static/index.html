@@ -309,6 +309,10 @@
         <!-- Journal sidebar: the session list (populated by track.js) -->
         <div id="exp-sidebar-journal" class="hidden">
           <div class="exp-browse-header">Sessions</div>
+          <!-- Start lives here, not in a session's card: it creates a NEW session,
+               so it must never sit on top of a closed one. Shown only when nothing
+               is live (track.js toggles it). -->
+          <button id="track-start" class="auth-btn primary-btn exp-start-btn hidden">＋ Start session</button>
           <div id="exp-session-list" class="exp-session-list"></div>
         </div>
       </div>
@@ -353,7 +357,6 @@
               <div class="exp-live-head">
                 <div id="exp-live-status" class="track-status"></div>
                 <div class="track-controls">
-                  <button id="track-start" class="auth-btn primary-btn">Start session</button>
                   <button id="track-pause" class="auth-btn hidden">Pause</button>
                   <button id="track-resume" class="auth-btn hidden">Resume</button>
                   <button id="track-stop" class="auth-btn hidden">Stop &amp; finish</button>

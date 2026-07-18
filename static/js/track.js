@@ -174,9 +174,8 @@ function renderLiveControls(){
   const active=TRACK.state==="active", paused=TRACK.state==="paused", stopped=TRACK.state==="stopped";
   // Pause/Resume/Stop act on the ONE live session, so they belong to that
   // session — we only surface them when it's the one on screen. Viewing a past
-  // session shows no controls (Resume appears only on the session that's
-  // actually paused). Start is the exception: it creates a session, so it shows
-  // whenever nothing is live, regardless of what's selected.
+  // session shows no controls. Start creates a NEW session, so it lives in the
+  // sidebar (never on a session's card) and shows whenever nothing is live.
   const viewingLive = !stopped && TRACK.liveRunId!=null && TRACK.selRunId===TRACK.liveRunId;
   const btn=(id,show)=>{ const el=$(id); if(el) el.classList.toggle("hidden", !show); };
   btn("#track-start", stopped);
@@ -184,18 +183,17 @@ function renderLiveControls(){
   btn("#track-resume", viewingLive && paused);
   btn("#track-stop", viewingLive && !stopped);
 
+  // The status line only ever describes the live session, so it shows solely when
+  // that session is the one on screen. A closed session on screen shows no live
+  // card — the coloured dot beside the live session in the list is its cue — so
+  // "live session paused/in progress" can never appear to belong to a closed one.
   const st=$("#exp-live-status");
   if(st){
-    if(stopped) st.textContent="No live session — start one to log your route.";
-    else if(viewingLive && active) st.textContent=`● Live${TRACK.online===false?" (waiting for pilot to come online…)":""}`;
+    if(viewingLive && active) st.textContent=`● Live${TRACK.online===false?" (waiting for pilot to come online…)":""}`;
     else if(viewingLive && paused) st.textContent=TRACK.pauseReason==="auto"
       ? "⏸ Auto-paused — pilot offline. Resumes automatically when you're back in game."
       : "⏸ Paused.";
-    // A live/paused session exists but a different (past) session is on screen.
-    // Just state the live session's condition — the coloured dot beside it in the
-    // list is the cue to click through to its controls; an imperative here reads as
-    // if it applied to the session being viewed.
-    else st.textContent=active ? "● Live session in progress." : "⏸ Live session paused.";
+    else st.textContent="";
     st.className="track-status"+((viewingLive&&active)?" track-live":"");
   }
   const err=$("#track-error");
@@ -203,6 +201,10 @@ function renderLiveControls(){
     ? "Location access not granted yet — log out and back in to authorise the new permission."
     : null);
   if(err){ err.classList.toggle("hidden", !msg); if(msg) err.textContent=msg; }
+  // Hide the whole live card unless the live session is on screen or there's an
+  // error to surface — otherwise it's an empty box atop a closed session.
+  const card=$("#exp-live");
+  if(card) card.classList.toggle("hidden", !viewingLive && !msg);
 }
 
 function renderSessionList(){

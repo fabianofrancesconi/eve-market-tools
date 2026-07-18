@@ -476,6 +476,7 @@
   .track-error { color:var(--yellow); background:var(--panel); border:1px solid var(--line2);
     border-radius:6px; padding:10px 14px; margin-top:12px; font-size:13px; line-height:1.5; }
 
+  .exp-start-btn { width:100%; margin-bottom:10px; }
   .exp-session-list { display:flex; flex-direction:column; gap:4px; }
   .exp-session-item { text-align:left; background:none; border:1px solid transparent;
     border-radius:6px; padding:8px 10px; cursor:pointer; color:var(--fg);

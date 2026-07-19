@@ -149,6 +149,11 @@ async function loadSettings(){
           expRenderRecent();
         }
       }catch(e){} }
+      // Exploration journal min-dwell filter. track.js seeds this from its own
+      // DOMContentLoaded handler, but that fires before this async /api/settings
+      // fetch resolves — so re-apply it here now the real prefs are in, or the
+      // saved value is silently lost on every reload.
+      if(typeof loadTrackMinDwell==="function"){ loadTrackMinDwell(); if(typeof syncMinDwellInputs==="function") syncMinDwellInputs(); }
       // View modes (Industry Planner/Summary, Exploration Guides/Journal) and the
       // Abyss selections are all server-authoritative now.
       if(typeof IND!=="undefined" && (s.ind_mode==="summary"||s.ind_mode==="planner")) IND.mode=s.ind_mode;

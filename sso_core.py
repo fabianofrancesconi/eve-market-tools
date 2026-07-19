@@ -272,12 +272,15 @@ def _http_date_to_epoch(value):
 
 def fetch_assets(token, character_id, session):
     """([{item_id, type_id, quantity, location_id, location_flag, is_singleton, ...},
-    …], last_modified) — every asset the character owns, across all locations, plus
-    the epoch of ESI's Last-Modified header (when CCP last refreshed the asset data,
-    NOT when we fetched it). Requires esi-assets.read_assets.v1. Paginated (X-Pages).
-    Note: ESI caches assets ~1h and only refreshes on server-side asset changes, so
-    freshly looted items lag — last_modified reflects that real data age."""
-    out, page, last_modified = [], 1, None
+    …], last_modified, expires) — every asset the character owns, across all
+    locations, plus two epochs from ESI's cache headers: last_modified (when CCP last
+    refreshed the asset data, NOT when we fetched it) and expires (when ESI's cache
+    entry lapses, i.e. the earliest a re-fetch could return newer data). Both are
+    taken from the first page. Requires esi-assets.read_assets.v1. Paginated
+    (X-Pages). Note: ESI caches assets ~1h and only refreshes on server-side asset
+    changes, so freshly looted items lag — last_modified reflects that real data age,
+    and expires lets a caller schedule its next poll for when fresh data is due."""
+    out, page, last_modified, expires = [], 1, None, None
     while page <= 100:
         r = session.get(f"{ESI}/characters/{character_id}/assets/",
                         params={"page": page},
@@ -285,6 +288,7 @@ def fetch_assets(token, character_id, session):
         r.raise_for_status()
         if page == 1:
             last_modified = _http_date_to_epoch(r.headers.get("Last-Modified"))
+            expires = _http_date_to_epoch(r.headers.get("Expires"))
         batch = r.json()
         if not batch:
             break
@@ -292,7 +296,7 @@ def fetch_assets(token, character_id, session):
         if page >= int(r.headers.get("X-Pages", 1)):
             break
         page += 1
-    return out, last_modified
+    return out, last_modified, expires
 
 
 # type_ids that are NEVER real ship haulage even when ESI reports them at the

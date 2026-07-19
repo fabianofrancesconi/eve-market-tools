@@ -377,7 +377,8 @@ class TestJournalHandlers:
 
         monkeypatch.setattr(lp_web.sso_core, "fetch_ship",
                             lambda t, c, s: {"ship_item_id": 500, "ship_name": "Heron"})
-        # fetch_assets returns (assets, last_modified) — the ESI data age.
+        # fetch_assets returns (assets, last_modified, expires) — ESI data age + when
+        # a re-fetch could return newer data.
         monkeypatch.setattr(lp_web.sso_core, "fetch_assets", lambda t, c, s: ([
             {"item_id": 1, "type_id": 34, "quantity": 100,
              "location_id": 500, "location_flag": "Cargo"},
@@ -386,7 +387,7 @@ class TestJournalHandlers:
             # A fitted module — must not be valued.
             {"item_id": 3, "type_id": 578, "quantity": 1,
              "location_id": 500, "location_flag": "HiSlot0"},
-        ], 1784203200.0))
+        ], 1784203200.0, 1784206800.0))
         monkeypatch.setattr(lp_web, "fetch_prices", lambda tids, s: {
             34: {"buy_max": 5.0, "sell_min": 6.0},
             35: {"buy_max": 100.0, "sell_min": 120.0},
@@ -401,6 +402,8 @@ class TestJournalHandlers:
         assert {i["name"] for i in out["items"]} == {"Tritanium", "Pyerite"}
         # The stamp is ESI's Last-Modified, not the fetch time.
         assert out["cargo_scanned_at"] == 1784203200.0
+        # cargo_expires is ESI's Expires — when a re-fetch could return newer data.
+        assert out["cargo_expires"] == 1784206800.0
         # The trail row now carries the computed value and the scan timestamp.
         row = lp_web._query_trail(acct, 1, run_id=run_id)[0]
         assert row["cargo_isk"] == out["total"]
@@ -414,7 +417,7 @@ class TestJournalHandlers:
         lp_web._append_trail(acct, 1, 100.0, run_id, 30000142, "Jita", 0.9)
         monkeypatch.setattr(lp_web.sso_core, "fetch_ship",
                             lambda t, c, s: {"ship_item_id": 500, "ship_name": "Heron"})
-        monkeypatch.setattr(lp_web.sso_core, "fetch_assets", lambda t, c, s: ([], None))
+        monkeypatch.setattr(lp_web.sso_core, "fetch_assets", lambda t, c, s: ([], None, None))
         out = lp_web.do_track_cargo_fetch({"entered_at": ["100.0"]})
         assert out["ok"] is True and out["total"] == 0.0
         assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["cargo_isk"] == 0.0
@@ -428,7 +431,7 @@ class TestJournalHandlers:
         lp_web._append_trail(acct, 1, 100.0, run_id, 30000142, "Jita", 0.9)
         monkeypatch.setattr(lp_web.sso_core, "fetch_ship",
                             lambda t, c, s: {"ship_item_id": 500, "ship_name": "Heron"})
-        monkeypatch.setattr(lp_web.sso_core, "fetch_assets", lambda t, c, s: ([], None))
+        monkeypatch.setattr(lp_web.sso_core, "fetch_assets", lambda t, c, s: ([], None, None))
         lp_web.do_track_cargo_fetch({"entered_at": ["100.0"]})
         assert lp_web._query_trail(acct, 1, run_id=run_id)[0]["cargo_scanned_at"] > 0
         # A hand-typed value must clear the "scanned" stamp — it's no longer an ESI scan.
@@ -447,7 +450,7 @@ class TestJournalHandlers:
                             lambda t, c, s: {"ship_item_id": 500, "ship_name": "Heron"})
         monkeypatch.setattr(lp_web.sso_core, "fetch_assets", lambda t, c, s: ([
             {"item_id": 1, "type_id": 99, "quantity": 3,
-             "location_id": 500, "location_flag": "Cargo"}], None))
+             "location_id": 500, "location_flag": "Cargo"}], None, None))
         monkeypatch.setattr(lp_web, "fetch_prices", lambda tids, s: {99: {}})
         monkeypatch.setattr(lp_web, "resolve_names", lambda tids, s, cd: {99: "Mystery Loot"})
         out = lp_web.do_track_cargo_fetch({"entered_at": ["100.0"]})

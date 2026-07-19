@@ -278,11 +278,14 @@ def test_fetch_assets_url_headers_and_last_modified():
                "location_id": 999, "location_flag": "Cargo"}]
     sess = _get_session(assets)
     sess.get.return_value.headers = {"X-Pages": "1",
-                                     "Last-Modified": "Wed, 16 Jul 2026 12:00:00 GMT"}
-    out, last_modified = sso_core.fetch_assets("TOKEN", 42, sess)
+                                     "Last-Modified": "Wed, 16 Jul 2026 12:00:00 GMT",
+                                     "Expires": "Wed, 16 Jul 2026 13:00:00 GMT"}
+    out, last_modified, expires = sso_core.fetch_assets("TOKEN", 42, sess)
     assert out == assets
     # Last-Modified is parsed to an epoch (the real ESI data age).
     assert last_modified == pytest.approx(1784203200.0, abs=1)
+    # Expires is parsed too (when a re-fetch could return newer data — ~1h later).
+    assert expires == pytest.approx(1784206800.0, abs=1)
     url = sess.get.call_args[0][0]
     assert url.endswith("/characters/42/assets/")
     assert sess.get.call_args[1]["headers"]["Authorization"] == "Bearer TOKEN"
@@ -291,14 +294,16 @@ def test_fetch_assets_url_headers_and_last_modified():
 def test_fetch_assets_missing_last_modified_is_none():
     sess = _get_session([{"item_id": 1, "type_id": 34}])
     sess.get.return_value.headers = {"X-Pages": "1"}
-    _out, last_modified = sso_core.fetch_assets("TOKEN", 42, sess)
+    _out, last_modified, expires = sso_core.fetch_assets("TOKEN", 42, sess)
     assert last_modified is None
+    assert expires is None
 
 
 def test_fetch_assets_paginates():
     page1 = MagicMock()
     page1.json.return_value = [{"item_id": 1, "type_id": 34}]
-    page1.headers = {"X-Pages": "2", "Last-Modified": "Wed, 16 Jul 2026 12:00:00 GMT"}
+    page1.headers = {"X-Pages": "2", "Last-Modified": "Wed, 16 Jul 2026 12:00:00 GMT",
+                     "Expires": "Wed, 16 Jul 2026 13:00:00 GMT"}
     page1.raise_for_status.return_value = None
     page2 = MagicMock()
     page2.json.return_value = [{"item_id": 2, "type_id": 35}]
@@ -306,11 +311,12 @@ def test_fetch_assets_paginates():
     page2.raise_for_status.return_value = None
     sess = MagicMock()
     sess.get.side_effect = [page1, page2]
-    out, last_modified = sso_core.fetch_assets("TOKEN", 42, sess)
+    out, last_modified, expires = sso_core.fetch_assets("TOKEN", 42, sess)
     assert [a["item_id"] for a in out] == [1, 2]
     assert sess.get.call_count == 2
-    # Last-Modified is taken from the first page.
+    # Last-Modified and Expires are taken from the first page.
     assert last_modified == pytest.approx(1784203200.0, abs=1)
+    assert expires == pytest.approx(1784206800.0, abs=1)
 
 
 def test_cargo_items_in_ship_filters_by_ship_and_flag():

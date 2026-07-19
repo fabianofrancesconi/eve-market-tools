@@ -9,7 +9,12 @@
 const TRACK = { state:"stopped", pauseReason:null, liveRunId:null, online:null,
                 error:null, scopeOk:true, sessions:[], selRunId:null,
                 detail:null, trail:[], minDwell:0, showHidden:false,
-                showManualHidden:false };
+                showManualHidden:false,
+                // Auto-refresh of the CURRENT system's cargo (the live "here" row):
+                // per-row {expires, fetchedAt} bookkeeping so the ring can count
+                // toward ESI's cache expiry and re-fetch exactly when fresh asset
+                // data is due. Past systems are never in here — they're frozen.
+                autoCargo:{}, cargoFetching:null, ringTimer:null };
 // Min-dwell journey filter — server-authoritative ('track_min_dwell' pref).
 function loadTrackMinDwell(){
   const v = (typeof getPref==="function") ? getPref('track_min_dwell', 0) : 0;
@@ -443,6 +448,135 @@ async function setSystemHidden(enteredAt, hidden){
   if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
 }
 
+// ── auto cargo refresh (current system only) + progress ring ─────────────────
+// While the Journal tab is open on a LIVE, ACTIVE session, the system you're
+// currently sitting in gets its cargo re-scanned from ESI automatically — but only
+// when fresh asset data is actually due. ESI caches assets ~1h and stamps each
+// response with an Expires header; we read it (`cargo_expires`) and time the next
+// scan to it, so we never poll faster than the cache turns over. Two hard rules the
+// user asked for:
+//   • ONLY the current system — every earlier trail row is a frozen snapshot and is
+//     never touched automatically.
+//   • ONLY if you haven't hand-typed the value — a manual edit clears the ESI scan
+//     stamp (cargo_scanned_at → null), and we never overwrite such a value.
+// The ring fills clockwise toward the next scan; clicking it forces a scan now.
+const CARGO_CACHE_FALLBACK = 3600;   // assumed ESI asset-cache window when no Expires
+const CARGO_RING_CIRC = 97.39;       // 2π·15.5, the SVG circle's circumference
+
+// The current system for a live, active session: the newest trail row. (null when
+// stopped/paused or viewing history — nothing to auto-refresh then.)
+function liveHereRow(){
+  if(!(TRACK.detail && TRACK.detail.is_live && TRACK.state==="active")) return null;
+  const rows=TRACK.trail;
+  return rows.length ? rows[rows.length-1] : null;
+}
+// A value is "hand-typed" when it's a number with no ESI scan stamp — that's the
+// user's own figure, so it's off-limits to auto-refresh. Blank or previously-scanned
+// rows are fair game.
+function cargoAutoEligible(row){
+  if(!row) return false;
+  if(row.cargo_isk!=null && !row.cargo_scanned_at) return false;
+  return true;
+}
+// Auto-refresh runs only while the journal is actually on screen (the user's choice).
+function journalVisible(){
+  return AUTH.loggedIn
+    && (typeof ACTIVE_TAB==="undefined" || ACTIVE_TAB==="exp")
+    && (typeof EXP_MODE==="undefined" || EXP_MODE==="journal");
+}
+
+// Scan the current system's hold from ESI and re-anchor the ring to the fresh
+// Expires. Shared by the timer (auto) and the ring click (manual "scan now").
+async function autoCargoScan(enteredAt){
+  if(TRACK.cargoFetching!=null) return;       // one scan at a time
+  TRACK.cargoFetching=enteredAt;
+  const ring=$("#exp-cargo-ring"); if(ring) ring.classList.add("scanning");
+  let ok=false;
+  try{
+    const r=await fetch("/api/track/cargo/fetch",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({entered_at:enteredAt})});
+    const j=await r.json();
+    if(j && j.ok){
+      ok=true;
+      // Anchor the ring from now until ESI says newer data is available.
+      const now=Date.now()/1000;
+      const exp=j.cargo_expires || (now+CARGO_CACHE_FALLBACK);
+      TRACK.autoCargo[enteredAt]={expires:exp, fetchedAt:now};
+      TRACK.unpricedByRow = TRACK.unpricedByRow || {};
+      if(j.unpriced && j.unpriced.length) TRACK.unpricedByRow[enteredAt]=j.unpriced;
+      else delete TRACK.unpricedByRow[enteredAt];
+      if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
+    }
+    // A non-ok result (e.g. missing assets/ship scopes) stays silent here — the
+    // manual ⟳ button in the trail surfaces the actual error message.
+  }catch(_){}
+  finally{
+    if(!ok){
+      // Back off 5 min on failure so a missing-scope/network error can't hammer ESI
+      // once per tick.
+      const now=Date.now()/1000;
+      TRACK.autoCargo[enteredAt]={expires:now+300, fetchedAt:now, failed:true};
+    }
+    TRACK.cargoFetching=null;
+    const rg=$("#exp-cargo-ring"); if(rg) rg.classList.remove("scanning");
+  }
+}
+
+// Called once a second: keeps the ring in sync and fires the auto-scan when due.
+// Cheap and mostly a no-op — it bails immediately unless a live system is on screen.
+function tickCargoRing(){
+  const ring=$("#exp-cargo-ring");
+  if(!ring) return;
+  const row = journalVisible() ? liveHereRow() : null;
+  const show = !!row && cargoAutoEligible(row) && TRACK.selRunId===TRACK.liveRunId;
+  ring.classList.toggle("hidden", !show);
+  if(!show) return;
+
+  const at=row.entered_at;
+  const fill=ring.querySelector(".cargo-ring-fill");
+  const label=ring.querySelector(".cargo-ring-label");
+  // Never yank the value out from under the user while they're editing this row.
+  const ae=document.activeElement;
+  const editing = ae && ae.classList && ae.classList.contains("track-cargo-input")
+    && +ae.dataset.at===at;
+
+  if(TRACK.cargoFetching===at){ ring.title="Scanning this system's cargo…"; return; }
+
+  let info=TRACK.autoCargo[at];
+  if(!info){
+    if(row.cargo_scanned_at){
+      // Fresh page load mid-session: resume the countdown from the persisted scan
+      // stamp (a stale one just reads as "due now" and triggers a scan below).
+      info={expires:row.cargo_scanned_at+CARGO_CACHE_FALLBACK, fetchedAt:row.cargo_scanned_at};
+      TRACK.autoCargo[at]=info;
+    } else {
+      // Truly unscanned current system → fill the hold automatically.
+      if(fill) fill.style.strokeDashoffset=String(CARGO_RING_CIRC);
+      if(label) label.textContent="";
+      ring.title="Fetching this system's cargo from ESI…";
+      if(!editing) autoCargoScan(at);
+      return;
+    }
+  }
+
+  const now=Date.now()/1000;
+  const remaining=info.expires-now;
+  if(remaining<=0){
+    if(!editing) autoCargoScan(at);
+    return;
+  }
+  const span=Math.max(1, info.expires-info.fetchedAt);
+  const progress=Math.min(1, Math.max(0, (now-info.fetchedAt)/span));
+  if(fill) fill.style.strokeDashoffset=String(CARGO_RING_CIRC*(1-progress));
+  if(label){
+    const s=Math.round(remaining);
+    label.textContent = s>=60 ? Math.round(s/60)+"m" : s+"s";
+  }
+  ring.title="Auto-rescans this system's cargo in "+fmtDwell(remaining)
+    +" (when ESI's ~1h asset cache next refreshes). Click to scan now.";
+}
+
 // A per-system note button: 📝 when empty, a filled chip previewing the note
 // (with the full text on hover) when set. Clicking opens the note modal.
 function noteBtnHtml(r){
@@ -511,6 +645,13 @@ document.addEventListener("DOMContentLoaded", ()=>{
   if(notesEl) notesEl.onchange=()=>sessionUpdate({notes:notesEl.value});
   const notesToggle=$("#exp-session-notes-toggle");
   if(notesToggle) notesToggle.onclick=()=>$("#exp-session-notes-wrap").classList.toggle("hidden");
+
+  // Ring: click = "scan the current system now"; a 1s ticker drives the fill and
+  // fires the auto-scan when ESI's cache is due. The ticker is a cheap no-op unless
+  // a live, active system is on screen.
+  const ring=$("#exp-cargo-ring");
+  if(ring) ring.onclick=()=>{ const row=liveHereRow(); if(row) autoCargoScan(row.entered_at); };
+  if(!TRACK.ringTimer) TRACK.ringTimer=setInterval(tickCargoRing, 1000);
 
   loadTrackMinDwell();
   syncMinDwellInputs();

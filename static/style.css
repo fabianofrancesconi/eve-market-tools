@@ -475,7 +475,29 @@
   .exp-live-head { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
   .track-status { color:var(--dim); font-size:13.5px; }
   .track-status.track-live { color:var(--green2); font-weight:600; }
+  .exp-live-head-left { display:flex; align-items:center; gap:12px; min-width:0; }
   .track-controls { display:flex; gap:8px; }
+
+  /* Auto cargo-refresh ring — a small circle that fills clockwise toward the
+     moment ESI's asset cache expires (when a re-scan of the current system's hold
+     would return fresher data). It scans automatically on completion; clicking it
+     forces a scan now. The ring only appears for the live, active system. */
+  .cargo-ring { position:relative; width:30px; height:30px; flex:none; padding:0;
+    background:none; border:none; cursor:pointer; line-height:0; }
+  .cargo-ring svg { width:30px; height:30px; transform:rotate(-90deg); display:block; }
+  .cargo-ring-track { fill:none; stroke:var(--line2); stroke-width:3; }
+  .cargo-ring-fill { fill:none; stroke:var(--cyan); stroke-width:3; stroke-linecap:round;
+    /* r=15.5 → circumference ≈ 97.39; JS sets stroke-dashoffset to show progress. */
+    stroke-dasharray:97.39; stroke-dashoffset:97.39;
+    transition:stroke-dashoffset .9s linear; }
+  .cargo-ring:hover .cargo-ring-fill { stroke:var(--cyan2); }
+  /* While a scan is in flight the ring pulses and the fill goes full. */
+  .cargo-ring.scanning .cargo-ring-fill { stroke:var(--green2); animation:cargo-ring-pulse 1s ease-in-out infinite; }
+  .cargo-ring-label { position:absolute; inset:0; display:flex; align-items:center;
+    justify-content:center; font-size:8.5px; font-weight:600; color:var(--dim);
+    letter-spacing:-.3px; }
+  .cargo-ring.scanning .cargo-ring-label { color:var(--green2); }
+  @keyframes cargo-ring-pulse { 0%,100% { opacity:.4; } 50% { opacity:1; } }
   .track-error { color:var(--yellow); background:var(--panel); border:1px solid var(--line2);
     border-radius:6px; padding:10px 14px; margin-top:12px; font-size:13px; line-height:1.5; }
 

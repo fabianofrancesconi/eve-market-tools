@@ -377,7 +377,18 @@
             <!-- Live session widget -->
             <div id="exp-live" class="exp-live-card">
               <div class="exp-live-head">
-                <div id="exp-live-status" class="track-status"></div>
+                <div class="exp-live-head-left">
+                  <div id="exp-live-status" class="track-status"></div>
+                  <!-- Auto cargo-refresh ring: fills toward ESI's asset-cache expiry;
+                       re-scans the current system's hold when fresh data is due. -->
+                  <button id="exp-cargo-ring" class="cargo-ring hidden" type="button" title="">
+                    <svg viewBox="0 0 36 36" aria-hidden="true">
+                      <circle class="cargo-ring-track" cx="18" cy="18" r="15.5"></circle>
+                      <circle class="cargo-ring-fill" cx="18" cy="18" r="15.5"></circle>
+                    </svg>
+                    <span class="cargo-ring-label"></span>
+                  </button>
+                </div>
                 <div class="track-controls">
                   <button id="track-pause" class="auth-btn hidden">Pause</button>
                   <button id="track-resume" class="auth-btn hidden">Resume</button>

@@ -640,7 +640,9 @@ class Exploration:
         caches assets ~1h and only refreshes on server-side changes, so freshly
         looted items may lag. The recorded `cargo_scanned_at` is ESI's Last-Modified
         (when CCP last refreshed the asset data), NOT our fetch time — that's the
-        honest "as of" age; it falls back to the fetch time if the header is absent."""
+        honest "as of" age; it falls back to the fetch time if the header is absent.
+        The response also carries `cargo_expires` (ESI's Expires epoch, or None) so
+        the client can time its next auto-fetch to when fresh data is actually due."""
         acct = self._h.require_account()
         cid = self._h._track_target_cid(acct, q)
         entered_at = float(q.get("entered_at", ["0"])[0] or 0)
@@ -659,7 +661,8 @@ class Exploration:
         try:
             token = self._h._access_token(acct, cid)
             ship = sso_core.fetch_ship(token, cid, self._h.SESSION)
-            assets, last_modified = sso_core.fetch_assets(token, cid, self._h.SESSION)
+            assets, last_modified, expires = sso_core.fetch_assets(
+                token, cid, self._h.SESSION)
         except LPError as e:
             return {"error": str(e)}
         except requests.HTTPError as e:
@@ -679,7 +682,8 @@ class Exploration:
                                     cargo_scanned_at=scanned_at)
             self._h._CHAR_PUBSUB.bump(id(acct))
             return {"ok": True, "total": 0.0, "items": [],
-                    "ship_name": ship.get("ship_name"), "cargo_scanned_at": scanned_at}
+                    "ship_name": ship.get("ship_name"), "cargo_scanned_at": scanned_at,
+                    "cargo_expires": expires}
 
         tids = list(cargo)
         prices = self._h.fetch_prices(tids, self._h.SESSION)
@@ -703,6 +707,7 @@ class Exploration:
         self._h._CHAR_PUBSUB.bump(id(acct))
         return {"ok": True, "total": total, "items": items,
                 "ship_name": ship.get("ship_name"), "cargo_scanned_at": scanned_at,
+                "cargo_expires": expires,
                 "unpriced": [i["name"] for i in items if not i["priced"]]}
 
     def do_track_note(self, q):

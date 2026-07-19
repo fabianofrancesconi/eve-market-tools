@@ -380,11 +380,14 @@
               <div class="exp-session-annot">
                 <span class="exp-annot-field exp-cargo-total">Total cargo value
                   <b id="exp-session-cargo-total">—</b>
-                  <span class="track-th-hint" title="The latest system's cargo value. This is the actual estimated cargo value based on Jita best buy-order prices — i.e. the ISK you'd actually get dumping the hold to buy orders right now (falling back to the sell price for items with no buyer). It's deliberately lower than EVE's in-game 'estimated price', which is a smoothed CCP average, not an executable price. Fetched values come from ESI; you can also type values in the Cargo column below.">?</span>
+                  <span class="track-th-hint" title="The latest system's cargo value. Fetched values come from ESI; you can also type values in the Cargo column below.">?</span>
                 </span>
                 <button id="exp-session-notes-toggle" class="auth-btn" type="button">📝 Notes</button>
                 <button id="exp-session-delete" class="auth-btn exp-danger-btn hidden" type="button">Delete</button>
               </div>
+              <!-- Always-visible basis note so the figure is never mistaken for
+                   EVE's smoothed in-game "estimated price". -->
+              <div class="exp-cargo-basis">This is the actual estimated cargo value based on <b>Jita best buy-order</b> prices — the ISK you'd get dumping the hold to buy orders right now (falling back to sell price for items with no buyer). It's deliberately lower than EVE's in-game “estimated price”, a smoothed CCP average that isn't an executable price.</div>
               <div id="exp-session-notes-wrap" class="exp-notes-wrap hidden">
                 <textarea id="exp-session-notes" class="exp-notes" placeholder="Freeform notes for this session…"></textarea>
               </div>

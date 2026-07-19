@@ -1027,6 +1027,16 @@ function _activeJobIdSet(){
     .filter(j=>j.activity_id===1 && j.job_id!=null).map(j=>String(j.job_id)));
 }
 
+// Resolved station/structure name of the live job a build is linked to, or ""
+// if that job isn't in the current fetch. The server resolves facility_id to a
+// name (falling back to "Structure" for unnamed citadels) on each job.
+function _buildJobLocation(b){
+  if(b.job_id==null) return "";
+  const jobs=(AUTH.data&&AUTH.data.jobs)||[];
+  const j=jobs.find(j=>String(j.job_id)===String(b.job_id));
+  return (j&&j.location)||"";
+}
+
 // Recompute each build's status from live jobs and persist the transitions that
 // must survive a reload (first link to a job, and completion). Returns nothing;
 // mutates IND.builds in place and re-renders.
@@ -1354,9 +1364,14 @@ function _buildCardHtml(b, linked){
     }
   } else if(st.key==="building"){
     const end=b.job_end?Date.parse(b.job_end):null;
+    // The linked live job carries a resolved station/structure name — show where
+    // the batch is being built so a multi-location industrialist knows where to
+    // pick it up.
+    const loc=_buildJobLocation(b);
+    const meta=(b.char_name?" · "+b.char_name:"")+(loc?" · 📍 "+loc:"");
     statusLine=end && isFinite(end)
-      ? `<span class="ind-build-live ind-live-timer" data-end="${end}">${fmtCountdown(end-Date.now())}</span> <span class="ind-build-eta">ETA ${new Date(end).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}${b.char_name?" · "+b.char_name:""}</span>`
-      : `<span class="ind-build-live">running${b.char_name?" · "+b.char_name:""}</span>`;
+      ? `<span class="ind-build-live ind-live-timer" data-end="${end}">${fmtCountdown(end-Date.now())}</span> <span class="ind-build-eta">ETA ${new Date(end).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}${meta}</span>`
+      : `<span class="ind-build-live">running${meta}</span>`;
   } else {
     statusLine=`<span class="ind-build-done">Finished${b.done_at?" "+new Date(b.done_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""}</span>`;
   }

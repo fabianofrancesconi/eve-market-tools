@@ -386,7 +386,7 @@ function _renderCharPanel(c){
   if(cOrders.length) h+=` <span class="char-card-sub">(${cOrders.length} · ${fmtISK(ordersVal)} ISK)</span>`;
   h+=`</h3>`+(ordersExp?`<span class="char-card-note" title="ESI caches market orders ~20 min. New/changed orders won't appear until this time.">updates at ${ordersExp}</span>`:"")+`</div><div class="char-card-body">`;
   if(cOrders.length){
-    h+=`<div class="char-card-scroll"><table class="mini char-orders-tbl"><thead><tr>`;
+    h+=`<div class="char-card-scroll char-orders-scroll"><table class="mini char-orders-tbl"><thead><tr>`;
     h+=`<th>Item</th><th>Side</th><th style="text-align:right">Remaining</th><th style="text-align:right">Price</th>`;
     h+=`<th style="text-align:right">Total value</th><th style="text-align:right">Jita sell</th>`;
     h+=`<th style="text-align:right">Queue</th><th style="text-align:right">Posted</th><th style="text-align:right">Expires</th></tr></thead><tbody>`;
@@ -488,7 +488,7 @@ function _renderAllPanel(chars){
     const buyOrders=allOrders.filter(o=>o.is_buy_order);
     const sellVal=sellOrders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0),0);
     const buyVal=buyOrders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0),0);
-    h+=`<div class="char-card-scroll"><table class="mini char-orders-tbl"><thead><tr>`;
+    h+=`<div class="char-card-scroll char-orders-scroll"><table class="mini char-orders-tbl"><thead><tr>`;
     h+=`<th>Character</th><th>Item</th><th>Side</th><th style="text-align:right">Remaining</th><th style="text-align:right">Price</th>`;
     h+=`<th style="text-align:right">Total value</th><th style="text-align:right">Jita sell</th>`;
     h+=`<th style="text-align:right">Queue</th><th style="text-align:right">Posted</th><th style="text-align:right">Expires</th></tr></thead><tbody>`;

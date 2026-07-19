@@ -1082,10 +1082,13 @@ function refreshSellingBuilds(){
   }).catch(()=>{ _refreshingSelling=false; });
 }
 
-// ── Industry Planner ⇄ Summary mode ──────────────────────────────────────────
-// The Industry tab has two modes sharing one tablewrap: the Planner (blueprint
-// catalogue + tracked-build cards) and the Summary (portfolio P&L of everything
-// crafted and sold — summary.js). The last-used mode is server-authoritative.
+// ── Industry Planner ⇄ Tracker mode ──────────────────────────────────────────
+// The Industry tab has two modes sharing one tablewrap: the Planner (the
+// blueprint catalogue — what to build) and the Tracker (the portfolio P&L
+// dashboard from summary.js plus the tracked-build cards for everything crafted
+// and sold). A build leaves the Planner and lives in the Tracker the moment it's
+// tracked. data-mode stays "summary" internally so saved prefs keep working.
+// The last-used mode is server-authoritative.
 function indSetMode(mode){
   IND.mode = (mode==="summary") ? "summary" : "planner";
   if(typeof setPref==="function") setPref('ind_mode', IND.mode);
@@ -1093,19 +1096,46 @@ function indSetMode(mode){
 }
 
 // Reflect IND.mode into the DOM: toggle the two views + the mode buttons, hide
-// the scan-filter controls bar in Summary mode, and (re)load the roll-up on
-// entry. Safe to call whenever the Industry tab or auth state changes.
+// the scan-filter controls bar in Tracker mode, and (re)load the roll-up +
+// build cards on entry. Safe to call whenever the Industry tab or auth changes.
 function indApplyMode(){
-  const summary = IND.mode==="summary";
+  const tracker = IND.mode==="summary";
   document.querySelectorAll(".ind-mode-btn").forEach(b=>
     b.classList.toggle("active", b.dataset.mode===IND.mode));
   const planV=$("#ind-planner-view"), sumV=$("#ind-summary-view");
-  if(planV) planV.classList.toggle("hidden", summary);
-  if(sumV) sumV.classList.toggle("hidden", !summary);
+  if(planV) planV.classList.toggle("hidden", tracker);
+  if(sumV) sumV.classList.toggle("hidden", !tracker);
   // The scan-filter controls belong to the Planner only.
   const ctrls=$("#ind-controls");
-  if(ctrls && ACTIVE_TAB==="ind" && AUTH.loggedIn) ctrls.classList.toggle("hidden", summary);
-  if(summary && typeof loadSummary==="function") loadSummary();
+  if(ctrls && ACTIVE_TAB==="ind" && AUTH.loggedIn) ctrls.classList.toggle("hidden", tracker);
+  _updateTrackCount();
+  if(tracker){
+    renderIndBuilds();                                  // cards live in the Tracker now
+    if(typeof loadSummary==="function") loadSummary();  // dashboard above them
+  }
+}
+
+// Keep the Tracker button's (N) badge and the Planner's "N tracked → open
+// Tracker" hint in sync with the current build count.
+function _updateTrackCount(){
+  const n=IND.builds.length;
+  const badge=$("#ind-track-count");
+  if(badge){
+    badge.textContent = n?`(${n})`:"";
+    badge.classList.toggle("hidden", !n);
+  }
+  const hint=$("#ind-planner-trackhint");
+  if(hint){
+    if(n && IND.mode!=="summary"){
+      hint.classList.remove("hidden");
+      hint.innerHTML=`<span class="ind-trackhint-txt">${n} tracked build${n===1?"":"s"} — cost, profit &amp; sales now live in the Tracker.</span>`
+        +`<button class="ind-trackhint-go">Open Tracker ▸</button>`;
+      const go=hint.querySelector(".ind-trackhint-go");
+      if(go) go.onclick=()=>indSetMode("summary");
+    } else {
+      hint.classList.add("hidden"); hint.innerHTML="";
+    }
+  }
 }
 
 (function(){
@@ -1191,14 +1221,18 @@ function _buildBreakEven(b){
   };
 }
 
-// Render the tracked-builds section in the Industry tab. Always expanded — no
-// collapse toggle. If the Character overview is the active tab, refresh it too
-// so its 🔗 tracked-job markers reflect the current builds.
+// Render the tracked-builds cards. These live in the Tracker view now (below the
+// portfolio dashboard), so only render them while the Tracker is active; the
+// Planner shows a link-across hint instead. Always expanded — no collapse toggle.
+// If the Character overview is the active tab, refresh it too so its 🔗
+// tracked-job markers reflect the current builds.
 function renderIndBuilds(){
+  _updateTrackCount();
   const box=$("#ind-builds");
   if(box){
-    if(!IND.builds.length){ box.classList.add("hidden"); box.innerHTML=""; }
-    else {
+    if(IND.mode!=="summary" || !IND.builds.length){
+      box.classList.add("hidden"); box.innerHTML="";
+    } else {
       box.classList.remove("hidden");
       // Jobs already linked to a build must not be offered as a close match to
       // an awaiting one. Collect the linked ids (as strings) up front.
@@ -1215,11 +1249,12 @@ function renderIndBuilds(){
 }
 
 // Expand a tracked build's detailed view and scroll to it. Used when arriving
-// from a clicked industry-job row in the Character overview.
+// from a clicked industry-job row in the Character overview. The cards live in
+// the Tracker now, so switch into it first.
 function openTrackedBuild(id){
   if(!IND.builds.some(b=>b.id===id)) return;
   IND.buildsExpanded.add(id);
-  renderIndBuilds();
+  if(IND.mode!=="summary") indSetMode("summary"); else renderIndBuilds();
   const box=$("#ind-builds");
   const card=box&&box.querySelector(`.ind-build-card[data-id="${CSS.escape(id)}"]`);
   if(card) card.scrollIntoView({block:"center", behavior:"smooth"});

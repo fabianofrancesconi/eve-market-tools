@@ -141,13 +141,15 @@
 </div>
 
 <!-- Industry controls -->
-<!-- Planner ⇄ Summary switch: the catalogue/planner vs the portfolio P&L roll-up
-     of everything you've tracked, built and sold. Kept above the scan-filter
-     controls so the toggle stays put when Summary mode hides those controls. -->
+<!-- Planner ⇄ Tracker switch: the catalogue/planner (what to build) vs the
+     Tracker (the cards + portfolio P&L for everything you've tracked, built and
+     sold). data-mode stays "summary" so saved mode prefs keep working. Kept
+     above the scan-filter controls so the toggle stays put when Tracker mode
+     hides those controls. -->
 <div id="ind-modebar" class="exp-modebar hidden">
   <div class="exp-modeswitch">
     <button class="ind-mode-btn active" data-mode="planner">Planner</button>
-    <button class="ind-mode-btn" data-mode="summary">Summary</button>
+    <button class="ind-mode-btn" data-mode="summary">Tracker<span id="ind-track-count" class="mode-count hidden"></span></button>
   </div>
 </div>
 <div id="ind-controls" class="ctrlbar hidden">
@@ -259,13 +261,18 @@
         <div class="prog-track"><div class="prog-fill" id="ind-prog-fill"></div></div>
         <div class="prog-sub" id="ind-prog-sub"></div>
       </div>
-      <div id="ind-builds" class="ind-builds hidden"></div>
+      <!-- Once tracked, builds live in the Tracker. The Planner just links across. -->
+      <div id="ind-planner-trackhint" class="ind-trackhint hidden"></div>
       <div id="ind-chips" class="ind-chips"></div>
       <div id="ind-detail" class="hidden"></div>
       <table id="ind-tbl"><colgroup id="ind-cg"></colgroup><thead></thead><tbody></tbody></table>
     </div>
-    <!-- Industry portfolio P&L across all tracked builds (rendered by summary.js). -->
-    <div id="ind-summary-view" class="hidden"><div id="sum-body"></div></div>
+    <!-- Tracker: portfolio P&L dashboard (summary.js → #sum-body) followed by the
+         tracked-build cards (ind.js → #ind-builds). -->
+    <div id="ind-summary-view" class="hidden">
+      <div id="sum-body"></div>
+      <div id="ind-builds" class="ind-builds hidden"></div>
+    </div>
   </div>
   <div id="char-tablewrap" class="tablewrap hidden">
     <div id="char-empty" class="char-empty">

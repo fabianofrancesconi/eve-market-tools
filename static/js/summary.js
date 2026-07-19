@@ -67,9 +67,12 @@ function renderSummary(){
   if(SUMMARY.loading){ body.innerHTML=`<div class="sum-loading">Loading portfolio…</div>`; return; }
   const d=SUMMARY.data;
   if(!d || !d.builds || !d.builds.length){
-    body.innerHTML=`<div class="sum-empty-note">No tracked builds yet. Track a build in
-      the Industry tab, and once it's built you can list it for sale and watch the
-      real profit roll in here.</div>`;
+    // The tracked-build cards (#ind-builds, rendered by ind.js) sit below this
+    // node and stay empty; here we just explain how to fill the Tracker.
+    body.innerHTML=`<div class="sum-empty-note">No tracked builds yet. In the
+      <b>Planner</b>, find a blueprint and hit <b>＋ Track this build</b> — it'll
+      appear here, and once it's built your sell order links automatically so the
+      real profit rolls in.</div>`;
     return;
   }
   const isk=v=>v===null||v===undefined?"—":fmtISK(v);
@@ -90,6 +93,14 @@ function renderSummary(){
     const stax=b.sales_tax||0, bfee=b.broker_fee||0;
     ready += remain*(ask*(1-stax-bfee)-cpu);
   });
+  // Est. total profit = booked (all-time realized) + still-to-come (ready). The
+  // margin is that estimate against the capital it's riding on (cost already
+  // sunk into unsold builds + cost basis of what's sold).
+  const realizedAll=(t.realized_profit)||0;
+  const estTotal=realizedAll+ready;
+  const soldCost=d.builds.reduce((s,b)=>s+(((b.realized&&b.realized.units)||0)*(b.cost_per_unit||0)),0);
+  const capBase=(t.capital_in_flight||0)+soldCost;
+  const margin=capBase>0?estTotal/capBase*100:null;
 
   const kpis=`<div class="sum-kpis">
     <div class="sum-kpi">
@@ -103,21 +114,42 @@ function renderSummary(){
       </div>
     </div>
     <div class="sum-kpi">
+      <div class="sum-kpi-label">Ready to realize</div>
+      <div class="sum-kpi-val ${pn(ready)}">${isk(ready)}</div>
+      <div class="sum-kpi-sub">unsold stock projected at frozen ask, net of fees</div>
+    </div>
+    <div class="sum-kpi">
       <div class="sum-kpi-label">Capital in flight</div>
       <div class="sum-kpi-val">${isk(t.capital_in_flight)}</div>
       <div class="sum-kpi-sub">frozen cost of unsold builds</div>
     </div>
-    <div class="sum-kpi">
-      <div class="sum-kpi-label">Ready to realize</div>
-      <div class="sum-kpi-val ${pn(ready)}">${isk(ready)}</div>
-      <div class="sum-kpi-sub">projected at frozen ask, net of fees</div>
-    </div>
-    <div class="sum-kpi">
-      <div class="sum-kpi-label">Tracked builds</div>
-      <div class="sum-kpi-val">${(t.count||0).toLocaleString()}</div>
-      <div class="sum-kpi-sub">across the pipeline</div>
+    <div class="sum-kpi sum-kpi-accent">
+      <div class="sum-kpi-label">Est. total profit</div>
+      <div class="sum-kpi-val ${pn(estTotal)}">${isk(estTotal)}</div>
+      <div class="sum-kpi-sub">realized + ready${margin!=null?` · <b class="${pn(margin)}">${margin>=0?"+":""}${margin.toFixed(1)}%</b> on capital`:""}</div>
     </div>
   </div>`;
+
+  // "Where your capital sits" — a stacked bar of frozen cost by pipeline stage,
+  // so the big Capital-in-flight number becomes legible at a glance.
+  const capByStage={building:0,built:0,listed:0,planned:0};
+  d.builds.forEach(b=>{
+    if(!(b.stage in capByStage)) return;
+    const cpu=b.cost_per_unit;
+    const sold=(b.realized&&b.realized.units)||0;
+    let cost=b.batch_cost||0;
+    if(cpu!=null&&sold) cost=Math.max(0, cost-sold*cpu);   // unsold remainder only
+    capByStage[b.stage]+=cost;
+  });
+  const capTot=Object.values(capByStage).reduce((s,v)=>s+v,0);
+  const capOrder=["planned","building","built","listed"];
+  const capBar=capTot>0?`<div class="sum-capbar-wrap">
+    <div class="sum-capbar">${capOrder.filter(s=>capByStage[s]>0).map(s=>
+      `<span class="sum-capseg stage-${s}" style="width:${(capByStage[s]/capTot*100).toFixed(2)}%"
+        title="${_SUM_STAGE_LABEL[s]}: ${isk(capByStage[s])}"></span>`).join("")}</div>
+    <div class="sum-caplegend">${capOrder.filter(s=>capByStage[s]>0).map(s=>
+      `<span class="sum-caplbl stage-${s}">${_SUM_STAGE_LABEL[s]} <b>${isk(capByStage[s])}</b></span>`).join("")}</div>
+  </div>`:"";
 
   // Needs-action queue.
   const acts=_sumNeedsAction();
@@ -155,7 +187,7 @@ function renderSummary(){
       <tbody>${rows||`<tr><td colspan="4" class="sum-none">Nothing sold yet.</td></tr>`}</tbody></table>
   </div>`;
 
-  body.innerHTML=`<div class="sum-wrap">${kpis}${strip}${queue}${breakdown}</div>`;
+  body.innerHTML=`<div class="sum-wrap">${kpis}${capBar}${strip}${queue}${breakdown}</div>`;
   _wireSummary(body);
 }
 

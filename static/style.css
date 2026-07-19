@@ -509,6 +509,8 @@
     border:1px solid var(--line2); border-radius:4px; padding:3px 6px; margin:0 4px; }
   .track-filter select { background:var(--panel2); color:var(--fg);
     border:1px solid var(--line2); border-radius:4px; padding:3px 6px; }
+  .track-filter-scope { color:var(--dim2); font-size:11px; font-style:italic;
+    border:1px solid var(--line2); border-radius:10px; padding:1px 8px; cursor:help; }
   .track-hidden-note { color:var(--dim2); font-style:italic; }
   .track-hidden-toggle { background:none; border:none; color:var(--dim2); font:inherit;
     font-style:italic; cursor:pointer; padding:0; }

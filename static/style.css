@@ -604,9 +604,6 @@
   /* Session total cargo (latest system's value) — read-only display. */
   .exp-cargo-total { flex-direction:row; align-items:center; gap:6px; }
   .exp-cargo-total b { color:var(--fg); font-size:14px; }
-  .exp-cargo-basis { font-size:11px; line-height:1.5; color:var(--dim); max-width:640px;
-    margin:-4px 0 12px; padding-left:9px; border-left:2px solid var(--line2); }
-  .exp-cargo-basis b { color:var(--fg); font-weight:600; }
 
   /* ── Character tab ───────────────────────────────────────────────── */
   #char-tablewrap { padding:24px 28px; overflow-y:auto; }

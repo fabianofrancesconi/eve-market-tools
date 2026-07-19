@@ -1046,10 +1046,15 @@ function reconcileBuilds(){
     }
   });
   renderIndBuilds();
-  // Fills/auto-links accrue server-side during the background refresh, so when
-  // any build is actively selling, re-pull the frozen list to reflect the latest
-  // realized profit + order linkage. Fresh jobs arriving is the natural trigger.
-  if(IND.builds.some(b=>b.sell && b.sell.started_at && !b.sell.closed_at)) refreshSellingBuilds();
+  // Fills/auto-links accrue server-side during the background refresh, so re-pull
+  // the frozen list to reflect the latest realized profit + order linkage. This
+  // also surfaces a button-free auto-start: a *built* build (done, not yet
+  // selling, not opted out) may have just been auto-linked to its sell order
+  // server-side, so we pull those too — not only builds already selling.
+  const needsSellPull=IND.builds.some(b=>
+    (b.sell && b.sell.started_at && !b.sell.closed_at) ||
+    (b.done_at && !(b.sell&&b.sell.started_at) && !b.no_auto_sell));
+  if(needsSellPull) refreshSellingBuilds();
   return changed;
 }
 
@@ -1071,6 +1076,7 @@ function refreshSellingBuilds(){
       if(JSON.stringify(b.sell||null)!==JSON.stringify(f.sell||null)){
         b.sell=f.sell; changed=true;
       }
+      if(!!b.no_auto_sell!==!!f.no_auto_sell){ b.no_auto_sell=f.no_auto_sell; changed=true; }
     });
     if(changed) renderIndBuilds();
   }).catch(()=>{ _refreshingSelling=false; });
@@ -1297,11 +1303,9 @@ function _buildCardHtml(b, linked){
       <span class="ind-build-status ${st.key}">${st.label}</span>
       <span class="ind-build-name">${b.product_name||"?"}</span>
       <span class="ind-build-runs">${n.toLocaleString()} run(s)</span>
-      <span class="ind-build-stat" title="Frozen lowest-ask sell price per unit — what a patient list order would have fetched">Sell list <b>${isk(s.ask)}</b></span>
-      <span class="ind-build-stat" title="Frozen highest-bid sell price per unit — what an instant sale would have fetched">Sell instant <b>${isk(s.bid)}</b></span>
       <span class="ind-build-stat">Cost <b>${isk(batchCost)}</b></span>
-      <span class="ind-build-stat">Profit list <b class="${pn(batchProfitL)}">${isk(batchProfitL)}</b></span>
-      <span class="ind-build-stat">Profit instant <b class="${pn(batchProfitI)}">${isk(batchProfitI)}</b></span>
+      <span class="ind-build-stat ind-build-grp" title="Patient list order: frozen lowest-ask sell price per unit and the batch profit it yields">List <b>${isk(s.ask)}</b> → <b class="${pn(batchProfitL)}">${isk(batchProfitL)}</b></span>
+      <span class="ind-build-stat ind-build-grp" title="Instant sale into buy orders: frozen highest-bid sell price per unit and the batch profit it yields">Instant <b>${isk(s.bid)}</b> → <b class="${pn(batchProfitI)}">${isk(batchProfitI)}</b></span>
       <span class="ind-build-stat">Build ${fmtDur(batchTime)}</span>
       <span class="ind-build-when">frozen ${when}</span>
       <button class="ind-build-toggle" title="Show the full frozen snapshot">${expanded?"▲ Hide":"▼ Details"}</button>
@@ -1351,8 +1355,8 @@ function _buildSellHtml(b, stage){
       <span class="ind-sell-price">Propose <b>${isk(price)}</b>/unit${units!=null?` · ${units.toLocaleString()} unit(s)`:""}</span>
       <span class="ind-sell-be" title="Selling below this loses money">break-even ${isk(be.list)}/unit</span>
       <button class="ind-sell-copy" title="Copy the proposed price to paste into EVE's sell order">⧉ Copy price</button>
-      <button class="ind-sell-start" title="List this in-game at that price, then start tracking the sale here">Start tracking sale ▸</button>
-      <div class="ind-sell-hint">EVE has no API to place orders — list it in-game, then this auto-links the order and tracks your real profit.</div>
+      <button class="ind-sell-start" title="Only needed to sell a partial batch or to start before the order appears — a full-batch sell order links on its own">Track a partial sale ▸</button>
+      <div class="ind-sell-hint">Just list it in-game — your sell order links automatically and tracks your real profit at whatever price the market pays. (Use “partial” only to track fewer than the full ${units!=null?units.toLocaleString():""} units.)</div>
     </div>`;
   }
   if(stage==="listed"||stage==="sold"){
@@ -1373,6 +1377,10 @@ function _buildSellHtml(b, stage){
         <span class="ind-sell-pick-list"></span></div>`;
     }
     const closed=stage==="sold";
+    const linkedId=(sell.order_ids||[])[0];
+    // Once an order is linked, offer a one-click unlink (mis-link recovery). The
+    // order is tombstoned server-side so it isn't auto-grabbed again next sweep.
+    const unlinkBtn=linkedId?`<button class="ind-sell-unlink" data-order="${linkedId}" title="Wrong order? Detach it — it won't be auto-linked again.">✕ unlink</button>`:"";
     return `<div class="ind-sell ind-sell-live" data-id="${b.id}">
       <div class="ind-sell-cards">
         <div class="ind-sell-card">
@@ -1394,7 +1402,7 @@ function _buildSellHtml(b, stage){
       ${pick}
       <div class="ind-sell-foot">
         ${closed?`<span class="ind-sell-done">✓ Fully sold${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'}):""}</span>`
-          :`<span class="ind-sell-watching">⏳ Watching your sell order${(sell.order_ids||[]).length?" (linked)":"…"}</span>`}
+          :`<span class="ind-sell-watching">${linkedId?`${sell.auto?"🔗 Auto-linked":"⏳ Linked to"} your sell order${sell.auto?"":" — tracking fills"} ${unlinkBtn}`:"⏳ Watching for your sell order…"}</span>`}
         <button class="ind-sell-cancel" title="Stop tracking this sale (keeps the build)">Stop tracking sale</button>
       </div>
     </div>`;
@@ -1445,34 +1453,27 @@ function _buildDetailHtml(b){
   const beI=(batchCost!=null&&qtyTot>0&&(1-stax)>0)?batchCost/(qtyTot*(1-stax)):null;
   const beL=(batchCost!=null&&qtyTot>0&&(1-stax-bfee)>0)?batchCost/(qtyTot*(1-stax-bfee)):null;
   const frozen=b.created_at?`frozen ${new Date(b.created_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'})}`:"frozen";
+  // One card per sell strategy (list vs instant), each pairing that strategy's
+  // sell revenue with the profit it yields — so a losing strategy reads red as a
+  // whole block and the two are compared side by side rather than interleaved.
+  const stratCard=(label, sub, sell, ask, be, profit, kSell, kProfit)=>`
+      <div class="ind-d-card ind-d-strat">
+        <div class="ind-d-card-label">${label} <span class="ind-d-strat-note">${sub}</span></div>
+        <div class="ind-d-strat-sell">
+          <div class="ind-d-strat-line"><span class="ind-d-strat-k">Sell</span><span class="ind-d-card-val">${isk(sell)}</span></div>
+          <div class="ind-d-card-sub">${qtyTot!=null?qtyTot.toLocaleString()+"× @ "+ask:""}</div>
+          <div class="ind-d-card-now" data-k="${kSell}"></div>
+        </div>
+        <div class="ind-d-strat-profit">
+          <div class="ind-d-strat-line"><span class="ind-d-strat-k">Profit</span><span class="ind-d-card-val ${pn(profit)}">${isk(profit)}</span></div>
+          <div class="ind-d-card-sub ind-d-card-warn">${be!=null?`break-even ${isk(be)}/unit`:""}</div>
+          <div class="ind-d-card-now" data-k="${kProfit}"></div>
+        </div>
+      </div>`;
   return `<div class="ind-build-detail">
-    <div class="ind-build-headcards">
-      <div class="ind-d-card">
-        <div class="ind-d-card-label">Sell — list</div>
-        <div class="ind-d-card-val">${isk(sellL)}</div>
-        <div class="ind-d-card-sub">${qtyTot!=null?qtyTot.toLocaleString()+"× @ ask "+isk(d.ask):""}</div>
-        <div class="ind-d-card-sub ind-d-card-warn">${beL!=null?`break-even ${isk(beL)}/unit`:""}</div>
-        <div class="ind-d-card-now" data-k="sellL"></div>
-      </div>
-      <div class="ind-d-card">
-        <div class="ind-d-card-label">Sell — instant</div>
-        <div class="ind-d-card-val">${isk(sellI)}</div>
-        <div class="ind-d-card-sub">${qtyTot!=null?qtyTot.toLocaleString()+"× @ bid "+isk(d.bid):""}</div>
-        <div class="ind-d-card-sub ind-d-card-warn">${beI!=null?`break-even ${isk(beI)}/unit`:""}</div>
-        <div class="ind-d-card-now" data-k="sellI"></div>
-      </div>
-      <div class="ind-d-card">
-        <div class="ind-d-card-label">Profit — list</div>
-        <div class="ind-d-card-val ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
-        <div class="ind-d-card-sub">${frozen}</div>
-        <div class="ind-d-card-now" data-k="profitL"></div>
-      </div>
-      <div class="ind-d-card">
-        <div class="ind-d-card-label">Profit — instant</div>
-        <div class="ind-d-card-val ${pn(batchProfitI)}">${isk(batchProfitI)}</div>
-        <div class="ind-d-card-sub">${frozen}</div>
-        <div class="ind-d-card-now" data-k="profitI"></div>
-      </div>
+    <div class="ind-build-headcards ind-build-strat">
+      ${stratCard("List", "patient sell orders", sellL, "ask "+isk(d.ask), beL, batchProfitL, "sellL", "profitL")}
+      ${stratCard("Instant", "sell into buy orders", sellI, "bid "+isk(d.bid), beI, batchProfitI, "sellI", "profitI")}
     </div>
     <div class="ind-build-costline">
       <span>Material cost <b>${isk(matCostBatch)}</b></span>
@@ -1532,6 +1533,8 @@ function _wireSellCard(card, b){
     if(confirm(`Stop tracking the sale of ${b.product_name||"this build"}? (The build itself stays.)`))
       cancelSellTracking(b);
   };
+  const unlink=card.querySelector(".ind-sell-unlink");
+  if(unlink) unlink.onclick=()=>unlinkSellOrder(b, unlink.dataset.order);
   const pick=card.querySelector(".ind-sell-pick");
   if(pick) _renderSellPickList(pick, b);
 }
@@ -1559,7 +1562,9 @@ function startSellTracking(b, btn){
 function cancelSellTracking(b){
   fetch("/api/ind/builds/sell/cancel",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({id:b.id})}).then(r=>r.json()).then(()=>{
-    if(b.sell) delete b.sell; renderIndBuilds();
+    // Mirror the server tombstone locally so the auto-start pull doesn't re-fire
+    // every reconcile cycle (and the card doesn't bounce back into selling).
+    if(b.sell) delete b.sell; b.no_auto_sell=true; renderIndBuilds();
   }).catch(()=>{});
 }
 
@@ -1584,6 +1589,15 @@ function _renderSellPickList(pickEl, b){
 
 function linkSellOrder(b, orderId){
   fetch("/api/ind/builds/sell/link",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:b.id, order_id:String(orderId)})}).then(r=>r.json()).then(res=>{
+    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); }
+  }).catch(()=>{});
+}
+
+// Detach a mis-linked order. The server tombstones it so the background sweep
+// won't immediately re-link the same order the user just rejected.
+function unlinkSellOrder(b, orderId){
+  fetch("/api/ind/builds/sell/unlink",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({id:b.id, order_id:String(orderId)})}).then(r=>r.json()).then(res=>{
     if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); }
   }).catch(()=>{});

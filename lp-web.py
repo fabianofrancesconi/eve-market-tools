@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.129.3"
+__version__ = "1.130.0"
 
 import argparse
 import base64
@@ -1538,7 +1538,9 @@ def do_ind_builds_sell_start(q):
             "realized": sell.get("realized") or [],
             "closed_at": None,
         })
+        sell.pop("auto", None)      # an explicit Start is no longer an auto-link
         b["sell"] = sell
+        b.pop("no_auto_sell", None)  # user opted in — clear any prior cancel tombstone
         _save_tracked_builds(acct, builds)
     return {"ok": True, "build": b}
 
@@ -1568,7 +1570,9 @@ def do_ind_builds_sell_link(q):
 
 
 def do_ind_builds_sell_unlink(q):
-    """Detach a linked order from a build (mis-link recovery)."""
+    """Detach a linked order from a build (mis-link recovery). The order is
+    tombstoned in build['unlinked_ids'] so the every-sweep auto-linker doesn't
+    immediately re-grab the same order the user just rejected."""
     acct = current_account()
     if not acct:
         return {"error": "not available"}
@@ -1584,13 +1588,19 @@ def do_ind_builds_sell_unlink(q):
         sell = b["sell"]
         sell["order_ids"] = [o for o in (sell.get("order_ids") or [])
                              if str(o) != str(order_id)]
+        tomb = [str(x) for x in (b.get("unlinked_ids") or [])]
+        if str(order_id) not in tomb:
+            tomb.append(str(order_id))
+        b["unlinked_ids"] = tomb
         _save_tracked_builds(acct, builds)
     return {"ok": True, "build": b}
 
 
 def do_ind_builds_sell_cancel(q):
     """Abandon sell-tracking a build — drops the sell state (and its accrued
-    realized history) so the card returns to its plain built view."""
+    realized history) so the card returns to its plain built view. Sets
+    no_auto_sell so the auto-linker doesn't silently re-start the sale on the
+    next sweep; a manual Start clears that flag and opts back in."""
     acct = current_account()
     if not acct:
         return {"error": "not available"}
@@ -1600,18 +1610,29 @@ def do_ind_builds_sell_cancel(q):
     with _TRACKED_BUILDS_LOCK:
         builds = _load_tracked_builds(acct)
         b = next((x for x in builds if x.get("id") == build_id), None)
-        if b and b.pop("sell", None) is not None:
+        if b is not None:
+            b.pop("sell", None)
+            b["no_auto_sell"] = True
             _save_tracked_builds(acct, builds)
     return {"ok": True}
 
 
 def _reconcile_sell_builds(acct, current_orders):
     """Wire the character's live sell orders + detected fills into any builds in
-    the 'selling' state. Auto-links a single new matching order (flags needs_pick
-    when several match), then accrues each fill's net revenue against the frozen
-    cost basis, deduped by event id so a re-run never double-counts. Closes a
-    build once its target quantity has sold. Idempotent — safe to run every
-    sweep and across the per-character thread pool (guarded by the lock)."""
+    the 'selling' state. Sell-tracking starts *automatically*: a finished (built)
+    build whose product shows up as a single fresh sell order is linked with no
+    button press (flagged sell.auto). Once selling, a single new matching order is
+    auto-linked (needs_pick when several match), then each fill's net revenue is
+    accrued against the frozen cost basis — deduped by event id so a re-run never
+    double-counts, and at the order's *real* fill price (the market decides it,
+    not our proposed price). Closes a build once its target quantity has sold.
+
+    Two tombstones keep user intent sticky against the every-sweep re-link: an
+    order the user unlinked is recorded in build['unlinked_ids'] and never
+    re-grabbed, and a build whose sale the user cancelled carries no_auto_sell so
+    it isn't silently re-auto-started (a manual Start clears that flag).
+    Idempotent — safe to run every sweep and across the per-character thread pool
+    (guarded by the lock)."""
     if not acct:
         return
     with _TRACKED_BUILDS_LOCK:
@@ -1619,7 +1640,12 @@ def _reconcile_sell_builds(acct, current_orders):
         selling = [b for b in builds
                    if (b.get("sell") or {}).get("started_at")
                    and not (b.get("sell") or {}).get("closed_at")]
-        if not selling:
+        # Built-but-not-yet-selling builds eligible for button-free auto-start.
+        auto_candidates = [b for b in builds
+                           if b.get("done_at")
+                           and not (b.get("sell") or {}).get("started_at")
+                           and not b.get("no_auto_sell")]
+        if not selling and not auto_candidates:
             return
         # Orders already claimed by any build must not be auto-linked twice.
         linked_ids = {str(o) for b in builds
@@ -1633,6 +1659,37 @@ def _reconcile_sell_builds(acct, current_orders):
             events_by_order.setdefault(str(ev.get("order_id")), []).append(ev)
 
         changed = False
+        # Auto-start pass: a built build + exactly one fresh matching sell order
+        # (issued around/after the job finished, not claimed or previously
+        # unlinked) begins sell-tracking on its own. Several matches are left for
+        # the user to start manually — we won't guess which order is the batch.
+        for b in auto_candidates:
+            pid = b.get("product_type_id")
+            anchor = b.get("done_at") or 0
+            tomb = {str(x) for x in (b.get("unlinked_ids") or [])}
+            cands = [o for o in current_orders
+                     if not o.get("is_buy_order")
+                     and o.get("type_id") == pid
+                     and str(o.get("order_id")) not in linked_ids
+                     and str(o.get("order_id")) not in tomb
+                     and (_parse_iso_ts(o.get("issued")) or 0)
+                     >= anchor - _SELL_MATCH_MARGIN]
+            if len(cands) == 1:
+                oid = str(cands[0]["order_id"])
+                b["sell"] = {
+                    "started_at": time.time(),
+                    "auto": True,
+                    "qty_target": _build_units_produced(b),
+                    "cost_per_unit": _build_cost_per_unit(b),
+                    "order_ids": [oid],
+                    "needs_pick": False,
+                    "realized": [],
+                    "closed_at": None,
+                }
+                linked_ids.add(oid)
+                selling.append(b)
+                changed = True
+
         for b in selling:
             sell = b["sell"]
             pid = b.get("product_type_id")
@@ -1640,10 +1697,12 @@ def _reconcile_sell_builds(acct, current_orders):
             # Auto-match: a new sell order for this product, issued around/after
             # the user hit Sell, not already linked elsewhere.
             if not sell.get("order_ids"):
+                tomb = {str(x) for x in (b.get("unlinked_ids") or [])}
                 cands = [o for o in current_orders
                          if not o.get("is_buy_order")
                          and o.get("type_id") == pid
                          and str(o.get("order_id")) not in linked_ids
+                         and str(o.get("order_id")) not in tomb
                          and (_parse_iso_ts(o.get("issued")) or 0)
                          >= started - _SELL_MATCH_MARGIN]
                 if len(cands) == 1:
@@ -1748,6 +1807,7 @@ def do_ind_summary(q):
                 "qty_target": sell.get("qty_target"),
                 "cost_per_unit": sell.get("cost_per_unit"),
                 "needs_pick": sell.get("needs_pick", False),
+                "auto": sell.get("auto", False),
                 "order_ids": sell.get("order_ids") or [],
                 # Raw fills (ts/units/net) so the client can time-filter the
                 # realized-profit total (this week / month / all).

@@ -998,6 +998,16 @@
   .ind-build-headcards { display:grid; grid-template-columns:repeat(4,1fr); gap:10px;
     align-items:stretch; }
   @media (max-width:720px){ .ind-build-headcards { grid-template-columns:repeat(2,1fr); } }
+  /* Strategy layout: one card per sell strategy (list / instant), each pairing
+     its sell revenue with the profit it yields so the two read as whole blocks. */
+  .ind-build-headcards.ind-build-strat { grid-template-columns:repeat(2,1fr); }
+  @media (max-width:720px){ .ind-build-headcards.ind-build-strat { grid-template-columns:1fr; } }
+  .ind-d-strat .ind-d-card-label { display:flex; align-items:baseline; gap:8px; }
+  .ind-d-strat-note { text-transform:none; letter-spacing:0; font-weight:500;
+    color:var(--dim); font-size:10.5px; }
+  .ind-d-strat-profit { margin-top:10px; padding-top:8px; border-top:1px dashed var(--line2); }
+  .ind-d-strat-line { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+  .ind-d-strat-k { color:var(--dim); font-size:11.5px; }
   /* Cards stretch to equal height so each card's "now" slot lines up in a row. */
   .ind-build-headcards .ind-d-card { display:flex; flex-direction:column; }
   .ind-d-card-now { margin-top:auto; padding-top:6px; font-size:11px; color:var(--fg);
@@ -1076,6 +1086,9 @@
   .ind-sell-foot { display:flex; align-items:center; gap:12px; margin-top:8px;
     flex-wrap:wrap; }
   .ind-sell-watching { color:var(--cyan); font-size:11.5px; }
+  .ind-sell-unlink { padding:0 6px; margin-left:4px; font-size:10.5px; cursor:pointer;
+    border-radius:4px; background:transparent; border:1px solid var(--line2); color:var(--dim); }
+  .ind-sell-unlink:hover { border-color:var(--red); color:var(--red); }
   .ind-sell-done { color:var(--green2,#4caf76); font-size:11.5px; font-weight:700; }
 
   /* ── Summary tab (industry portfolio P&L) ────────────────────────── */

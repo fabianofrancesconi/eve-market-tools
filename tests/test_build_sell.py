@@ -215,6 +215,114 @@ class TestReconcileAutoMatch:
         lp_web._reconcile_sell_builds(acct, orders)
         assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == []
 
+    def test_manual_link_respects_unlink_tombstone(self, monkeypatch, tmp_path):
+        # After an explicit unlink, the auto-linker must not re-grab that order.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _save_build(runs=10)
+        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
+        orders = [_sell_order(700, 587, 10, 10, 160.0)]
+        lp_web._reconcile_sell_builds(acct, orders)
+        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == ["700"]
+        lp_web.do_ind_builds_sell_unlink({"id": [b["id"]], "order_id": ["700"]})
+        # Same order still present in-game — but it was rejected, so stays unlinked.
+        lp_web._reconcile_sell_builds(acct, orders)
+        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == []
+
+
+class TestAutoStart:
+    """A finished build auto-starts sell-tracking when its product appears as a
+    single fresh sell order — no 'Start tracking' click required."""
+
+    def _built(self, runs=10, **snap):
+        b = _save_build(runs=runs, **snap)
+        stored = lp_web.do_ind_builds_list({})["builds"][0]
+        stored["job_id"] = "123"
+        stored["done_at"] = time.time()
+        lp_web._save_tracked_builds(lp_web.current_account(), [stored])
+        return stored
+
+    def test_built_single_order_auto_starts(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        self._built(runs=10)
+        orders = [_sell_order(700, 587, 10, 10, 160.0)]
+        lp_web._track_order_changes(acct, 1, orders, {})
+        lp_web._reconcile_sell_builds(acct, orders)
+        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
+        assert sell["started_at"] is not None
+        assert sell["auto"] is True
+        assert sell["order_ids"] == ["700"]
+        assert sell["qty_target"] == 10
+        assert sell["cost_per_unit"] == 100.0
+
+    def test_built_multiple_orders_do_not_auto_start(self, monkeypatch, tmp_path):
+        # Ambiguous → leave it for the user; don't guess which order is the batch.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        self._built(runs=10)
+        orders = [_sell_order(700, 587, 5, 5, 160.0),
+                  _sell_order(701, 587, 5, 5, 162.0)]
+        lp_web._reconcile_sell_builds(acct, orders)
+        assert (lp_web.do_ind_builds_list({})["builds"][0].get("sell") or {}) \
+            .get("started_at") is None
+
+    def test_not_yet_built_does_not_auto_start(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _save_build(runs=10)          # planned, no done_at
+        orders = [_sell_order(700, 587, 10, 10, 160.0)]
+        lp_web._reconcile_sell_builds(acct, orders)
+        assert (lp_web.do_ind_builds_list({})["builds"][0].get("sell") or {}) \
+            .get("started_at") is None
+
+    def test_auto_start_accrues_real_fill_price(self, monkeypatch, tmp_path):
+        # Profit is computed from the order's actual fill price, not our proposal.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        self._built(runs=10)
+        orders0 = [_sell_order(700, 587, 10, 10, 137.0)]  # listed at 137, not our ask
+        lp_web._track_order_changes(acct, 1, orders0, {})
+        lp_web._reconcile_sell_builds(acct, orders0)
+        orders1 = [_sell_order(700, 587, 6, 10, 137.0)]   # 4 sold @ 137
+        lp_web._track_order_changes(acct, 1, orders1, {})
+        lp_web._reconcile_sell_builds(acct, orders1)
+        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
+        assert rz["units"] == 4
+        assert rz["net"] == 4 * 137.0
+        assert rz["profit"] == 4 * (137.0 - 100.0)
+
+    def test_cancel_tombstone_blocks_reauto(self, monkeypatch, tmp_path):
+        # Cancelling an auto-started sale must not silently re-start it next sweep.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        self._built(runs=10)
+        orders = [_sell_order(700, 587, 10, 10, 160.0)]
+        lp_web._track_order_changes(acct, 1, orders, {})
+        lp_web._reconcile_sell_builds(acct, orders)
+        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["auto"] is True
+        b = lp_web.do_ind_builds_list({})["builds"][0]
+        lp_web.do_ind_builds_sell_cancel({"id": [b["id"]]})
+        stored = lp_web.do_ind_builds_list({})["builds"][0]
+        assert "sell" not in stored
+        assert stored["no_auto_sell"] is True
+        # Order still live → but the user opted out, so no re-auto-start.
+        lp_web._reconcile_sell_builds(acct, orders)
+        assert "sell" not in lp_web.do_ind_builds_list({})["builds"][0]
+
+    def test_manual_start_clears_cancel_tombstone(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = self._built(runs=10)
+        b["no_auto_sell"] = True
+        lp_web._save_tracked_builds(acct, [b])
+        res = lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
+        assert res["ok"] is True
+        stored = lp_web.do_ind_builds_list({})["builds"][0]
+        assert stored.get("no_auto_sell") in (None, False) \
+            and "no_auto_sell" not in stored
+        assert stored["sell"]["started_at"] is not None
+
 
 class TestReconcileAccrual:
     def _setup(self, monkeypatch, tmp_path, sales_tax=0.0):

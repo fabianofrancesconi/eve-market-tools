@@ -207,6 +207,80 @@ class TestLoyaltyAsOf:
         assert out["loyalty_expires"] == "Tue, 07 Jul 2026 11:00:00 GMT"
 
 
+# ── Research / copy jobs surface to the frontend (busy-blueprint note) ─────────
+
+class TestResearchJobsSurfaced:
+    """The industry planner shows a "busy being researched" note on blueprints
+    tied up in an ME/TE research or copy job. That relies on those jobs reaching
+    the client bundle un-filtered (not just manufacturing, activity_id 1), each
+    carrying its activity label + blueprint_type_id + end date."""
+
+    def _mock(self, monkeypatch, tmp_path, jobs):
+        cache = tmp_path / "cache"; cache.mkdir(exist_ok=True)
+        monkeypatch.setattr(lp_web, "CACHE_DIR", cache)
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", cache / "jobs.json")
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", cache / "order_events.json")
+        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda a, cid: None)
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda a, cid: None)
+        monkeypatch.setattr(lp_web, "_track_delivered_jobs", lambda *a, **k: 0)
+        monkeypatch.setattr(lp_web, "resolve_names",
+                            lambda ids, *a, **k: {i: f"Type {i}" for i in ids})
+        monkeypatch.setattr(lp_web, "resolve_station_names",
+                            lambda ids, *a, **k: {i: "Some Structure" for i in ids})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_wallet", lambda *a, **k: 0.0)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skills",
+                            lambda *a, **k: {"total_sp": 0, "skills": []})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skillqueue", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points", lambda *a, **k: ([], {}))
+        monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: jobs)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: ([], {}))
+        acct = _acct({1: {"name": "Main", "access_token": "tok",
+                          "expires_at": time.time() + 3600}})
+        lp_web._REQUEST.account = acct
+        lp_web._CHAR_DATA_CACHE.pop(1, None)
+        lp_web._CHAR_DATA_SIG.pop(1, None)
+
+    def test_me_research_job_surfaces_with_label(self, monkeypatch, tmp_path):
+        self._mock(monkeypatch, tmp_path, [
+            {"job_id": 42, "activity_id": 4, "blueprint_type_id": 999,
+             "product_type_id": 999, "runs": 1, "status": "active",
+             "start_date": "2026-07-19T00:00:00Z", "end_date": "2026-07-20T00:00:00Z",
+             "facility_id": 60003760},
+        ])
+        out = lp_web.do_char_data({})
+        job = next(j for j in out["jobs"] if j["job_id"] == 42)
+        assert job["activity_id"] == 4
+        assert job["activity"] == "ME Research"
+        assert job["blueprint_type_id"] == 999
+        assert job["end"] == "2026-07-20T00:00:00Z"
+
+    def test_copy_and_te_jobs_are_not_dropped(self, monkeypatch, tmp_path):
+        self._mock(monkeypatch, tmp_path, [
+            {"job_id": 1, "activity_id": 3, "blueprint_type_id": 111,
+             "product_type_id": 111, "runs": 1, "status": "active",
+             "end_date": "2026-07-20T00:00:00Z", "facility_id": 1},
+            {"job_id": 2, "activity_id": 5, "blueprint_type_id": 222,
+             "product_type_id": 333, "runs": 10, "status": "paused",
+             "end_date": "2026-07-21T00:00:00Z", "facility_id": 1},
+        ])
+        out = lp_web.do_char_data({})
+        by_id = {j["job_id"]: j for j in out["jobs"]}
+        assert by_id[1]["activity"] == "TE Research"
+        assert by_id[2]["activity"] == "Copying"
+        assert by_id[2]["blueprint_type_id"] == 222
+
+    def test_delivered_research_job_is_excluded(self, monkeypatch, tmp_path):
+        """A finished/delivered job frees the blueprint, so it must not surface as
+        a busy note — only active/paused/ready jobs are kept."""
+        self._mock(monkeypatch, tmp_path, [
+            {"job_id": 7, "activity_id": 4, "blueprint_type_id": 555,
+             "product_type_id": 555, "runs": 1, "status": "delivered",
+             "end_date": "2026-07-01T00:00:00Z", "facility_id": 1},
+        ])
+        out = lp_web.do_char_data({})
+        assert all(j["job_id"] != 7 for j in out["jobs"])
+
+
 # ── next_sync_in reflects the server's background-refresh schedule ─────────────
 
 class TestNextSyncSchedule:

@@ -4,7 +4,7 @@
 let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es:null,
            groupsLoaded:false, profiles:[],
            favorites:new Set(), hidden:new Set(),
-           timers:{}, savedGroup:null, openDetail:null, colOrder:null,
+           timers:{}, research:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{}, detailRuns:1,
            fillTotal:0, fillDone:0, tradeWeight:0.5,
            builds:[], buildsLoaded:false, buildsExpanded:new Set(),
@@ -159,6 +159,20 @@ function indSortRows(rows){
   });
 }
 
+// Tooltip for the "busy being researched" note: which activity, whose character,
+// and when the blueprint frees up.
+function indResearchTip(rz){
+  const who=rz.character_name?` by ${rz.character_name}`:"";
+  let when="";
+  if(rz.end>0){
+    const rem=rz.end-Date.now();
+    when=rem>0
+      ? ` — frees up in ${fmtCountdownShort(rem)} (${new Date(rz.end).toLocaleString([],{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})})`
+      : " — job ready to deliver";
+  }
+  return `Blueprint busy: ${rz.activity||"research"}${who}${when}`.replace(/"/g,'&quot;');
+}
+
 function indRowHtml(r, idx){
   const fav=IND.favorites.has(r.blueprint_id);
   const hid=IND.hidden.has(r.blueprint_id);
@@ -178,6 +192,8 @@ function indRowHtml(r, idx){
     let v=r[c.k], txt=c.f?c.f(v,r):(v===null||v===undefined?"—":v);
     if(c.k==="product_name"){
       if(r.missing_price) txt+=" *";
+      const rz=IND.research[r.blueprint_id];
+      if(rz) txt+=` <span class="ind-busy-note" title="${indResearchTip(rz)}">🔬 ${rz.activity||"researching"}</span>`;
       if(r.group_name) txt+=`<span class="ind-group-sub">${r.group_name}</span>`;
     }
     let cls=c.cls||"";
@@ -667,6 +683,21 @@ function renderIndDetail(d, container){
         ? "No active manufacturing job for this blueprint."
         : "Log in with EVE to see your running industry jobs here."}</div>`;
   }
+  // Busy-being-researched note: the blueprint is tied up in a ME/TE research or
+  // copy job, so it can't be used for manufacturing until that job finishes.
+  const rz=IND.research[d.blueprint_id];
+  let researchHtml="";
+  if(rz){
+    const who=rz.character_name?` (${rz.character_name})`:"";
+    let when="";
+    if(rz.end>0){
+      const rem=rz.end-nowMs;
+      when=rem>0
+        ? ` — frees up in <b>${fmtCountdownShort(rem)}</b>, ETA ${new Date(rz.end).toLocaleString([],{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})}`
+        : " — <b>job ready</b> to deliver";
+    }
+    researchHtml=`<div class="ind-busy-warn">🔬 This blueprint is busy: <b>${rz.activity||"research"}</b>${who}${when}.</div>`;
+  }
   let invHtml="";
   if(d.invention){
     const iv=d.invention;
@@ -694,6 +725,7 @@ function renderIndDetail(d, container){
       <span class="ind-d-close" title="Close">✕</span>
     </div>
     <div class="ind-d-body">
+    ${researchHtml}
     ${esiOwned && !isBpo ? `<div class="ind-bpc-warn">
       ⚠ You only have a <b>Blueprint Copy</b> with <b>${bpcRuns} run${bpcRuns===1?"":"s"}</b> remaining — it will be consumed.
       ${d.bp_market

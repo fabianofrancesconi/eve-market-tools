@@ -773,12 +773,26 @@ function renderCharData(){
 // Rebuild the Industry-table timers from the character's real manufacturing jobs,
 // keyed by blueprint type id (== the planner's blueprint_id). This is the only
 // source of timers — there is no manual timer any more.
+// Alongside the manufacturing timers we build IND.research: blueprints currently
+// occupied by a research/copy job (ME/TE research, copying), so the planner can
+// warn that the BP is busy and shouldn't be scheduled for something else yet.
 function syncJobTimers(){
   IND.timers={};
+  IND.research={};
+  const RESEARCH_ACTS={3:1,4:1,5:1};   // TE Research, ME Research, Copying
   (AUTH.data&&AUTH.data.jobs||[]).forEach(j=>{
-    if(j.activity_id!==1) return;          // manufacturing only
     const end=Date.parse(j.end), bp=j.blueprint_type_id;
-    if(isFinite(end) && bp) IND.timers[bp]=end;
+    if(!bp) return;
+    if(j.activity_id===1){                 // manufacturing → crafting timer
+      if(isFinite(end)) IND.timers[bp]=end;
+    } else if(RESEARCH_ACTS[j.activity_id]){
+      // Keep the job finishing latest so the note reflects when the BP frees up.
+      const cur=IND.research[bp];
+      if(!cur || (isFinite(end) && end>cur.end)){
+        IND.research[bp]={activity:j.activity||"", activity_id:j.activity_id,
+                          end:isFinite(end)?end:0, character_name:j.character_name||""};
+      }
+    }
   });
   if(ACTIVE_TAB==="ind") renderIndTable();
   if(IND.openDetail) renderIndDetail(IND.openDetail);

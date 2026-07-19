@@ -359,6 +359,21 @@
             <p>Log in with your EVE Online account to track exploration sessions.</p>
           </div>
           <div id="exp-journal-body">
+            <!-- Journal-wide display filter. Lives here — above the live card and
+                 outside any session detail — because it is a single global view
+                 preference (server-stored, sticky across reloads/devices) that
+                 applies to whichever session's table you're viewing, NOT a
+                 per-session setting. -->
+            <div class="track-filter">
+              <label>Hide systems under
+                <input id="track-min-dwell" type="number" min="0" step="1" value="0">
+                <select id="track-min-unit">
+                  <option value="1">sec</option>
+                  <option value="60">min</option>
+                </select>
+              </label>
+              <span id="track-hidden-note" class="track-hidden-note"></span>
+            </div>
             <!-- Live session widget -->
             <div id="exp-live" class="exp-live-card">
               <div class="exp-live-head">
@@ -390,17 +405,6 @@
               <div class="exp-cargo-basis">This is the actual estimated cargo value based on <b>Jita best buy-order</b> prices — the ISK you'd get dumping the hold to buy orders right now (falling back to sell price for items with no buyer). It's deliberately lower than EVE's in-game “estimated price”, a smoothed CCP average that isn't an executable price.</div>
               <div id="exp-session-notes-wrap" class="exp-notes-wrap hidden">
                 <textarea id="exp-session-notes" class="exp-notes" placeholder="Freeform notes for this session…"></textarea>
-              </div>
-              <div class="track-filter">
-                <label>Hide systems under
-                  <input id="track-min-dwell" type="number" min="0" step="1" value="0">
-                  <select id="track-min-unit">
-                    <option value="1">sec</option>
-                    <option value="60">min</option>
-                  </select>
-                </label>
-                <span class="track-filter-scope" title="This is a global display preference, not part of the session. It applies to every session's table and is remembered across reloads and devices.">applies to all sessions</span>
-                <span id="track-hidden-note" class="track-hidden-note"></span>
               </div>
               <table id="track-table" class="hidden">
                 <thead><tr>

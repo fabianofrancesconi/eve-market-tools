@@ -162,7 +162,7 @@ class Exploration:
                     {"entered_at": entered_at, "run_id": run_id, "system_id": system_id,
                      "system_name": system_name, "security": security,
                      "scanned": False, "note": "", "hidden": False,
-                     "cargo_scanned_at": None})
+                     "cargo_scanned_at": None, "cargo_expires": None})
                 save_json(self._h.LOCATION_TRAIL_PATH, store)
 
     def _enrich_trail_regions(self, rows):
@@ -189,12 +189,14 @@ class Exploration:
         return self._h._enrich_trail_regions(rows)
 
     def _annotate_trail(self, acct, cid, entered_at, scanned=None, cargo_isk=None,
-                        note=None, hidden=None, cargo_scanned_at=None):
+                        note=None, hidden=None, cargo_scanned_at=None,
+                        cargo_expires=None):
         if pg_store.enabled():
             pg_store.location_trail_annotate(acct.account_id, cid, entered_at,
                                              scanned=scanned, cargo_isk=cargo_isk,
                                              note=note, hidden=hidden,
-                                             cargo_scanned_at=cargo_scanned_at)
+                                             cargo_scanned_at=cargo_scanned_at,
+                                             cargo_expires=cargo_expires)
             return
         with self._h._TRAIL_RECORD_LOCK:
             store = load_json(self._h.LOCATION_TRAIL_PATH, {})
@@ -211,6 +213,9 @@ class Exploration:
                     if cargo_scanned_at is not None:
                         r["cargo_scanned_at"] = (cargo_scanned_at
                                                  if cargo_scanned_at != "" else None)
+                    if cargo_expires is not None:
+                        r["cargo_expires"] = (cargo_expires
+                                              if cargo_expires != "" else None)
                     break
             save_json(self._h.LOCATION_TRAIL_PATH, store)
 
@@ -625,9 +630,10 @@ class Exploration:
                 cargo_isk = float(raw)
             except (TypeError, ValueError):
                 cargo_isk = ""
-        # A hand-typed value isn't an ESI scan — clear any stale "as of" timestamp.
+        # A hand-typed value isn't an ESI scan — clear any stale "as of" timestamp
+        # and cache-expiry so the auto-refresh ring won't treat it as scanned.
         self._h._annotate_trail(acct, cid, entered_at, cargo_isk=cargo_isk,
-                                cargo_scanned_at="")
+                                cargo_scanned_at="", cargo_expires="")
         self._h._CHAR_PUBSUB.bump(id(acct))
         return {"ok": True}
 
@@ -679,7 +685,8 @@ class Exploration:
         if not cargo:
             # Empty hold is a legitimate result: record 0 so the column shows it.
             self._h._annotate_trail(acct, cid, entered_at, cargo_isk=0.0,
-                                    cargo_scanned_at=scanned_at)
+                                    cargo_scanned_at=scanned_at,
+                                    cargo_expires=expires if expires is not None else "")
             self._h._CHAR_PUBSUB.bump(id(acct))
             return {"ok": True, "total": 0.0, "items": [],
                     "ship_name": ship.get("ship_name"), "cargo_scanned_at": scanned_at,
@@ -703,7 +710,8 @@ class Exploration:
         items.sort(key=lambda i: i["value"], reverse=True)
 
         self._h._annotate_trail(acct, cid, entered_at, cargo_isk=total,
-                                cargo_scanned_at=scanned_at)
+                                cargo_scanned_at=scanned_at,
+                                cargo_expires=expires if expires is not None else "")
         self._h._CHAR_PUBSUB.bump(id(acct))
         return {"ok": True, "total": total, "items": items,
                 "ship_name": ship.get("ship_name"), "cargo_scanned_at": scanned_at,

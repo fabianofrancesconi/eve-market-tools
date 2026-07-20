@@ -139,6 +139,24 @@ class TestRegionResolver:
         lp_web._annotate_trail(acct, 1, 100.0, cargo_isk="")
         assert lp_web._query_trail(acct, 1, run_id="run1")[0]["cargo_isk"] is None
 
+    def test_annotate_cargo_expires_persists_and_clears(self, monkeypatch, tmp_path):
+        """The ESI Expires header is persisted per row so the auto-refresh ring can
+        resume its countdown faithfully after a page reload, and a hand-typed value
+        (cargo_expires="") clears it."""
+        _isolate(monkeypatch, tmp_path)
+        acct = _acct()
+        lp_web._append_trail(acct, 1, 100.0, "run1", 1, "A", 0.5)
+        lp_web._annotate_trail(acct, 1, 100.0, cargo_isk=1.0,
+                               cargo_scanned_at=1000.0, cargo_expires=4600.0)
+        row = lp_web._query_trail(acct, 1, run_id="run1")[0]
+        assert row["cargo_expires"] == 4600.0
+        assert row["cargo_scanned_at"] == 1000.0
+        # Manual edit clears both the scan stamp and the cache-expiry.
+        lp_web._annotate_trail(acct, 1, 100.0, cargo_scanned_at="", cargo_expires="")
+        row = lp_web._query_trail(acct, 1, run_id="run1")[0]
+        assert row["cargo_expires"] is None
+        assert row["cargo_scanned_at"] is None
+
     def test_annotate_note_set_and_clear(self, monkeypatch, tmp_path):
         _isolate(monkeypatch, tmp_path)
         acct = _acct()

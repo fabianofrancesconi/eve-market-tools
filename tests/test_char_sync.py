@@ -318,6 +318,29 @@ class TestNextSyncSchedule:
         out = lp_web.do_char_data({})
         assert out["next_sync_in"] == lp_web._BG_REFRESH_INTERVAL
 
+    def test_force_sync_resets_countdown_to_full_interval(self, monkeypatch, tmp_path):
+        self._setup(monkeypatch, tmp_path)
+        # Only ~12s left on the shared timer. A manual force-sync (refresh=1) must
+        # push the next sweep out to a fresh full interval and report that — not
+        # the 12s that were left — so the browser's countdown resets to 5:00.
+        monkeypatch.setattr(lp_web, "_BG_NEXT_SYNC_TS", time.time() + 12)
+        lp_web._BG_WAKE.clear()
+        out = lp_web.do_char_data({"refresh": ["1"]})
+        assert out["next_sync_in"] >= lp_web._BG_REFRESH_INTERVAL - 5
+        # …and the background loop was signalled to honour the new deadline rather
+        # than sweeping at the old (now-stale) one.
+        assert lp_web._BG_WAKE.is_set()
+
+    def test_plain_poll_does_not_reset_countdown(self, monkeypatch, tmp_path):
+        self._setup(monkeypatch, tmp_path)
+        # A non-forced poll must leave the schedule alone — it reports whatever is
+        # left and never wakes/reschedules the loop.
+        monkeypatch.setattr(lp_web, "_BG_NEXT_SYNC_TS", time.time() + 40)
+        lp_web._BG_WAKE.clear()
+        out = lp_web.do_char_data({})
+        assert 35 <= out["next_sync_in"] <= 40
+        assert not lp_web._BG_WAKE.is_set()
+
 
 # ── New data from a sweep reaches connected clients ───────────────────────────
 

@@ -557,9 +557,13 @@ function tickCargoRing(){
   let info=TRACK.autoCargo[at];
   if(!info){
     if(row.cargo_scanned_at){
-      // Fresh page load mid-session: resume the countdown from the persisted scan
-      // stamp (a stale one just reads as "due now" and triggers a scan below).
-      info={expires:row.cargo_scanned_at+CARGO_CACHE_FALLBACK, fetchedAt:row.cargo_scanned_at};
+      // Fresh page load mid-session: resume the countdown from the persisted scan.
+      // Prefer the real ESI Expires header (cargo_expires) — that's exactly when
+      // fresh asset data is due — and only fall back to scan-time + assumed cache
+      // window for rows saved before we persisted the header. A stale expiry just
+      // reads as "due now" and triggers a scan below.
+      const exp=row.cargo_expires || (row.cargo_scanned_at+CARGO_CACHE_FALLBACK);
+      info={expires:exp, fetchedAt:row.cargo_scanned_at};
       TRACK.autoCargo[at]=info;
     } else {
       // Truly unscanned current system → fill the hold automatically.
@@ -584,8 +588,11 @@ function tickCargoRing(){
     const s=Math.round(remaining);
     label.textContent = s>=60 ? Math.round(s/60)+"m" : s+"s";
   }
-  ring.title="Auto-rescans this system's cargo in "+fmtDwell(remaining)
-    +" (when ESI's ~1h asset cache next refreshes). Click to scan now.";
+  // The Expires header is the authoritative moment fresh asset data is due, so
+  // surface the actual clock time alongside the countdown, not just "in 12m".
+  ring.title="Cargo next refreshes at "+fmtClock(info.expires)
+    +" (in "+fmtDwell(remaining)+", when ESI's asset cache next updates). "
+    +"Click to scan now.";
 }
 
 // A per-system note button: 📝 when empty, a filled chip previewing the note

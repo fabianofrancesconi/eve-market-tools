@@ -162,6 +162,10 @@ MIGRATIONS = [
             pos INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (account_id, profile_id));
     """),
+    (11, "ESI cache-expiry of the last cargo scan per trail row (v1.135+)", """
+        ALTER TABLE mono_location_trail
+            ADD COLUMN IF NOT EXISTS cargo_expires DOUBLE PRECISION;
+    """),
 ]
 
 

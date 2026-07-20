@@ -141,6 +141,11 @@ async function loadSettings(){
         const sec=typeof ind.sections==="string"?JSON.parse(ind.sections):ind.sections;
         if(sec&&typeof sec==="object") Object.assign(IND.sections, sec);
       }catch(e){} }
+      // Tracker status-group collapse state (stage key -> collapsed).
+      if(ind.build_groups){ try{
+        const bg=typeof ind.build_groups==="string"?JSON.parse(ind.build_groups):ind.build_groups;
+        if(bg&&typeof bg==="object") Object.assign(IND.buildGroups, bg);
+      }catch(e){} }
       // Exploration recent lookups — server-authoritative so every device converges.
       if(s.exp_recent!==undefined && typeof EXP!=="undefined"){ try{
         const er=typeof s.exp_recent==="string"?JSON.parse(s.exp_recent):s.exp_recent;

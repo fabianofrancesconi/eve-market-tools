@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.135.1"
+__version__ = "1.136.0"
 
 import argparse
 import base64
@@ -727,6 +727,23 @@ _BG_REFRESH_INTERVAL = 300  # 5 minutes
 # authoritative "next sync in …" that reflects the real server schedule rather
 # than a value each browser invents on load. 0 until the loop establishes it.
 _BG_NEXT_SYNC_TS = 0.0
+# Set to wake the background loop early when a manual force-sync reschedules the
+# next sweep — the loop is otherwise asleep until its old deadline and would both
+# ignore the new schedule and run a now-redundant sweep at the stale time.
+_BG_WAKE = threading.Event()
+
+
+def _reschedule_bg_sync():
+    """A manual force-sync just re-fetched every character, so the next background
+    sweep can wait a full interval — and, crucially, the shared countdown every
+    client shows should reset to that full interval. Push the schedule out, wake
+    the loop so it honours the new deadline instead of sweeping at the old one, and
+    announce the change so all open streams re-publish the reset countdown in
+    lockstep (the UI only ever displays the schedule the server hands it)."""
+    global _BG_NEXT_SYNC_TS
+    _BG_NEXT_SYNC_TS = time.time() + _BG_REFRESH_INTERVAL
+    _BG_WAKE.set()
+    _CHAR_PUBSUB.announce_sweep()
 
 
 def _snapshot_accounts():
@@ -745,6 +762,7 @@ def _bg_char_refresh_loop():
     time.sleep(30)
     while True:
         _BG_NEXT_SYNC_TS = time.time() + _BG_REFRESH_INTERVAL
+        _BG_WAKE.clear()
         try:
             # Snapshot under the registry lock: a concurrent login/logout mutates
             # _ACCOUNTS, and iterating it bare can raise "dict changed size during
@@ -766,7 +784,19 @@ def _bg_char_refresh_loop():
         # Tell every open stream the sweep is done so they re-publish the shared
         # countdown in lockstep (data-change nudges already fired per account).
         _CHAR_PUBSUB.announce_sweep()
-        time.sleep(max(0, _BG_NEXT_SYNC_TS - time.time()))
+        # Sleep until the scheduled deadline, but wake early if a manual force-sync
+        # pushed it out (_reschedule_bg_sync). On such a wake we must NOT sweep —
+        # the manual sync already fetched everything — so we loop back and wait for
+        # the *new* deadline. Re-read _BG_NEXT_SYNC_TS each pass so a reschedule
+        # mid-sleep is honoured rather than firing a redundant sweep at the old time.
+        while True:
+            remaining = _BG_NEXT_SYNC_TS - time.time()
+            if remaining <= 0:
+                break
+            if _BG_WAKE.wait(remaining):
+                _BG_WAKE.clear()   # rescheduled → re-wait against the new deadline
+                continue
+            break
 
 
 def _warn_if_multi_replica():
@@ -2171,7 +2201,8 @@ def _fetch_one_char_data_uncached(acct, cid):
 def do_char_data(q):
     """Fetch data for all linked characters and return a combined bundle."""
     acct = require_account()
-    if q.get("refresh"):
+    forced = bool(q.get("refresh"))
+    if forced:
         with acct.lock:
             for cid in list(acct.characters.keys()):
                 _CHAR_DATA_CACHE.pop(cid, None)
@@ -2222,6 +2253,13 @@ def do_char_data(q):
     combined_orders.sort(key=lambda o: o.get("issued") or "", reverse=True)
 
     active_data = results.get(active_char_id) or next(iter(results.values()), {})
+
+    # A manual force-sync just re-fetched everything, so push the next background
+    # sweep out to a full interval and reset the shared countdown — every client
+    # (including this one, via next_sync_in below) then shows a fresh 5:00 rather
+    # than whatever was left on the old timer.
+    if forced:
+        _reschedule_bg_sync()
 
     # Time until the next server-side background refresh — the authoritative sync
     # cadence, so every browser's countdown agrees and a page reload shows the

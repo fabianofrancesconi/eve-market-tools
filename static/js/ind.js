@@ -8,6 +8,7 @@ let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es
            colw:{}, colVis:{}, detailRuns:1,
            fillTotal:0, fillDone:0, tradeWeight:0.5,
            builds:[], buildsLoaded:false, buildsExpanded:new Set(),
+           buildGroups:{},   // stage key -> true when that status group is collapsed
            mode:"planner",
            sections:{fav:true, owned:true, hidden:false, all:true, builds:true}};
 // IND.mode is seeded from server prefs by loadSettings (getPref 'ind_mode').
@@ -44,7 +45,7 @@ const IND_COLS = [
   {k:"margin_instant",     t:"Margin instant", w: 75, tip:"Profit as % of cost when selling instantly at the highest bid.", f:fmtPct1, pn:true},
   {k:"build_time",         t:"Build time",     w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
   {k:"total_cost",         t:"Cost/run",       w: 98, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
-  {k:"bp_price",           t:"BP price",       w:108, tip:"Cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention. 'BPO' = you own the original. 'BPC (N)' = you have a limited-run copy.", f:(v,r)=> r.owned_bp_me_te?((r.owned_is_bpo||r.owned_max_runs===-1)?"BPO":`BPC (${r.owned_max_runs})`):((r.other_owners&&r.other_owners.length)?r.other_owners.map(o=>`${o.name}${o.is_bpo?" BPO":" BPC"}`).join(", "):(v!=null?fmtISK(v):(r.bp_source==="invention"?"invent":"—"))), cls:"bp-buy"},
+  {k:"bp_price",           t:"BP price",       w:108, tip:"For blueprints you own: 'Owned' with the type (BPO / BPC N) and, for a researched original, an ME/TE pill. Otherwise the cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention.", f:_bpPriceCell},
   {k:"payback_runs",       t:"Payback",        w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r.owned_bp_me_te?"—":(v==null?"—":fmtNum(v)+" runs")},
   {k:"ask",                t:"Sell price",     w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
   {k:"in_vol_run",         t:"Cargo in",       w: 85, tip:"m³ of materials to haul in per run.", f:v=>v?fmtVol(v):"—"},
@@ -171,6 +172,32 @@ function indResearchTip(rz){
       : " — job ready to deliver";
   }
   return `Blueprint busy: ${rz.activity||"research"}${who}${when}`.replace(/"/g,'&quot;');
+}
+
+// The "BP price" cell. For a blueprint you (or an alt) own it reads "Owned" with
+// the concrete type on a sub-line (BPO / BPC N) and, for a researched original, a
+// small ME/TE pill — so a researched BPO is visible at a glance. Ownership is the
+// only thing shown in gold; when an actual market price is involved the cell uses
+// the regular text colour.
+function _bpPriceCell(v, r){
+  if(r.owned_bp_me_te){
+    const bpo=r.owned_is_bpo||r.owned_max_runs===-1;
+    const type=bpo?"BPO":`BPC ${r.owned_max_runs}`;
+    const me=r.me_used||0, te=r.te_used||0;
+    // Only originals get researched — a BPC's ME/TE are baked in and not "yours".
+    const pill=(bpo && (me>0||te>0))
+      ? ` <span class="bp-research-pill" title="Researched blueprint — Material Efficiency ${me}, Time Efficiency ${te}">ME ${me} · TE ${te}</span>`
+      : "";
+    return `<span class="bp-owned">Owned</span>`
+         + `<span class="ind-group-sub">${type}${pill}</span>`;
+  }
+  if(r.other_owners&&r.other_owners.length){
+    // Owned by another of your characters — still "yours", so gold, with who/what.
+    return `<span class="bp-owned">Owned</span>`
+         + `<span class="ind-group-sub">${r.other_owners.map(o=>`${o.name} · ${o.is_bpo?"BPO":"BPC"}`).join(", ")}</span>`;
+  }
+  if(v!=null) return fmtISK(v);                         // a real market price — regular colour
+  return r.bp_source==="invention"?"invent":"—";
 }
 
 function indRowHtml(r, idx){
@@ -1298,6 +1325,23 @@ function _buildBreakEven(b){
 // Planner shows a link-across hint instead. Always expanded — no collapse toggle.
 // If the Character overview is the active tab, refresh it too so its 🔗
 // tracked-job markers reflect the current builds.
+// Group order + labels for the tracker. Follows the build lifecycle so the most
+// "needs-your-attention" work (planned/building) sits at the top and finished
+// sales sink to the bottom. Keyed by _buildStage()'s output.
+const _BUILD_GROUP_ORDER=["planned","building","built","listed","sold"];
+const _BUILD_GROUP_LABEL={
+  planned:"⚠ Planned", building:"⏳ Building", built:"✓ Built — ready to list",
+  listed:"🏷 Listed for sale", sold:"💰 Sold",
+};
+// A representative timestamp for ordering builds *within* a status group, newest
+// first. Uses the stage-relevant moment (finish/list/sale) when known so the most
+// recently-progressed build leads, falling back to when it was first tracked.
+function _buildSortTs(b){
+  const sell=b.sell||{};
+  return sell.closed_at || sell.started_at || b.done_at
+      || (b.job_end?Date.parse(b.job_end)/1000:0) || b.created_at || 0;
+}
+
 function renderIndBuilds(){
   _updateTrackCount();
   const box=$("#ind-builds");
@@ -1309,10 +1353,33 @@ function renderIndBuilds(){
       // Jobs already linked to a build must not be offered as a close match to
       // an awaiting one. Collect the linked ids (as strings) up front.
       const linked=new Set(IND.builds.filter(b=>b.job_id!=null).map(b=>String(b.job_id)));
-      const rows=IND.builds.map(b=>_buildCardHtml(b, linked)).join("");
-      box.innerHTML=`
-        <div class="ind-builds-head static">Tracked builds <span class="chip-count">(${IND.builds.length})</span></div>
-        <div class="ind-builds-list">${rows}</div>`;
+      // Bucket every build by lifecycle stage, then order each bucket newest-first.
+      const buckets={};
+      IND.builds.forEach(b=>{ (buckets[_buildStage(b)]||(buckets[_buildStage(b)]=[])).push(b); });
+      let html=`<div class="ind-builds-head static">Tracked builds <span class="chip-count">(${IND.builds.length})</span></div>`;
+      for(const key of _BUILD_GROUP_ORDER){
+        const list=buckets[key];
+        if(!list||!list.length) continue;
+        list.sort((a,b)=>_buildSortTs(b)-_buildSortTs(a));
+        const collapsed=IND.buildGroups[key]===true;
+        const rows=list.map(b=>_buildCardHtml(b, linked)).join("");
+        html+=`<div class="ind-build-group ${key}${collapsed?" collapsed":""}" data-grp="${key}">
+          <div class="ind-build-grp-head" data-grp="${key}">
+            <span class="grp-arrow">▾</span>${_BUILD_GROUP_LABEL[key]||key}
+            <span class="chip-count">(${list.length})</span></div>
+          <div class="ind-builds-list">${rows}</div></div>`;
+      }
+      box.innerHTML=html;
+      // Collapse/expand a whole status group; the choice is persisted server-side
+      // so every device opens the tracker the same way.
+      box.querySelectorAll(".ind-build-grp-head").forEach(h=>{
+        h.onclick=()=>{
+          const k=h.dataset.grp;
+          IND.buildGroups[k]=!IND.buildGroups[k];
+          setPref('ind.build_groups', IND.buildGroups);
+          renderIndBuilds();
+        };
+      });
       IND.builds.forEach(b=>_wireBuildCard(box, b));
     }
   }
@@ -1324,8 +1391,12 @@ function renderIndBuilds(){
 // from a clicked industry-job row in the Character overview. The cards live in
 // the Tracker now, so switch into it first.
 function openTrackedBuild(id){
-  if(!IND.builds.some(b=>b.id===id)) return;
+  const b=IND.builds.find(x=>x.id===id);
+  if(!b) return;
   IND.buildsExpanded.add(id);
+  // The card lives inside its status group — make sure that group is expanded,
+  // or the card we're about to scroll to would be hidden.
+  IND.buildGroups[_buildStage(b)]=false;
   if(IND.mode!=="summary") indSetMode("summary"); else renderIndBuilds();
   const box=$("#ind-builds");
   const card=box&&box.querySelector(`.ind-build-card[data-id="${CSS.escape(id)}"]`);

@@ -938,7 +938,7 @@ setInterval(()=>{
     const inBuildCard=!!el.closest(".ind-build-card");
     if(rem<=0){
       if(isCell){ el.textContent="✓ Ready"; el.classList.add("done"); el.removeAttribute("data-end"); }
-      else if(inBuildCard){ el.textContent="finishing…"; el.removeAttribute("data-end"); }
+      else if(inBuildCard){ el.textContent="ready for delivery"; el.removeAttribute("data-end"); }
       else if(IND.openDetail) renderIndDetail(IND.openDetail);
     } else {
       el.textContent=isCell?fmtCountdownShort(rem):fmtCountdown(rem);

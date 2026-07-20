@@ -24,6 +24,17 @@ function saveTrackMinDwell(){
   if(typeof setPref==="function") setPref('track_min_dwell', TRACK.minDwell);
 }
 
+// Every /api/track/* call targets the character assigned to the Exploration
+// page (falling back to the account's active character). The server reads
+// char_id from the query string for both GET and POST, so appending it here
+// covers all endpoints. Preserves any existing query params.
+function trackUrl(path){
+  if(typeof assignedCharId!=="function") return path;
+  const cid=assignedCharId("exp");
+  if(cid==null) return path;
+  return path + (path.includes("?")?"&":"?") + "char_id=" + encodeURIComponent(cid);
+}
+
 function fmtDwell(sec){
   if(sec==null) return "—";
   sec=Math.max(0,Math.round(sec));
@@ -84,7 +95,7 @@ function fmtCargoInput(v){
 async function loadTrackStatus(){
   if(!AUTH.loggedIn) return;
   try{
-    const j=await (await fetch("/api/track/status")).json();
+    const j=await (await fetch(trackUrl("/api/track/status"))).json();
     if(j.error) return;
     TRACK.state=j.state||"stopped";
     TRACK.pauseReason=j.pause_reason||null;
@@ -97,14 +108,14 @@ async function loadTrackStatus(){
 async function loadTrackSessions(){
   if(!AUTH.loggedIn) return;
   try{
-    const j=await (await fetch("/api/track/sessions")).json();
+    const j=await (await fetch(trackUrl("/api/track/sessions"))).json();
     TRACK.sessions=j.sessions||[];
   }catch(_){}
 }
 async function loadTrackSession(runId){
   if(!AUTH.loggedIn || !runId) return;
   try{
-    const j=await (await fetch("/api/track/session?run_id="+encodeURIComponent(runId))).json();
+    const j=await (await fetch(trackUrl("/api/track/session?run_id="+encodeURIComponent(runId)))).json();
     if(j.error){ TRACK.detail=null; TRACK.trail=[]; return; }
     TRACK.detail=j.session||null;
     TRACK.trail=j.trail||[];
@@ -138,7 +149,7 @@ async function trackOnLivePush(){
 // ── actions ────────────────────────────────────────────────────────────────
 
 async function trackAction(path){
-  try{ await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}); }
+  try{ await fetch(trackUrl(path),{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}); }
   catch(_){}
   // A fresh Start should select the new live session.
   if(path.endsWith("/start")) TRACK.selRunId=null;
@@ -146,14 +157,14 @@ async function trackAction(path){
 }
 function sessionUpdate(fields){
   if(!TRACK.selRunId) return;
-  postPrefs("/api/track/session/update", Object.assign({run_id:TRACK.selRunId}, fields));
+  postPrefs(trackUrl("/api/track/session/update"), Object.assign({run_id:TRACK.selRunId}, fields));
 }
 async function sessionDelete(){
   if(!TRACK.selRunId) return;
   const s=TRACK.sessions.find(x=>x.run_id===TRACK.selRunId);
   if(s && s.is_live){ return; }
   if(!confirm("Delete this session and its route? This can't be undone.")) return;
-  try{ await fetch("/api/track/session/delete",{method:"POST",headers:{"Content-Type":"application/json"},
+  try{ await fetch(trackUrl("/api/track/session/delete"),{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({run_id:TRACK.selRunId})}); }catch(_){}
   TRACK.selRunId=null;
   await refreshJournal();
@@ -404,7 +415,7 @@ function renderTrail(){
     inp.oninput=()=>{ inp.value=fmtCargoInput(inp.value); };
     inp.onchange=async ()=>{
       const digits=stripCargo(inp.value);       // server wants a bare number / blank
-      await fetch("/api/track/cargo",{method:"POST",headers:{"Content-Type":"application/json"},
+      await fetch(trackUrl("/api/track/cargo"),{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({entered_at:+inp.dataset.at, cargo_isk:digits})});
       // Re-pull so the session total (latest system's value) reflects the edit.
       if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
@@ -420,7 +431,7 @@ function renderTrail(){
     btn.onclick=async ()=>{
       btn.disabled=true; const glyph=btn.textContent; btn.textContent="…";
       try{
-        const r=await fetch("/api/track/cargo/fetch",{method:"POST",
+        const r=await fetch(trackUrl("/api/track/cargo/fetch"),{method:"POST",
           headers:{"Content-Type":"application/json"},
           body:JSON.stringify({entered_at:+btn.dataset.at})});
         const j=await r.json();
@@ -443,7 +454,7 @@ function renderTrail(){
 
 // Manually hide/unhide one system from the journal, then refresh.
 async function setSystemHidden(enteredAt, hidden){
-  await fetch("/api/track/hide",{method:"POST",headers:{"Content-Type":"application/json"},
+  await fetch(trackUrl("/api/track/hide"),{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({entered_at:enteredAt, hidden})});
   if(TRACK.selRunId){ await loadTrackSession(TRACK.selRunId); await loadTrackSessions(); renderJournal(); }
 }
@@ -493,7 +504,7 @@ async function autoCargoScan(enteredAt){
   const ring=$("#exp-cargo-ring"); if(ring) ring.classList.add("scanning");
   let ok=false;
   try{
-    const r=await fetch("/api/track/cargo/fetch",{method:"POST",
+    const r=await fetch(trackUrl("/api/track/cargo/fetch"),{method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({entered_at:enteredAt})});
     const j=await r.json();
@@ -604,7 +615,7 @@ function closeNoteModal(){ $("#trackNoteModal").classList.add("hidden"); }
 async function saveNoteModal(){
   const ta=$("#track-note-text");
   const at=+ta.dataset.at;
-  postPrefs("/api/track/note",{entered_at:at, note:ta.value});
+  postPrefs(trackUrl("/api/track/note"),{entered_at:at, note:ta.value});
   // Keep the in-memory row in sync so the button re-renders without a round-trip.
   const row=TRACK.trail.find(r=>Math.abs(r.entered_at-at)<1e-6);
   if(row) row.note=ta.value;

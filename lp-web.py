@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.133.2"
+__version__ = "1.134.0"
 
 import argparse
 import base64
@@ -2941,6 +2941,25 @@ def _ind_params(q):
     }
 
 
+def _ind_target_cid(acct, q):
+    """Which character's skills + owned blueprints the Industry scan/detail
+    should compute against. Honours an explicit ``char_id`` request param (the
+    per-page assignment) when it names a character linked to this account, else
+    falls back to the account's active character. Mirrors
+    ``exploration._track_target_cid``."""
+    raw = q.get("char_id", [None])[0]
+    if raw:
+        try:
+            cid = int(raw)
+        except (TypeError, ValueError):
+            cid = None
+        with acct.lock:
+            known = cid in acct.characters
+        if cid is not None and known:
+            return cid
+    return acct.active_char_id
+
+
 def _patch_group_names(rows):
     """Backfill group_name (and market_group_id) for cached rows that predate
     the feature. Older caches lack market_group_id entirely, so we resolve it
@@ -3011,8 +3030,12 @@ def do_ind_scan(q, emit=None):
     # they don't triple-hit ESI on tab open.
     _emit({"type": "progress", "pct": 2, "msg": "Refreshing blueprint ownership…", "sub": ""})
     _refresh_all_blueprints(acct, force=not (favorites_only or owned_only))
+    ind_cid = _ind_target_cid(acct, q)
+    # The assigned character may not be the active one, whose skill profile is
+    # loaded on login/switch — ensure the target's skills are cached before we read.
+    if ind_cid and ind_cid not in acct.skill_profiles:
+        _refresh_skill_profile(acct, ind_cid)
     with acct.lock:
-        ind_cid = acct.active_char_id
         ind_skill_profile = dict(acct.skill_profiles.get(ind_cid, {})) if ind_cid else {}
         ind_bp_me_te = dict(acct.bp_me_tes.get(ind_cid, {})) if ind_cid else {}
     if ind_skill_profile:
@@ -3189,8 +3212,10 @@ def do_ind_detail(q):
         station_id = JITA_STATION_ID
     region_id = TRADE_HUBS[station_id]["region_id"]
     params = _ind_params(q)
+    ind_cid = _ind_target_cid(acct, q)
+    if ind_cid and ind_cid not in acct.skill_profiles:
+        _refresh_skill_profile(acct, ind_cid)
     with acct.lock:
-        ind_cid = acct.active_char_id
         ind_skill_profile = dict(acct.skill_profiles.get(ind_cid, {})) if ind_cid else {}
         ind_bp_me_te = dict(acct.bp_me_tes.get(ind_cid, {})) if ind_cid else {}
     if ind_skill_profile:

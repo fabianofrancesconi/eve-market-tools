@@ -293,6 +293,18 @@ class TestIsolation:
         assert lp_web.prefs_all(a1) == {"active_tab": "lp"}
         assert lp_web.prefs_all(a2) == {"active_tab": "ind"}
 
+    def test_object_valued_pref_roundtrips(self, pg):
+        """The per-page character assignment is stored as a single object-valued
+        pref (page_char = {ind: cid, ...}); it must survive a set/read round-trip
+        unchanged like any scalar key."""
+        a1 = _acct(pg, 1, "A")
+        assignment = {"ind": 20, "exp": 30, "lp": 40}
+        lp_web.pref_set(a1, "page_char", assignment)
+        assert lp_web.prefs_all(a1)["page_char"] == assignment
+        # Setting to None deletes the key.
+        lp_web.pref_set(a1, "page_char", None)
+        assert "page_char" not in lp_web.prefs_all(a1)
+
     def test_favorites_and_profiles_isolated_per_account(self, pg):
         a1 = _acct(pg, 1, "A")
         a2 = _acct(pg, 2, "B")

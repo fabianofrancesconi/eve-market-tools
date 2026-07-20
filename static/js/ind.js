@@ -436,6 +436,12 @@ function indParams(extra){
     min_tradeability: $("#ind-mintrade").value||"0",
     favorites:    JSON.stringify([...IND.favorites]),
   };
+  // Compute against the character assigned to the Industry page (its skills &
+  // owned blueprints), falling back to the account's active character.
+  if(typeof assignedCharId==="function"){
+    const cid=assignedCharId("ind");
+    if(cid!=null) p.char_id=cid;
+  }
   return new URLSearchParams(Object.assign(p, extra||{}));
 }
 

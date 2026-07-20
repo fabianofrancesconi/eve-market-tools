@@ -357,6 +357,64 @@ class TestCrossCharBlueprintAnnotations:
         assert other_owners == []
 
 
+# ── Per-page Industry character assignment (char_id targeting) ────────────────
+
+class TestIndTargetCid:
+    def _acct2(self):
+        return _acct({
+            10: {"name": "Main", "refresh_token": "x"},
+            20: {"name": "Alt", "refresh_token": "y"},
+        }, active=10)
+
+    def test_defaults_to_active_when_no_param(self):
+        acct = self._acct2()
+        assert lp_web._ind_target_cid(acct, {}) == 10
+
+    def test_honours_linked_char_id(self):
+        acct = self._acct2()
+        assert lp_web._ind_target_cid(acct, {"char_id": ["20"]}) == 20
+
+    def test_foreign_char_id_falls_back_to_active(self):
+        """A char_id not linked to this account must not be honoured."""
+        acct = self._acct2()
+        assert lp_web._ind_target_cid(acct, {"char_id": ["999"]}) == 10
+
+    def test_invalid_char_id_falls_back_to_active(self):
+        acct = self._acct2()
+        assert lp_web._ind_target_cid(acct, {"char_id": ["not-a-number"]}) == 10
+
+    def test_empty_char_id_falls_back_to_active(self):
+        acct = self._acct2()
+        assert lp_web._ind_target_cid(acct, {"char_id": [""]}) == 10
+
+    def test_assigned_char_selects_its_own_skills_and_blueprints(self):
+        """The char resolved for the scan indexes the per-character skill and
+        blueprint caches, so assigning an alt yields ITS skills/BPs — and the
+        cross-character other_owners annotation still lists the active char."""
+        acct = self._acct2()
+        acct.skill_profiles = {10: {3380: 5}, 20: {3380: 1}}
+        acct.bp_me_tes = {
+            10: {681: (10, 20, True, -1)},
+            20: {681: (2, 4, True, -1), 999: (0, 0, False, 50)},
+        }
+        # Assigned to the alt → the alt's caches drive the scan.
+        ind_cid = lp_web._ind_target_cid(acct, {"char_id": ["20"]})
+        assert ind_cid == 20
+        with acct.lock:
+            prof = dict(acct.skill_profiles.get(ind_cid, {}))
+            bps = dict(acct.bp_me_tes.get(ind_cid, {}))
+        assert prof == {3380: 1}                       # alt's skills, not Main's {3380: 5}
+        assert bps == {681: (2, 4, True, -1), 999: (0, 0, False, 50)}
+        # other_owners for the assigned char (20) lists the active char (10).
+        other = {}
+        for ocid, bp_map in acct.bp_me_tes.items():
+            if ocid == ind_cid:
+                continue
+            for tid, entry in bp_map.items():
+                other.setdefault(tid, []).append(acct.characters[ocid]["name"])
+        assert other.get(681) == ["Main"]
+
+
 # ── Blueprint-ownership refresh on scan (transfers between alts) ──────────────
 
 class TestBlueprintRefreshOnScan:

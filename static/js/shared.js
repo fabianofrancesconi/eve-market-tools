@@ -283,6 +283,9 @@ function switchTab(tab, opts){
   if(tab==="char" && AUTH.loggedIn){ renderCharData(); refreshCharData(); markCharEventsSeen(); }
   if(tab==="exp" && typeof expOnEnterTab==="function") expOnEnterTab();
   if(tab==="notes" && !NOTES.loaded) loadNotes();
+  // The per-page character badge lives in each tab's control bar — (re)draw it
+  // for the tab we just switched to (control bars share slots via .page-char-slot).
+  if(typeof renderPageCharBadges==="function") renderPageCharBadges();
 }
 // The Industry planner has no manual ME/TE/skill inputs — it needs a real
 // character's owned blueprints and trained skills, so it's gated behind login

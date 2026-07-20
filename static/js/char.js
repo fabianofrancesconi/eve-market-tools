@@ -83,7 +83,6 @@ function renderAuthChip(){
   if(typeof expApplyAuth==="function") expApplyAuth();
   if(AUTH.loggedIn){
     $("#chip-name").textContent=accountLabel();
-    renderCharDropdown();
     renderSettingsPanel();
   }
   if(typeof renderPageCharBadges==="function") renderPageCharBadges();
@@ -100,36 +99,16 @@ function accountLabel(){
   const first=chars[0].name||AUTH.name||"Capsuleer";
   return chars.length>1 ? `${first} · ${chars.length} chars` : first;
 }
-// The chip's ▾ dropdown is now switch-only: it picks the account-wide active
-// character. Adding, removing and per-page assignment live in the ⚙ settings
-// panel (renderSettingsPanel).
-function renderCharDropdown(){
-  const dd=$("#char-dropdown");
-  if(!dd) return;
-  dd.innerHTML=AUTH.characters.map(c=>{
-    const active=c.character_id===AUTH.activeCharId?" ★":"";
-    return `<div class="char-dd-row" data-cid="${c.character_id}">`
-      +`<span class="char-dd-name">${authEsc(c.name)}${active}</span>`
-      +`</div>`;
-  }).join("")
-    +`<div class="char-dd-row char-dd-add"><button id="dd-settings-btn" class="auth-btn-sm">⚙ Manage characters</button></div>`;
-  dd.querySelectorAll(".char-dd-name").forEach(el=>{
-    el.onclick=e=>{
-      e.stopPropagation();
-      const cid=el.parentElement.dataset.cid;
-      switchActiveChar(parseInt(cid));
-      $("#char-dropdown").classList.add("hidden");
-    };
-  });
-  const setBtn=dd.querySelector("#dd-settings-btn");
-  if(setBtn) setBtn.onclick=e=>{ e.stopPropagation(); dd.classList.add("hidden"); openSettingsPanel(); };
-}
+// Character management — add, remove, switch default, per-page assignment — all
+// live in the ⚙ settings panel (renderSettingsPanel). The chip is just a label
+// that opens the Overview tab.
 async function switchActiveChar(cid){
   await fetch(`/api/auth/switch?active_char_id=${cid}`);
   await checkAuth();
-  // The active character also drives the Industry planner (skills / blueprints).
-  // Re-run the scan so a table already on screen reflects the new character.
-  if(ACTIVE_TAB==="ind" && IND.rows && IND.rows.length) scanInd(false);
+  // The default character drives every page left on "Use default" (plus the
+  // header wallet + Overview). Re-run the visible page if it's following the
+  // default, so a table/journal already on screen reflects the new character.
+  PAGE_CHAR_PAGES.forEach(p=>{ if(!pageHasAssignment(p)) applyPageChar(p); });
 }
 
 // ── Per-page character assignment ────────────────────────────────────────────
@@ -937,15 +916,7 @@ function showLoginLanding(){
   document.body.classList.add("landing-active");
   $("#login-landing").classList.remove("hidden");
 }
-$("#chip-dd-toggle").onclick=e=>{
-  e.stopPropagation();
-  const dd=$("#char-dropdown");
-  dd.classList.toggle("hidden");
-};
 document.addEventListener("click",e=>{
-  const dd=$("#char-dropdown");
-  if(dd && !dd.classList.contains("hidden") && !dd.contains(e.target) && e.target.id!=="chip-dd-toggle")
-    dd.classList.add("hidden");
   const sp=$("#settings-panel");
   if(sp && !sp.classList.contains("hidden") && !sp.contains(e.target) && e.target.id!=="settings-btn")
     sp.classList.add("hidden");
@@ -962,19 +933,22 @@ function renderSettingsPanel(){
   const map=getPref('page_char', {}) || {};
   const charOpts=(sel)=>AUTH.characters.map(c=>
     `<option value="${c.character_id}"${c.character_id===sel?" selected":""}>${authEsc(c.name)}</option>`).join("");
+  const defName=charName(AUTH.activeCharId)||"—";
+  // Character list: name + remove. Which character is the default is chosen by
+  // the "Default character" select below, not per-row buttons.
   const chars=AUTH.characters.map(c=>{
-    const active=c.character_id===AUTH.activeCharId;
+    const isDefault=c.character_id===AUTH.activeCharId;
     return `<div class="set-char-row" data-cid="${c.character_id}">`
-      +`<span class="set-char-name">${authEsc(c.name)}${active?' <span class="set-char-active">★ active</span>':''}</span>`
-      +(active?'':`<button class="set-char-use auth-btn-sm" data-cid="${c.character_id}" title="Make this the active character">Use</button>`)
+      +`<span class="set-char-name">${authEsc(c.name)}${isDefault?' <span class="set-char-active">★ default</span>':''}</span>`
       +`<button class="set-char-rm" data-cid="${c.character_id}" title="Remove ${authEsc(c.name)}">✕</button>`
       +`</div>`;
   }).join("");
+  // Per-page assignment. Empty = "Use default (<default char>)".
   const assigns=PAGE_CHAR_PAGES.map(p=>
     `<div class="set-assign-row">`
       +`<span class="set-assign-page">${PAGE_CHAR_LABELS[p]}</span>`
       +`<select class="set-assign-sel" data-page="${p}">`
-        +`<option value="">Active character</option>`
+        +`<option value="">Use default (${authEsc(defName)})</option>`
         +charOpts(map[p]!=null?map[p]:null)
       +`</select>`
     +`</div>`).join("");
@@ -986,17 +960,24 @@ function renderSettingsPanel(){
         +`<button id="set-add-char" class="auth-btn-sm">+ Add character</button>`
         +`<button id="set-logout-all" class="auth-btn-sm set-danger">Logout all</button>`
       +`</div></div>`
+    +`<div class="set-section"><div class="set-head">Default character</div>`
+      +`<div class="set-assign-hint">Used for the header wallet, the Overview tab, and any page below left on “Use default”.</div>`
+      +`<div class="set-assign-row"><span class="set-assign-page">Default</span>`
+        +`<select id="set-default-sel">${charOpts(AUTH.activeCharId)}</select></div></div>`
     +`<div class="set-section"><div class="set-head">Page assignments</div>`
       +`<div class="set-assign-hint">Choose which character each tool uses. Industry uses that character's skills &amp; blueprints; LP Store uses their loyalty points; Exploration tracks them.</div>`
       +assigns+`</div>`;
-  sp.querySelectorAll(".set-char-use").forEach(b=>
-    b.onclick=e=>{ e.stopPropagation(); switchActiveChar(parseInt(b.dataset.cid)); });
   sp.querySelectorAll(".set-char-rm").forEach(b=>
     b.onclick=e=>{ e.stopPropagation(); doLogout(parseInt(b.dataset.cid)); });
   const add=sp.querySelector("#set-add-char");
   if(add) add.onclick=e=>{ e.stopPropagation(); doLogin(); };
   const lall=sp.querySelector("#set-logout-all");
   if(lall) lall.onclick=e=>{ e.stopPropagation(); doLogout(); };
+  const defSel=sp.querySelector("#set-default-sel");
+  if(defSel) defSel.onchange=e=>{
+    e.stopPropagation();
+    if(defSel.value) switchActiveChar(parseInt(defSel.value));
+  };
   sp.querySelectorAll(".set-assign-sel").forEach(sel=>
     sel.onchange=e=>{
       e.stopPropagation();
@@ -1016,10 +997,7 @@ $("#settings-btn").onclick=e=>{
   else sp.classList.add("hidden");
 };
 
-$("#char-chip").onclick=e=>{
-  if(e.target.closest("#chip-dd-toggle")||e.target.closest("#char-dropdown")) return;
-  switchTab("char");
-};
+$("#char-chip").onclick=()=>{ switchTab("char"); };
 
 // Clicking the countdown — or the explicit ⟳ button — forces an immediate
 // cache-busting re-fetch of every character from ESI. The button spins until

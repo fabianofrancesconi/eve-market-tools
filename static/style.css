@@ -122,6 +122,10 @@
     cursor:pointer; flex-shrink:0;
   }
   .auth-cog:hover { color:var(--cyan); border-color:var(--cyan2); }
+  #char-sync { font-size:15px; }
+  #char-sync.syncing { color:var(--cyan); border-color:var(--cyan2);
+    pointer-events:none; animation:char-sync-spin .8s linear infinite; }
+  @keyframes char-sync-spin { to { transform:rotate(360deg); } }
   #char-chip { display:flex; align-items:center; gap:8px; position:relative;
     background:var(--panel3); border:1px solid var(--line2); border-radius:4px;
     padding:3px 4px 3px 11px; cursor:pointer; }

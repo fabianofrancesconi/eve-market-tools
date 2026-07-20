@@ -75,6 +75,7 @@ function romanLvl(n){ return ROMAN[n]||String(n||""); }
 function renderAuthChip(){
   $("#login-eve").classList.toggle("hidden", AUTH.loggedIn);
   $("#char-chip").classList.toggle("hidden", !AUTH.loggedIn);
+  $("#char-sync").classList.toggle("hidden", !AUTH.loggedIn);
   $("#char-tab-btn").classList.toggle("hidden", !AUTH.loggedIn);
   $("#char-empty").classList.toggle("hidden", AUTH.loggedIn);
   $("#char-body").classList.toggle("hidden", !AUTH.loggedIn);
@@ -880,9 +881,28 @@ $("#char-chip").onclick=e=>{
   switchTab("char");
 };
 
-// Clicking the countdown forces an immediate cache-busting refresh.
-$("#char-refresh-timer").onclick=()=>{ if(AUTH.loggedIn) refreshCharData(true); };
+// Clicking the countdown — or the explicit ⟳ button — forces an immediate
+// cache-busting re-fetch of every character from ESI. The button spins until
+// the fetch settles (with a floor so a fast round-trip still reads as action).
+$("#char-refresh-timer").onclick=()=>forceSync();
 $("#char-refresh-timer").style.cursor="pointer";
+$("#char-sync").onclick=()=>forceSync();
+let _syncing=false;
+async function forceSync(){
+  if(!AUTH.loggedIn || _syncing) return;
+  _syncing=true;
+  const btn=$("#char-sync");
+  btn.classList.add("syncing");
+  setStatus("Syncing characters from EVE…");
+  const spun=new Promise(r=>setTimeout(r,600));   // minimum visible spin
+  try{ await refreshCharData(true); }
+  finally{
+    await spun;
+    btn.classList.remove("syncing");
+    _syncing=false;
+    setStatus("Synced "+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}));
+  }
+}
 
 // Live updates arrive via the SSE stream; the per-second countdown ticker
 // (tickCharRefreshTimer) fires a fallback re-pull when its 5-min deadline

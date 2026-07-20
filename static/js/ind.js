@@ -1208,11 +1208,31 @@ function deleteBuild(id){
     body:JSON.stringify({id})}).catch(()=>{});
 }
 
-// Status of a build for display, derived from its stored link fields + live jobs.
+// Job status of a build, derived from its stored link fields + live jobs. This
+// tracks only the *manufacturing job* (awaiting → building → done); the card's
+// badge uses _buildBadge below, which reflects the whole sell lifecycle so a
+// built-but-unsold batch doesn't read as finished.
 function _buildStatus(b){
   if(b.done_at) return {key:"done", label:"✓ Done"};
   if(b.job_id!=null && _activeJobIdSet().has(String(b.job_id))) return {key:"building", label:"⏳ Building"};
   return {key:"awaiting", label:"⚠ No matching job"};
+}
+
+// The card's colored badge, driven by the full lifecycle stage — not just the
+// job. A batch that's built but hasn't sold anything stays amber ("Built · not
+// sold"), an in-progress sale is cyan, and only a completed/closed sale turns
+// green. This is what stops "✓ Done / Finished" from claiming a batch is over
+// before a single unit has actually sold.
+function _buildBadge(b, stage){
+  if(stage==="planned") return {key:"awaiting", label:_buildStatus(b).label};
+  if(stage==="building") return {key:"building", label:"⏳ Building"};
+  if(stage==="built")    return {key:"built", label:"🔨 Built · not sold"};
+  if(stage==="listed"){
+    const rz=_buildRealized(b);
+    return {key:"listed", label:rz.units>0?"◑ Selling":"◔ Listed"};
+  }
+  // sold
+  return {key:"sold", label:(b.sell||{}).closed_early?"✓ Closed early":"✓ Sold"};
 }
 
 // Explicit lifecycle stage for the stepper: planned → building → built →
@@ -1252,7 +1272,11 @@ function _buildRealized(b){
   const net=entries.reduce((s,e)=>s+(e.net||0),0);
   const cpu=sell.cost_per_unit;
   const cost=(cpu!=null)?units*cpu:null;
-  return {units, net, cost, profit:(cost!=null)?net-cost:null};
+  // A build closed out early writes off the frozen cost of the unsold remainder
+  // as a realized loss (mirrors the server's _build_realized) so profit is honest.
+  const writeoff=sell.writeoff_cost||0;
+  return {units, net, cost, writeoff,
+          profit:(cost!=null)?net-cost-writeoff:null};
 }
 
 // Break-even sell price per unit (revenue exactly covers total batch cost).
@@ -1379,16 +1403,17 @@ function _buildCardHtml(b, linked){
       ? `<span class="ind-build-live ind-live-timer" data-end="${end}">${fmtCountdown(end-Date.now())}</span> <span class="ind-build-eta">ETA ${new Date(end).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}${meta}</span>`
       : `<span class="ind-build-live">running${meta}</span>`;
   } else {
-    statusLine=`<span class="ind-build-done">Finished${b.done_at?" "+new Date(b.done_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""}</span>`;
+    statusLine=`<span class="ind-build-done">Build finished${b.done_at?" "+new Date(b.done_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""}</span>`;
   }
   const expanded=IND.buildsExpanded.has(b.id);
   const detail=expanded?_buildDetailHtml(b):"";
   const stage=_buildStage(b);
+  const badge=_buildBadge(b, stage);
   const stepper=_buildStepperHtml(stage);
   const sellBlock=_buildSellHtml(b, stage);
-  return `<div class="ind-build-card ${st.key} stage-${stage}" data-id="${b.id}">
+  return `<div class="ind-build-card ${badge.key} stage-${stage}" data-id="${b.id}">
     <div class="ind-build-row">
-      <span class="ind-build-status ${st.key}">${st.label}</span>
+      <span class="ind-build-status ${badge.key}">${badge.label}</span>
       <span class="ind-build-name">${b.product_name||"?"}</span>
       <span class="ind-build-runs">${n.toLocaleString()} run(s)</span>
       <span class="ind-build-stat">Cost <b>${isk(batchCost)}</b></span>
@@ -1465,32 +1490,47 @@ function _buildSellHtml(b, stage){
         <span class="ind-sell-pick-list"></span></div>`;
     }
     const closed=stage==="sold";
+    const closedEarly=closed&&sell.closed_early;
     const linkedId=(sell.order_ids||[])[0];
     // Once an order is linked, offer a one-click unlink (mis-link recovery). The
     // order is tombstoned server-side so it isn't auto-grabbed again next sweep.
     const unlinkBtn=linkedId?`<button class="ind-sell-unlink" data-order="${linkedId}" title="Wrong order? Detach it — it won't be auto-linked again.">✕ unlink</button>`:"";
-    return `<div class="ind-sell ind-sell-live" data-id="${b.id}">
+    // A cost line for the realized card: when closed early, the written-off
+    // remainder is shown so the profit number's loss component is explicit.
+    const costSub=closedEarly&&rz.writeoff>0
+      ? `net ${isk(rz.net)} − sold cost ${isk(rz.cost)} − write-off ${isk(rz.writeoff)}`
+      : `net ${isk(rz.net)} − cost ${isk(rz.cost)}`;
+    // While listed with a remainder but no live linked order, the previous
+    // listing lapsed (expired) — nudge the user to re-list; the new order links
+    // itself. This is the resell-at-a-different-price path.
+    const relisting=!closed && !linkedId && rz.units>0 && remain>0;
+    let watchMsg;
+    if(linkedId) watchMsg=`${sell.auto?"🔗 Auto-linked":"⏳ Linked to"} your sell order${sell.auto?"":" — tracking fills"} ${unlinkBtn}`;
+    else if(relisting) watchMsg=`⚠ Previous listing ended with ${remain.toLocaleString()} unsold — re-list them in-game (at any price) and the new order links automatically.`;
+    else watchMsg="⏳ Watching for your sell order…";
+    return `<div class="ind-sell ind-sell-live${relisting?" ind-sell-relist":""}" data-id="${b.id}">
       <div class="ind-sell-cards">
         <div class="ind-sell-card">
           <div class="ind-sell-card-label">${closed?"Sold":"Sold so far"}</div>
           <div class="ind-sell-card-val">${rz.units.toLocaleString()} / ${target.toLocaleString()}</div>
-          <div class="ind-sell-card-sub">${closed?"complete":`${remain.toLocaleString()} left`}</div>
+          <div class="ind-sell-card-sub">${closedEarly?`${remain.toLocaleString()} written off`:(closed?"complete":`${remain.toLocaleString()} left`)}</div>
         </div>
         <div class="ind-sell-card">
           <div class="ind-sell-card-label">Realized profit</div>
           <div class="ind-sell-card-val ${pn(rz.profit)}">${isk(rz.profit)}</div>
-          <div class="ind-sell-card-sub">net ${isk(rz.net)} − cost ${isk(rz.cost)}</div>
+          <div class="ind-sell-card-sub">${costSub}</div>
         </div>
         <div class="ind-sell-card">
           <div class="ind-sell-card-label">Remainder (proj.)</div>
-          <div class="ind-sell-card-val ${pn(projRemain)}">${remain>0?isk(projRemain):"—"}</div>
-          <div class="ind-sell-card-sub">${remain>0?`${remain.toLocaleString()} @ frozen ask`:"nothing left"}</div>
+          <div class="ind-sell-card-val ${pn(projRemain)}">${remain>0&&!closed?isk(projRemain):"—"}</div>
+          <div class="ind-sell-card-sub">${closed?"closed out":(remain>0?`${remain.toLocaleString()} @ frozen ask`:"nothing left")}</div>
         </div>
       </div>
       ${pick}
       <div class="ind-sell-foot">
-        ${closed?`<span class="ind-sell-done">✓ Fully sold${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'}):""}</span>`
-          :`<span class="ind-sell-watching">${linkedId?`${sell.auto?"🔗 Auto-linked":"⏳ Linked to"} your sell order${sell.auto?"":" — tracking fills"} ${unlinkBtn}`:"⏳ Watching for your sell order…"}</span>`}
+        ${closed?`<span class="ind-sell-done">${closedEarly?`✓ Closed early${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'}):""} · ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`✓ Fully sold${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'}):""}`}</span>`
+          :`<span class="ind-sell-watching">${watchMsg}</span>`}
+        ${!closed&&rz.units>0?`<button class="ind-sell-close" title="Give up on the unsold remainder: mark this sale done. The ${remain.toLocaleString()} unsold unit(s)' cost is written off as a loss so your totals stay honest.">Close out ▸</button>`:""}
         <button class="ind-sell-cancel" title="Stop tracking this sale (keeps the build)">Stop tracking sale</button>
       </div>
     </div>`;
@@ -1621,6 +1661,14 @@ function _wireSellCard(card, b){
     if(confirm(`Stop tracking the sale of ${b.product_name||"this build"}? (The build itself stays.)`))
       cancelSellTracking(b);
   };
+  const close=card.querySelector(".ind-sell-close");
+  if(close) close.onclick=()=>{
+    const rz=_buildRealized(b);
+    const target=(b.sell||{}).qty_target||_buildUnits(b)||0;
+    const remain=Math.max(0, target-rz.units);
+    if(confirm(`Close out this sale? ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold — the ${remain.toLocaleString()} unsold unit(s) will be written off as a loss and the sale marked done.`))
+      closeSellTracking(b, close);
+  };
   const unlink=card.querySelector(".ind-sell-unlink");
   if(unlink) unlink.onclick=()=>unlinkSellOrder(b, unlink.dataset.order);
   const pick=card.querySelector(".ind-sell-pick");
@@ -1654,6 +1702,17 @@ function cancelSellTracking(b){
     // every reconcile cycle (and the card doesn't bounce back into selling).
     if(b.sell) delete b.sell; b.no_auto_sell=true; renderIndBuilds();
   }).catch(()=>{});
+}
+
+// Close out a partial sale: mark it done, write off the unsold remainder as a
+// realized loss. The card flips to the "closed early" sold state.
+function closeSellTracking(b, btn){
+  if(btn){ btn.disabled=true; btn.textContent="Closing…"; }
+  fetch("/api/ind/builds/sell/close",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:b.id})}).then(r=>r.json()).then(res=>{
+    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); }
+    else if(btn){ btn.disabled=false; btn.textContent=res&&res.error?("⚠ "+res.error):"⚠ Failed"; }
+  }).catch(()=>{ if(btn){ btn.disabled=false; btn.textContent="⚠ Failed"; } });
 }
 
 // The needs_pick case: list the character's open sell orders for this product so

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.134.1"
+__version__ = "1.135.0"
 
 import argparse
 import base64
@@ -1478,16 +1478,20 @@ def _build_cost_per_unit(b):
 
 def _build_realized(b):
     """Realized sale totals from the accrued fill events: units sold, net
-    revenue after sales tax, the frozen cost of those units, and profit."""
+    revenue after sales tax, the frozen cost of those units, and profit. A build
+    the user closed out early (gave up selling the rest) carries a write-off: the
+    frozen cost of the unsold remainder, booked as a realized loss so the profit
+    figure and the portfolio totals stay honest."""
     sell = b.get("sell") or {}
     entries = sell.get("realized") or []
     units = sum(e.get("units", 0) for e in entries)
     net = sum(e.get("net", 0) for e in entries)
     cpu = sell.get("cost_per_unit")
+    writeoff = sell.get("writeoff_cost") or 0
     cost_of_sold = units * cpu if cpu is not None else None
-    profit = (net - cost_of_sold) if cost_of_sold is not None else None
+    profit = (net - cost_of_sold - writeoff) if cost_of_sold is not None else None
     return {"units": units, "net": net, "cost_of_sold": cost_of_sold,
-            "profit": profit}
+            "writeoff": writeoff, "profit": profit}
 
 
 def _build_stage(b):
@@ -1617,6 +1621,39 @@ def do_ind_builds_sell_cancel(q):
     return {"ok": True}
 
 
+def do_ind_builds_sell_close(q):
+    """Close out a build early: mark the sale done even though the full target
+    hasn't sold (e.g. an order expired and the user won't re-list the rest). The
+    units actually sold keep their real realized profit; the frozen cost of the
+    unsold remainder is written off as a realized loss so capital-in-flight
+    clears and the portfolio totals stay honest ('closed early'). Requires an
+    active (started, not-yet-closed) sale."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    build_id = q.get("id", [""])[0]
+    if not build_id:
+        return {"error": "missing id"}
+    with _TRACKED_BUILDS_LOCK:
+        builds = _load_tracked_builds(acct)
+        b = next((x for x in builds if x.get("id") == build_id), None)
+        if not b or not (b.get("sell") or {}).get("started_at"):
+            return {"error": "not selling"}
+        sell = b["sell"]
+        if sell.get("closed_at"):
+            return {"ok": True, "build": b}   # already closed — no-op
+        rz = _build_realized(b)
+        cpu = sell.get("cost_per_unit")
+        target = sell.get("qty_target") or _build_units_produced(b) or 0
+        remain = max(0, target - rz["units"])
+        sell["writeoff_units"] = remain
+        sell["writeoff_cost"] = remain * cpu if cpu is not None else 0
+        sell["closed_at"] = time.time()
+        sell["closed_early"] = True
+        _save_tracked_builds(acct, builds)
+    return {"ok": True, "build": b}
+
+
 def _reconcile_sell_builds(acct, current_orders):
     """Wire the character's live sell orders + detected fills into any builds in
     the 'selling' state. Sell-tracking starts *automatically*: a finished (built)
@@ -1718,10 +1755,15 @@ def _reconcile_sell_builds(acct, current_orders):
             realized = sell.setdefault("realized", [])
             seen = {e.get("event_id") for e in realized}
             stax = (b.get("snapshot") or {}).get("sales_tax") or 0
+            expired_oids = set()
             for oid in sell.get("order_ids") or []:
                 for ev in events_by_order.get(str(oid), []):
                     if ev.get("expired"):
-                        continue  # lapsed unsold — not a sale
+                        # The listing lapsed with units unsold — not a sale. Note
+                        # the order so we can unlink it below and let a re-listed
+                        # order (at any new price) auto-link and keep accruing.
+                        expired_oids.add(str(oid))
+                        continue
                     evid = ev.get("id")
                     sold = ev.get("sold") or 0
                     if evid in seen or sold <= 0:
@@ -1734,6 +1776,15 @@ def _reconcile_sell_builds(acct, current_orders):
                         "net": sold * price * (1 - stax),
                     })
                     seen.add(evid)
+                    changed = True
+            # A linked order that expired with units left is dropped so the next
+            # sweep can auto-link the user's replacement listing. The sale stays
+            # open (not closed) — the remaining units are still theirs to re-sell.
+            if expired_oids:
+                remaining = [o for o in (sell.get("order_ids") or [])
+                             if str(o) not in expired_oids]
+                if remaining != (sell.get("order_ids") or []):
+                    sell["order_ids"] = remaining
                     changed = True
             # Close out once the target quantity has sold.
             if not sell.get("closed_at"):
@@ -1804,6 +1855,9 @@ def do_ind_summary(q):
             "sell": {
                 "started_at": sell.get("started_at"),
                 "closed_at": sell.get("closed_at"),
+                "closed_early": sell.get("closed_early", False),
+                "writeoff_units": sell.get("writeoff_units", 0),
+                "writeoff_cost": sell.get("writeoff_cost", 0),
                 "qty_target": sell.get("qty_target"),
                 "cost_per_unit": sell.get("cost_per_unit"),
                 "needs_pick": sell.get("needs_pick", False),
@@ -3455,6 +3509,7 @@ _POST_ROUTES = {
     "/api/ind/builds/sell/link": do_ind_builds_sell_link,
     "/api/ind/builds/sell/unlink": do_ind_builds_sell_unlink,
     "/api/ind/builds/sell/cancel": do_ind_builds_sell_cancel,
+    "/api/ind/builds/sell/close": do_ind_builds_sell_close,
 }
 
 # Session cookie + the endpoints reachable without one (multi-user mode). The app

@@ -1023,14 +1023,21 @@
   .ind-track-btn:disabled { opacity:.7; cursor:default; }
   .ind-build-card { background:var(--panel2); border:1px solid var(--line2);
     border-left-width:3px; border-radius:6px; padding:8px 12px; }
+  /* Card border + badge colour track the whole sell lifecycle, not just the job:
+     a built-but-unsold batch stays amber (it isn't "done"), an in-progress sale
+     is cyan, and only a completed/closed sale goes green. */
   .ind-build-card.awaiting { border-left-color:var(--gold,#c8a040); }
   .ind-build-card.building { border-left-color:var(--cyan); }
-  .ind-build-card.done { border-left-color:var(--green2,#4caf76); }
+  .ind-build-card.built { border-left-color:var(--gold,#c8a040); }
+  .ind-build-card.listed { border-left-color:var(--cyan2,#29b6f6); }
+  .ind-build-card.sold, .ind-build-card.done { border-left-color:var(--green2,#4caf76); }
   .ind-build-row { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-size:12.5px; }
   .ind-build-status { font-weight:700; font-size:11.5px; white-space:nowrap; }
   .ind-build-status.awaiting { color:var(--gold,#c8a040); }
   .ind-build-status.building { color:var(--cyan); }
-  .ind-build-status.done { color:var(--green2,#4caf76); }
+  .ind-build-status.built { color:var(--gold,#c8a040); }
+  .ind-build-status.listed { color:var(--cyan2,#29b6f6); }
+  .ind-build-status.sold, .ind-build-status.done { color:var(--green2,#4caf76); }
   .ind-build-name { font-weight:700; color:var(--fg); min-width:150px; }
   .ind-build-runs { color:var(--dim); }
   .ind-build-stat { color:var(--dim); }
@@ -1117,7 +1124,7 @@
     text-transform:uppercase; letter-spacing:.5px; }
   .ind-sell-price b { color:var(--fg); font-weight:700; }
   .ind-sell-be { color:var(--gold,#c8a040); font-size:11.5px; }
-  .ind-sell-copy, .ind-sell-start, .ind-sell-cancel, .ind-sell-pickbtn {
+  .ind-sell-copy, .ind-sell-start, .ind-sell-cancel, .ind-sell-close, .ind-sell-pickbtn {
     padding:2px 10px; font-size:11px; cursor:pointer; border-radius:4px;
     background:var(--panel2); border:1px solid var(--line2); color:var(--dim); }
   .ind-sell-copy:hover, .ind-sell-pickbtn:hover { border-color:var(--cyan); color:var(--cyan); }
@@ -1125,6 +1132,11 @@
   .ind-sell-start:hover:not(:disabled) { background:#12351f; color:var(--green,#6bd898); }
   .ind-sell-start:disabled { opacity:.6; cursor:default; }
   .ind-sell-cancel:hover { border-color:var(--red); color:var(--red); }
+  .ind-sell-close:hover:not(:disabled) { border-color:var(--gold,#c8a040); color:var(--gold,#c8a040); }
+  .ind-sell-close:disabled { opacity:.6; cursor:default; }
+  /* A lapsed listing awaiting a re-list: amber left rule so it reads as "needs you". */
+  .ind-sell-relist { border-left:2px solid var(--gold,#c8a040); padding-left:8px; }
+  .ind-sell-relist .ind-sell-watching { color:var(--gold,#c8a040); }
   .ind-sell-hint { flex-basis:100%; color:var(--dim2); font-size:10.5px; margin-top:2px; }
   .ind-sell-cards { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
   @media (max-width:600px){ .ind-sell-cards { grid-template-columns:1fr; } }

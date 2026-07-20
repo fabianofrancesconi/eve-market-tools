@@ -403,6 +403,123 @@ class TestReconcileAccrual:
         assert rz["units"] == 0
 
 
+class TestRelistAfterExpiry:
+    """A linked order that expires with units unsold is dropped so the user's
+    re-listed order (at any new price) auto-links and keeps accruing — the sale
+    stays open, not closed."""
+
+    def test_expired_order_unlinks_and_stays_open(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _save_build(runs=10)
+        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
+        # A 90-day order past its expiry can't also be freshly-issued enough to
+        # auto-link, so link it manually (the accrual loop keys off the link, not
+        # the issued date). issued 91 days ago → vanishing counts as expired.
+        issued = _now_iso(-91 * 86400)
+        lp_web.do_ind_builds_sell_link({"id": [b["id"]], "order_id": ["700"]})
+        orders0 = [_sell_order(700, 587, 10, 10, 160.0, issued=issued)]
+        lp_web._track_order_changes(acct, 1, orders0, {})
+        lp_web._reconcile_sell_builds(acct, orders0)
+        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == ["700"]
+        # Order vanishes past its expiry → expired event; the linked id is dropped.
+        lp_web._track_order_changes(acct, 1, [], {})
+        lp_web._reconcile_sell_builds(acct, [])
+        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
+        assert sell["order_ids"] == []
+        assert sell["closed_at"] is None                 # still selling, not done
+        assert lp_web._build_stage(lp_web.do_ind_builds_list({})["builds"][0]) == "listed"
+
+    def test_relisted_order_autolinks_at_new_price(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        clock = [time.time()]
+        monkeypatch.setattr(lp_web.time, "time", lambda: clock[0])
+        b = _save_build(runs=10)
+        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
+        # First listing: 4 sell @ 160, then it expires with 6 unsold. Linked
+        # manually (an already-expiring order isn't fresh enough to auto-link).
+        issued = _now_iso(-91 * 86400)
+        lp_web.do_ind_builds_sell_link({"id": [b["id"]], "order_id": ["700"]})
+        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 10, 10, 160.0, issued=issued)], {})
+        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 10, 10, 160.0, issued=issued)])
+        clock[0] += 100
+        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 6, 10, 160.0, issued=issued)], {})
+        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 6, 10, 160.0, issued=issued)])
+        clock[0] += 100
+        lp_web._track_order_changes(acct, 1, [], {})     # expires, 6 unsold
+        lp_web._reconcile_sell_builds(acct, [])
+        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == []
+        # Re-list the remaining 6 at a DIFFERENT price (155) — a fresh order.
+        clock[0] += 100
+        relist = [_sell_order(701, 587, 6, 6, 155.0, issued=_now_iso())]
+        lp_web._track_order_changes(acct, 1, relist, {})
+        lp_web._reconcile_sell_builds(acct, relist)
+        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
+        assert sell["order_ids"] == ["701"]              # new order auto-linked
+        # Those 6 now sell at 155.
+        clock[0] += 100
+        lp_web._track_order_changes(acct, 1, [_sell_order(701, 587, 0, 6, 155.0, issued=_now_iso())], {})
+        lp_web._reconcile_sell_builds(acct, [])
+        stored = lp_web.do_ind_builds_list({})["builds"][0]
+        rz = lp_web._build_realized(stored)
+        assert rz["units"] == 10                         # 4 @ 160 + 6 @ 155
+        assert rz["net"] == 4 * 160.0 + 6 * 155.0        # mixed prices booked
+        assert stored["sell"]["closed_at"] is not None   # target met → closed
+
+
+class TestCloseOut:
+    """Closing out a partial sale marks it sold and writes off the unsold
+    remainder's frozen cost as a realized loss ('closed early')."""
+
+    def _partial(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _save_build(runs=10)                          # cost/unit 100
+        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
+        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 10, 10, 160.0)], {})
+        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 10, 10, 160.0)])
+        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 6, 10, 160.0)], {})  # 4 sold
+        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 6, 10, 160.0)])
+        return acct, b
+
+    def test_close_writes_off_remainder(self, monkeypatch, tmp_path):
+        acct, b = self._partial(monkeypatch, tmp_path)
+        res = lp_web.do_ind_builds_sell_close({"id": [b["id"]]})
+        assert res["ok"] is True
+        stored = lp_web.do_ind_builds_list({})["builds"][0]
+        sell = stored["sell"]
+        assert sell["closed_at"] is not None
+        assert sell["closed_early"] is True
+        assert sell["writeoff_units"] == 6                # 10 target − 4 sold
+        assert sell["writeoff_cost"] == 6 * 100.0
+        assert lp_web._build_stage(stored) == "sold"
+        rz = lp_web._build_realized(stored)
+        assert rz["units"] == 4
+        # Profit = 4 sold @ 60 each − 600 written off = 240 − 600 = −360.
+        assert rz["profit"] == 4 * 60.0 - 6 * 100.0
+
+    def test_close_clears_capital_in_flight(self, monkeypatch, tmp_path):
+        acct, b = self._partial(monkeypatch, tmp_path)
+        lp_web.do_ind_builds_sell_close({"id": [b["id"]]})
+        s = lp_web.do_ind_summary({})
+        assert s["totals"]["capital_in_flight"] == 0.0    # sold stage → nothing in flight
+        assert s["totals"]["realized_profit"] == 4 * 60.0 - 6 * 100.0
+
+    def test_close_requires_active_sale(self, monkeypatch, tmp_path):
+        _bind(monkeypatch, tmp_path, _acct())
+        b = _save_build(runs=10)                          # never started selling
+        assert "error" in lp_web.do_ind_builds_sell_close({"id": [b["id"]]})
+
+    def test_close_is_idempotent(self, monkeypatch, tmp_path):
+        acct, b = self._partial(monkeypatch, tmp_path)
+        lp_web.do_ind_builds_sell_close({"id": [b["id"]]})
+        first = lp_web.do_ind_builds_list({})["builds"][0]["sell"]["closed_at"]
+        lp_web.do_ind_builds_sell_close({"id": [b["id"]]})   # no-op
+        second = lp_web.do_ind_builds_list({})["builds"][0]["sell"]["closed_at"]
+        assert first == second
+
+
 class TestSummary:
     def test_empty(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())

@@ -43,6 +43,10 @@ function _sumRealizedInRange(){
       net+=f.net||0; units+=f.units||0;
       if(cpu!=null) profit+=(f.net||0)-(f.units||0)*cpu;
     });
+    // A close-out write-off is a realized loss booked at the close date — count
+    // it in the window so the ranged total matches the all-time one.
+    if(sell.closed_early && sell.writeoff_cost && (sell.closed_at||0)>=cutoff)
+      profit-=sell.writeoff_cost;
   });
   return {profit, net, units};
 }

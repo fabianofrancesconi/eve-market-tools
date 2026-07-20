@@ -1369,7 +1369,8 @@ function _buildCardHtml(b, linked){
   const batchCost=be.cost, batchProfitL=be.profitL, batchProfitI=be.profitI, batchTime=be.time;
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   const when=b.created_at?new Date(b.created_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"";
-  // Status line: warning if no job yet, live countdown while building, ETA/finish otherwise.
+  // Status line: warning if no job yet, live countdown + ETA while building.
+  // Once built/listed/sold there's no line — the stepper hover carries the state.
   let statusLine="";
   if(st.key==="awaiting"){
     // If a running job for this blueprint exists with a different run count,
@@ -1402,14 +1403,15 @@ function _buildCardHtml(b, linked){
     statusLine=end && isFinite(end)
       ? `<span class="ind-build-live ind-live-timer" data-end="${end}">${fmtCountdown(end-Date.now())}</span> <span class="ind-build-eta">ETA ${new Date(end).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}${meta}</span>`
       : `<span class="ind-build-live">running${meta}</span>`;
-  } else {
-    statusLine=`<span class="ind-build-done">Build finished${b.done_at?" "+new Date(b.done_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""}</span>`;
   }
+  // Once the build is finished (built/listed/sold) the stepper + sell block carry
+  // the state; the old "Build finished <date>" line is gone — its timestamp now
+  // lives in the stepper's hover tooltip.
   const expanded=IND.buildsExpanded.has(b.id);
   const detail=expanded?_buildDetailHtml(b):"";
   const stage=_buildStage(b);
   const badge=_buildBadge(b, stage);
-  const stepper=_buildStepperHtml(stage);
+  const stepper=_buildStepperHtml(b, stage);
   const sellBlock=_buildSellHtml(b, stage);
   return `<div class="ind-build-card ${badge.key} stage-${stage}" data-id="${b.id}">
     <div class="ind-build-row">
@@ -1425,7 +1427,7 @@ function _buildCardHtml(b, linked){
       <button class="ind-build-del" title="Stop tracking this build">✕</button>
     </div>
     ${stepper}
-    <div class="ind-build-substatus">${statusLine}</div>
+    ${statusLine?`<div class="ind-build-substatus">${statusLine}</div>`:""}
     ${sellBlock}
     ${detail}
   </div>`;
@@ -1435,13 +1437,71 @@ function _buildCardHtml(b, linked){
 // current stage highlighted and everything up to it marked done. The stage that
 // needs the user (built → "list it in game"; listed with needs_pick) is styled
 // as "active" so the card reads as a guided flow, not just a status label.
-function _buildStepperHtml(stage){
+// Each step carries a data-tip: hovering a stage shows what it means and when it
+// happened (completed / started / ETA), so the timestamps live in a popup rather
+// than cluttering the card.
+function _buildStepperHtml(b, stage){
   const idx=_BUILD_STAGES.indexOf(stage);
   const dots=_BUILD_STAGES.map((s,i)=>{
     const cls=i<idx?"done":(i===idx?"active":"todo");
-    return `<span class="ind-step ${cls}"><i class="ind-step-dot"></i>${_STAGE_LABEL[s]}</span>`;
+    const tip=_stageTip(b, s, cls).replace(/"/g,"&quot;");
+    return `<span class="ind-step ${cls}" data-tip="${tip}"><i class="ind-step-dot"></i>${_STAGE_LABEL[s]}</span>`;
   }).join(`<i class="ind-step-sep"></i>`);
   return `<div class="ind-build-stepper">${dots}</div>`;
+}
+
+// Short local timestamp for a unix-seconds value (or "" if absent).
+function _stageTs(ts){
+  return ts?new Date(ts*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"";
+}
+
+// The hover text for one stepper stage: a one-line "what this step is" plus its
+// timing — when it completed (done), when it started / its ETA (active/ongoing),
+// or that it hasn't happened yet (todo).
+function _stageTip(b, s, cls){
+  const sell=b.sell||{};
+  const done=cls==="done", active=cls==="active";
+  if(s==="planned"){
+    const when=_stageTs(b.created_at);
+    return `Planned — build tracked${when?" "+when:""}.`;
+  }
+  if(s==="building"){
+    if(active){
+      const end=b.job_end?Date.parse(b.job_end):null;
+      const loc=_buildJobLocation(b);
+      const meta=(b.char_name?" · "+b.char_name:"")+(loc?" · 📍 "+loc:"");
+      return end&&isFinite(end)
+        ? `Building — manufacturing job running, ETA ${_stageTs(end/1000)}${meta}.`
+        : (b.job_id!=null?`Building — job running${meta}.`
+                        :"Building — no in-game job linked yet; start the runs in EVE.");
+    }
+    if(done) return `Building — job delivered${b.done_at?" "+_stageTs(b.done_at):""}.`;
+    return "Building — manufacturing job not started yet.";
+  }
+  if(s==="built"){
+    if(active) return `Built — job delivered${b.done_at?" "+_stageTs(b.done_at):""}; ready to list for sale.`;
+    if(done) return `Built — completed${b.done_at?" "+_stageTs(b.done_at):""}, now listed.`;
+    return "Built — waiting on the manufacturing job.";
+  }
+  if(s==="listed"){
+    const rz=_buildRealized(b);
+    const target=sell.qty_target||_buildUnits(b)||0;
+    if(active){
+      const started=_stageTs(sell.started_at);
+      const sold=rz.units>0?` · ${rz.units.toLocaleString()}/${target.toLocaleString()} sold`:"";
+      return `Listed — sell order tracked${started?" since "+started:""}${sold}.`;
+    }
+    if(done) return `Listed — sale complete${sell.closed_at?" "+_stageTs(sell.closed_at):""}.`;
+    return "Listed — not on the market yet.";
+  }
+  // sold
+  if(active){
+    const when=_stageTs(sell.closed_at);
+    return sell.closed_early
+      ? `Sold — closed early${when?" "+when:""}; unsold remainder written off.`
+      : `Sold — fully sold${when?" "+when:""}.`;
+  }
+  return "Sold — sale not finished yet.";
 }
 
 // Proposed list price for a built batch: the current ask if we have one, else

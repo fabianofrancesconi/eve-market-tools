@@ -906,6 +906,14 @@
     cursor:pointer; }
   .ind-d-head:hover { color:var(--cyan); }
   .ind-d-head button { cursor:pointer; }
+  /* Wallet/cargo "max" buttons, pushed to the far right of the header (left of
+     the ✕). Absolutely positioned so they sit flush-right regardless of the
+     runs-controls width. */
+  .ind-d-maxwrap { position:absolute; right:22px; top:0; display:inline-flex; gap:6px; }
+  .ind-d-max-isk, .ind-d-max-cargo { font-size:11.5px; padding:2px 9px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--cyan);
+    white-space:nowrap; }
+  .ind-d-max-isk:hover, .ind-d-max-cargo:hover { border-color:var(--cyan2); background:var(--cyan2); color:var(--fg); }
   .ind-d-close { position:absolute; right:0; top:0; cursor:pointer; color:var(--dim); padding:0 4px; }
   .ind-d-close:hover { color:var(--fg); }
   .ind-copy, .ind-own, .ind-pull-prices { margin:0 6px; padding:1px 8px; font-size:11.5px; cursor:pointer;

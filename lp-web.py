@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.136.7"
+__version__ = "1.136.8"
 
 import argparse
 import base64
@@ -3379,26 +3379,6 @@ def do_ind_detail(q):
     owned_me_te = ind_bp_me_te.get(blueprint_id)
     if owned_me_te:
         params["me"], params["te"] = owned_me_te[0], owned_me_te[1]
-
-    # TEMP DIAGNOSTIC: dump the raw ESI blueprint rows for this type so we can see
-    # what ME/TE ESI actually reports vs. what got cached. Enabled with debug_bp=1.
-    if q.get("debug_bp", ["0"])[0] in ("1", "true", "on"):
-        dbg = {"blueprint_id": blueprint_id, "ind_cid": ind_cid,
-               "cached_entry": owned_me_te,
-               "all_cached": {str(c): m.get(blueprint_id)
-                              for c, m in acct.bp_me_tes.items()},
-               "esi_rows_by_char": {}}
-        with acct.lock:
-            cids = list(acct.characters.keys())
-        for c in cids:
-            try:
-                tok = _access_token(acct, c)
-                bps = sso_core.fetch_character_blueprints(tok, c, SESSION)
-                dbg["esi_rows_by_char"][str(c)] = [
-                    b for b in bps if b.get("type_id") == blueprint_id]
-            except Exception as e:  # noqa: BLE001 — diagnostic only
-                dbg["esi_rows_by_char"][str(c)] = f"error: {e}"
-        return dbg
 
     conn = ind_core.connect_sde(CACHE_DIR)
     try:

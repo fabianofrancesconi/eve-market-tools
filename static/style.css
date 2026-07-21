@@ -909,11 +909,24 @@
   /* Wallet/cargo "max" buttons, pushed to the far right of the header (left of
      the ✕). Absolutely positioned so they sit flush-right regardless of the
      runs-controls width. */
-  .ind-d-maxwrap { position:absolute; right:22px; top:0; display:inline-flex; gap:6px; }
-  .ind-d-max-isk, .ind-d-max-cargo { font-size:11.5px; padding:2px 9px; cursor:pointer;
+  .ind-d-maxwrap { position:absolute; right:22px; top:0; display:inline-flex; gap:6px; align-items:center; }
+  .ind-d-max-isk { font-size:11.5px; padding:2px 9px; cursor:pointer;
     background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--cyan);
     white-space:nowrap; }
-  .ind-d-max-isk:hover, .ind-d-max-cargo:hover { border-color:var(--cyan2); background:var(--cyan2); color:var(--fg); }
+  .ind-d-max-isk:hover { border-color:var(--cyan2); background:var(--cyan2); color:var(--fg); }
+  /* Cargo box: icon + m³ input + "Max cargo" button joined as one pill. */
+  .ind-d-cargo-box { display:inline-flex; align-items:stretch; border:1px solid var(--line2);
+    border-radius:4px; overflow:hidden; background:var(--panel); }
+  .ind-d-cargo-ico { display:inline-flex; align-items:center; padding:0 5px 0 7px; font-size:11.5px;
+    background:var(--panel2); border-right:1px solid var(--line2); }
+  .ind-d-cargo-cap { width:66px; border:0; background:transparent; color:var(--fg); font-size:11.5px;
+    padding:2px 6px; text-align:right; outline:none; }
+  .ind-d-cargo-cap::placeholder { color:var(--dim); }
+  .ind-d-max-cargo { font-size:11.5px; padding:2px 9px; cursor:pointer; white-space:nowrap;
+    background:var(--panel2); border:0; border-left:1px solid var(--line2); color:var(--cyan); }
+  .ind-d-max-cargo:hover:not([disabled]) { background:var(--cyan2); color:var(--fg); }
+  .ind-d-max-cargo[disabled] { color:var(--dim); cursor:not-allowed; }
+  .ind-d-cargo-box:focus-within { border-color:var(--cyan2); }
   .ind-d-close { position:absolute; right:0; top:0; cursor:pointer; color:var(--dim); padding:0 4px; }
   .ind-d-close:hover { color:var(--fg); }
   .ind-copy, .ind-own, .ind-pull-prices { margin:0 6px; padding:1px 8px; font-size:11.5px; cursor:pointer;

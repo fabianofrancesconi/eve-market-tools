@@ -671,8 +671,10 @@ function renderIndDetail(d, container){
   const maxIskRuns=(AUTH&&AUTH.loggedIn&&walletBal!=null&&costPerRun!=null&&costPerRun>0)
     ? Math.max(1, Math.floor(walletBal/costPerRun)) : null;
   // "Max cargo" — the most runs whose input materials fit a given cargo m³. Uses
-  // the per-run input volume (inVolRun); the user supplies the available m³.
-  const maxCargoRuns=cap=>(inVolRun>0)?Math.max(1, Math.floor(cap/inVolRun)):null;
+  // the per-run input volume (inVolRun); the m³ is user-supplied via an inline
+  // box and persisted across sessions (pref 'ind.cargo_cap').
+  const cargoCap=(typeof getPref==="function")?getPref("ind.cargo_cap", null):null;
+  const maxCargoRuns=cap=>(inVolRun>0 && cap>0)?Math.max(1, Math.floor(cap/inVolRun)):null;
   // Cumulative runs delivered for this exact item, from the same tracker
   // backing the Character tab KPI — broken out per product there.
   const prodTrack=(AUTH.loggedIn && AUTH.data && AUTH.data.runs_tracked)
@@ -778,7 +780,7 @@ function renderIndDetail(d, container){
       <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
       <button class="ind-track-btn" title="Freeze these stats for the current run count so you can revisit them after the batch finishes — the numbers stay put even as market prices move. Appears under 'Tracked builds' up top.">＋ Track this build</button>
       ${tier} · <span class="ind-d-runs-wrap">Runs <input class="ind-d-runs" type="text" inputmode="numeric" pattern="[0-9]*" value="${n}" style="width:68px"><span class="ind-d-runs-step"><button class="ind-d-runs-inc" title="Increase runs" tabindex="-1">▲</button><button class="ind-d-runs-dec" title="Decrease runs" tabindex="-1">▼</button></span><button class="ind-d-runs-add" data-n="10" title="Add 10 runs">+10</button><button class="ind-d-runs-add" data-n="100" title="Add 100 runs">+100</button><button class="ind-d-runs-add" data-n="1000" title="Add 1000 runs">+1000</button><button class="ind-d-runs-mul" data-m="2" title="Double the runs">×2</button><button class="ind-d-runs-mul" data-m="5" title="5× the runs">×5</button><button class="ind-d-runs-mul" data-m="10" title="10× the runs">×10</button></span> · source ${d.station_name}
-      <span class="ind-d-maxwrap">${maxIskRuns!=null?`<button class="ind-d-max-isk" title="Set runs to the most this batch's wallet can afford — materials + job install + broker fee + sales tax at the suggested list price (${isk(costPerRun)}/run against ${isk(walletBal)} in ${maxWho}'s wallet)">💰 Max wallet (${fmtNum(maxIskRuns)})</button>`:""}<button class="ind-d-max-cargo" title="Set runs to the most that fit a cargo hold's m³ of input materials — you'll be asked for the available m³">📦 Max cargo</button></span>
+      <span class="ind-d-maxwrap">${maxIskRuns!=null?`<button class="ind-d-max-isk" title="Set runs to the most this batch's wallet can afford — materials + job install + broker fee + sales tax at the suggested list price (${isk(costPerRun)}/run against ${isk(walletBal)} in ${maxWho}'s wallet)">💰 Max wallet (${fmtNum(maxIskRuns)})</button>`:""}<span class="ind-d-cargo-box" title="Set runs to the most whose input materials fit this cargo hold. Your m³ is saved across sessions."><span class="ind-d-cargo-ico">📦</span><input class="ind-d-cargo-cap" type="text" inputmode="decimal" placeholder="m³" value="${cargoCap!=null?cargoCap:""}"><button class="ind-d-max-cargo"${inVolRun>0?"":" disabled"}>Max cargo</button></span></span>
       <span class="ind-d-close" title="Close">✕</span>
     </div>
     <div class="ind-d-body">
@@ -899,8 +901,8 @@ function renderIndDetail(d, container){
   // Clicking the header bar itself (not its buttons) collapses the detail view.
   const head=box.querySelector(".ind-d-head");
   let headDownInInteractive=false;
-  head.onmousedown=ev=>{ headDownInInteractive=!!ev.target.closest("button,input,.ind-d-runs-wrap"); };
-  head.onclick=ev=>{ if(!ev.target.closest("button,input,.ind-d-runs-wrap") && !headDownInInteractive) closeIndDetail(); };
+  head.onmousedown=ev=>{ headDownInInteractive=!!ev.target.closest("button,input,.ind-d-runs-wrap,.ind-d-cargo-box"); };
+  head.onclick=ev=>{ if(!ev.target.closest("button,input,.ind-d-runs-wrap,.ind-d-cargo-box") && !headDownInInteractive) closeIndDetail(); };
   box.querySelector(".ind-fav-btn").onclick=()=>toggleFavorite(d.blueprint_id);
   const trackBtn=box.querySelector(".ind-track-btn");
   if(trackBtn) trackBtn.onclick=()=>trackThisBuild(d, Math.max(1, IND.detailRuns||1), trackBtn);
@@ -968,18 +970,28 @@ function renderIndDetail(d, container){
   });
   const maxIskBtn=box.querySelector(".ind-d-max-isk");
   if(maxIskBtn && maxIskRuns!=null) maxIskBtn.onclick=()=>setRuns(maxIskRuns);
+  const cargoInput=box.querySelector(".ind-d-cargo-cap");
   const maxCargoBtn=box.querySelector(".ind-d-max-cargo");
-  if(maxCargoBtn) maxCargoBtn.onclick=()=>{
-    if(inVolRun<=0){ alert("This blueprint's input volume is unknown, so cargo can't be maxed."); return; }
-    const prev=IND._lastCargoCap!=null?String(IND._lastCargoCap):"";
-    const ans=prompt("Available cargo hold m³?\n(The batch's input materials will be fit to this.)", prev);
-    if(ans===null) return;
-    const cap=parseFloat(String(ans).replace(/[, ]/g,""));
-    if(!isFinite(cap)||cap<=0){ alert("Enter a positive m³ value."); return; }
-    IND._lastCargoCap=cap;
+  // Parse the cargo box, persist it (across sessions), and fit runs to it. The
+  // box is the source of truth; the button just applies whatever it holds.
+  const applyCargo=()=>{
+    if(inVolRun<=0) return;
+    const cap=parseFloat((cargoInput.value||"").replace(/[, ]/g,""));
+    if(!isFinite(cap)||cap<=0){ cargoInput.focus(); return; }
+    if(typeof setPref==="function") setPref("ind.cargo_cap", cap);
     const runs=maxCargoRuns(cap);
-    if(runs!=null) setRuns(runs);
+    if(runs!=null) setRuns(runs);   // re-renders; the box keeps its value via the pref
   };
+  if(cargoInput){
+    // Persist on change without re-rendering (so typing isn't interrupted); the
+    // stored value is what a later reopen / Max click reads.
+    cargoInput.addEventListener("input", ()=>{
+      const cap=parseFloat((cargoInput.value||"").replace(/[, ]/g,""));
+      if(typeof setPref==="function") setPref("ind.cargo_cap", (isFinite(cap)&&cap>0)?cap:null);
+    });
+    cargoInput.addEventListener("keydown", ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); applyCargo(); } });
+  }
+  if(maxCargoBtn && inVolRun>0) maxCargoBtn.onclick=applyCargo;
 }
 
 function fmtCountdown(ms){

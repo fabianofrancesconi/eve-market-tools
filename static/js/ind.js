@@ -45,7 +45,7 @@ const IND_COLS = [
   {k:"margin_instant",     t:"Margin instant", w: 75, tip:"Profit as % of cost when selling instantly at the highest bid.", f:fmtPct1, pn:true},
   {k:"build_time",         t:"Build time",     w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
   {k:"total_cost",         t:"Cost/run",       w: 98, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
-  {k:"bp_price",           t:"BP price",       w:108, tip:"For blueprints you own: 'Owned' with the type (BPO / BPC N) and, for a researched original, an ME/TE pill. Otherwise the cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention.", f:_bpPriceCell},
+  {k:"bp_price",           t:"BP price",       w:108, tip:"For blueprints you own: the type — BPO (green) or BPC (cyan, with its remaining runs in parentheses) — plus, for a researched original, an ME/TE pill. If only another of your characters owns it, their name is shown below the type. Otherwise the cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention.", f:_bpPriceCell},
   {k:"payback_runs",       t:"Payback",        w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r.owned_bp_me_te?"—":(v==null?"—":fmtNum(v)+" runs")},
   {k:"ask",                t:"Sell price",     w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
   {k:"in_vol_run",         t:"Cargo in",       w: 85, tip:"m³ of materials to haul in per run.", f:v=>v?fmtVol(v):"—"},
@@ -174,28 +174,34 @@ function indResearchTip(rz){
   return `Blueprint busy: ${rz.activity||"research"}${who}${when}`.replace(/"/g,'&quot;');
 }
 
-// The "BP price" cell. For a blueprint you (or an alt) own it reads "Owned" with
-// the concrete type on a sub-line (BPO / BPC N) and, for a researched original, a
-// small ME/TE pill — so a researched BPO is visible at a glance. Ownership is the
-// only thing shown in gold; when an actual market price is involved the cell uses
-// the regular text colour.
+// The "BP price" cell. For a blueprint you (or an alt) own, the concrete type IS
+// the ownership indicator: a green "BPO" or a cyan "BPC (N)" showing its remaining
+// runs, plus a small ME/TE pill for a researched original. When only another of
+// your characters owns it, that character's name sits on a sub-line below the type.
+// When an actual market price is involved the cell uses the regular text colour.
 function _bpPriceCell(v, r){
   if(r.owned_bp_me_te){
     const bpo=r.owned_is_bpo||r.owned_max_runs===-1;
-    const type=bpo?"BPO":`BPC ${r.owned_max_runs}`;
+    const type=bpo?"BPO":`BPC (${r.owned_max_runs})`;
     const kind=bpo?"bp-bpo":"bp-bpc";
     const me=r.me_used||0, te=r.te_used||0;
     // Only originals get researched — a BPC's ME/TE are baked in and not "yours".
     const pill=(bpo && (me>0||te>0))
       ? ` <span class="bp-research-pill" title="Researched blueprint — Material Efficiency ${me}, Time Efficiency ${te}">ME ${me} · TE ${te}</span>`
       : "";
-    return `<span class="bp-owned">Owned</span>`
-         + `<span class="ind-group-sub"><span class="${kind}">${type}</span>${pill}</span>`;
+    // The type IS the ownership indicator (green BPO / cyan BPC). Owned by the
+    // selected industry character, so no owner name below.
+    return `<span class="bp-owned ${kind}">${type}</span>${pill}`;
   }
   if(r.other_owners&&r.other_owners.length){
-    // Owned by another of your characters — still "yours", so gold, with who/what.
-    return `<span class="bp-owned">Owned</span>`
-         + `<span class="ind-group-sub">${r.other_owners.map(o=>`${o.name} · <span class="${o.is_bpo?"bp-bpo":"bp-bpc"}">${o.is_bpo?"BPO":"BPC"}</span>`).join(", ")}</span>`;
+    // Owned only by other characters of yours — show the type (coloured) with the
+    // owning character's name below, since it isn't the selected default.
+    return r.other_owners.map(o=>{
+      const kind=o.is_bpo?"bp-bpo":"bp-bpc";
+      const label=o.is_bpo?"BPO":`BPC${o.max_runs>0?` (${o.max_runs})`:""}`;
+      return `<span class="bp-owned ${kind}">${label}</span>`
+           + `<span class="ind-group-sub">${o.name}</span>`;
+    }).join("");
   }
   if(v!=null) return fmtISK(v);                         // a real market price — regular colour
   return r.bp_source==="invention"?"invent":"—";

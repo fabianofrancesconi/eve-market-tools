@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.136.1"
+__version__ = "1.136.2"
 
 import argparse
 import base64
@@ -3254,6 +3254,7 @@ def do_ind_scan(q, emit=None):
                 "name": other_name,
                 "me": entry[0], "te": entry[1],
                 "is_bpo": entry[2],
+                "max_runs": entry[3] if len(entry) > 3 else -1,
             })
     for r in rows:
         r["other_owners"] = other_owners_map.get(r["blueprint_id"], [])

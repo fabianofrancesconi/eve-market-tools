@@ -187,7 +187,7 @@ function _bpPriceCell(v, r){
     const me=r.me_used||0, te=r.te_used||0;
     // Only originals get researched — a BPC's ME/TE are baked in and not "yours".
     const pill=(bpo && (me>0||te>0))
-      ? ` <span class="bp-research-pill" title="Researched blueprint — Material Efficiency ${me}, Time Efficiency ${te}">ME ${me} · TE ${te}</span>`
+      ? `<span class="ind-group-sub"><span class="bp-research-pill" title="Researched blueprint — Material Efficiency ${me}, Time Efficiency ${te}">ME ${me} · TE ${te}</span></span>`
       : "";
     // The type IS the ownership indicator (green BPO / cyan BPC). Owned by the
     // selected industry character, so no owner name below.

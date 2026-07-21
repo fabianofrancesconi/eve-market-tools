@@ -183,18 +183,19 @@ function _bpPriceCell(v, r){
   if(r.owned_bp_me_te){
     const bpo=r.owned_is_bpo||r.owned_max_runs===-1;
     const type=bpo?"BPO":`BPC ${r.owned_max_runs}`;
+    const kind=bpo?"bp-bpo":"bp-bpc";
     const me=r.me_used||0, te=r.te_used||0;
     // Only originals get researched — a BPC's ME/TE are baked in and not "yours".
     const pill=(bpo && (me>0||te>0))
       ? ` <span class="bp-research-pill" title="Researched blueprint — Material Efficiency ${me}, Time Efficiency ${te}">ME ${me} · TE ${te}</span>`
       : "";
     return `<span class="bp-owned">Owned</span>`
-         + `<span class="ind-group-sub">${type}${pill}</span>`;
+         + `<span class="ind-group-sub"><span class="${kind}">${type}</span>${pill}</span>`;
   }
   if(r.other_owners&&r.other_owners.length){
     // Owned by another of your characters — still "yours", so gold, with who/what.
     return `<span class="bp-owned">Owned</span>`
-         + `<span class="ind-group-sub">${r.other_owners.map(o=>`${o.name} · ${o.is_bpo?"BPO":"BPC"}`).join(", ")}</span>`;
+         + `<span class="ind-group-sub">${r.other_owners.map(o=>`${o.name} · <span class="${o.is_bpo?"bp-bpo":"bp-bpc"}">${o.is_bpo?"BPO":"BPC"}</span>`).join(", ")}</span>`;
   }
   if(v!=null) return fmtISK(v);                         // a real market price — regular colour
   return r.bp_source==="invention"?"invent":"—";

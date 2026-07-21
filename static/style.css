@@ -963,6 +963,10 @@
   /* Ownership in the BP-price cell is the only thing shown in gold; the sub-line
      type (BPO / BPC N) and an actual market price use the regular text colours. */
   #ind-tbl td .bp-owned { color:var(--gold,#c8a040); font-weight:700; }
+  /* Distinguish the two blueprint kinds on the sub-line: a BPO is a permanent
+     original (green), a BPC is a limited-run copy (cyan). */
+  .bp-bpo { color:var(--green2,#66bb6a); font-weight:700; }
+  .bp-bpc { color:var(--cyan,#4fc3f7); font-weight:700; }
   .bp-research-pill { display:inline-block; font-size:9.5px; font-weight:700;
     color:var(--gold,#c8a040); background:rgba(200,160,64,.14);
     border:1px solid rgba(200,160,64,.5); border-radius:4px;

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.136.5"
+__version__ = "1.136.6"
 
 import argparse
 import base64
@@ -862,13 +862,20 @@ def _refresh_char_blueprints(acct, cid):
         bps = sso_core.fetch_character_blueprints(token, cid, SESSION)
         bp_map = sso_core.owned_blueprint_lookup(bps)
         try:
+            with acct.lock:
+                prev_map = dict(acct.bp_me_tes.get(cid, {}))
             jobs = sso_core.fetch_industry_jobs(token, cid, SESSION)
             for j in jobs:
                 if j.get("activity_id") != 1 or j.get("status") != "active":
                     continue
                 bp_tid = j.get("blueprint_type_id")
+                # A blueprint tied up in a running manufacturing job is omitted
+                # from /blueprints/ until the job delivers. Prove ownership from
+                # the job, but preserve the last-known researched ME/TE (and BPO/
+                # BPC + runs) rather than resetting it to 0/0 — otherwise a
+                # researched blueprint reads as unresearched while it's building.
                 if bp_tid and bp_tid not in bp_map:
-                    bp_map[bp_tid] = (0, 0, True, -1)
+                    bp_map[bp_tid] = prev_map.get(bp_tid, (0, 0, True, -1))
         except (LPError, requests.RequestException):
             pass
     except (LPError, requests.RequestException):

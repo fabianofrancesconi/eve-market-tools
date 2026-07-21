@@ -454,6 +454,36 @@ class TestBlueprintRefreshOnScan:
         lp_web._refresh_all_blueprints(acct, force=False)   # interval elapsed → refresh
         assert calls == [1, 1]
 
+    def test_active_job_bp_keeps_researched_me_te(self, monkeypatch):
+        """A researched blueprint tied up in an active manufacturing job is
+        omitted from /blueprints/, but its cached ME/TE must survive rather than
+        resetting to 0/0 while it builds."""
+        acct = _acct({1: "A"})
+        acct.bp_me_tes = {1: {681: (10, 20, True, -1)}}   # previously known research
+        monkeypatch.setattr(lp_web, "_access_token", lambda a, cid: "tok")
+        # /blueprints/ no longer lists 681 (it's in a running job).
+        monkeypatch.setattr(sso_core, "fetch_character_blueprints",
+                            lambda t, c, s: [])
+        monkeypatch.setattr(sso_core, "fetch_industry_jobs",
+                            lambda t, c, s: [{"activity_id": 1, "status": "active",
+                                              "blueprint_type_id": 681}])
+        lp_web._refresh_char_blueprints(acct, 1)
+        assert acct.bp_me_tes[1][681] == (10, 20, True, -1)
+
+    def test_active_job_bp_unknown_defaults_to_zero(self, monkeypatch):
+        """With no prior knowledge of a blueprint in an active job, ownership is
+        still proven from the job, defaulting to 0/0 BPO."""
+        acct = _acct({1: "A"})
+        acct.bp_me_tes = {1: {}}
+        monkeypatch.setattr(lp_web, "_access_token", lambda a, cid: "tok")
+        monkeypatch.setattr(sso_core, "fetch_character_blueprints",
+                            lambda t, c, s: [])
+        monkeypatch.setattr(sso_core, "fetch_industry_jobs",
+                            lambda t, c, s: [{"activity_id": 1, "status": "active",
+                                              "blueprint_type_id": 999}])
+        lp_web._refresh_char_blueprints(acct, 1)
+        assert acct.bp_me_tes[1][999] == (0, 0, True, -1)
+
 
 # ── Combined char data output ─────────────────────────────────────────────────
 

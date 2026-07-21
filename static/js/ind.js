@@ -1379,6 +1379,12 @@ function _buildSortTs(b){
   return sell.closed_at || sell.started_at || b.done_at
       || (b.job_end?Date.parse(b.job_end)/1000:0) || b.created_at || 0;
 }
+// Finish time (epoch seconds) of a building job, for soonest-first ordering.
+// Builds with no known end (unlinked / awaiting) sort last (+Infinity).
+function _buildFinishTs(b){
+  const end=b.job_end?Date.parse(b.job_end):NaN;
+  return isFinite(end)?end/1000:Infinity;
+}
 
 function renderIndBuilds(){
   _updateTrackCount();
@@ -1398,7 +1404,10 @@ function renderIndBuilds(){
       for(const key of _BUILD_GROUP_ORDER){
         const list=buckets[key];
         if(!list||!list.length) continue;
-        list.sort((a,b)=>_buildSortTs(b)-_buildSortTs(a));
+        // Building jobs sort by soonest finish first (the next one to complete
+        // leads); every other group stays newest-progress-first.
+        if(key==="building") list.sort((a,b)=>_buildFinishTs(a)-_buildFinishTs(b));
+        else list.sort((a,b)=>_buildSortTs(b)-_buildSortTs(a));
         const collapsed=IND.buildGroups[key]===true;
         const rows=list.map(b=>_buildCardHtml(b, linked)).join("");
         html+=`<div class="ind-build-group ${key}${collapsed?" collapsed":""}" data-grp="${key}">

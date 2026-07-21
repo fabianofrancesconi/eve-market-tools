@@ -198,11 +198,25 @@ function renderTable(){
   tbody.querySelectorAll("tr").forEach(tr=>tr.onclick=()=>openDetail(+tr.dataset.id));
 }
 
+function showLPProgress(msg, sub, pct){
+  const il=$("#init-loading"); if(il) il.remove();
+  $("#tbl").classList.add("hidden");
+  $("#lp-progress").classList.remove("hidden");
+  $("#lp-prog-label").textContent=msg;
+  $("#lp-prog-sub").textContent=sub||"";
+  $("#lp-prog-fill").style.width=(pct||0)+"%";
+}
+function hideLPProgress(){
+  $("#lp-progress").classList.add("hidden");
+  $("#tbl").classList.remove("hidden");
+}
+
 // A scan supersedes anything already running. `_scanSeq` bumps on every scan so
 // a slow response from an earlier corp can't land late and clobber the current
 // one, and `_scanAbort` cancels the previous scan + liquidity fetches outright
 // (closing those connections) so the browser stops waiting on stale work.
-let _scanSeq=0, _scanAbort=null;
+// `_scanES` is the in-flight scan's SSE stream (progress), closed on supersede.
+let _scanSeq=0, _scanAbort=null, _scanES=null;
 async function scan(forceRefresh=false){
   const _il=$("#init-loading"); if(_il) _il.remove();
   const corp=$("#corp").value.trim();
@@ -222,24 +236,48 @@ async function scan(forceRefresh=false){
       carry[r.offer_id]={daily_vol:r.daily_vol, days_to_clear:r.days_to_clear,
         list_price:r.list_price, floor_age:r.floor_age};
   }
-  // Supersede any in-flight scan: abort it, bump the token, and wipe the table
-  // now so the previous corp's rows don't linger while the new data loads.
+  // Supersede any in-flight scan: abort it, close its progress stream, bump the
+  // token, and wipe the table now so the previous corp's rows don't linger while
+  // the new data loads.
   if(_scanAbort) _scanAbort.abort();
+  if(_scanES){ _scanES.close(); _scanES=null; }
   _scanAbort=new AbortController();
   const seq=++_scanSeq, signal=_scanAbort.signal;
   STATE.rows=[]; STATE.selOffer=null; STATE.lastScanData=null; closeDetail(); renderTable();
   const btn=$("#refresh");
   if(forceRefresh){ btn.disabled=true; btn.textContent="⟳ Fetching…"; }
   setStatus("Scanning "+corp+(forceRefresh?" (refreshing from ESI)":"")+" …");
+  showLPProgress("Starting scan…", corp, 1);
   STATE.ctx={lp:$("#lp").value, tax:pctToFrac($("#g-tax").value), broker:pctToFrac($("#g-broker").value), station:$("#market").value};
   const p=new URLSearchParams({corp, ...STATE.ctx});
   const ms=$("#maxspread").value.trim(); if(ms) p.set("max_spread",ms);
   if(forceRefresh) p.set("refresh","1");
   try{
-    const res=await fetch("/api/scan?"+p, {signal});
-    const data=await res.json();
+    // Stream the scan over SSE so the progress bar advances phase-by-phase
+    // (offers → prices → evaluate → format) instead of spinning indefinitely.
+    const data=await new Promise((resolve,reject)=>{
+      const es=new EventSource("/api/scan?"+p); _scanES=es;
+      es.onmessage=e=>{
+        let d; try{ d=JSON.parse(e.data); }catch(err){ return; }
+        if(seq!==_scanSeq){ es.close(); if(_scanES===es) _scanES=null; return; }
+        if(d.type==="progress"){
+          showLPProgress(d.msg, d.sub||"", d.pct||0);
+          setStatus(d.msg+(d.sub?" — "+d.sub:""));
+        } else if(d.type==="result"){
+          es.close(); if(_scanES===es) _scanES=null; resolve(d);
+        } else if(d.type==="error"){
+          es.close(); if(_scanES===es) _scanES=null; reject(new Error(d.error));
+        }
+      };
+      es.onerror=()=>{
+        es.close(); if(_scanES===es) _scanES=null;
+        if(seq!==_scanSeq) return;  // superseded; the newer scan owns the UI
+        reject(new Error("Connection error — server may have stopped."));
+      };
+    });
     if(seq!==_scanSeq) return;  // a newer scan started while we waited
-    if(data.error){ setStatus(data.error,true); return; }
+    if(data.error){ hideLPProgress(); setStatus(data.error,true); return; }
+    hideLPProgress();
     STATE.rows=data.rows; STATE.ctx.corp_id=data.corp_id; STATE.selOffer=null;
     STATE.lastScanData=data; closeDetail(); renderLPStatus();
     if(forceRefresh){
@@ -260,8 +298,9 @@ async function scan(forceRefresh=false){
       fillLiquidity(seq, signal);
     }
   }catch(e){
-    if(e.name==="AbortError") return;  // superseded; the newer scan owns the UI
-    setStatus("Request failed: "+e,true);
+    if(e.name==="AbortError"||seq!==_scanSeq) return;  // superseded; newer scan owns the UI
+    hideLPProgress();
+    setStatus("Request failed: "+e.message,true);
   }
   finally{ if(seq===_scanSeq){ btn.disabled=false; btn.textContent="⟳ Refresh"; } }
 }

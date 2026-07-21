@@ -145,11 +145,15 @@ def get_offers(corp_id, session, cache_dir, refresh=False):
     return offers
 
 
-def fetch_prices(type_ids, session, station_id=JITA_STATION_ID):
+def fetch_prices(type_ids, session, station_id=JITA_STATION_ID, progress_cb=None):
     """Best sell (min) / best buy (max) and depth at the given station per type_id,
-    via Fuzzwork's station aggregate (batched). 0/missing prices -> None."""
+    via Fuzzwork's station aggregate (batched). 0/missing prices -> None.
+
+    progress_cb(done, total, batch, batches) is called after each batch so a
+    caller streaming SSE can report how far the (slowest) pricing phase has got."""
     out = {}
     ids = sorted(set(type_ids))
+    batches = max(1, math.ceil(len(ids) / 100))
     for i in range(0, len(ids), 100):
         chunk = ids[i:i + 100]
         r = session.get(FUZZWORK_AGG,
@@ -164,6 +168,8 @@ def fetch_prices(type_ids, session, station_id=JITA_STATION_ID):
                 "sell_volume": float(sell.get("volume") or 0),
                 "buy_volume": float(buy.get("volume") or 0),
             }
+        if progress_cb:
+            progress_cb(min(i + 100, len(ids)), len(ids), i // 100 + 1, batches)
     return out
 
 

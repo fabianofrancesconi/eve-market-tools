@@ -116,6 +116,18 @@ class TestFetchPricesStationParam:
         sess = self._make_session(rens)
         lp_core.fetch_prices([34], sess, station_id=rens)
 
+    def test_progress_cb_called_per_batch(self):
+        """fetch_prices reports (done, total, batch, batches) after each 100-type
+        batch so a streaming caller can advance a progress bar."""
+        sess = self._make_session(lp_core.JITA_STATION_ID)
+        ids = list(range(250))  # 3 batches of 100/100/50
+        calls = []
+        lp_core.fetch_prices(ids, sess, progress_cb=lambda *a: calls.append(a))
+        assert [c[3] for c in calls] == [3, 3, 3]  # batches total is constant
+        assert [c[2] for c in calls] == [1, 2, 3]  # batch index increments
+        assert [c[0] for c in calls] == [100, 200, 250]  # done caps at total
+        assert all(c[1] == 250 for c in calls)  # total is len(ids)
+
 
 # ---------------------------------------------------------------------------
 # lp_core.fetch_orderbook_jita — station_id / region_id params

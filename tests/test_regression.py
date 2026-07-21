@@ -74,6 +74,18 @@ def http_get(url):
         return json.loads(e.read()), e.code
 
 
+def http_sse_events(url):
+    """GET an SSE endpoint → list of parsed `data:` event dicts. Used for the
+    scan endpoints, which stream `progress`/`result`/`error` events."""
+    events = []
+    with urllib.request.urlopen(url) as r:
+        for raw in r:
+            line = raw.decode().strip()
+            if line.startswith("data:"):
+                events.append(json.loads(line[len("data:"):].strip()))
+    return events
+
+
 def http_post_json(url, data):
     """POST JSON body → (parsed_body, status_code). Handles 4xx/5xx without raising."""
     body = json.dumps(data).encode()
@@ -300,17 +312,19 @@ class TestApiCorpsEndpoint:
 # ---------------------------------------------------------------------------
 
 class TestApiScanEndpoint:
-    def test_missing_corp_returns_400(self, tmp_server):
+    def test_missing_corp_streams_error_event(self, tmp_server):
+        # /api/scan streams SSE now; a bad request surfaces as an `error` event
+        # rather than an HTTP 400.
         base, _ = tmp_server
-        data, status = http_get(f"{base}/api/scan")
-        assert status == 400
-        assert "error" in data
+        events = http_sse_events(f"{base}/api/scan")
+        assert events and events[-1]["type"] == "error"
+        assert events[-1]["error"]
 
-    def test_empty_corp_returns_400(self, tmp_server):
+    def test_empty_corp_streams_error_event(self, tmp_server):
         base, _ = tmp_server
-        data, status = http_get(f"{base}/api/scan?corp=&corp_id=")
-        assert status == 400
-        assert "error" in data
+        events = http_sse_events(f"{base}/api/scan?corp=&corp_id=")
+        assert events and events[-1]["type"] == "error"
+        assert events[-1]["error"]
 
     def test_do_scan_raises_lperror_with_no_corp(self):
         with pytest.raises(LPError):
@@ -374,6 +388,28 @@ class TestApiScanEndpoint:
              patch.object(lp_web, "resolve_volumes", return_value={202: None}):
             result = lp_web.do_scan(q)
         assert result["rows"][0]["output_volume"] is None
+
+    def test_do_scan_emits_progress_events(self, tmp_path):
+        """do_scan streams monotonic progress events via emit() so the browser can
+        show a progress bar rather than an indefinite spinner."""
+        lp_web.CACHE_DIR = tmp_path
+        fake_offers = [{"type_id": 101, "quantity": 5, "lp_cost": 1000}]
+        q = {"corp_id": ["1000"], "lp": ["10000"], "tax": ["0.08"],
+             "broker": ["0.03"], "station": ["60003760"]}
+        events = []
+        with patch.object(lp_web, "resolve_corp_name", return_value="Test Corp"), \
+             patch.object(lp_web, "get_offers", return_value=fake_offers), \
+             patch.object(lp_web, "load_json", return_value={}), \
+             patch.object(lp_web, "fetch_prices", return_value={}), \
+             patch.object(lp_web, "evaluate", return_value=([], [])), \
+             patch.object(lp_web, "resolve_names", return_value={}), \
+             patch.object(lp_web, "resolve_volumes", return_value={}):
+            lp_web.do_scan(q, emit=events.append)
+        assert events, "expected progress events"
+        assert all(e["type"] == "progress" for e in events)
+        pcts = [e["pct"] for e in events]
+        assert pcts == sorted(pcts)  # monotonically non-decreasing
+        assert all(0 <= p <= 100 for p in pcts)
 
     def test_do_scan_rows_carry_liquidity_placeholders(self, tmp_path):
         """Scan rows expose type_id/sell_volume + null saturation fields so the

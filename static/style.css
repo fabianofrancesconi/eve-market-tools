@@ -763,8 +763,8 @@
   .note.bad::before { content:"✕"; }
   .muted { color:var(--dim); font-size:12.5px; line-height:1.5; margin-top:10px; }
 
-  /* ── Arb progress overlay ────────────────────────────────────────── */
-  #arb-progress {
+  /* ── Scan progress overlay (Arb / Industry / LP) ─────────────────── */
+  #arb-progress, #lp-progress {
     display:flex; flex-direction:column; align-items:center; justify-content:center;
     height:100%; gap:10px; padding:24px;
   }

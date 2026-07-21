@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.136.3"
+__version__ = "1.136.4"
 
 import argparse
 import base64
@@ -2430,7 +2430,13 @@ def _all_type_ids(offers):
 
 
 
-def do_scan(q):
+def do_scan(q, emit=None):
+    """Scan a corp's LP store. Optionally streams SSE progress via emit(dict) so
+    the browser can show a progress bar instead of an indefinite spinner."""
+    def _emit(d):
+        if emit:
+            emit(d)
+
     corp_arg = (q.get("corp", [""])[0] or "").strip()
     corp_id_arg = q.get("corp_id", [""])[0].strip()
     lp = float(q.get("lp", ["0"])[0] or 0)
@@ -2460,16 +2466,40 @@ def do_scan(q):
     if fresh:
         reason = "forced by user" if force else "first scan this session"
         print(f"[LP] Refreshing offers for {corp_name} ({reason})", file=sys.stderr)
+    _emit({"type": "progress", "pct": 6,
+           "msg": (f"Fetching LP-store offers for {corp_name}…" if fresh
+                   else f"Loading LP-store offers for {corp_name}…"), "sub": ""})
     offers = get_offers(corp_id, SESSION, CACHE_DIR, refresh=fresh)
     REFRESHED_CORPS.add(corp_id)
     offers_meta = load_json(CACHE_DIR / f"lpstore_{corp_id}.json", {})
-    prices = fetch_prices(_all_type_ids(offers), SESSION, station_id=station_id)
+
+    type_ids = _all_type_ids(offers)
+    station_name = TRADE_HUBS[station_id]["name"]
+    _emit({"type": "progress", "pct": 15,
+           "msg": f"Fetching {station_name} prices…",
+           "sub": f"{len(offers):,} offers · {len(type_ids):,} item types"})
+
+    def price_progress(done, total, batch, batches):
+        # Pricing is the slow phase — sweep the bar across 15→75% as batches land.
+        pct = 15 + round(done / max(total, 1) * 60)
+        _emit({"type": "progress", "pct": pct,
+               "msg": f"Fetching {station_name} prices…",
+               "sub": f"batch {batch} of {batches} — {done:,} of {total:,} types priced"})
+
+    prices = fetch_prices(type_ids, SESSION, station_id=station_id,
+                          progress_cb=price_progress)
+
+    _emit({"type": "progress", "pct": 80,
+           "msg": "Evaluating offers…", "sub": "Computing ISK/LP and profitability"})
     sellable, unsellable = evaluate(offers, prices, lp, tax, broker)
 
-    names = resolve_names(_all_type_ids(offers), SESSION, CACHE_DIR)
+    _emit({"type": "progress", "pct": 90,
+           "msg": "Resolving item names & volumes…", "sub": ""})
+    names = resolve_names(type_ids, SESSION, CACHE_DIR)
     volumes = resolve_volumes(
         {r["name_id"] for r in sellable} | {r["name_id"] for r in unsellable},
         SESSION, CACHE_DIR)
+    _emit({"type": "progress", "pct": 97, "msg": "Formatting results…", "sub": ""})
     rows = []
     for r in sellable:
         sp = r["spread_pct"]
@@ -3849,9 +3879,7 @@ class Handler(BaseHTTPRequestHandler):
                     _patch_group_names(ind_data["rows"])
                 self._send_json({"lp": lp_data, "ind": ind_data})
             elif parsed.path == "/api/scan":
-                result = do_scan(q)
-                _save_last_scan(current_account(), "lp", result)
-                self._send_json(result)
+                self._handle_sse_scan(q, do_scan, "lp")
             elif parsed.path == "/api/char/stream":
                 self._handle_char_stream()
             elif parsed.path == "/api/arb/scan":

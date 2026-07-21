@@ -4,6 +4,7 @@
 let STATE = {rows:[], sort:{key:"isk_per_lp_best", dir:-1}, ctx:{}, selOffer:null,
              colw:{}, colVis:{}, hideIlliquid:false, hideUnaffordable:false, lastScanData:null,
              tradeWeight:0.5,  // liquidity↔competition blend: 0=all competition, 1=all liquidity
+             fillTotal:0, fillDone:0,  // background liquidity-fill progress (N / M)
              lotTrackerOpen:false, recipeOpen:false,
              shoppingOpen:true, costOpen:false, cargoOpen:false, saleOpen:false};
 
@@ -215,8 +216,9 @@ function hideLPProgress(){
 // a slow response from an earlier corp can't land late and clobber the current
 // one, and `_scanAbort` cancels the previous scan + liquidity fetches outright
 // (closing those connections) so the browser stops waiting on stale work.
-// `_scanES` is the in-flight scan's SSE stream (progress), closed on supersede.
-let _scanSeq=0, _scanAbort=null, _scanES=null;
+// `_scanES` is the in-flight scan's SSE stream (progress) and `_liqES` the
+// follow-on liquidity fill stream; both are closed on supersede.
+let _scanSeq=0, _scanAbort=null, _scanES=null, _liqES=null;
 async function scan(forceRefresh=false){
   const _il=$("#init-loading"); if(_il) _il.remove();
   const corp=$("#corp").value.trim();
@@ -241,6 +243,8 @@ async function scan(forceRefresh=false){
   // the new data loads.
   if(_scanAbort) _scanAbort.abort();
   if(_scanES){ _scanES.close(); _scanES=null; }
+  if(_liqES){ _liqES.close(); _liqES=null; }
+  STATE.fillTotal=0; STATE.fillDone=0;
   _scanAbort=new AbortController();
   const seq=++_scanSeq, signal=_scanAbort.signal;
   STATE.rows=[]; STATE.selOffer=null; STATE.lastScanData=null; closeDetail(); renderTable();
@@ -324,38 +328,58 @@ function _liqGiveUp(seq){
   for(const r of STATE.rows) if(!r.liq_loaded){ r.liq_loaded=true; changed=true; }
   if(changed){ renderTable(); if(STATE.detail&&STATE.selOffer) renderDetail(); }
 }
-async function fillLiquidity(seq, signal){
+// Apply one partial liquidity payload ({offer_id: {...}}) onto the rows in place.
+function _applyLiquidity(liq){
+  for(const r of STATE.rows){
+    const e=liq[r.offer_id];
+    if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear;
+      r.list_price=e.list_price; r.floor_age=e.floor_age; r.liq_loaded=true; }
+  }
+}
+// Stream the market-saturation fill (Daily Vol / Days to Clear / Tradeability /
+// List @ / Floor age) over SSE so rows de-spin as each reward type's live
+// order-book lookup lands, with an N / M counter — instead of one indefinite
+// spinner that only clears when the whole (slow) fill finishes.
+function fillLiquidity(seq, signal){
   const corpId=STATE.ctx.corp_id; if(!corpId) return;
   const p=new URLSearchParams({corp_id:corpId, lp:STATE.ctx.lp,
     tax:STATE.ctx.tax, broker:STATE.ctx.broker, station:STATE.ctx.station});
-  let settled=false;
-  const giveUp=setTimeout(()=>{ if(!settled) _liqGiveUp(seq); }, LIQ_TIMEOUT_MS);
-  try{
-    const d=await (await fetch("/api/liquidity?"+p, {signal})).json();
-    settled=true; clearTimeout(giveUp);
-    if(seq!==_scanSeq) return;  // a newer scan superseded this fill
-    if(d.error||!d.liquidity){ _liqGiveUp(seq); return; }
-    if(STATE.ctx.corp_id!==corpId) return;  // user re-scanned; drop stale fill
-    const liq=d.liquidity;
-    // Mark EVERY row loaded, not just the ones with an entry: untradeable /
-    // unsellable offers get no liquidity entry, so keying off the map alone left
-    // them spinning forever. They keep their null values and render "no data".
-    for(const r of STATE.rows){
-      const e=liq[r.offer_id];
-      if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear; r.list_price=e.list_price; r.floor_age=e.floor_age; }
-      r.liq_loaded=true;
+  if(_liqES){ _liqES.close(); _liqES=null; }
+  const es=new EventSource("/api/liquidity?"+p); _liqES=es;
+  STATE.fillTotal=0; STATE.fillDone=0;
+  // Belt-and-braces: if the stream stalls, stop every remaining spinner.
+  const giveUp=setTimeout(()=>{ if(_liqES===es){ es.close(); _liqES=null; } _liqGiveUp(seq); }, LIQ_TIMEOUT_MS);
+  const finish=()=>{ clearTimeout(giveUp); if(_liqES===es) _liqES=null; STATE.fillTotal=0; };
+  es.onmessage=e=>{
+    let d; try{ d=JSON.parse(e.data); }catch(err){ return; }
+    if(seq!==_scanSeq || STATE.ctx.corp_id!==corpId){ es.close(); finish(); return; }
+    if(d.type==="progress"){
+      if(d.liquidity) _applyLiquidity(d.liquidity);
+      STATE.fillTotal=d.total||0; STATE.fillDone=d.done||0;
+      computeTradeability(); renderTable(); renderLPStatus();
+      if(STATE.detail&&STATE.selOffer) renderDetail();
+    } else if(d.type==="result"){
+      es.close(); finish();
+      if(d.liquidity) _applyLiquidity(d.liquidity);
+      // Mark EVERY row loaded, not just the ones with an entry: untradeable /
+      // unsellable offers get no liquidity entry, so keying off the map alone left
+      // them spinning forever. They keep their null values and render "no data".
+      for(const r of STATE.rows) r.liq_loaded=true;
+      // Stamp when these saturation figures were computed so the status line can
+      // flag them as stale once carried across enough Refreshes (see renderLPStatus).
+      if(STATE.lastScanData) STATE.lastScanData.liq_computed_at=Math.floor(Date.now()/1000);
+      computeTradeability(); renderTable(); renderLPStatus();
+      if(STATE.detail&&STATE.selOffer) renderDetail();
+      persistScan("lp", STATE.lastScanData ? {...STATE.lastScanData, rows:STATE.rows} : null);
+    } else if(d.type==="error"){
+      es.close(); finish(); _liqGiveUp(seq);
     }
-    // Stamp when these saturation figures were computed so the status line can
-    // flag them as stale once carried across enough Refreshes (see renderLPStatus).
-    if(STATE.lastScanData) STATE.lastScanData.liq_computed_at=Math.floor(Date.now()/1000);
-    renderTable(); renderLPStatus();
-    if(STATE.detail&&STATE.selOffer) renderDetail();
-    persistScan("lp", STATE.lastScanData ? {...STATE.lastScanData, rows:STATE.rows} : null);
-  }catch(e){
-    settled=true; clearTimeout(giveUp);
-    if(e.name==="AbortError"||seq!==_scanSeq) return;  // superseded; leave it be
-    _liqGiveUp(seq);  // network / parse error — give up so rows don't spin forever
-  }
+  };
+  es.onerror=()=>{
+    es.close(); finish();
+    if(seq!==_scanSeq) return;  // superseded; leave it be
+    _liqGiveUp(seq);  // give up so rows don't spin forever
+  };
 }
 
 // Tradeability etc. are carried across Refreshes rather than recomputed, so they
@@ -370,10 +394,14 @@ function renderLPStatus(){
       ? ` · <span class="ts-stale" data-tip="Tradeability, Daily Vol, Days to Clear, List @ and Floor age were calculated ${fmtTs(d.liq_computed_at)} and aren't refreshed by ⟳ Refresh. Click Scan to recompute.">⚠ tradeability ${fmtTs(d.liq_computed_at)}</span>`
       : ` · tradeability ${fmtTs(d.liq_computed_at)}`;
   }
+  const fillPill = STATE.fillTotal>0
+    ? `<span class="pill">${_SPIN} scoring tradeability <b>${STATE.fillDone.toLocaleString()}</b> / ${STATE.fillTotal.toLocaleString()}</span>`
+    : "";
   setStatus(
     `<span class="pill"><b>${d.corp_name}</b></span>`
     +`<span class="pill"><b>${d.count}</b> offers</span>`
     +`<span class="pill"><b>${Number(d.lp).toLocaleString()}</b> LP · list vs instant sell</span>`
+    +fillPill
     +`<span class="ts">offers ${fmtTs(d.offers_fetched_at)} · prices ${fmtTs(d.scanned_at)}${trade}</span>`);
 }
 

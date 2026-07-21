@@ -516,6 +516,47 @@ class TestDoLiquidity:
         assert result["liquidity"][1]["floor_age"] == 3600.0
         assert result["liquidity"][2]["floor_age"] == 3600.0
 
+    def test_emit_streams_progress_with_partial_liquidity(self, tmp_path):
+        """With emit set, do_liquidity streams progress events carrying a partial
+        liquidity payload and an N / M counter so the browser de-spins rows as each
+        reward type resolves — and the union of all partials covers every offer."""
+        lp_web.CACHE_DIR = tmp_path
+        fake_offers = [{"type_id": t, "quantity": 1, "lp_cost": 1000}
+                       for t in (101, 102, 103)]
+        fake_sellable = [
+            {"offer_id": 1, "name_id": 101, "qty": 1, "max_units": 1,
+             "sell_volume": 0, "ask": 100.0},
+            {"offer_id": 2, "name_id": 102, "qty": 1, "max_units": 1,
+             "sell_volume": 0, "ask": 100.0},
+            {"offer_id": 3, "name_id": 103, "qty": 1, "max_units": 1,
+             "sell_volume": 0, "ask": 100.0},
+        ]
+        q = {"corp_id": ["1000"], "lp": ["1000"], "station": ["60003760"]}
+        events = []
+        with patch.object(lp_web, "get_offers", return_value=fake_offers), \
+             patch.object(lp_web, "fetch_prices", return_value={}), \
+             patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
+             patch.object(lp_web, "fetch_history_prices", return_value={}), \
+             patch.object(lp_web, "fetch_history_volumes",
+                          return_value={101: 5, 102: 5, 103: 5}), \
+             patch.object(lp_web, "fetch_sell_order_stats",
+                          return_value={"age_seconds": 3600.0}):
+            result = lp_web.do_liquidity(q, emit=events.append)
+        assert events, "expected progress events"
+        assert all(e["type"] == "progress" for e in events)
+        # Counter is monotonic and lands on total.
+        dones = [e["done"] for e in events]
+        assert dones == sorted(dones)
+        assert events[-1]["done"] == events[-1]["total"] == 3
+        assert all(0 <= e["pct"] <= 100 for e in events)
+        # Every offer appears across the streamed partials (nothing left spinning).
+        streamed = set()
+        for e in events:
+            streamed.update(e.get("liquidity", {}))
+        assert streamed == {"1", "2", "3"}
+        # The full dict is still returned for non-streaming callers.
+        assert set(result["liquidity"]) == {1, 2, 3}
+
 
 # ---------------------------------------------------------------------------
 # SESSION retry on stale pooled connections

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.136.4"
+__version__ = "1.136.5"
 
 import argparse
 import base64
@@ -2587,15 +2587,21 @@ def do_scan(q, emit=None):
     }
 
 
-def do_liquidity(q):
+def do_liquidity(q, emit=None):
     """Background fill for the market-saturation columns. Recomputes the same
     sellable rows as /api/scan (so capped figures use the identical LP budget /
     fees), fetches daily traded volume per reward type from region history, and
     returns {offer_id: {daily_vol, days_to_clear, capped_units, capped_profit}}.
 
-    Split out from the scan because it costs one history call per type -- the
-    front end fires it after the table is already on screen and patches rows in
-    place as the answer arrives."""
+    Split out from the scan because it costs one live order-book call per reward
+    type -- the front end fires it after the table is already on screen. When an
+    emit(dict) callback is given the fill streams SSE ``progress`` events (with a
+    partial ``liquidity`` payload) so the browser can de-spin rows and show an
+    ``N / M`` counter as each type resolves, instead of one indefinite spinner."""
+    def _emit(d):
+        if emit:
+            emit(d)
+
     corp_id = int(q["corp_id"][0])
     lp = float(q.get("lp", ["0"])[0] or 0)
     tax = float(q.get("tax", ["0.045"])[0] or 0.045)
@@ -2614,19 +2620,39 @@ def do_liquidity(q):
     # history files the volume fetch just wrote, so no extra ESI round-trips.
     fair_prices = fetch_history_prices(reward_ids, region_id, SESSION, CACHE_DIR)
     liq = enrich_liquidity(sellable, daily_vols)
-    # Freshness of the current cheapest sell order, deduped per reward type
-    # (one live order-book call each -- order books aren't cacheable, so this
-    # is the slow part of the fill).
-    floor_age_by_type = {}
+
+    # Offers grouped by reward type, so one live order-book lookup de-spins every
+    # offer sharing that type. Freshness of the current cheapest sell order is the
+    # slow part of the fill (order books aren't cacheable), so we stream the
+    # answer type-by-type rather than blocking on the whole set.
+    offers_by_type = {}
     for r in sellable:
-        tid = r["name_id"]
-        if tid not in floor_age_by_type:
-            stats = fetch_sell_order_stats(tid, SESSION, station_id=station_id,
-                                           region_id=region_id)
-            floor_age_by_type[tid] = stats["age_seconds"] if stats else None
-        liq[r["offer_id"]]["list_price"] = suggested_list_price(
-            r.get("ask"), fair_prices.get(tid))
-        liq[r["offer_id"]]["floor_age"] = floor_age_by_type[tid]
+        offers_by_type.setdefault(r["name_id"], []).append(r)
+    type_ids = list(offers_by_type)
+    total = len(type_ids)
+
+    done = 0
+    pending = {}   # offers resolved since the last emit, keyed by offer_id
+    step = max(1, total // 50)   # coalesce into ~2% chunks to bound SSE chatter
+    for tid in type_ids:
+        stats = fetch_sell_order_stats(tid, SESSION, station_id=station_id,
+                                       region_id=region_id)
+        age = stats["age_seconds"] if stats else None
+        for r in offers_by_type[tid]:
+            liq[r["offer_id"]]["list_price"] = suggested_list_price(
+                r.get("ask"), fair_prices.get(tid))
+            liq[r["offer_id"]]["floor_age"] = age
+            pending[str(r["offer_id"])] = liq[r["offer_id"]]
+        done += 1
+        # Stream partial fills so rows de-spin as data lands and the status line
+        # can show real progress, rather than one indefinite spinner.
+        if emit and (done == total or done % step == 0):
+            _emit({"type": "progress",
+                   "pct": round(done / max(total, 1) * 100),
+                   "done": done, "total": total,
+                   "liquidity": pending})
+            pending = {}
+
     return {"liquidity": liq}
 
 
@@ -3529,7 +3555,6 @@ TAB_ROUTES = {"/lp", "/arbitrage", "/arb", "/industry", "/ind",
 
 _GET_ROUTES = {
     "/api/corps": lambda q: get_npc_corps(),
-    "/api/liquidity": do_liquidity,
     "/api/detail": do_detail,
     "/api/history": do_history,
     "/api/ind/groups": do_ind_groups,
@@ -3880,6 +3905,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"lp": lp_data, "ind": ind_data})
             elif parsed.path == "/api/scan":
                 self._handle_sse_scan(q, do_scan, "lp")
+            elif parsed.path == "/api/liquidity":
+                self._handle_sse_scan(q, do_liquidity, "liq")
             elif parsed.path == "/api/char/stream":
                 self._handle_char_stream()
             elif parsed.path == "/api/arb/scan":

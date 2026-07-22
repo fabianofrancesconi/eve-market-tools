@@ -5,10 +5,16 @@ const AUTH = { loggedIn:false, name:null, charId:null, data:null,
                characters:[], activeCharId:null };
 const CHAR_REFRESH_MS = 300000;  // ESI caches character industry jobs for 5 min
 let charRefreshDeadline = 0;
+// After a manual sync we briefly flash "Synced HH:MM:SS" in place of the
+// countdown, then revert to the running countdown once this timestamp passes.
+let _syncedFlashUntil = 0;
 function tickCharRefreshTimer(){
   const el=$("#char-refresh-timer");
   if(!AUTH.loggedIn || !charRefreshDeadline){ el.classList.add("hidden"); return; }
   el.classList.remove("hidden");
+  if(Date.now() < _syncedFlashUntil) return;   // holding the "Synced …" flash
+  // Restore the countdown markup if we were just showing the "Synced …" flash.
+  if(!$("#char-refresh-secs")) el.innerHTML=`Next sync in <span id="char-refresh-secs">—</span>`;
   const remaining=charRefreshDeadline-Date.now();
   $("#char-refresh-secs").textContent=remaining>0?fmtCountdownShort(remaining):"0:00";
   // The server pushes a "sync" event each background sweep to reset this in
@@ -1011,14 +1017,20 @@ async function forceSync(){
   _syncing=true;
   const btn=$("#char-sync");
   btn.classList.add("syncing");
-  setStatus("Syncing characters from EVE…");
   const spun=new Promise(r=>setTimeout(r,600));   // minimum visible spin
   try{ await refreshCharData(true); }
   finally{
     await spun;
     btn.classList.remove("syncing");
     _syncing=false;
-    setStatus("Synced "+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}));
+    // Flash "Synced HH:MM:SS" in the countdown slot for 5s, then let the
+    // per-second ticker revert to the running "Next sync in …" countdown.
+    const t=$("#char-refresh-timer");
+    if(t){
+      t.classList.remove("hidden");
+      t.textContent="Synced "+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      _syncedFlashUntil=Date.now()+5000;
+    }
   }
 }
 

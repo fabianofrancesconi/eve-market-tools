@@ -4,7 +4,12 @@
     --fg:#c8d8e8; --dim:#5a7a95; --dim2:#3d5a70;
     --cyan:#4fc3f7; --cyan2:#29b6f6; --green:#4caf76; --green2:#66bb6a;
     --yellow:#f0c040; --red:#e05555; --accent:#1e5799;
-    --accent2:#2471c8; --gold:#c8a040;
+    --accent2:#2471c8; --gold:#c8a040; --violet:#b085f5;
+    /* Canonical build-lifecycle stage colours — one distinct hue per stage so
+       adjacent stages never collide. Green stays reserved for a realised sale.
+       Used by the tracker cards AND the Summary tab so both views agree. */
+    --stg-planned:#5a7a95; --stg-building:#4fc3f7; --stg-built:#c8a040;
+    --stg-listed:#b085f5; --stg-sold:#66bb6a;
   }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--fg);
@@ -1093,32 +1098,32 @@
      branch rather than a flat list flush with the header text. */
   .ind-build-group .ind-builds-list { margin-left:16px; }
   /* Tint each group's header to match its cards' left-border accent. */
-  .ind-build-group.planned .ind-build-grp-head { color:var(--gold,#c8a040); }
-  .ind-build-group.building .ind-build-grp-head { color:var(--cyan); }
-  .ind-build-group.built .ind-build-grp-head,
-  .ind-build-group.listed .ind-build-grp-head,
-  .ind-build-group.sold .ind-build-grp-head { color:var(--green2,#4caf76); }
+  .ind-build-group.planned .ind-build-grp-head { color:var(--stg-planned); }
+  .ind-build-group.building .ind-build-grp-head { color:var(--stg-building); }
+  .ind-build-group.built .ind-build-grp-head { color:var(--stg-built); }
+  .ind-build-group.listed .ind-build-grp-head { color:var(--stg-listed); }
+  .ind-build-group.sold .ind-build-grp-head { color:var(--stg-sold); }
   .ind-track-btn { margin:0 6px; padding:1px 8px; font-size:11.5px; cursor:pointer;
     background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--green2,#4caf76); }
   .ind-track-btn:hover { border-color:var(--green2,#4caf76); }
   .ind-track-btn:disabled { opacity:.7; cursor:default; }
   .ind-build-card { background:var(--panel2); border:1px solid var(--line2);
     border-left-width:3px; border-radius:6px; padding:8px 12px; }
-  /* Card border + badge colour track the whole sell lifecycle, not just the job:
-     a built-but-unsold batch stays amber (it isn't "done"), an in-progress sale
-     is cyan, and only a completed/closed sale goes green. */
-  .ind-build-card.awaiting { border-left-color:var(--gold,#c8a040); }
-  .ind-build-card.building { border-left-color:var(--cyan); }
-  .ind-build-card.built { border-left-color:var(--gold,#c8a040); }
-  .ind-build-card.listed { border-left-color:var(--cyan2,#29b6f6); }
-  .ind-build-card.sold, .ind-build-card.done { border-left-color:var(--green2,#4caf76); }
+  /* Card border + badge colour track the whole sell lifecycle, not just the job.
+     One distinct hue per stage (slate → cyan → amber → violet → green) so no two
+     adjacent stages look alike; green stays reserved for a realised/closed sale. */
+  .ind-build-card.awaiting { border-left-color:var(--stg-planned); }
+  .ind-build-card.building { border-left-color:var(--stg-building); }
+  .ind-build-card.built { border-left-color:var(--stg-built); }
+  .ind-build-card.listed { border-left-color:var(--stg-listed); }
+  .ind-build-card.sold, .ind-build-card.done { border-left-color:var(--stg-sold); }
   .ind-build-row { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-size:12.5px; }
   .ind-build-status { font-weight:700; font-size:11.5px; white-space:nowrap; }
-  .ind-build-status.awaiting { color:var(--gold,#c8a040); }
-  .ind-build-status.building { color:var(--cyan); }
-  .ind-build-status.built { color:var(--gold,#c8a040); }
-  .ind-build-status.listed { color:var(--cyan2,#29b6f6); }
-  .ind-build-status.sold, .ind-build-status.done { color:var(--green2,#4caf76); }
+  .ind-build-status.awaiting { color:var(--stg-planned); }
+  .ind-build-status.building { color:var(--stg-building); }
+  .ind-build-status.built { color:var(--stg-built); }
+  .ind-build-status.listed { color:var(--stg-listed); }
+  .ind-build-status.sold, .ind-build-status.done { color:var(--stg-sold); }
   .ind-build-name { font-weight:700; color:var(--fg); min-width:150px; }
   .ind-build-runs { color:var(--dim); }
   .ind-build-stat { color:var(--dim); }
@@ -1273,28 +1278,28 @@
   .sum-capbar { display:flex; height:12px; border-radius:6px; overflow:hidden;
     background:var(--panel2); border:1px solid var(--line2); }
   .sum-capseg { height:100%; }
-  .sum-capseg.stage-planned { background:var(--dim2); }
-  .sum-capseg.stage-building { background:var(--cyan); }
-  .sum-capseg.stage-built { background:var(--green2,#4caf76); }
-  .sum-capseg.stage-listed { background:var(--gold,#c8a040); }
+  .sum-capseg.stage-planned { background:var(--stg-planned); }
+  .sum-capseg.stage-building { background:var(--stg-building); }
+  .sum-capseg.stage-built { background:var(--stg-built); }
+  .sum-capseg.stage-listed { background:var(--stg-listed); }
   .sum-caplegend { display:flex; gap:14px; flex-wrap:wrap; margin-top:7px; }
   .sum-caplbl { font-size:11px; color:var(--dim); display:flex; align-items:center; gap:5px; }
   .sum-caplbl::before { content:""; width:9px; height:9px; border-radius:2px; display:inline-block; }
-  .sum-caplbl.stage-planned::before { background:var(--dim2); }
-  .sum-caplbl.stage-building::before { background:var(--cyan); }
-  .sum-caplbl.stage-built::before { background:var(--green2,#4caf76); }
-  .sum-caplbl.stage-listed::before { background:var(--gold,#c8a040); }
+  .sum-caplbl.stage-planned::before { background:var(--stg-planned); }
+  .sum-caplbl.stage-building::before { background:var(--stg-building); }
+  .sum-caplbl.stage-built::before { background:var(--stg-built); }
+  .sum-caplbl.stage-listed::before { background:var(--stg-listed); }
   .sum-caplbl b { color:var(--fg); font-weight:700; }
   .sum-stagestrip { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
   .sum-stagepill { font-size:11px; color:var(--dim); background:var(--panel2);
     border:1px solid var(--line2); border-radius:20px; padding:3px 11px;
     border-left-width:3px; }
   .sum-stagepill b { color:var(--fg); font-weight:800; margin-right:2px; }
-  .sum-stagepill.stage-planned { border-left-color:var(--dim2); }
-  .sum-stagepill.stage-building { border-left-color:var(--cyan); }
-  .sum-stagepill.stage-built { border-left-color:var(--green2,#4caf76); }
-  .sum-stagepill.stage-listed { border-left-color:var(--gold,#c8a040); }
-  .sum-stagepill.stage-sold { border-left-color:var(--green,#6bd898); }
+  .sum-stagepill.stage-planned { border-left-color:var(--stg-planned); }
+  .sum-stagepill.stage-building { border-left-color:var(--stg-building); }
+  .sum-stagepill.stage-built { border-left-color:var(--stg-built); }
+  .sum-stagepill.stage-listed { border-left-color:var(--stg-listed); }
+  .sum-stagepill.stage-sold { border-left-color:var(--stg-sold); }
   .sum-section { margin-top:20px; }
   .sum-section-head { font-size:11px; font-weight:700; text-transform:uppercase;
     letter-spacing:.8px; color:var(--cyan); opacity:.85; padding-bottom:6px;

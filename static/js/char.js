@@ -577,7 +577,7 @@ function _renderAllPanel(chars){
 // ── Wallet History Chart ────────────────────────────────────────────────
 let _walletChart=null;
 let _walletHistoryCache=null;
-let _walletChartDays=30;
+let _walletChartDays=7;
 let _walletChartCharId=null;
 
 async function _loadWalletHistory(days){
@@ -666,24 +666,16 @@ async function renderWalletChart(charId){
   container.innerHTML='';
   _walletChartCharId=charId;
 
-  function _updateStatsForRange(minTs, maxTs){
-    const statsEl=document.getElementById('walletChartStats');
-    if(statsEl) statsEl.innerHTML=_walletChartStats(_walletHistoryCache,_walletChartCharId,minTs,maxTs);
-  }
-
   const opts={
     chart:{
       type:'area', height:200,
       background:'transparent',
-      toolbar:{show:true, tools:{zoom:true,zoomin:true,zoomout:true,pan:true,reset:true,download:false}},
-      zoom:{enabled:true,type:'x'},
+      // Zoom, pan and mouse-wheel scroll are disabled: the range buttons (7d/30d/90d)
+      // are the only way to change the window, so the chart never hijacks page scroll.
+      toolbar:{show:false},
+      zoom:{enabled:false,allowMouseWheelZoom:false},
       animations:{enabled:true,easing:'easeinout',speed:400},
       fontFamily:'inherit',
-      events:{
-        zoomed:function(_ctx,{xaxis}){ _updateStatsForRange(xaxis.min,xaxis.max); },
-        scrolled:function(_ctx,{xaxis}){ _updateStatsForRange(xaxis.min,xaxis.max); },
-        beforeResetZoom:function(){ _updateStatsForRange(null,null); },
-      },
     },
     theme:{mode:'dark'},
     colors:charId?['#4fc3f7']:['#4fc3f7','#66bb6a','#f0c040','#e05555','#ab47bc'],

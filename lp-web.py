@@ -2480,6 +2480,24 @@ def _downsample(series, max_points=500):
     return result
 
 
+def _resample_hourly(series):
+    """Collapse a [(ts, balance), ...] list to one point per clock hour.
+
+    Each bucket is timestamped exactly on the hour boundary (:00, UTC) so the
+    chart's x-axis lands on precise hours rather than wherever a snapshot
+    happened to be taken. The balance for a bucket is the last (most recent)
+    reading within that hour — a wallet balance is a running total, so the
+    latest value best represents "the balance at that hour", not an average."""
+    buckets = {}
+    for pt in series:
+        hour_start = (int(pt[0]) // 3600) * 3600
+        # Keep the most recent reading in the hour (series may be unsorted).
+        prev = buckets.get(hour_start)
+        if prev is None or pt[0] >= prev[0]:
+            buckets[hour_start] = pt
+    return [[hour_start, buckets[hour_start][1]] for hour_start in sorted(buckets)]
+
+
 def do_wallet_history(q):
     """Return wallet balance time-series for all characters."""
     acct = require_account()
@@ -2508,7 +2526,7 @@ def do_wallet_history(q):
         if pts:
             series[str(cid)] = {
                 "name": char_names.get(cid, "?"),
-                "data": _downsample(pts),
+                "data": _resample_hourly(pts),
             }
 
     return {"series": series}

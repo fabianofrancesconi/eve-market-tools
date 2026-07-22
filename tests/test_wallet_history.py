@@ -97,12 +97,42 @@ class TestDownsample:
         assert result[0][0] < result[-1][0]
 
 
+class TestResampleHourly:
+    def test_timestamps_on_the_hour(self):
+        """Every returned timestamp lands exactly on a clock-hour boundary."""
+        series = [[3600 + 137, 100.0], [7200 + 42, 200.0]]
+        result = lp_web._resample_hourly(series)
+        assert [p[0] for p in result] == [3600, 7200]
+
+    def test_collapses_within_hour_to_latest(self):
+        """Multiple readings in one hour collapse to one point holding the
+        most-recent balance (a balance is a running total, not an average)."""
+        series = [[3600 + 10, 100.0], [3600 + 1800, 150.0], [3600 + 3500, 175.0]]
+        result = lp_web._resample_hourly(series)
+        assert result == [[3600, 175.0]]
+
+    def test_unsorted_input(self):
+        """Out-of-order points still resolve to the latest reading per hour."""
+        series = [[3600 + 3500, 175.0], [3600 + 10, 100.0], [3600 + 1800, 150.0]]
+        result = lp_web._resample_hourly(series)
+        assert result == [[3600, 175.0]]
+
+    def test_distinct_hours_preserved(self):
+        series = [[3600 + 10, 100.0], [10800 + 5, 300.0]]
+        result = lp_web._resample_hourly(series)
+        assert result == [[3600, 100.0], [10800, 300.0]]
+
+    def test_empty(self):
+        assert lp_web._resample_hourly([]) == []
+
+
 class TestWalletHistoryEndpoint:
     def test_returns_series(self, monkeypatch, tmp_path):
         """The endpoint returns the correct shape."""
         path = tmp_path / "wh.json"
         now = time.time()
-        data = {"1": [[now - 100, 500.0], [now - 50, 600.0]]}
+        # Two points ~2 hours apart so they land in distinct hourly buckets.
+        data = {"1": [[now - 7200, 500.0], [now - 100, 600.0]]}
         path.write_text(json.dumps(data))
 
         monkeypatch.setattr(lp_web, "WALLET_HISTORY_PATH", path)

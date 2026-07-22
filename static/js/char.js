@@ -448,7 +448,7 @@ function _renderCharPanel(c){
       const exp=_fmtExpires(expiresMs);
       const expTip=isFinite(expiresMs)?` title="${new Date(expiresMs).toLocaleString()}"`:"";
       const queueCell=o.is_best==null?`<span style="color:var(--dim)">—</span>`
-        :o.is_best?`<span class="tx-sell">Best ✓</span>`:`<span class="tx-buy">#${o.queue_rank} / ${o.queue_total}</span>`;
+        :o.is_best?`<span class="ord-best">Best ✓</span>`:`<span class="ord-queue">#${o.queue_rank} / ${o.queue_total}</span>`;
       const saleTip=o.last_sale_ts?` title="Last sale: ${o.last_sale_qty} unit${o.last_sale_qty>1?'s':''} sold ${_fmtAgo(o.last_sale_ts)}" style="text-align:right;color:var(--green2)"`
         :` style="text-align:right"`;
       h+=`<tr><td>${authEsc(o.type_name)}</td>`
@@ -550,7 +550,7 @@ function _renderAllPanel(chars){
       const exp=_fmtExpires(expiresMs);
       const expTip=isFinite(expiresMs)?` title="${new Date(expiresMs).toLocaleString()}"`:"";
       const queueCell=o.is_best==null?`<span style="color:var(--dim)">—</span>`
-        :o.is_best?`<span class="tx-sell">Best ✓</span>`:`<span class="tx-buy">#${o.queue_rank} / ${o.queue_total}</span>`;
+        :o.is_best?`<span class="ord-best">Best ✓</span>`:`<span class="ord-queue">#${o.queue_rank} / ${o.queue_total}</span>`;
       const saleTip=o.last_sale_ts?` title="Last sale: ${o.last_sale_qty} unit${o.last_sale_qty>1?'s':''} sold ${_fmtAgo(o.last_sale_ts)}" style="text-align:right;color:var(--green2)"`
         :` style="text-align:right"`;
       h+=`<tr><td>${authEsc(o._char)}</td><td>${authEsc(o.type_name)}</td>`

@@ -10,6 +10,13 @@
        Used by the tracker cards AND the Summary tab so both views agree. */
     --stg-planned:#5a7a95; --stg-building:#4fc3f7; --stg-built:#c8a040;
     --stg-listed:#b085f5; --stg-sold:#66bb6a;
+    /* Canonical market-order colours — single source of truth for the Market
+       orders table (side, queue position, expiry) so it reads as one system with
+       the tracker. Buy/sell keep the EVE convention (red/green); queue position
+       gets its own violet hue so a mid-queue rank no longer borrows the red
+       "buy" alarm colour, and "Best" reuses the realised-sale green. */
+    --ord-buy:#e05555; --ord-sell:#66bb6a; --ord-best:#66bb6a;
+    --ord-queue:#b085f5; --ord-exp-soon:#f0c040; --ord-exp-gone:#e05555;
   }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--fg);
@@ -743,12 +750,16 @@
   .char-card-scroll table.mini thead th { position:sticky; top:0; background:var(--panel2); z-index:1; }
   .char-none { color:var(--dim); font-size:13.5px; padding:10px 4px; }
   .char-none.char-none-warn { color:var(--gold); }
-  .char-orders-tbl td.tx-buy { color:var(--red); font-weight:600; }
-  .char-orders-tbl td.tx-sell { color:var(--green2); font-weight:600; }
+  /* Market-order colours all draw from the canonical --ord-* vars (see :root). */
+  .char-orders-tbl td.tx-buy, .char-orders-tbl .tx-buy { color:var(--ord-buy); font-weight:600; }
+  .char-orders-tbl td.tx-sell, .char-orders-tbl .tx-sell { color:var(--ord-sell); font-weight:600; }
+  /* Queue position is its own signal, not a buy/sell one. */
+  .char-orders-tbl .ord-queue { color:var(--ord-queue); font-weight:600; }
+  .char-orders-tbl .ord-best { color:var(--ord-best); font-weight:600; }
   /* Expiry column: highlight orders about to lapse. */
   .char-orders-tbl td.exp-cell { font-variant-numeric:tabular-nums; }
-  .char-orders-tbl td.exp-cell.exp-soon { color:var(--yellow); }
-  .char-orders-tbl td.exp-cell.exp-gone { color:var(--red); font-weight:600; }
+  .char-orders-tbl td.exp-cell.exp-soon { color:var(--ord-exp-soon); }
+  .char-orders-tbl td.exp-cell.exp-gone { color:var(--ord-exp-gone); font-weight:600; }
   .char-jobs-tbl td.tl, .char-jobs-tbl th:last-child { text-align:right;
     font-variant-numeric:tabular-nums; }
   .char-jobs-tbl th:first-child, .char-jobs-tbl td:first-child { min-width:8em; }

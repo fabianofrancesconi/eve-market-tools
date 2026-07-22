@@ -1707,16 +1707,21 @@ function _buildSellHtml(b, stage){
   if(stage==="listed"||stage==="sold"){
     const rz=_buildRealized(b);
     const sell=b.sell||{};
+    const instant=sell.mode==="instant";
     const target=sell.qty_target||_buildUnits(b)||0;
     const cpu=sell.cost_per_unit;
     const remain=Math.max(0, target-rz.units);
     const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
-    // Projected profit on the unsold remainder at the frozen list price.
+    // Projected profit on the unsold remainder. Instant sales are valued at the
+    // frozen bid (sold into buy orders, sales tax only); listed at the frozen ask
+    // (patient order, tax + broker fee).
     const d=b.snapshot||{};
     const stax=d.sales_tax||0, bfee=d.broker_fee||0;
-    const projRemain=(d.ask!=null&&cpu!=null)?remain*(d.ask*(1-stax-bfee)-cpu):null;
+    const projRemain=instant
+      ? ((d.bid!=null&&cpu!=null)?remain*(d.bid*(1-stax)-cpu):null)
+      : ((d.ask!=null&&cpu!=null)?remain*(d.ask*(1-stax-bfee)-cpu):null);
     let pick="";
-    if(sell.needs_pick){
+    if(sell.needs_pick && !instant){
       pick=`<div class="ind-sell-pick" data-id="${b.id}">
         <span class="ind-sell-warn">Several open sell orders match ${b.product_name||"this item"} — pick the one to track:</span>
         <span class="ind-sell-pick-list"></span></div>`;
@@ -1735,9 +1740,15 @@ function _buildSellHtml(b, stage){
     // While listed with a remainder but no live linked order, the previous
     // listing lapsed (expired) — nudge the user to re-list; the new order links
     // itself. This is the resell-at-a-different-price path.
-    const relisting=!closed && !linkedId && rz.units>0 && remain>0;
+    const relisting=!instant && !closed && !linkedId && rz.units>0 && remain>0;
     let watchMsg;
-    if(linkedId) watchMsg=`${sell.auto?"🔗 Auto-linked":"⏳ Linked to"} your sell order${sell.auto?"":" — tracking fills"} ${unlinkBtn}`;
+    if(instant){
+      // Instant sales accrue from wallet transactions — no order to link.
+      watchMsg=closed
+        ? "⚡ Sold instantly (into buy orders)"
+        : `⚡ Instant sale — accruing wallet transactions for ${b.product_name||"this item"} at their real sale price${remain>0?` · ${remain.toLocaleString()} still to sell`:""}`;
+    }
+    else if(linkedId) watchMsg=`${sell.auto?"🔗 Auto-linked":"⏳ Linked to"} your sell order${sell.auto?"":" — tracking fills"} ${unlinkBtn}`;
     else if(relisting) watchMsg=`⚠ Previous listing ended with ${remain.toLocaleString()} unsold — re-list them in-game (at any price) and the new order links automatically.`;
     else watchMsg="⏳ Watching for your sell order…";
     return `<div class="ind-sell ind-sell-live${relisting?" ind-sell-relist":""}" data-id="${b.id}">
@@ -1755,7 +1766,7 @@ function _buildSellHtml(b, stage){
         <div class="ind-sell-card">
           <div class="ind-sell-card-label">Remainder (proj.)</div>
           <div class="ind-sell-card-val ${pn(projRemain)}">${remain>0&&!closed?isk(projRemain):"—"}</div>
-          <div class="ind-sell-card-sub">${closed?"closed out":(remain>0?`${remain.toLocaleString()} @ frozen ask`:"nothing left")}</div>
+          <div class="ind-sell-card-sub">${closed?"closed out":(remain>0?`${remain.toLocaleString()} @ frozen ${instant?"bid":"ask"}`:"nothing left")}</div>
         </div>
       </div>
       ${pick}

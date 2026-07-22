@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.137.0"
+__version__ = "1.138.0"
 
 import argparse
 import base64
@@ -1713,7 +1713,11 @@ def _reconcile_sell_builds(acct, current_orders):
         builds = _load_tracked_builds(acct)
         selling = [b for b in builds
                    if (b.get("sell") or {}).get("started_at")
-                   and not (b.get("sell") or {}).get("closed_at")]
+                   and not (b.get("sell") or {}).get("closed_at")
+                   # Instant-sell builds are accrued from wallet transactions by
+                   # _reconcile_instant_sell_builds — the order-diff engine here
+                   # must leave them alone so a sale is never counted twice.
+                   and (b.get("sell") or {}).get("mode") != "instant"]
         # Built-but-not-yet-selling builds eligible for button-free auto-start.
         auto_candidates = [b for b in builds
                            if b.get("done_at")
@@ -1830,6 +1834,147 @@ def _reconcile_sell_builds(acct, current_orders):
                 if qt and total >= qt:
                     sell["closed_at"] = time.time()
                     changed = True
+        if changed:
+            _save_tracked_builds(acct, builds)
+
+
+# How long before a build finished a transaction may be dated and still count as
+# a sale of that build's output — covers clock skew and pre-selling stock crafted
+# just before the job delivered. Kept tight so an unrelated earlier sale of the
+# same item isn't mis-attributed.
+_INSTANT_SELL_BACKDATE = 6 * 3600
+
+
+def _reconcile_instant_sell_builds(acct, transactions):
+    """Accrue *instant* sales (selling into a buy order) against tracked builds
+    from the character's wallet transactions. This is the separate path that the
+    order-diff engine can't cover: an instant sell never creates a market order,
+    so there's nothing for _reconcile_sell_builds to watch.
+
+    Auto-detect (no button): a *built* build whose product shows up in a sell
+    transaction dated at/after it finished is adopted into an 'instant' sale on
+    its own and the transaction accrued at its real received price. It closes
+    once the target quantity has sold.
+
+    A wallet transaction carries NO order_id, so we can't tie it to a specific
+    order — we match by product type_id + date only. To stay mutually exclusive
+    with the order-diff engine and never double-count: (a) this only ever touches
+    builds NOT already in a listed sale — the listed reconcile runs first each
+    sweep and claims any build with a real sell order, flipping it to a listed
+    sale that this function then skips; (b) each transaction id is claimed by at
+    most one build (oldest-built first). Because there's no order_id, a sale of
+    the same item from an untracked source (e.g. flipping) after a build finished
+    can be mis-attributed to it — the back-date margin and qty_target cap contain
+    that, and it's the accepted trade-off of button-free auto-detection.
+
+    Idempotent: fills dedup by transaction_id inside sell.realized, so re-running
+    every sweep (and across the per-character pool, under the lock) never
+    double-books."""
+    if not acct or not transactions:
+        return
+    # Sell transactions only, oldest first so the earliest sale fills the
+    # earliest-finished build.
+    sells = sorted((t for t in transactions if not t.get("is_buy")),
+                   key=lambda t: t.get("date") or "")
+    if not sells:
+        return
+    with _TRACKED_BUILDS_LOCK:
+        builds = _load_tracked_builds(acct)
+        # Candidates: built, not sold, not cancelled, and NOT in a listed sale
+        # (a listed sale has started_at with mode != 'instant' — those belong to
+        # the order-diff engine). A build already adopted as instant stays here.
+        def _is_listed_sale(b):
+            s = b.get("sell") or {}
+            return bool(s.get("started_at")) and s.get("mode") != "instant"
+        candidates = [b for b in builds
+                      if b.get("done_at")
+                      and not (b.get("sell") or {}).get("closed_at")
+                      and not b.get("no_auto_sell")
+                      and not _is_listed_sale(b)]
+        if not candidates:
+            return
+        # Oldest-finished first, so concurrent batches of the same item claim
+        # transactions in a stable order.
+        candidates.sort(key=lambda b: b.get("done_at") or 0)
+        # A transaction already accrued by ANY build must not be re-claimed.
+        claimed = {str(e.get("transaction_id"))
+                   for b in builds
+                   for e in ((b.get("sell") or {}).get("realized") or [])
+                   if e.get("transaction_id") is not None}
+        changed = False
+        for b in candidates:
+            pid = b.get("product_type_id")
+            anchor = (b.get("done_at") or 0) - _INSTANT_SELL_BACKDATE
+            qt = ((b.get("sell") or {}).get("qty_target")
+                  or _build_units_produced(b) or 0)
+            # Collect this build's matching, unclaimed sells first — only adopt an
+            # instant sale if there's actually something to accrue, so an unsold
+            # built build stays plain "built" (and can still be listed instead).
+            fresh = []
+            taken = 0
+            existing = sum(e.get("units", 0)
+                           for e in ((b.get("sell") or {}).get("realized") or []))
+            for t in sells:
+                if qt > 0 and existing + taken >= qt:
+                    break
+                if t.get("type_id") != pid:
+                    continue
+                tid = str(t.get("transaction_id"))
+                if tid in claimed:
+                    continue
+                ts = _parse_iso_ts(t.get("date"))
+                if ts is None or ts < anchor:
+                    continue
+                qty = t.get("quantity") or 0
+                if qty <= 0:
+                    continue
+                # Cap the units taken from this transaction at the batch's
+                # remaining target: a single sale can exceed the batch (the item
+                # was also flipped from other stock), and only the batch's own
+                # output is this build's. Pricing is per-unit so the cap prorates
+                # cleanly; the id is still claimed so we don't revisit it.
+                if qt > 0:
+                    qty = min(qty, qt - existing - taken)
+                if qty <= 0:
+                    continue
+                fresh.append((t, tid, ts, qty))
+                taken += qty
+            if not fresh:
+                continue
+            # Adopt into (or extend) an instant sale.
+            sell = b.get("sell") or {}
+            if not sell.get("started_at"):
+                sell = {
+                    "started_at": time.time(),
+                    "mode": "instant",
+                    "auto": True,
+                    "qty_target": qt or None,
+                    "cost_per_unit": _build_cost_per_unit(b),
+                    "order_ids": [],
+                    "needs_pick": False,
+                    "realized": [],
+                    "closed_at": None,
+                }
+                b["sell"] = sell
+            realized = sell.setdefault("realized", [])
+            stax = (b.get("snapshot") or {}).get("sales_tax") or 0
+            for t, tid, ts, qty in fresh:
+                price = t.get("unit_price") or 0
+                realized.append({
+                    "transaction_id": t.get("transaction_id"),
+                    "ts": ts,
+                    "units": qty,
+                    "price": price,
+                    "gross": qty * price,
+                    "net": qty * price * (1 - stax),
+                    "instant": True,
+                })
+                claimed.add(tid)
+            changed = True
+            # Close out once the target quantity has sold.
+            sold_total = sum(e.get("units", 0) for e in realized)
+            if qt and sold_total >= qt:
+                sell["closed_at"] = time.time()
         if changed:
             _save_tracked_builds(acct, builds)
 
@@ -2045,6 +2190,13 @@ def _fetch_one_char_data_uncached(acct, cid):
     _refresh_char_blueprints(acct, cid)
 
     wallet = sso_core.fetch_wallet(token, cid, SESSION)
+    transactions = []
+    try:
+        transactions, _tx_meta = sso_core.fetch_wallet_transactions(token, cid, SESSION)
+    except requests.HTTPError:
+        # Missing wallet scope / transient ESI error — instant-sell accrual just
+        # sits out this sweep; listed-order tracking is unaffected.
+        transactions = []
     skills = sso_core.fetch_skills(token, cid, SESSION)
     queue = sso_core.fetch_skillqueue(token, cid, SESSION)
     loyalty, loyalty_meta = sso_core.fetch_loyalty_points(token, cid, SESSION)
@@ -2172,6 +2324,15 @@ def _fetch_one_char_data_uncached(acct, cid):
         # tracked builds in the selling state (auto-link + accrue realized P&L).
         try:
             _reconcile_sell_builds(acct, orders_out)
+        except Exception:
+            pass
+    # Instant sells (selling into a buy order) leave no market order, so accrue
+    # them from wallet transactions. Runs AFTER the listed reconcile so a build
+    # with a real sell order is claimed as a listed sale first and skipped here —
+    # keeping the two paths mutually exclusive (no double-count).
+    if transactions:
+        try:
+            _reconcile_instant_sell_builds(acct, transactions)
         except Exception:
             pass
     for o in orders_out:

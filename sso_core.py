@@ -202,6 +202,23 @@ def fetch_wallet(token, character_id, session):
     return r.json()
 
 
+def fetch_wallet_transactions(token, character_id, session):
+    """([{transaction_id, date, type_id, quantity, unit_price, is_buy, client_id,
+    location_id, journal_ref_id, is_personal}, …], meta) — the character's most
+    recent market transactions (up to 2500, newest first), plus ESI cache headers.
+    Requires esi-wallet.read_character_wallet.v1. NOTE: transactions carry NO
+    order_id, so a sell transaction can't be tied back to a specific sell order —
+    it only tells you an item of that type_id sold at that price. ESI caches this
+    ~1h. Not paginated here (from_id walks older pages); the newest page is enough
+    for incremental accrual since callers dedup by transaction_id."""
+    r = session.get(f"{ESI}/characters/{character_id}/wallet/transactions/",
+                    headers=_auth_headers(token), timeout=30)
+    r.raise_for_status()
+    meta = {"last_modified": r.headers.get("Last-Modified"),
+            "expires": r.headers.get("Expires")}
+    return r.json(), meta
+
+
 def fetch_loyalty_points(token, character_id, session):
     """([{corporation_id, loyalty_points}, …], meta) where meta carries ESI's
     cache headers — {last_modified, expires}. ESI caches loyalty points for ~1h,

@@ -76,6 +76,16 @@ def test_track_guards_against_duplicate_pending_builds():
     assert "if(!_confirmTrackNotDuplicate(d, runs)) return;" in src
 
 
+def test_instant_sale_rendering_wired():
+    src = lp_web.FRONTEND_SOURCE
+    # The sell panel distinguishes an instant sale (accrued from wallet
+    # transactions, no order to link) from a listed one.
+    assert 'sell.mode==="instant"' in src
+    assert "Instant sale" in src            # the watch message
+    # The needs-pick order chooser is suppressed for instant sales.
+    assert "sell.needs_pick && !instant" in src
+
+
 def test_tracker_dashboard_has_est_profit_and_capital_bar():
     src = lp_web.FRONTEND_SOURCE
     assert "Est. total profit" in src        # new headline KPI

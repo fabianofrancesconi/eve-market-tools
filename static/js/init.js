@@ -137,6 +137,10 @@ async function loadSettings(){
         const hb=typeof ind.hidden_bps==="string"?JSON.parse(ind.hidden_bps):ind.hidden_bps;
         if(Array.isArray(hb)) IND.hidden=new Set(hb);
       }catch(e){} }
+      if(ind.notes){ try{
+        const nt=typeof ind.notes==="string"?JSON.parse(ind.notes):ind.notes;
+        if(nt&&typeof nt==="object") IND.notes=nt;
+      }catch(e){} }
       if(ind.sections){ try{
         const sec=typeof ind.sections==="string"?JSON.parse(ind.sections):ind.sections;
         if(sec&&typeof sec==="object") Object.assign(IND.sections, sec);

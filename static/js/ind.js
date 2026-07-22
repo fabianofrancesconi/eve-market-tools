@@ -3,7 +3,7 @@
 // ══════════════════════════════════════════════════════════════════════════
 let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es:null,
            groupsLoaded:false, profiles:[],
-           favorites:new Set(), hidden:new Set(),
+           favorites:new Set(), hidden:new Set(), notes:{},
            timers:{}, research:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{}, detailRuns:1,
            fillTotal:0, fillDone:0, tradeWeight:0.5,
@@ -228,6 +228,8 @@ function indRowHtml(r, idx){
       if(r.missing_price) txt+=" *";
       const rz=IND.research[r.blueprint_id];
       if(rz) txt+=` <span class="ind-busy-note" title="${indResearchTip(rz)}">🔬 ${rz.activity||"researching"}</span>`;
+      const nt=indNote(r.blueprint_id);
+      if(nt) txt+=` <span class="ind-note-mark" title="${nt.replace(/"/g,'&quot;')}">📝</span>`;
       if(r.group_name) txt+=`<span class="ind-group-sub">${r.group_name}</span>`;
     }
     let cls=c.cls||"";
@@ -425,6 +427,15 @@ function toggleHidden(bp){
   if(IND.hidden.has(bp)) IND.hidden.delete(bp); else IND.hidden.add(bp);
   setPref('ind.hidden_bps', [...IND.hidden]);
   renderIndTable();
+}
+// Per-blueprint notes live in one blob pref (ind.notes = {bp_id: text}), mirroring
+// ind.hidden_bps. Empty/blank notes are dropped so the marker and blob stay clean.
+function indNote(bp){ return IND.notes[bp]||""; }
+function setIndNote(bp, text){
+  bp=+bp;
+  const t=(text||"").trim();
+  if(t) IND.notes[bp]=t; else delete IND.notes[bp];
+  setPref('ind.notes', IND.notes);
 }
 
 function renderIndStatus(){
@@ -784,6 +795,10 @@ function renderIndDetail(d, container){
       <span class="ind-d-close" title="Close">✕</span>
     </div>
     <div class="ind-d-body">
+    <div class="ind-d-note">
+      <label class="ind-d-note-lbl">📝 Note</label>
+      <textarea class="ind-d-note-box" rows="2" placeholder="Add a note for this blueprint…">${(indNote(d.blueprint_id)||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}</textarea>
+    </div>
     ${researchHtml}
     ${esiOwned && !isBpo ? `<div class="ind-bpc-warn">
       ⚠ You only have a <b>Blueprint Copy</b> with <b>${bpcRuns} run${bpcRuns===1?"":"s"}</b> remaining — it will be consumed.
@@ -904,6 +919,17 @@ function renderIndDetail(d, container){
   head.onmousedown=ev=>{ headDownInInteractive=!!ev.target.closest("button,input,.ind-d-runs-wrap,.ind-d-cargo-box"); };
   head.onclick=ev=>{ if(!ev.target.closest("button,input,.ind-d-runs-wrap,.ind-d-cargo-box") && !headDownInInteractive) closeIndDetail(); };
   box.querySelector(".ind-fav-btn").onclick=()=>toggleFavorite(d.blueprint_id);
+  // Note editor — autosaves as you type (debounced by setPref). Re-render the
+  // table on blur so the 📝 marker appears/disappears without disrupting typing.
+  const noteBox=box.querySelector(".ind-d-note-box");
+  if(noteBox){
+    let last=indNote(d.blueprint_id);
+    noteBox.addEventListener("input", ()=>setIndNote(d.blueprint_id, noteBox.value));
+    noteBox.addEventListener("blur", ()=>{
+      const now=indNote(d.blueprint_id);
+      if((!!now)!==(!!last)){ last=now; renderIndTable(); }
+    });
+  }
   const trackBtn=box.querySelector(".ind-track-btn");
   if(trackBtn) trackBtn.onclick=()=>trackThisBuild(d, Math.max(1, IND.detailRuns||1), trackBtn);
   const copyBtn=box.querySelector(".ind-copy");
@@ -1045,10 +1071,39 @@ setInterval(()=>{
 // Only a build that was actually linked can become "done", so a freshly-tracked
 // build never jumps straight to done.
 
+// Guard against tracking the same thing twice. Only *pending* builds (still in
+// the "planned" stage — no live job, not built/listed/sold yet) count as a clash:
+// once a batch is building or beyond it's a real, distinct run. An exact match
+// (same blueprint AND run count) is a hard, near-error warning; the same
+// blueprint at a different run count is a softer "you already plan to build this"
+// nudge. Returns true if the user chose to go ahead (or there was no clash).
+function _confirmTrackNotDuplicate(d, runs){
+  const bp=d.blueprint_id, name=(d.product||{}).name||"this blueprint";
+  const pending=IND.builds.filter(b=>b.blueprint_id===bp && _buildStage(b)==="planned");
+  if(!pending.length) return true;
+  const exact=pending.find(b=>Math.max(1,b.runs||1)===runs);
+  if(exact){
+    return confirm(
+      `⚠ Already planned\n\n`
+      +`You already have a pending build of ${name} at exactly ${runs} run${runs===1?"":"s"} `
+      +`(not started in-game yet). Tracking it again will create a duplicate.\n\n`
+      +`Track a second identical build anyway?`);
+  }
+  const others=pending.map(b=>Math.max(1,b.runs||1)).sort((a,b)=>a-b);
+  const runList=others.length===1?`${others[0]} runs`
+    :`${others.slice(0,-1).join(", ")} and ${others[others.length-1]} runs`;
+  return confirm(
+    `Similar build already planned\n\n`
+    +`You already plan to build ${name} (${runList}), but this one is ${runs} run${runs===1?"":"s"}. `
+    +`If that's a separate batch, go ahead — otherwise you may be double-tracking.\n\n`
+    +`Track this ${runs}-run build too?`);
+}
+
 // Freeze the currently-open detail blob for N runs and persist it. The snapshot
 // is the exact /api/ind/detail response the panel is rendering, so reopening it
 // reproduces the numbers verbatim regardless of later price moves.
 function trackThisBuild(d, runs, btn){
+  if(!_confirmTrackNotDuplicate(d, runs)) return;
   const snap=JSON.parse(JSON.stringify(d));
   const body={runs:String(runs), snapshot:JSON.stringify(snap)};
   if(btn){ btn.disabled=true; btn.textContent="Tracking…"; }
@@ -1240,26 +1295,13 @@ function indApplyMode(){
   }
 }
 
-// Keep the Tracker button's (N) badge and the Planner's "N tracked → open
-// Tracker" hint in sync with the current build count.
+// Keep the Tracker button's (N) badge in sync with the current build count.
 function _updateTrackCount(){
   const n=IND.builds.length;
   const badge=$("#ind-track-count");
   if(badge){
     badge.textContent = n?`(${n})`:"";
     badge.classList.toggle("hidden", !n);
-  }
-  const hint=$("#ind-planner-trackhint");
-  if(hint){
-    if(n && IND.mode!=="summary"){
-      hint.classList.remove("hidden");
-      hint.innerHTML=`<span class="ind-trackhint-txt">${n} tracked build${n===1?"":"s"} — cost, profit &amp; sales now live in the Tracker.</span>`
-        +`<button class="ind-trackhint-go">Open Tracker ▸</button>`;
-      const go=hint.querySelector(".ind-trackhint-go");
-      if(go) go.onclick=()=>indSetMode("summary");
-    } else {
-      hint.classList.add("hidden"); hint.innerHTML="";
-    }
   }
 }
 

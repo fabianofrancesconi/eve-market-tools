@@ -52,15 +52,28 @@ def test_mode_button_renamed_to_tracker():
 
 def test_tracked_build_cards_live_in_tracker():
     src = lp_web.FRONTEND_SOURCE
-    # #ind-builds now sits inside the Tracker view, not the planner view, and the
-    # Planner shows a link-across hint instead.
+    # #ind-builds now sits inside the Tracker view, not the planner view.
     sum_view = src.index('id="ind-summary-view"')
     plan_view = src.index('id="ind-planner-view"')
     builds = src.index('id="ind-builds"')
     assert plan_view < sum_view < builds  # #ind-builds comes after the summary view opens
-    assert 'id="ind-planner-trackhint"' in src
     # The mode toggle renders cards + count on entry.
     assert "_updateTrackCount" in src
+
+
+def test_track_guards_against_duplicate_pending_builds():
+    src = lp_web.FRONTEND_SOURCE
+    # trackThisBuild runs a duplicate guard before saving: exact (same bp + runs)
+    # is a hard warning, same bp / different runs is a softer nudge. Only pending
+    # ("planned") builds count as a clash.
+    assert "_confirmTrackNotDuplicate" in src
+    guard = src.index("function _confirmTrackNotDuplicate")
+    body = src[guard:src.index("function trackThisBuild", guard)]
+    assert '_buildStage(b)==="planned"' in body
+    assert "Already planned" in body          # hard, near-error warning
+    assert "Similar build already planned" in body  # soft nudge
+    # trackThisBuild bails out when the guard is declined.
+    assert "if(!_confirmTrackNotDuplicate(d, runs)) return;" in src
 
 
 def test_tracker_dashboard_has_est_profit_and_capital_bar():

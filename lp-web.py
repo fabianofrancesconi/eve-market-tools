@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.139.0"
+__version__ = "1.139.1"
 
 import argparse
 import base64
@@ -1395,6 +1395,32 @@ def do_ind_builds_delete(q):
     if len(kept) != len(builds):
         _save_tracked_builds(acct, kept)
     return {"ok": True}
+
+
+def do_ind_builds_archive(q):
+    """Toggle a build's archived flag. Archiving hides its card into the tracker's
+    collapsed Archived section but keeps it in the portfolio stats (its realized
+    profit still counts) — it's a declutter, not a delete. Pass archived=0 to
+    unarchive."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    build_id = q.get("id", [""])[0]
+    if not build_id:
+        return {"error": "missing id"}
+    raw = q.get("archived", ["1"])[0]
+    archived = str(raw).lower() not in ("0", "false", "")
+    with _TRACKED_BUILDS_LOCK:
+        builds = _load_tracked_builds(acct)
+        b = next((x for x in builds if x.get("id") == build_id), None)
+        if not b:
+            return {"error": "unknown build"}
+        if archived:
+            b["archived"] = True
+        else:
+            b.pop("archived", None)
+        _save_tracked_builds(acct, builds)
+    return {"ok": True, "build": b}
 
 
 def do_ind_builds_link(q):
@@ -3879,6 +3905,7 @@ _POST_ROUTES = {
     "/api/track/session/delete": do_track_session_delete,
     "/api/ind/builds/save": do_ind_builds_save,
     "/api/ind/builds/delete": do_ind_builds_delete,
+    "/api/ind/builds/archive": do_ind_builds_archive,
     "/api/ind/builds/link": do_ind_builds_link,
     "/api/ind/builds/sell/start": do_ind_builds_sell_start,
     "/api/ind/builds/sell/link": do_ind_builds_sell_link,

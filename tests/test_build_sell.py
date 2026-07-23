@@ -634,6 +634,42 @@ class TestSellEdit:
         assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == ["701"]
 
 
+class TestArchive:
+    def test_archive_sets_flag(self, monkeypatch, tmp_path):
+        _bind(monkeypatch, tmp_path, _acct())
+        b = _save_build(runs=10)
+        res = lp_web.do_ind_builds_archive({"id": [b["id"]]})
+        assert res["ok"] is True
+        assert lp_web.do_ind_builds_list({})["builds"][0]["archived"] is True
+
+    def test_unarchive_removes_flag(self, monkeypatch, tmp_path):
+        _bind(monkeypatch, tmp_path, _acct())
+        b = _save_build(runs=10)
+        lp_web.do_ind_builds_archive({"id": [b["id"]]})
+        lp_web.do_ind_builds_archive({"id": [b["id"]], "archived": ["0"]})
+        assert "archived" not in lp_web.do_ind_builds_list({})["builds"][0]
+
+    def test_archive_unknown_build(self, monkeypatch, tmp_path):
+        _bind(monkeypatch, tmp_path, _acct())
+        assert "error" in lp_web.do_ind_builds_archive({"id": ["nope"]})
+
+    def test_archived_build_still_counts_in_stats(self, monkeypatch, tmp_path):
+        # Archiving is a declutter, not a delete — realized profit stays in totals.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _save_build(runs=10)
+        b_stored = lp_web.do_ind_builds_list({})["builds"][0]
+        b_stored["sell"] = {"started_at": 1.0, "closed_at": 2.0,
+                            "qty_target": 10, "cost_per_unit": 100.0,
+                            "realized": [{"event_id": "x", "units": 10,
+                                          "price": 160.0, "net": 1600.0}]}
+        lp_web._save_tracked_builds(acct, [b_stored])
+        before = lp_web.do_ind_summary({})["totals"]["realized_profit"]
+        lp_web.do_ind_builds_archive({"id": [b["id"]]})
+        after = lp_web.do_ind_summary({})["totals"]["realized_profit"]
+        assert before == after == 600.0
+
+
 class TestSummary:
     def test_empty(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())

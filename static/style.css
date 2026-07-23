@@ -1133,6 +1133,8 @@
   .ind-build-group.built .ind-build-grp-head { color:var(--stg-built); }
   .ind-build-group.listed .ind-build-grp-head { color:var(--stg-listed); }
   .ind-build-group.sold .ind-build-grp-head { color:var(--stg-sold); }
+  .ind-build-group.archived .ind-build-grp-head { color:var(--dim); }
+  .ind-build-group.archived .ind-build-card { opacity:.7; }
   .ind-track-btn { margin:0 6px; padding:1px 8px; font-size:11.5px; cursor:pointer;
     background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--green2,#4caf76); }
   .ind-track-btn:hover { border-color:var(--green2,#4caf76); }
@@ -1239,11 +1241,15 @@
     text-transform:uppercase; letter-spacing:.5px; }
   .ind-sell-price b { color:var(--fg); font-weight:700; }
   .ind-sell-be { color:var(--gold,#c8a040); font-size:11.5px; }
-  .ind-sell-copy, .ind-sell-start, .ind-sell-cancel, .ind-sell-close, .ind-sell-edit, .ind-sell-pickbtn {
+  .ind-sell-copy, .ind-sell-start, .ind-sell-cancel, .ind-sell-close, .ind-sell-edit, .ind-sell-archive, .ind-sell-delete, .ind-sell-pickbtn {
     padding:2px 10px; font-size:11px; cursor:pointer; border-radius:4px;
     background:var(--panel2); border:1px solid var(--line2); color:var(--dim); }
   .ind-sell-edit:hover:not(:disabled) { border-color:var(--cyan); color:var(--cyan); }
   .ind-sell-edit:disabled { opacity:.6; cursor:default; }
+  .ind-sell-archive:hover:not(:disabled) { border-color:var(--gold,#c8a040); color:var(--gold,#c8a040); }
+  .ind-sell-delete:hover:not(:disabled) { border-color:var(--red); color:var(--red); }
+  /* Delete + Stop-tracking are destructive → push them to the right of the foot. */
+  .ind-sell-delete { margin-left:auto; }
   .ind-sell-copy:hover, .ind-sell-pickbtn:hover { border-color:var(--cyan); color:var(--cyan); }
   .ind-sell-start { background:#0e2a1c; border-color:var(--green2,#4caf76); color:var(--green2,#4caf76); }
   .ind-sell-start:hover:not(:disabled) { background:#12351f; color:var(--green,#6bd898); }

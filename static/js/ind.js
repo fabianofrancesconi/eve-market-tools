@@ -1327,6 +1327,15 @@ function deleteBuild(id){
     body:JSON.stringify({id})}).catch(()=>{});
 }
 
+// Archive (hide into the collapsed Archived section) or unarchive a build. The
+// build stays in the portfolio stats either way — this only declutters the list.
+function archiveBuild(b, archived){
+  b.archived=archived;
+  renderIndBuilds();
+  fetch("/api/ind/builds/archive",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:b.id, archived:archived?"1":"0"})}).catch(()=>{});
+}
+
 // Job status of a build, derived from its stored link fields + live jobs. This
 // tracks only the *manufacturing job* (awaiting → building → done); the card's
 // badge uses _buildBadge below, which reflects the whole sell lifecycle so a
@@ -1451,10 +1460,15 @@ function renderIndBuilds(){
       // Jobs already linked to a build must not be offered as a close match to
       // an awaiting one. Collect the linked ids (as strings) up front.
       const linked=new Set(IND.builds.filter(b=>b.job_id!=null).map(b=>String(b.job_id)));
+      // Archived builds live in their own collapsed section, out of the normal
+      // stage buckets (they still count in the portfolio stats — archive is a
+      // declutter, not a delete).
+      const archived=IND.builds.filter(b=>b.archived);
+      const active=IND.builds.filter(b=>!b.archived);
       // Bucket every build by lifecycle stage, then order each bucket newest-first.
       const buckets={};
-      IND.builds.forEach(b=>{ (buckets[_buildStage(b)]||(buckets[_buildStage(b)]=[])).push(b); });
-      let html=`<div class="ind-builds-head static">Tracked builds <span class="chip-count">(${IND.builds.length})</span></div>`;
+      active.forEach(b=>{ (buckets[_buildStage(b)]||(buckets[_buildStage(b)]=[])).push(b); });
+      let html=`<div class="ind-builds-head static">Tracked builds <span class="chip-count">(${active.length})</span></div>`;
       for(const key of _BUILD_GROUP_ORDER){
         const list=buckets[key];
         if(!list||!list.length) continue;
@@ -1468,6 +1482,20 @@ function renderIndBuilds(){
           <div class="ind-build-grp-head" data-grp="${key}">
             <span class="grp-arrow">▾</span>${_BUILD_GROUP_LABEL[key]||key}
             <span class="chip-count">(${list.length})</span></div>
+          <div class="ind-builds-list">${rows}</div></div>`;
+      }
+      // Archived section — collapsed by default, at the very bottom.
+      if(archived.length){
+        archived.sort((a,b)=>_buildSortTs(b)-_buildSortTs(a));
+        // Default collapsed: normalise unset → true so the generic toggle (which
+        // flips the value) opens/closes it consistently with the other groups.
+        if(IND.buildGroups.archived===undefined) IND.buildGroups.archived=true;
+        const collapsed=IND.buildGroups.archived===true;
+        const rows=archived.map(b=>_buildCardHtml(b, linked)).join("");
+        html+=`<div class="ind-build-group archived${collapsed?" collapsed":""}" data-grp="archived">
+          <div class="ind-build-grp-head" data-grp="archived">
+            <span class="grp-arrow">▾</span>📦 Archived
+            <span class="chip-count">(${archived.length})</span></div>
           <div class="ind-builds-list">${rows}</div></div>`;
       }
       box.innerHTML=html;
@@ -1596,7 +1624,7 @@ function _buildCardHtml(b, linked){
       <span class="ind-build-stat">Build ${fmtDur(batchTime)}</span>
       <span class="ind-build-when">frozen ${when}</span>
       <button class="ind-build-toggle" title="Show the full frozen snapshot">${expanded?"▲ Hide":"▼ Details"}</button>
-      <button class="ind-build-del" title="Stop tracking this build">✕</button>
+      ${(stage==="listed"||stage==="sold")?"":`<button class="ind-build-del" title="Stop tracking this build">✕</button>`}
     </div>
     ${stepper}
     ${statusLine?`<div class="ind-build-substatus">${statusLine}</div>`:""}
@@ -1774,8 +1802,10 @@ function _buildSellHtml(b, stage){
         ${closed?`<span class="ind-sell-done">${closedEarly?`✓ Closed early${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'}):""} · ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`✓ Fully sold${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'}):""}`}</span>`
           :`<span class="ind-sell-watching">${watchMsg}</span>`}
         ${!closed&&rz.units>0?`<button class="ind-sell-close" title="Give up on the unsold remainder: mark this sale done. The ${remain.toLocaleString()} unsold unit(s)' cost is written off as a loss so your totals stay honest.">Close out ▸</button>`:""}
-        <button class="ind-sell-edit" title="Correct the tracked sale — set how many actually sold and/or the target quantity. Lowering below the target reopens the sale so a re-listed order can keep tracking.">Edit sale</button>
         ${closed?"":`<button class="ind-sell-cancel" title="Stop tracking this sale (keeps the build)">Stop tracking sale</button>`}
+        <button class="ind-sell-edit" title="Correct the tracked sale — set how many actually sold and/or the target quantity. Lowering below the target reopens the sale so a re-listed order can keep tracking.">Edit sale</button>
+        ${closed?`<button class="ind-sell-archive" title="${b.archived?"Move this build back into the active tracker":"Hide this finished build in the collapsed Archived section. It still counts in your portfolio stats."}">${b.archived?"Unarchive":"Archive"}</button>`:""}
+        <button class="ind-sell-delete" title="Delete this build and its sale — the tracked realized profit/data is removed from your stats. Can't be undone.">Delete</button>
       </div>
     </div>`;
   }
@@ -1919,6 +1949,13 @@ function _wireSellCard(card, b){
   };
   const edit=card.querySelector(".ind-sell-edit");
   if(edit) edit.onclick=()=>editSellTracking(b, edit);
+  const archive=card.querySelector(".ind-sell-archive");
+  if(archive) archive.onclick=()=>archiveBuild(b, !b.archived);
+  const sdel=card.querySelector(".ind-sell-delete");
+  if(sdel) sdel.onclick=()=>{
+    if(confirm(`Delete this build of ${b.product_name||"?"}? This removes the build and its sale — the tracked realized profit/data is removed from your stats. This can't be undone.`))
+      deleteBuild(b.id);
+  };
   const unlink=card.querySelector(".ind-sell-unlink");
   if(unlink) unlink.onclick=()=>unlinkSellOrder(b, unlink.dataset.order);
   const pick=card.querySelector(".ind-sell-pick");

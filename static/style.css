@@ -17,7 +17,18 @@
        "buy" alarm colour, and "Best" reuses the realised-sale green. */
     --ord-buy:#e05555; --ord-sell:#66bb6a; --ord-best:#66bb6a;
     --ord-queue:#b085f5; --ord-exp-soon:#f0c040; --ord-exp-gone:#e05555;
+    /* Generic 5-step sequential "heat" ramp — a reusable good→bad scale for any
+       ranked/positional display (front→back of a queue, low→high pressure, …).
+       heat-1 = best/front (cool), heat-5 = worst/back (hot). heat-3 is the
+       canonical violet (== --ord-queue) so anything that used to be flat violet
+       still reads as violet at mid-scale. Apply via the .heat-N text classes. */
+    --heat-1:#5fa8ff; --heat-2:#8f8ff0; --heat-3:#b085f5;
+    --heat-4:#d873a0; --heat-5:#e86a45;
   }
+  /* Generic heat-scale text colours — not tied to any one table. */
+  .heat-1 { color:var(--heat-1); } .heat-2 { color:var(--heat-2); }
+  .heat-3 { color:var(--heat-3); } .heat-4 { color:var(--heat-4); }
+  .heat-5 { color:var(--heat-5); }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--fg);
     font:16.5px/1.5 "IBM Plex Sans","Segoe UI",system-ui,sans-serif; height:100vh; overflow:hidden; }
@@ -753,8 +764,15 @@
   /* Market-order colours all draw from the canonical --ord-* vars (see :root). */
   .char-orders-tbl td.tx-buy, .char-orders-tbl .tx-buy { color:var(--ord-buy); font-weight:600; }
   .char-orders-tbl td.tx-sell, .char-orders-tbl .tx-sell { color:var(--ord-sell); font-weight:600; }
-  /* Queue position is its own signal, not a buy/sell one. */
+  /* Queue position is its own signal, not a buy/sell one. The colour now comes
+     from the generic .heat-N ramp (front→back of the queue); .ord-queue just
+     carries the weight and a violet fallback if no heat class is present. */
   .char-orders-tbl .ord-queue { color:var(--ord-queue); font-weight:600; }
+  .char-orders-tbl .ord-queue.heat-1 { color:var(--heat-1); }
+  .char-orders-tbl .ord-queue.heat-2 { color:var(--heat-2); }
+  .char-orders-tbl .ord-queue.heat-3 { color:var(--heat-3); }
+  .char-orders-tbl .ord-queue.heat-4 { color:var(--heat-4); }
+  .char-orders-tbl .ord-queue.heat-5 { color:var(--heat-5); }
   .char-orders-tbl .ord-best { color:var(--ord-best); font-weight:600; }
   /* Expiry column: highlight orders about to lapse. */
   .char-orders-tbl td.exp-cell { font-variant-numeric:tabular-nums; }

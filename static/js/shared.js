@@ -77,6 +77,15 @@ function fmtISK(n){
   return Math.round(n).toLocaleString();
 }
 function fmtNum(n){ return (n===null||n===undefined)? "-" : Math.round(n).toLocaleString(); }
+// Generic 1..5 "heat" bucket for a 1-based rank within a set of `total`. Maps
+// position → one of the .heat-N classes (heat-1 = front/best, heat-5 = back).
+// Fraction-based so it scales to any queue length; a solo entry (total<=1) is
+// always heat-1. Reusable for any ranked display, not just market-order queues.
+function heatClass(rank, total){
+  if(rank==null || total==null || total<=1) return "heat-1";
+  const frac=(rank-1)/(total-1);            // 0 at front → 1 at back
+  return "heat-"+Math.min(5, Math.max(1, Math.round(frac*4)+1));
+}
 function fmtVol(n){ return (n===null||n===undefined)? "?" : n.toLocaleString(undefined,{maximumFractionDigits:1})+" m³"; }
 function fmtSpread(s){ return s===null? "no bid" : Math.round(s)+"%"; }
 // Days-to-clear. capped_profit===null is the "not fetched yet" sentinel (the

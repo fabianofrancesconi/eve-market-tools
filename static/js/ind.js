@@ -756,13 +756,17 @@ function renderIndDetail(d, container){
   // closes; d.sim_me_te flags that the shown ME/TE is hypothetical, not the
   // real character/owned value. Editing re-fetches (quantities & build time are
   // server-computed).
-  const simEditing = !!IND.sim[d.blueprint_id];
+  const sim=IND.sim[d.blueprint_id];
   const meVal=d.me_used, teVal=d.te_used;
   let meTeHtml;
-  if(simEditing){
+  if(sim){
+    // Show the real (pre-sim) value struck through next to the field whenever it
+    // differs, so it's obvious you're looking at a what-if, not the truth.
+    const was=(real,cur)=> (real!=null && real!==cur)
+      ? `<span class="ind-sim-was" title="Real value">${real}</span>` : "";
     meTeHtml=`<span class="ind-sim-wrap">
-        ME <input class="ind-sim-me" type="text" inputmode="numeric" pattern="[0-9]*" value="${meVal}" style="width:38px" title="Material Efficiency (0–10)">
-        TE <input class="ind-sim-te" type="text" inputmode="numeric" pattern="[0-9]*" value="${teVal}" style="width:38px" title="Time Efficiency (0–20)">
+        ME ${was(sim.realMe,meVal)}<input class="ind-sim-me" type="text" inputmode="numeric" pattern="[0-9]*" value="${meVal}" style="width:34px" title="Material Efficiency (0–10). ↑/↓ or scroll to step, Enter to apply">
+        TE ${was(sim.realTe,teVal)}<input class="ind-sim-te" type="text" inputmode="numeric" pattern="[0-9]*" value="${teVal}" style="width:34px" title="Time Efficiency (0–20). ↑/↓ or scroll to step, Enter to apply">
         <button class="ind-sim-reset" title="Stop simulating — revert to the real ME/TE">↺ reset</button>
         <span class="ind-sim-tag" title="Hypothetical values — not saved, gone when you close the tab">what-if</span></span>`;
   } else {
@@ -1070,9 +1074,11 @@ function renderIndDetail(d, container){
   // so the inline ME/TE inputs appear (no re-fetch — values are unchanged yet).
   const simBtn=box.querySelector(".ind-sim-btn");
   if(simBtn) simBtn.onclick=()=>{
-    IND.sim[d.blueprint_id]={me:d.me_used, te:d.te_used};
+    // d.me_used/te_used ARE the real values right now (no sim applied yet), so
+    // stash them as the baseline for the "real → sim" display.
+    IND.sim[d.blueprint_id]={me:d.me_used, te:d.te_used, realMe:d.me_used, realTe:d.te_used};
     renderIndDetail(d);
-    const fresh=box.querySelector(".ind-sim-me"); if(fresh) fresh.focus();
+    const fresh=box.querySelector(".ind-sim-me"); if(fresh){ fresh.focus(); fresh.select(); }
   };
   // Leave what-if mode and re-fetch the real values.
   const simReset=box.querySelector(".ind-sim-reset");
@@ -1083,17 +1089,31 @@ function renderIndDetail(d, container){
   // Apply the typed ME/TE. Only re-fetch when a value actually changed (clamped
   // to EVE's ranges); Enter/blur commit, so mid-typing keystrokes don't spam.
   const meInput=box.querySelector(".ind-sim-me"), teInput=box.querySelector(".ind-sim-te");
+  const clamp1=(v,hi)=>isNaN(v)?0:Math.max(0,Math.min(hi,v));
+  // Commit whatever's typed. Keeps the stashed baseline (realMe/realTe) so the
+  // "real → sim" display survives; only re-fetches when a value actually moved.
   const commitSim=()=>{
-    const clamp=(el,hi)=>{ const v=parseInt((el.value||"").replace(/[^0-9]/g,""),10); return isNaN(v)?0:Math.max(0,Math.min(hi,v)); };
-    const me=clamp(meInput,10), te=clamp(teInput,20);
+    const read=(el,hi)=>clamp1(parseInt((el.value||"").replace(/[^0-9]/g,""),10),hi);
+    const me=read(meInput,10), te=read(teInput,20);
     const cur=IND.sim[d.blueprint_id]||{};
     if(cur.me===me && cur.te===te) return;
-    IND.sim[d.blueprint_id]={me, te};
+    IND.sim[d.blueprint_id]={me, te, realMe:cur.realMe, realTe:cur.realTe};
     reloadIndDetail(d.blueprint_id);
   };
-  [meInput,teInput].forEach(el=>{
+  // Bump a field by ±1 (arrow keys / mouse wheel) within its range and commit.
+  const step=(el,hi,delta)=>{
+    const now=clamp1(parseInt((el.value||"").replace(/[^0-9]/g,""),10),hi);
+    el.value=clamp1(now+delta,hi);
+    commitSim();
+  };
+  [[meInput,10],[teInput,20]].forEach(([el,hi])=>{
     if(!el) return;
-    el.addEventListener("keydown", ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); commitSim(); } });
+    el.addEventListener("keydown", ev=>{
+      if(ev.key==="Enter"){ ev.preventDefault(); commitSim(); }
+      else if(ev.key==="ArrowUp"){ ev.preventDefault(); step(el,hi,1); }
+      else if(ev.key==="ArrowDown"){ ev.preventDefault(); step(el,hi,-1); }
+    });
+    el.addEventListener("wheel", ev=>{ ev.preventDefault(); step(el,hi,ev.deltaY<0?1:-1); }, {passive:false});
     el.addEventListener("blur", commitSim);
   });
 }

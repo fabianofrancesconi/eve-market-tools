@@ -1062,6 +1062,7 @@
   .ind-sim-reset { padding:0 6px; font-size:10.5px; cursor:pointer;
     background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--dim); }
   .ind-sim-reset:hover { color:var(--fg); }
+  .ind-sim-was { color:var(--dim); text-decoration:line-through; font-size:11px; margin-right:2px; }
   .ind-sim-tag { font-size:9.5px; font-weight:700; color:var(--cyan);
     background:rgba(80,180,220,.14); border:1px solid var(--cyan2); border-radius:4px;
     padding:0 4px; white-space:nowrap; }

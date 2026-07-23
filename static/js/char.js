@@ -753,8 +753,20 @@ function renderCharData(){
   // Order activity (sales + expiries)
   if(events.length){
     const shown=events.slice(0,10);
+    // Header total: ISK sold across the sale events (expired-unsold rows carry no
+    // value), plus a count breakdown of sold vs expired.
+    let totIsk=0, nSold=0, nExpired=0;
+    for(const e of events){
+      if(e.expired){ nExpired++; }
+      else { nSold++; totIsk+=(e.sold||0)*(e.price||0); }
+    }
+    const parts=[];
+    if(nSold) parts.push(`${nSold} sold`);
+    if(nExpired) parts.push(`${nExpired} expired`);
+    const totStr=`${fmtISK(totIsk)} ISK${parts.length?" · "+parts.join(" · "):""}`;
     html+=`<div class="char-events"><div class="char-events-hdr">`;
     html+=`<span class="char-events-title">Order activity (${events.length})</span>`;
+    html+=`<span class="char-events-total" title="Total sale value of the listed activity (expired-unsold orders excluded), and the sold / expired counts">${totStr}</span>`;
     html+=`<button class="char-events-dismiss" data-eid="all">dismiss all</button></div>`;
     for(const e of shown){
       const isk=e.sold*e.price;

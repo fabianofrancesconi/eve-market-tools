@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.138.7"
+__version__ = "1.139.0"
 
 import argparse
 import base64
@@ -1687,6 +1687,101 @@ def do_ind_builds_sell_close(q):
         sell["writeoff_cost"] = remain * cpu if cpu is not None else 0
         sell["closed_at"] = time.time()
         sell["closed_early"] = True
+        _save_tracked_builds(acct, builds)
+    return {"ok": True, "build": b}
+
+
+def _trim_realized(entries, limit):
+    """Return a prefix of the fill ledger totalling `limit` units, splitting the
+    boundary entry proportionally (units + gross + net) so the kept fills keep
+    their real per-unit economics. limit <= 0 empties the ledger; a limit at or
+    above the current total keeps every entry (we never fabricate sales)."""
+    if limit <= 0:
+        return []
+    kept = []
+    acc = 0
+    for e in entries:
+        u = e.get("units", 0) or 0
+        if acc + u <= limit:
+            kept.append(e)
+            acc += u
+            if acc == limit:
+                break
+        else:
+            need = limit - acc
+            if need > 0 and u > 0:
+                frac = need / u
+                ne = dict(e)
+                ne["units"] = need
+                if e.get("gross") is not None:
+                    ne["gross"] = e["gross"] * frac
+                if e.get("net") is not None:
+                    ne["net"] = e["net"] * frac
+                kept.append(ne)
+            break
+    return kept
+
+
+def do_ind_builds_sell_edit(q):
+    """Manually correct a tracked sale: set the units-sold count and/or the target
+    quantity. Reducing units below the target reopens a closed sale so a re-listed
+    order can keep accruing; the previously-linked (now stale) orders are unlinked
+    and tombstoned so their old fill events don't re-accrue. Used to recover from a
+    false 'sold' (e.g. an order was cancelled, not bought out) or to resize a batch.
+    Requires an existing sale."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    build_id = q.get("id", [""])[0]
+    if not build_id:
+        return {"error": "missing id"}
+    with _TRACKED_BUILDS_LOCK:
+        builds = _load_tracked_builds(acct)
+        b = next((x for x in builds if x.get("id") == build_id), None)
+        if not b or not b.get("sell"):
+            return {"error": "not selling"}
+        sell = b["sell"]
+        was_closed = bool(sell.get("closed_at"))
+        if "qty_target" in q:
+            try:
+                qt = int(q.get("qty_target", [""])[0])
+                if qt > 0:
+                    sell["qty_target"] = qt
+            except (TypeError, ValueError):
+                pass
+        if "units" in q:
+            try:
+                target_units = int(q.get("units", [""])[0])
+            except (TypeError, ValueError):
+                target_units = None
+            if target_units is not None and target_units >= 0:
+                sell["realized"] = _trim_realized(
+                    sell.get("realized") or [], target_units)
+        # Recompute the closed state against the (possibly new) target.
+        total = sum(e.get("units", 0) for e in (sell.get("realized") or []))
+        qt = sell.get("qty_target") or _build_units_produced(b) or 0
+        if qt and total >= qt:
+            if not sell.get("closed_at"):
+                sell["closed_at"] = time.time()
+        else:
+            sell["closed_at"] = None
+            sell.pop("closed_early", None)
+            sell.pop("writeoff_units", None)
+            sell.pop("writeoff_cost", None)
+        # A sale the edit reopened: its old linked orders are stale (they
+        # vanished/filled — that's why it had closed), and their historical fill
+        # events would re-accrue on the next sweep. Unlink + tombstone them so a
+        # fresh re-listed order auto-links instead.
+        if was_closed and not sell.get("closed_at"):
+            stale = [str(o) for o in (sell.get("order_ids") or [])]
+            if stale:
+                tomb = [str(x) for x in (b.get("unlinked_ids") or [])]
+                for o in stale:
+                    if o not in tomb:
+                        tomb.append(o)
+                b["unlinked_ids"] = tomb
+                sell["order_ids"] = []
+                sell["needs_pick"] = False
         _save_tracked_builds(acct, builds)
     return {"ok": True, "build": b}
 
@@ -3790,6 +3885,7 @@ _POST_ROUTES = {
     "/api/ind/builds/sell/unlink": do_ind_builds_sell_unlink,
     "/api/ind/builds/sell/cancel": do_ind_builds_sell_cancel,
     "/api/ind/builds/sell/close": do_ind_builds_sell_close,
+    "/api/ind/builds/sell/edit": do_ind_builds_sell_edit,
 }
 
 # Session cookie + the endpoints reachable without one (multi-user mode). The app

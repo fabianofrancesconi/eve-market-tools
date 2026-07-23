@@ -520,6 +520,120 @@ class TestCloseOut:
         assert first == second
 
 
+class TestTrimRealized:
+    def test_trim_to_zero_empties(self):
+        entries = [{"units": 4, "gross": 400.0, "net": 380.0}]
+        assert lp_web._trim_realized(entries, 0) == []
+
+    def test_trim_keeps_all_when_at_or_above_total(self):
+        entries = [{"units": 4, "gross": 400.0, "net": 380.0},
+                   {"units": 6, "gross": 600.0, "net": 570.0}]
+        assert lp_web._trim_realized(entries, 10) == entries
+        assert lp_web._trim_realized(entries, 99) == entries
+
+    def test_trim_keeps_whole_entries_on_boundary(self):
+        entries = [{"units": 4, "gross": 400.0, "net": 380.0},
+                   {"units": 6, "gross": 600.0, "net": 570.0}]
+        kept = lp_web._trim_realized(entries, 4)
+        assert len(kept) == 1 and kept[0]["units"] == 4
+
+    def test_trim_splits_boundary_entry_proportionally(self):
+        entries = [{"units": 10, "gross": 1000.0, "net": 950.0}]
+        kept = lp_web._trim_realized(entries, 4)
+        assert len(kept) == 1
+        assert kept[0]["units"] == 4
+        assert kept[0]["gross"] == 400.0
+        assert kept[0]["net"] == 380.0
+
+
+class TestSellEdit:
+    def test_edit_requires_active_sale(self, monkeypatch, tmp_path):
+        _bind(monkeypatch, tmp_path, _acct())
+        b = _save_build(runs=10)                          # never started selling
+        assert "error" in lp_web.do_ind_builds_sell_edit({"id": [b["id"]]})
+
+    def test_edit_target_only(self, monkeypatch, tmp_path):
+        _bind(monkeypatch, tmp_path, _acct())
+        b = _save_build(runs=10)
+        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
+        res = lp_web.do_ind_builds_sell_edit({"id": [b["id"]], "qty_target": ["8900"]})
+        assert res["build"]["sell"]["qty_target"] == 8900
+
+    def test_edit_units_trims_ledger(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _save_build(runs=10)
+        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
+        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 10, 10, 160.0)], {})
+        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 10, 10, 160.0)])
+        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 4, 10, 160.0)], {})  # 6 sold
+        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 4, 10, 160.0)])
+        # Correct 6 → 2 sold.
+        lp_web.do_ind_builds_sell_edit({"id": [b["id"]], "units": ["2"]})
+        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
+        assert rz["units"] == 2
+        assert rz["net"] == 2 * 160.0
+
+    def test_false_sold_reopens_and_tombstones_stale_order(self, monkeypatch, tmp_path):
+        # The recovery path: an order was cancelled (counted as fully sold); the
+        # user zeroes the sold count. The sale reopens and the stale order is
+        # tombstoned so its old fill events don't re-accrue on the next sweep.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        clock = [time.time()]
+        monkeypatch.setattr(lp_web.time, "time", lambda: clock[0])
+        b = _save_build(runs=10)
+        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
+        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 10, 10, 160.0)], {})
+        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 10, 10, 160.0)])
+        clock[0] += 300
+        lp_web._track_order_changes(acct, 1, [], {})       # vanishes → counted sold
+        lp_web._reconcile_sell_builds(acct, [])
+        stored = lp_web.do_ind_builds_list({})["builds"][0]
+        assert stored["sell"]["closed_at"] is not None     # falsely fully sold
+        # Undo: it wasn't sold — set units to 0.
+        clock[0] += 300
+        lp_web.do_ind_builds_sell_edit({"id": [b["id"]], "units": ["0"]})
+        stored = lp_web.do_ind_builds_list({})["builds"][0]
+        sell = stored["sell"]
+        assert sell["closed_at"] is None                   # reopened
+        assert sell["order_ids"] == []                     # stale order dropped
+        assert "700" in stored["unlinked_ids"]             # …and tombstoned
+        assert lp_web._build_realized(stored)["units"] == 0
+        assert lp_web._build_stage(stored) == "listed"
+        # A re-sweep with the (still-gone) order must not re-accrue the old fill.
+        clock[0] += 300
+        lp_web._reconcile_sell_builds(acct, [])
+        assert lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])["units"] == 0
+
+    def test_edit_reopen_then_relist_consolidates(self, monkeypatch, tmp_path):
+        # After reopening at a new (larger) target, a fresh order auto-links and
+        # accrues toward the new target — the consolidation flow.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        clock = [time.time()]
+        monkeypatch.setattr(lp_web.time, "time", lambda: clock[0])
+        b = _save_build(runs=10)
+        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
+        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 10, 10, 160.0)], {})
+        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 10, 10, 160.0)])
+        clock[0] += 300
+        lp_web._track_order_changes(acct, 1, [], {})       # cancelled → counted sold
+        lp_web._reconcile_sell_builds(acct, [])
+        clock[0] += 300
+        lp_web.do_ind_builds_sell_edit(
+            {"id": [b["id"]], "units": ["0"], "qty_target": ["20"]})
+        stored = lp_web.do_ind_builds_list({})["builds"][0]
+        assert stored["sell"]["qty_target"] == 20
+        assert stored["sell"]["closed_at"] is None
+        # New order (id 701, freshly issued) auto-links and fills.
+        clock[0] += 300
+        relist = [_sell_order(701, 587, 20, 20, 155.0, issued=_now_iso())]
+        lp_web._track_order_changes(acct, 1, relist, {})
+        lp_web._reconcile_sell_builds(acct, relist)
+        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == ["701"]
+
+
 class TestSummary:
     def test_empty(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())

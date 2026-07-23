@@ -1763,18 +1763,19 @@ function _buildSellHtml(b, stage){
           <div class="ind-sell-card-val ${pn(rz.profit)}">${isk(rz.profit)}</div>
           <div class="ind-sell-card-sub">${costSub}</div>
         </div>
-        <div class="ind-sell-card">
+        ${closed?"":`<div class="ind-sell-card">
           <div class="ind-sell-card-label">Remainder (proj.)</div>
-          <div class="ind-sell-card-val ${pn(projRemain)}">${remain>0&&!closed?isk(projRemain):"—"}</div>
-          <div class="ind-sell-card-sub">${closed?"closed out":(remain>0?`${remain.toLocaleString()} @ frozen ${instant?"bid":"ask"}`:"nothing left")}</div>
-        </div>
+          <div class="ind-sell-card-val ${pn(projRemain)}">${remain>0?isk(projRemain):"—"}</div>
+          <div class="ind-sell-card-sub">${remain>0?`${remain.toLocaleString()} @ frozen ${instant?"bid":"ask"}`:"nothing left"}</div>
+        </div>`}
       </div>
       ${pick}
       <div class="ind-sell-foot">
         ${closed?`<span class="ind-sell-done">${closedEarly?`✓ Closed early${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'}):""} · ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`✓ Fully sold${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'}):""}`}</span>`
           :`<span class="ind-sell-watching">${watchMsg}</span>`}
         ${!closed&&rz.units>0?`<button class="ind-sell-close" title="Give up on the unsold remainder: mark this sale done. The ${remain.toLocaleString()} unsold unit(s)' cost is written off as a loss so your totals stay honest.">Close out ▸</button>`:""}
-        <button class="ind-sell-cancel" title="Stop tracking this sale (keeps the build)">Stop tracking sale</button>
+        <button class="ind-sell-edit" title="Correct the tracked sale — set how many actually sold and/or the target quantity. Lowering below the target reopens the sale so a re-listed order can keep tracking.">Edit sale</button>
+        ${closed?"":`<button class="ind-sell-cancel" title="Stop tracking this sale (keeps the build)">Stop tracking sale</button>`}
       </div>
     </div>`;
   }
@@ -1870,7 +1871,11 @@ function _wireBuildCard(box, b){
   if(!card) return;
   const del=card.querySelector(".ind-build-del");
   if(del) del.onclick=()=>{
-    if(confirm(`Stop tracking this build of ${b.product_name||"?"}?`)) deleteBuild(b.id);
+    const hasSale=!!(b.sell&&b.sell.started_at);
+    const msg=hasSale
+      ? `Delete this build of ${b.product_name||"?"}? This removes the build and its sale — the tracked realized profit/data goes with it. This can't be undone.`
+      : `Stop tracking this build of ${b.product_name||"?"}?`;
+    if(confirm(msg)) deleteBuild(b.id);
   };
   const tog=card.querySelector(".ind-build-toggle");
   if(tog) tog.onclick=()=>{
@@ -1912,6 +1917,8 @@ function _wireSellCard(card, b){
     if(confirm(`Close out this sale? ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold — the ${remain.toLocaleString()} unsold unit(s) will be written off as a loss and the sale marked done.`))
       closeSellTracking(b, close);
   };
+  const edit=card.querySelector(".ind-sell-edit");
+  if(edit) edit.onclick=()=>editSellTracking(b, edit);
   const unlink=card.querySelector(".ind-sell-unlink");
   if(unlink) unlink.onclick=()=>unlinkSellOrder(b, unlink.dataset.order);
   const pick=card.querySelector(".ind-sell-pick");
@@ -1945,6 +1952,31 @@ function cancelSellTracking(b){
     // every reconcile cycle (and the card doesn't bounce back into selling).
     if(b.sell) delete b.sell; b.no_auto_sell=true; renderIndBuilds();
   }).catch(()=>{});
+}
+
+// Correct a tracked sale: prompt for the real units-sold count and the target,
+// then post them. Lowering units below the target reopens a closed sale (the
+// server unlinks + tombstones the stale orders) so a re-listed order tracks the
+// rest — the fix for a false "sold" after an order was cancelled, not bought out.
+function editSellTracking(b, btn){
+  const sell=b.sell||{};
+  const rz=_buildRealized(b);
+  const curTarget=sell.qty_target||_buildUnits(b)||0;
+  const tAns=prompt(`Target quantity for this sale?\n(How many units you're selling in total.)`, String(curTarget));
+  if(tAns===null) return;                         // cancelled
+  const target=parseInt(tAns,10);
+  const uAns=prompt(`How many have actually sold so far?\n(0 = none yet. Lowering below the target reopens the sale so a re-listed order keeps tracking.)`, String(rz.units));
+  if(uAns===null) return;
+  const units=parseInt(uAns,10);
+  const body={id:b.id};
+  if(!isNaN(target)&&target>0) body.qty_target=String(target);
+  if(!isNaN(units)&&units>=0) body.units=String(units);
+  if(btn){ btn.disabled=true; btn.textContent="Saving…"; }
+  fetch("/api/ind/builds/sell/edit",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(body)}).then(r=>r.json()).then(res=>{
+    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); }
+    else if(btn){ btn.disabled=false; btn.textContent=res&&res.error?("⚠ "+res.error):"⚠ Failed"; }
+  }).catch(()=>{ if(btn){ btn.disabled=false; btn.textContent="⚠ Failed"; } });
 }
 
 // Close out a partial sale: mark it done, write off the unsold remainder as a

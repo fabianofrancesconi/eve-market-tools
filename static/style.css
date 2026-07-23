@@ -1051,6 +1051,20 @@
     color:var(--gold,#c8a040); background:rgba(200,160,64,.14);
     border:1px solid rgba(200,160,64,.5); border-radius:4px;
     padding:0 4px; margin-left:5px; white-space:nowrap; vertical-align:middle; }
+  /* Simulate ME/TE (what-if) in the detail panel */
+  .ind-sim-btn { margin-left:8px; padding:0 7px; font-size:10.5px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line2); border-radius:4px;
+    color:var(--cyan); vertical-align:middle; }
+  .ind-sim-btn:hover { border-color:var(--cyan2); }
+  .ind-sim-wrap { display:inline-flex; align-items:center; gap:5px; flex-wrap:wrap; }
+  .ind-sim-wrap input { border:1px solid var(--cyan2); background:var(--panel2);
+    color:var(--fg); border-radius:4px; padding:1px 4px; font-size:12px; text-align:center; }
+  .ind-sim-reset { padding:0 6px; font-size:10.5px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--dim); }
+  .ind-sim-reset:hover { color:var(--fg); }
+  .ind-sim-tag { font-size:9.5px; font-weight:700; color:var(--cyan);
+    background:rgba(80,180,220,.14); border:1px solid var(--cyan2); border-radius:4px;
+    padding:0 4px; white-space:nowrap; }
   /* Build-location wizard modal */
   .ind-modal { position:fixed; inset:0; background:rgba(0,0,0,.6);
     display:flex; align-items:center; justify-content:center; z-index:50; }

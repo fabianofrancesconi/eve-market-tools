@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.139.2"
+__version__ = "1.140.0"
 
 import argparse
 import base64
@@ -3679,6 +3679,24 @@ def do_ind_detail(q):
     owned_me_te = ind_bp_me_te.get(blueprint_id)
     if owned_me_te:
         params["me"], params["te"] = owned_me_te[0], owned_me_te[1]
+    # "What-if" ME/TE: the planner lets you override the ME/TE this build is
+    # computed against (e.g. to see the economics of a fully-researched BPO you
+    # don't own yet). Session-only — the browser never persists it, so it wins
+    # over both the character default and any owned-blueprint value for this one
+    # request. Clamped to EVE's valid ranges (ME 0–10, TE 0–20).
+    def _sim(name, hi):
+        raw = q.get(name, [None])[0]
+        if raw in (None, ""):
+            return None
+        try:
+            return max(0, min(hi, int(float(raw))))
+        except (TypeError, ValueError):
+            return None
+    sim_me, sim_te = _sim("sim_me", 10), _sim("sim_te", 20)
+    if sim_me is not None:
+        params["me"] = sim_me
+    if sim_te is not None:
+        params["te"] = sim_te
 
     conn = ind_core.connect_sde(CACHE_DIR)
     try:
@@ -3735,6 +3753,8 @@ def do_ind_detail(q):
     detail["region_name"] = REGION_NAMES.get(region_id, f"region {region_id}")
     detail["bp_market"] = bp_market
     detail["missing_skills"] = skills_missing
+    # Flags the panel is showing hypothetical ME/TE rather than the real value.
+    detail["sim_me_te"] = (sim_me is not None or sim_te is not None)
     detail["owned_me_te"] = ({"me": owned_me_te[0], "te": owned_me_te[1],
                               "is_bpo": owned_me_te[2] if len(owned_me_te) > 2 else True,
                               "max_runs": owned_me_te[3] if len(owned_me_te) > 3 else -1}

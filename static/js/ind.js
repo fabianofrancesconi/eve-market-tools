@@ -6,6 +6,7 @@ let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es
            favorites:new Set(), hidden:new Set(), notes:{},
            timers:{}, research:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{}, detailRuns:1,
+           sim:{},   // blueprint_id -> {me,te} what-if override; in-memory only, never persisted
            fillTotal:0, fillDone:0, tradeWeight:0.5,
            builds:[], buildsLoaded:false, buildsExpanded:new Set(),
            buildGroups:{},   // stage key -> true when that status group is collapsed
@@ -490,6 +491,34 @@ function indParams(extra){
   return new URLSearchParams(Object.assign(p, extra||{}));
 }
 
+// Merge the in-memory "what-if" ME/TE override for this blueprint (if any) into
+// a detail-fetch param bag. Session-only: IND.sim lives in memory and is gone
+// the moment the tab closes — nothing here touches prefs or the server's saved
+// character/blueprint values.
+function indSimParams(bpId, extra){
+  const s=IND.sim[bpId];
+  const out=Object.assign({}, extra||{});
+  if(s){
+    if(s.me!=null) out.sim_me=String(s.me);
+    if(s.te!=null) out.sim_te=String(s.te);
+  }
+  return out;
+}
+
+// Re-fetch the open detail panel for the current sim state (ME/TE what-if
+// changes the material quantities and build time, which are computed server-
+// side, so a re-fetch is required — batch/run changes stay client-side).
+function reloadIndDetail(bpId){
+  const box=document.querySelector("tr.ind-detail-row>td");
+  if(!box) return;
+  const p=indParams(indSimParams(bpId, {blueprint_id:bpId,
+    refresh_prices:(IND.openDetail&&IND.openDetail.esi_prices)?"1":"0"}));
+  fetch("/api/ind/detail?"+p).then(r=>r.json()).then(fresh=>{
+    if(fresh.error) return;
+    renderIndDetail(fresh);
+  }).catch(()=>{});
+}
+
 function scanInd(refreshSde){
   if(IND.es){ IND.es.close(); IND.es=null; }
   IND_FILL_TOKEN++; IND.fillTotal=0; IND._lazyRendered=0;
@@ -610,7 +639,7 @@ function openIndDetail(row, clickedTr){
   tr.innerHTML=`<td colspan="${ncol}"><div class="ind-d-head">Loading ${row.product_name}…</div></td>`;
   clickedTr.after(tr);
   tr.querySelector("td").scrollIntoView({block:"nearest", behavior:"smooth"});
-  const p=indParams({blueprint_id:row.blueprint_id});
+  const p=indParams(indSimParams(row.blueprint_id, {blueprint_id:row.blueprint_id}));
   fetch("/api/ind/detail?"+p).then(r=>r.json()).then(d=>{
     if(d.error){ tr.querySelector("td").innerHTML=`<div class="ind-d-head">${d.error}</div>`; return; }
     renderIndDetail(d, tr.querySelector("td"));
@@ -722,6 +751,23 @@ function renderIndDetail(d, container){
   } else {
     bpSrc = "Not obtainable (no BPO for sale in The Forge)";
   }
+  // "Simulate ME/TE" — a what-if override the planner computes against. It's
+  // in-memory only (IND.sim, never persisted) so it evaporates when the tab
+  // closes; d.sim_me_te flags that the shown ME/TE is hypothetical, not the
+  // real character/owned value. Editing re-fetches (quantities & build time are
+  // server-computed).
+  const simEditing = !!IND.sim[d.blueprint_id];
+  const meVal=d.me_used, teVal=d.te_used;
+  let meTeHtml;
+  if(simEditing){
+    meTeHtml=`<span class="ind-sim-wrap">
+        ME <input class="ind-sim-me" type="text" inputmode="numeric" pattern="[0-9]*" value="${meVal}" style="width:38px" title="Material Efficiency (0–10)">
+        TE <input class="ind-sim-te" type="text" inputmode="numeric" pattern="[0-9]*" value="${teVal}" style="width:38px" title="Time Efficiency (0–20)">
+        <button class="ind-sim-reset" title="Stop simulating — revert to the real ME/TE">↺ reset</button>
+        <span class="ind-sim-tag" title="Hypothetical values — not saved, gone when you close the tab">what-if</span></span>`;
+  } else {
+    meTeHtml=`${meVal} / ${teVal} <button class="ind-sim-btn" title="Try different Material/Time Efficiency without owning the researched blueprint — session-only, not saved">⚗ Simulate</button>`;
+  }
   // Payback shown regardless of ownership: how many runs of profit recoup the
   // BPO's market price (informational even if you already own it).
   let payback;
@@ -829,7 +875,7 @@ function renderIndDetail(d, container){
 
       <div class="ind-d-sub">Blueprint &amp; market</div>
       <span>Blueprint</span><b class="bp-buy">${bpSrc}</b>
-      <span>ME / TE used</span><b>${d.me_used} / ${d.te_used}</b>
+      <span>ME / TE used</span><b class="ind-sim-cell">${meTeHtml}</b>
       <span>Ownership</span><b>${d.owned_me_te
           ? `<span class="ind-yours">✓ You own this blueprint${isBpo?" (Original — infinite runs)":" (Copy)"}</span>`
           : (d.other_owners&&d.other_owners.length
@@ -942,7 +988,7 @@ function renderIndDetail(d, container){
   const pullBtn=box.querySelector(".ind-pull-prices");
   pullBtn.onclick=()=>{
     pullBtn.disabled=true; pullBtn.textContent="Fetching…";
-    const p=indParams({blueprint_id:d.blueprint_id, refresh_prices:"1"});
+    const p=indParams(indSimParams(d.blueprint_id, {blueprint_id:d.blueprint_id, refresh_prices:"1"}));
     fetch("/api/ind/detail?"+p).then(r=>r.json()).then(fresh=>{
       if(fresh.error){ pullBtn.textContent="⚠ "+fresh.error; return; }
       renderIndDetail(fresh);
@@ -1018,6 +1064,38 @@ function renderIndDetail(d, container){
     cargoInput.addEventListener("keydown", ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); applyCargo(); } });
   }
   if(maxCargoBtn && inVolRun>0) maxCargoBtn.onclick=applyCargo;
+
+  // ── Simulate ME/TE ──────────────────────────────────────────────────────
+  // Enter what-if mode: seed the override with the current values and re-render
+  // so the inline ME/TE inputs appear (no re-fetch — values are unchanged yet).
+  const simBtn=box.querySelector(".ind-sim-btn");
+  if(simBtn) simBtn.onclick=()=>{
+    IND.sim[d.blueprint_id]={me:d.me_used, te:d.te_used};
+    renderIndDetail(d);
+    const fresh=box.querySelector(".ind-sim-me"); if(fresh) fresh.focus();
+  };
+  // Leave what-if mode and re-fetch the real values.
+  const simReset=box.querySelector(".ind-sim-reset");
+  if(simReset) simReset.onclick=()=>{
+    delete IND.sim[d.blueprint_id];
+    reloadIndDetail(d.blueprint_id);
+  };
+  // Apply the typed ME/TE. Only re-fetch when a value actually changed (clamped
+  // to EVE's ranges); Enter/blur commit, so mid-typing keystrokes don't spam.
+  const meInput=box.querySelector(".ind-sim-me"), teInput=box.querySelector(".ind-sim-te");
+  const commitSim=()=>{
+    const clamp=(el,hi)=>{ const v=parseInt((el.value||"").replace(/[^0-9]/g,""),10); return isNaN(v)?0:Math.max(0,Math.min(hi,v)); };
+    const me=clamp(meInput,10), te=clamp(teInput,20);
+    const cur=IND.sim[d.blueprint_id]||{};
+    if(cur.me===me && cur.te===te) return;
+    IND.sim[d.blueprint_id]={me, te};
+    reloadIndDetail(d.blueprint_id);
+  };
+  [meInput,teInput].forEach(el=>{
+    if(!el) return;
+    el.addEventListener("keydown", ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); commitSim(); } });
+    el.addEventListener("blur", commitSim);
+  });
 }
 
 function fmtCountdown(ms){

@@ -1562,6 +1562,80 @@ class TestCharStreamClient:
 
 
 # ---------------------------------------------------------------------------
+# Industry detail: what-if ME/TE simulation override
+# ---------------------------------------------------------------------------
+
+class TestIndDetailSimMeTe:
+    """The planner lets you override ME/TE for one detail request (session-only,
+    never persisted). sim_me/sim_te win over the character/owned baseline, are
+    clamped to EVE's ranges (ME 0–10, TE 0–20), and flip detail['sim_me_te']."""
+
+    def _build_sde(self, tmp_path):
+        from tests.test_ind_core import _fake_session
+        import ind_core
+        ind_core.build_sde_db(tmp_path, session=_fake_session())
+
+    def _setup(self, tmp_path, monkeypatch):
+        self._build_sde(tmp_path)
+        monkeypatch.setattr(lp_web, "CACHE_DIR", tmp_path)
+        acct = lp_web.Account(42)
+        acct.characters[42] = {"character_id": 42, "name": "T", "scopes": [],
+                               "refresh_token": "x"}
+        acct.active_char_id = 42
+        _use_account(acct)
+        monkeypatch.setattr(lp_web, "fetch_prices",
+                            lambda tids, *a, **k: {t: {"sell_min": 100.0, "buy_max": 90.0}
+                                                   for t in tids})
+        monkeypatch.setattr(lp_web.ind_core, "fetch_adjusted_prices",
+                            lambda *a, **k: {})
+        monkeypatch.setattr(lp_web, "resolve_names",
+                            lambda tids, *a, **k: {t: str(t) for t in tids})
+        monkeypatch.setattr(lp_web, "resolve_volumes",
+                            lambda tids, *a, **k: {t: 1.0 for t in tids})
+        monkeypatch.setattr(lp_web, "fetch_history_volumes",
+                            lambda tids, *a, **k: {list(tids)[0]: 100.0})
+        monkeypatch.setattr(lp_web.arb_core, "fetch_type_orders",
+                            lambda *a, **k: [])
+        return acct
+
+    def test_no_sim_uses_baseline_and_flag_false(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        d = lp_web.do_ind_detail({"blueprint_id": ["681"]})
+        assert d["me_used"] == 0 and d["te_used"] == 0
+        assert d["sim_me_te"] is False
+
+    def test_sim_overrides_me_te_and_sets_flag(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        d = lp_web.do_ind_detail({"blueprint_id": ["681"],
+                                  "sim_me": ["10"], "sim_te": ["20"]})
+        assert d["me_used"] == 10 and d["te_used"] == 20
+        assert d["sim_me_te"] is True
+
+    def test_sim_reduces_material_quantities(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        base = lp_web.do_ind_detail({"blueprint_id": ["681"]})
+        simmed = lp_web.do_ind_detail({"blueprint_id": ["681"], "sim_me": ["10"]})
+        base_q = {m["type_id"]: m["eff_qty"] for m in base["required_items"]}
+        sim_q = {m["type_id"]: m["eff_qty"] for m in simmed["required_items"]}
+        # ME 10 shaves material use versus the unresearched baseline.
+        assert any(sim_q[t] < base_q[t] for t in base_q)
+
+    def test_sim_clamped_to_valid_ranges(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        d = lp_web.do_ind_detail({"blueprint_id": ["681"],
+                                  "sim_me": ["99"], "sim_te": ["-5"]})
+        assert d["me_used"] == 10   # capped at 10
+        assert d["te_used"] == 0    # floored at 0
+
+    def test_sim_ignores_blank_and_garbage(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        d = lp_web.do_ind_detail({"blueprint_id": ["681"],
+                                  "sim_me": [""], "sim_te": ["abc"]})
+        assert d["me_used"] == 0 and d["te_used"] == 0
+        assert d["sim_me_te"] is False
+
+
+# ---------------------------------------------------------------------------
 # Industry detail: T2 (invention) blueprint with prices NOT refreshed
 # ---------------------------------------------------------------------------
 

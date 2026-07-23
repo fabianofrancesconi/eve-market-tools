@@ -632,17 +632,38 @@ function _walletChartStats(series, charId, minTs, maxTs){
 }
 
 let _walletChartRetry=0;
+let _walletChartRenderSeq=0;
 async function renderWalletChart(charId){
+  if(typeof ApexCharts==='undefined'){
+    const c=document.getElementById('walletChartContainer');
+    if(c) c.innerHTML='<div class="wallet-chart-none">Chart unavailable (no internet)</div>';
+    return;
+  }
+  // Re-entrancy guard. renderCharData() rebuilds #char-body's innerHTML — which
+  // replaces the chart container node — and it can fire again (tab switch,
+  // renderIndBuilds callback) while this async render is awaiting wallet
+  // history. A superseded call must bail before it renders into a now-detached
+  // container, which ApexCharts lays out as NaN geometry (the <svg> width /
+  // transform "NaN" errors). Bump a sequence token and re-grab the container
+  // AFTER every await.
+  const seq=++_walletChartRenderSeq;
+  if(!_walletHistoryCache){
+    const c0=document.getElementById('walletChartContainer');
+    if(c0) c0.innerHTML='<div class="wallet-chart-none">Loading…</div>';
+    _walletHistoryCache=await _loadWalletHistory(_walletChartDays);
+    if(seq!==_walletChartRenderSeq) return;   // superseded while awaiting
+  }
   const container=document.getElementById('walletChartContainer');
   if(!container) return;
-  if(typeof ApexCharts==='undefined'){
-    container.innerHTML='<div class="wallet-chart-none">Chart unavailable (no internet)</div>';
+  if(!_walletHistoryCache||!Object.keys(_walletHistoryCache).length){
+    container.innerHTML='<div class="wallet-chart-none">No wallet history yet. Data will appear after the next refresh cycle.</div>';
     return;
   }
   // ApexCharts divides by the container width to lay out the SVG; a zero-width
-  // container (layout not yet settled on boot, or the tab momentarily hidden)
-  // yields NaN geometry and a broken chart. Defer until the container has a
-  // real width — retry a few animation frames before giving up.
+  // container (layout not yet settled on boot, the tab momentarily hidden, or a
+  // freshly rebuilt #char-body not yet laid out) yields NaN geometry and a
+  // broken chart. Defer until the container has a real width — retry a few
+  // animation frames before giving up.
   if(!container.clientWidth){
     if(_walletChartRetry++ < 30){
       requestAnimationFrame(()=>renderWalletChart(charId));
@@ -650,14 +671,6 @@ async function renderWalletChart(charId){
     return;
   }
   _walletChartRetry=0;
-  if(!_walletHistoryCache){
-    container.innerHTML='<div class="wallet-chart-none">Loading…</div>';
-    _walletHistoryCache=await _loadWalletHistory(_walletChartDays);
-  }
-  if(!_walletHistoryCache||!Object.keys(_walletHistoryCache).length){
-    container.innerHTML='<div class="wallet-chart-none">No wallet history yet. Data will appear after the next refresh cycle.</div>';
-    return;
-  }
 
   let apexSeries=[];
   if(charId){

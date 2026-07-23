@@ -631,6 +631,7 @@ function _walletChartStats(series, charId, minTs, maxTs){
     +`<span><span class="k">Change</span><span class="v" style="color:${col}">${change>=0?'+':''}${fmtISK(change)} (${pct>=0?'+':''}${pct.toFixed(1)}%)</span></span>`;
 }
 
+let _walletChartRetry=0;
 async function renderWalletChart(charId){
   const container=document.getElementById('walletChartContainer');
   if(!container) return;
@@ -638,6 +639,17 @@ async function renderWalletChart(charId){
     container.innerHTML='<div class="wallet-chart-none">Chart unavailable (no internet)</div>';
     return;
   }
+  // ApexCharts divides by the container width to lay out the SVG; a zero-width
+  // container (layout not yet settled on boot, or the tab momentarily hidden)
+  // yields NaN geometry and a broken chart. Defer until the container has a
+  // real width — retry a few animation frames before giving up.
+  if(!container.clientWidth){
+    if(_walletChartRetry++ < 30){
+      requestAnimationFrame(()=>renderWalletChart(charId));
+    }
+    return;
+  }
+  _walletChartRetry=0;
   if(!_walletHistoryCache){
     container.innerHTML='<div class="wallet-chart-none">Loading…</div>';
     _walletHistoryCache=await _loadWalletHistory(_walletChartDays);

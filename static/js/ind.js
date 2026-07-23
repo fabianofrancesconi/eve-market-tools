@@ -1319,12 +1319,19 @@ function _patchBuildLink(b, fields){
     body:JSON.stringify(body)}).catch(()=>{});
 }
 
+// Re-pull the portfolio dashboard (totals + by-item table) after a mutation that
+// changes the stats — delete/edit/close/cancel/archive. Without this the summary
+// above the cards keeps showing pre-mutation figures until a manual refresh.
+function _refreshSummary(){
+  if(IND.mode==="summary" && typeof loadSummary==="function") loadSummary();
+}
+
 function deleteBuild(id){
   IND.builds=IND.builds.filter(b=>b.id!==id);
   IND.buildsExpanded.delete(id);
   renderIndBuilds();
   fetch("/api/ind/builds/delete",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({id})}).catch(()=>{});
+    body:JSON.stringify({id})}).then(_refreshSummary).catch(_refreshSummary);
 }
 
 // Archive (hide into the collapsed Archived section) or unarchive a build. The
@@ -1977,7 +1984,7 @@ function startSellTracking(b, btn){
   if(qty!=null) body.qty_target=String(qty);
   fetch("/api/ind/builds/sell/start",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify(body)}).then(r=>r.json()).then(res=>{
-    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); }
+    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); _refreshSummary(); }
     else if(btn){ btn.disabled=false; btn.textContent=res&&res.error?("⚠ "+res.error):"⚠ Failed"; }
   }).catch(()=>{ if(btn){ btn.disabled=false; btn.textContent="⚠ Failed"; } });
 }
@@ -1987,7 +1994,7 @@ function cancelSellTracking(b){
     body:JSON.stringify({id:b.id})}).then(r=>r.json()).then(()=>{
     // Mirror the server tombstone locally so the auto-start pull doesn't re-fire
     // every reconcile cycle (and the card doesn't bounce back into selling).
-    if(b.sell) delete b.sell; b.no_auto_sell=true; renderIndBuilds();
+    if(b.sell) delete b.sell; b.no_auto_sell=true; renderIndBuilds(); _refreshSummary();
   }).catch(()=>{});
 }
 
@@ -2011,7 +2018,7 @@ function editSellTracking(b, btn){
   if(btn){ btn.disabled=true; btn.textContent="Saving…"; }
   fetch("/api/ind/builds/sell/edit",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify(body)}).then(r=>r.json()).then(res=>{
-    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); }
+    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); _refreshSummary(); }
     else if(btn){ btn.disabled=false; btn.textContent=res&&res.error?("⚠ "+res.error):"⚠ Failed"; }
   }).catch(()=>{ if(btn){ btn.disabled=false; btn.textContent="⚠ Failed"; } });
 }
@@ -2022,7 +2029,7 @@ function closeSellTracking(b, btn){
   if(btn){ btn.disabled=true; btn.textContent="Closing…"; }
   fetch("/api/ind/builds/sell/close",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({id:b.id})}).then(r=>r.json()).then(res=>{
-    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); }
+    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); _refreshSummary(); }
     else if(btn){ btn.disabled=false; btn.textContent=res&&res.error?("⚠ "+res.error):"⚠ Failed"; }
   }).catch(()=>{ if(btn){ btn.disabled=false; btn.textContent="⚠ Failed"; } });
 }

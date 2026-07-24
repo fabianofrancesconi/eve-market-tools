@@ -1461,6 +1461,18 @@ class TestCharDataOrdersIsolation:
         # Live update on input without re-rendering.
         assert "maxCargoBtn.textContent=`Max cargo${runs!=null?` (${fmtNum(runs)})`:\"\"}`" in html
 
+    def test_ready_to_sell_shows_instant_price(self):
+        """The "Ready to sell" nudge offers an instant-sell price (frozen bid,
+        break-even, and its own copy button) alongside the list price."""
+        html = lp_web.FRONTEND_SOURCE
+        assert "ind-sell-price-instant" in html
+        assert "ind-sell-copy-instant" in html
+        # Instant price is the frozen highest bid.
+        assert "const instantPrice=d.bid;" in html
+        # Its copy button copies the bid, not the list price.
+        assert '_wireCopy(card.querySelector(".ind-sell-copy-instant"),' in html
+        assert "()=>(b.snapshot||{}).bid);" in html
+
 
 # ---------------------------------------------------------------------------
 # SESSION retry policy — a stale pooled keep-alive connection to ESI/Fuzzwork

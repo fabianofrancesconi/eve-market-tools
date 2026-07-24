@@ -1834,13 +1834,23 @@ function _buildSellHtml(b, stage){
     const price=_buildProposedPrice(b);
     const units=_buildUnits(b);
     const be=_buildBreakEven(b);
+    const d=b.snapshot||{};
+    // Instant-sell price = the frozen highest bid (sell straight into buy orders,
+    // sales tax only, no broker fee). Shown next to the list price so the user
+    // can copy either one; only render it when we have a bid to quote.
+    const instantPrice=d.bid;
+    const instantRow=(instantPrice!=null)?`
+      <span class="ind-sell-price ind-sell-price-instant">Instant <b>${isk(instantPrice)}</b>/unit</span>
+      <span class="ind-sell-be" title="Selling instantly below this loses money">break-even ${isk(be.instant)}/unit</span>
+      <button class="ind-sell-copy ind-sell-copy-instant" title="Copy the instant-sell price to paste into EVE">⧉ Copy price</button>`:"";
     return `<div class="ind-sell ind-sell-nudge" data-id="${b.id}">
       <span class="ind-sell-head">Ready to sell</span>
-      <span class="ind-sell-price">Propose <b>${isk(price)}</b>/unit${units!=null?` · ${units.toLocaleString()} unit(s)`:""}</span>
+      <span class="ind-sell-price">List <b>${isk(price)}</b>/unit${units!=null?` · ${units.toLocaleString()} unit(s)`:""}</span>
       <span class="ind-sell-be" title="Selling below this loses money">break-even ${isk(be.list)}/unit</span>
-      <button class="ind-sell-copy" title="Copy the proposed price to paste into EVE's sell order">⧉ Copy price</button>
+      <button class="ind-sell-copy" title="Copy the proposed list price to paste into EVE's sell order">⧉ Copy price</button>
+      ${instantRow}
       <button class="ind-sell-start" title="Only needed to sell a partial batch or to start before the order appears — a full-batch sell order links on its own">Track a partial sale ▸</button>
-      <div class="ind-sell-hint">Just list it in-game — your sell order links automatically and tracks your real profit at whatever price the market pays. (Use “partial” only to track fewer than the full ${units!=null?units.toLocaleString():""} units.)</div>
+      <div class="ind-sell-hint">List it in-game and your sell order links automatically; or instant-sell into buy orders and the app back-fills it at the real price once the job shows delivered. (Use “partial” only to track fewer than the full ${units!=null?units.toLocaleString():""} units.)</div>
     </div>`;
   }
   if(stage==="listed"||stage==="sold"){
@@ -2033,16 +2043,24 @@ function _wireBuildCard(box, b){
 
 // Wire the sell-section buttons (copy price, start tracking, cancel, pick-order).
 function _wireSellCard(card, b){
-  const copy=card.querySelector(".ind-sell-copy");
-  if(copy) copy.onclick=()=>{
-    const price=_buildProposedPrice(b);
-    if(price==null) return;
-    const txt=String(Math.round(price*100)/100);
-    const done=()=>{ copy.textContent="✓ Copied"; setTimeout(()=>{copy.textContent="⧉ Copy price";},1200); };
-    if(navigator.clipboard&&navigator.clipboard.writeText)
-      navigator.clipboard.writeText(txt).then(done).catch(()=>fallbackCopy(txt,done));
-    else fallbackCopy(txt, done);
+  // Copy-price buttons. The list button (.ind-sell-copy, not the instant variant)
+  // copies the proposed list price; the instant button copies the frozen bid.
+  const _wireCopy=(btn, priceFn)=>{
+    if(!btn) return;
+    btn.onclick=()=>{
+      const price=priceFn();
+      if(price==null) return;
+      const txt=String(Math.round(price*100)/100);
+      const done=()=>{ btn.textContent="✓ Copied"; setTimeout(()=>{btn.textContent="⧉ Copy price";},1200); };
+      if(navigator.clipboard&&navigator.clipboard.writeText)
+        navigator.clipboard.writeText(txt).then(done).catch(()=>fallbackCopy(txt,done));
+      else fallbackCopy(txt, done);
+    };
   };
+  _wireCopy(card.querySelector(".ind-sell-copy:not(.ind-sell-copy-instant)"),
+            ()=>_buildProposedPrice(b));
+  _wireCopy(card.querySelector(".ind-sell-copy-instant"),
+            ()=>(b.snapshot||{}).bid);
   const start=card.querySelector(".ind-sell-start");
   if(start) start.onclick=()=>startSellTracking(b, start);
   const cancel=card.querySelector(".ind-sell-cancel");

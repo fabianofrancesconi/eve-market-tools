@@ -1090,14 +1090,19 @@
   /* Tracked-build quick-look modal — a focused peek: stepper, one hero number,
      one quiet meta line. Reuses the tracker's stage colours + stepper so it
      reads as the same object the Industry card shows. */
-  .build-peek-box { width:360px; }
+  .build-peek-box { width:380px; }
   .build-peek-title { display:flex; align-items:baseline; gap:9px; flex-wrap:wrap;
     margin:0 0 14px; }
   .build-peek-title .ind-build-status { font-size:11px; }
   .build-peek-title .build-peek-name { color:var(--fg); font-size:16.5px;
     font-weight:600; letter-spacing:-.01em; }
-  /* The lifecycle stepper, centered as a quiet progress rail above the hero. */
-  .build-peek-stepper .ind-build-stepper { margin:0 0 16px; justify-content:center; }
+  /* The lifecycle stepper, centered as a quiet progress rail above the hero.
+     Tightened (smaller gaps + no letter-spacing) so all five stages fit one
+     line inside the narrow modal instead of wrapping "Sold" to a second row. */
+  .build-peek-stepper .ind-build-stepper { margin:0 0 16px; justify-content:center;
+    flex-wrap:nowrap; gap:5px; }
+  .build-peek-stepper .ind-step { letter-spacing:0; gap:3px; }
+  .build-peek-stepper .ind-step-sep { width:9px; }
   /* Hero: the one number that matters, sized to dominate. */
   .build-peek-hero { text-align:center; padding:4px 0 2px; }
   .build-peek-hero .bph-label { display:flex; align-items:center; justify-content:center;
@@ -1116,13 +1121,26 @@
   .build-peek-hero .build-peek-timer { font-variant-numeric:tabular-nums; }
   .build-peek-hero .bph-sub { font-size:12px; color:var(--dim); margin-top:6px;
     line-height:1.45; }
-  /* Sold-progress rail — a single thin bar, no label (the hero sub carries it). */
-  .build-peek-progress { height:4px; border-radius:99px; background:var(--panel3);
-    overflow:hidden; margin:14px 2px 2px; }
-  .build-peek-progress i { display:block; height:100%; border-radius:99px;
-    background:var(--stg-sold); }
+  /* Sold-progress rail — thin bar with its count read out beneath it. */
+  .build-peek-progress { margin:16px 2px 2px; }
+  .build-peek-progress .bpp-track { height:4px; border-radius:99px;
+    background:var(--panel3); overflow:hidden; }
+  .build-peek-progress .bpp-track i { display:block; height:100%; border-radius:99px;
+    background:var(--stg-listed); }
+  .build-peek-progress.done .bpp-track i { background:var(--stg-sold); }
+  .build-peek-progress .bpp-count { font-size:11px; color:var(--dim); margin-top:5px;
+    text-align:center; font-variant-numeric:tabular-nums; }
+  /* Industry facts pulled from the frozen snapshot — the reason to open the peek:
+     blueprint efficiency, run time, and where it's built. */
+  .build-peek-facts { display:flex; justify-content:center; flex-wrap:wrap;
+    gap:6px 8px; margin-top:16px; }
+  .build-peek-facts .bpf { font-size:11.5px; color:var(--fg);
+    background:var(--panel2); border:1px solid var(--line); border-radius:99px;
+    padding:3px 10px; font-variant-numeric:tabular-nums; }
+  .build-peek-facts .bpf i { font-style:normal; color:var(--dim); margin-right:3px; }
+  .build-peek-facts .bpf i + i { margin-left:3px; }
   /* One quiet footnote line: runs · units · cost. */
-  .build-peek-meta { text-align:center; margin-top:16px; padding-top:12px;
+  .build-peek-meta { text-align:center; margin-top:14px; padding-top:12px;
     border-top:1px solid var(--line); font-size:11.5px; color:var(--dim);
     font-variant-numeric:tabular-nums; }
   .build-peek-actions { margin-top:16px; }

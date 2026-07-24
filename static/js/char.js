@@ -1078,27 +1078,34 @@ function openBuildPeek(id){
     heroHtml=`<span class="bph-val ${pn(econ.profitL)}">${sign(econ.profitL)}${isk(econ.profitL)}</span>`;
     heroSub=`Ready to list at ${isk(_buildProposedPrice?_buildProposedPrice(b):s.ask)} / unit.`;
   } else {   // listed / sold
-    const target=(b.sell||{}).qty_target||units||0;
     heroLabel=stage==="sold"?"Realized profit":"Profit so far";
     heroHtml=`<span class="bph-val ${pn(rz.profit)}">${sign(rz.profit)}${isk(rz.profit)}</span>`;
-    heroSub=(stage==="sold")
-      ? ((b.sell||{}).closed_early?`Closed early — ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`Fully sold — ${rz.units.toLocaleString()} unit(s)`)
-      : `${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`;
+    // No sub here — the sold count lives on the progress bar below, not repeated.
   }
   // Margin badge rides alongside a money hero (not the countdown).
   const marginVal=(stage!=="building")?((rz?rz.profit:econ.profitL)!=null&&cost?((rz?rz.profit:econ.profitL)/cost):null):null;
   const marginTag=(marginVal!=null)?`<span class="bph-margin ${pn(rz?rz.profit:econ.profitL)}">${pct(marginVal)}</span>`:"";
 
-  // Sold-progress bar — only while a sale is live/closed, where it means something.
+  // Sold-progress bar with its count inline — only while a sale is live/closed.
   let progress="";
   if(rz){
     const target=(b.sell||{}).qty_target||units||0;
     const frac=target?Math.min(1, rz.units/target):0;
-    progress=`<div class="build-peek-progress"><i style="width:${(frac*100).toFixed(1)}%"></i></div>`;
+    const closedEarly=stage==="sold"&&(b.sell||{}).closed_early;
+    progress=`<div class="build-peek-progress ${stage==="sold"?"done":""}">
+      <div class="bpp-track"><i style="width:${(frac*100).toFixed(1)}%"></i></div>
+      <div class="bpp-count">${rz.units.toLocaleString()} / ${target.toLocaleString()} sold${closedEarly?" · rest written off":""}</div>
+    </div>`;
   }
 
-  // A single quiet meta line: runs, units, cost. That's the whole footnote.
-  const meta=`${n.toLocaleString()}× · ${units!=null?units.toLocaleString()+" units":"—"} · cost ${isk(cost)}`;
+  // Industry facts the Character overview doesn't show — the reason to follow the
+  // 🔗 in the first place: the blueprint's efficiency, how long a run takes, and
+  // where it's built. Each is skipped if the snapshot doesn't carry it.
+  const facts=[];
+  if(s.me_used!=null||s.te_used!=null) facts.push(`<span class="bpf"><i>ME</i>${s.me_used??0} · <i>TE</i>${s.te_used??0}</span>`);
+  if(s.build_time!=null) facts.push(`<span class="bpf"><i>Build</i>${fmtDur(econ.time)}</span>`);
+  const loc=(typeof _buildJobLocation==="function"&&_buildJobLocation(b))||s.station_name||"";
+  if(loc) facts.push(`<span class="bpf">📍 ${authEsc(loc)}</span>`);
 
   $("#build-peek-body").innerHTML=`
     <div class="build-peek-stepper">${stepper}</div>
@@ -1108,7 +1115,8 @@ function openBuildPeek(id){
       ${heroSub?`<div class="bph-sub">${heroSub}</div>`:""}
     </div>
     ${progress}
-    <div class="build-peek-meta">${meta}</div>`;
+    ${facts.length?`<div class="build-peek-facts">${facts.join("")}</div>`:""}
+    <div class="build-peek-meta">${n.toLocaleString()}× · ${units!=null?units.toLocaleString()+" units":"—"} · cost ${isk(cost)}</div>`;
   modal.classList.remove("hidden");
 }
 function closeBuildPeek(){ const m=$("#buildPeekModal"); if(m) m.classList.add("hidden"); _buildPeekId=null; }

@@ -1452,6 +1452,15 @@ class TestCharDataOrdersIsolation:
         assert 'data-sort-key="' in html
         assert "th.onclick" in html
 
+    def test_max_cargo_button_shows_run_count(self):
+        """Like "Max wallet (N)", the Max cargo button shows the runs that fit the
+        entered m³ in parentheses, and live-updates the count as the user types."""
+        html = lp_web.FRONTEND_SOURCE
+        # Initial render: parenthetical derived from maxCargoRuns(cargoCap).
+        assert "Max cargo${(()=>{const r=maxCargoRuns(cargoCap);" in html
+        # Live update on input without re-rendering.
+        assert "maxCargoBtn.textContent=`Max cargo${runs!=null?` (${fmtNum(runs)})`:\"\"}`" in html
+
 
 # ---------------------------------------------------------------------------
 # SESSION retry policy — a stale pooled keep-alive connection to ESI/Fuzzwork

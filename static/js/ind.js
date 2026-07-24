@@ -841,7 +841,7 @@ function renderIndDetail(d, container){
       <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
       <button class="ind-track-btn" title="Freeze these stats for the current run count so you can revisit them after the batch finishes — the numbers stay put even as market prices move. Appears under 'Tracked builds' up top.">＋ Track this build</button>
       ${tier} · <span class="ind-d-runs-wrap">Runs <input class="ind-d-runs" type="text" inputmode="numeric" pattern="[0-9]*" value="${n}" style="width:68px"><span class="ind-d-runs-step"><button class="ind-d-runs-inc" title="Increase runs" tabindex="-1">▲</button><button class="ind-d-runs-dec" title="Decrease runs" tabindex="-1">▼</button></span><button class="ind-d-runs-add" data-n="10" title="Add 10 runs">+10</button><button class="ind-d-runs-add" data-n="100" title="Add 100 runs">+100</button><button class="ind-d-runs-add" data-n="1000" title="Add 1000 runs">+1000</button><button class="ind-d-runs-mul" data-m="2" title="Double the runs">×2</button><button class="ind-d-runs-mul" data-m="5" title="5× the runs">×5</button><button class="ind-d-runs-mul" data-m="10" title="10× the runs">×10</button></span> · source ${d.station_name}
-      <span class="ind-d-maxwrap">${maxIskRuns!=null?`<button class="ind-d-max-isk" title="Set runs to the most this batch's wallet can afford — materials + job install + broker fee + sales tax at the suggested list price (${isk(costPerRun)}/run against ${isk(walletBal)} in ${maxWho}'s wallet)">💰 Max wallet (${fmtNum(maxIskRuns)})</button>`:""}<span class="ind-d-cargo-box" title="Set runs to the most whose input materials fit this cargo hold. Your m³ is saved across sessions."><span class="ind-d-cargo-ico">📦</span><input class="ind-d-cargo-cap" type="text" inputmode="decimal" placeholder="m³" value="${cargoCap!=null?cargoCap:""}"><button class="ind-d-max-cargo"${inVolRun>0?"":" disabled"}>Max cargo</button></span></span>
+      <span class="ind-d-maxwrap">${maxIskRuns!=null?`<button class="ind-d-max-isk" title="Set runs to the most this batch's wallet can afford — materials + job install + broker fee + sales tax at the suggested list price (${isk(costPerRun)}/run against ${isk(walletBal)} in ${maxWho}'s wallet)">💰 Max wallet (${fmtNum(maxIskRuns)})</button>`:""}<span class="ind-d-cargo-box" title="Set runs to the most whose input materials fit this cargo hold. Your m³ is saved across sessions."><span class="ind-d-cargo-ico">📦</span><input class="ind-d-cargo-cap" type="text" inputmode="decimal" placeholder="m³" value="${cargoCap!=null?cargoCap:""}"><button class="ind-d-max-cargo"${inVolRun>0?"":" disabled"}>Max cargo${(()=>{const r=maxCargoRuns(cargoCap);return r!=null?` (${fmtNum(r)})`:"";})()}</button></span></span>
       <span class="ind-d-close" title="Close">✕</span>
     </div>
     <div class="ind-d-body">
@@ -1064,6 +1064,12 @@ function renderIndDetail(d, container){
     cargoInput.addEventListener("input", ()=>{
       const cap=parseFloat((cargoInput.value||"").replace(/[, ]/g,""));
       if(typeof setPref==="function") setPref("ind.cargo_cap", (isFinite(cap)&&cap>0)?cap:null);
+      // Live-update the button's parenthetical run count as they type, without
+      // re-rendering (which would interrupt typing) — mirrors "Max wallet (N)".
+      if(maxCargoBtn){
+        const runs=maxCargoRuns(cap);
+        maxCargoBtn.textContent=`Max cargo${runs!=null?` (${fmtNum(runs)})`:""}`;
+      }
     });
     cargoInput.addEventListener("keydown", ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); applyCargo(); } });
   }

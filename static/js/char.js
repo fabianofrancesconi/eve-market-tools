@@ -1033,35 +1033,82 @@ function openBuildPeek(id){
   const modal=$("#buildPeekModal");
   if(!b || !modal){ if(typeof openTrackedBuild==="function") openTrackedBuild(id); return; }
   _buildPeekId=id;
-  const stage=(typeof _buildStage==="function")?_buildStage(b):"";
-  const stageLabel=(typeof _BUILD_GROUP_LABEL!=="undefined" && _BUILD_GROUP_LABEL[stage])||stage||"—";
+
   const isk=v=>(v==null?"—":fmtISK(v));
   const pn=v=>(v==null?"":(v>0?"pos":(v<0?"neg":"")));
+  const sign=v=>(v!=null&&v>0?"+":"");
+  const pct=v=>(v==null?null:(v>0?"+":"")+(v*100).toFixed(0)+"%");
   const n=Math.max(1, b.runs||1);
-  const econ=(typeof _batchEconomics==="function")?_batchEconomics(b.snapshot||{}, n):{};
+  const s=b.snapshot||{};
+  const stage=(typeof _buildStage==="function")?_buildStage(b):"";
+  const econ=(typeof _batchEconomics==="function")?_batchEconomics(s, n):{};
   const units=(typeof _buildUnits==="function")?_buildUnits(b):null;
-  const be=(typeof _buildBreakEven==="function")?_buildBreakEven(b):{};
+  const cost=econ.cost;
+  const rz=((stage==="listed"||stage==="sold") && typeof _buildRealized==="function")?_buildRealized(b):null;
 
-  const cell=(label,val,cls,wide)=>`<div class="build-peek-cell${wide?" bp-wide":""}">`
-    +`<div class="bp-label">${label}</div><div class="bp-val ${cls||""}">${val}</div></div>`;
-  let cells="";
-  cells+=cell("Runs", n.toLocaleString());
-  cells+=cell("Units", units!=null?units.toLocaleString():"—");
-  cells+=cell("Batch cost", isk(econ.cost));
-  cells+=cell("Break-even / unit", isk(be.list));
-  // Realized figures once a sale is under way; projected profit before that.
-  if((stage==="listed"||stage==="sold") && typeof _buildRealized==="function"){
-    const rz=_buildRealized(b);
-    cells+=cell("Sold", `${rz.units.toLocaleString()}${units!=null?` / ${units.toLocaleString()}`:""}`);
-    cells+=cell("Realized profit", isk(rz.profit), pn(rz.profit));
-  } else {
-    cells+=cell("Batch profit (list)", isk(econ.profitL), pn(econ.profitL));
-    cells+=cell("Batch profit (instant)", isk(econ.profitI), pn(econ.profitI));
+  // Header: reuse the tracker's colored stage badge so the peek reads as the
+  // same object the Industry card shows.
+  const badge=(typeof _buildBadge==="function")?_buildBadge(b, stage):{key:"",label:stage};
+  $("#build-peek-title").innerHTML=`<span class="ind-build-status ${badge.key}">${authEsc(badge.label)}</span>`
+    +`<span class="build-peek-name">${authEsc(b.product_name||"Tracked build")}</span>`;
+
+  // The same lifecycle stepper as the card — instantly recognizable.
+  const stepper=(typeof _buildStepperHtml==="function")?_buildStepperHtml(b, stage):"";
+
+  // The hero is the one number that matters at this stage: a live countdown while
+  // the job runs, otherwise the money (realized once selling, projected before).
+  // Everything else is a quiet one-line footnote — no pill grid.
+  let heroLabel, heroHtml, heroSub="", cls="";
+  if(stage==="building"){
+    const end=b.job_end?Date.parse(b.job_end):null;
+    const loc=(typeof _buildJobLocation==="function")?_buildJobLocation(b):"";
+    heroLabel="Finishes in";
+    heroHtml=(end&&isFinite(end))
+      ? `<span class="ind-live-timer build-peek-timer" data-end="${end}">${fmtCountdown(end-Date.now())}</span>`
+      : `<span class="build-peek-timer">running</span>`;
+    heroSub=(end&&isFinite(end))?`ETA ${new Date(end).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}`:"";
+    if(loc) heroSub+=(heroSub?" · ":"")+"📍 "+authEsc(loc);
+    cls="stage-building";
+  } else if(stage==="planned"){
+    heroLabel="Projected profit";
+    heroHtml=`<span class="bph-val ${pn(econ.profitL)}">${sign(econ.profitL)}${isk(econ.profitL)}</span>`;
+    heroSub=`Not started — begin ${n.toLocaleString()}× run(s) in EVE to link the job.`;
+  } else if(stage==="built"){
+    heroLabel="Projected profit";
+    heroHtml=`<span class="bph-val ${pn(econ.profitL)}">${sign(econ.profitL)}${isk(econ.profitL)}</span>`;
+    heroSub=`Ready to list at ${isk(_buildProposedPrice?_buildProposedPrice(b):s.ask)} / unit.`;
+  } else {   // listed / sold
+    const target=(b.sell||{}).qty_target||units||0;
+    heroLabel=stage==="sold"?"Realized profit":"Profit so far";
+    heroHtml=`<span class="bph-val ${pn(rz.profit)}">${sign(rz.profit)}${isk(rz.profit)}</span>`;
+    heroSub=(stage==="sold")
+      ? ((b.sell||{}).closed_early?`Closed early — ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`Fully sold — ${rz.units.toLocaleString()} unit(s)`)
+      : `${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`;
+  }
+  // Margin badge rides alongside a money hero (not the countdown).
+  const marginVal=(stage!=="building")?((rz?rz.profit:econ.profitL)!=null&&cost?((rz?rz.profit:econ.profitL)/cost):null):null;
+  const marginTag=(marginVal!=null)?`<span class="bph-margin ${pn(rz?rz.profit:econ.profitL)}">${pct(marginVal)}</span>`:"";
+
+  // Sold-progress bar — only while a sale is live/closed, where it means something.
+  let progress="";
+  if(rz){
+    const target=(b.sell||{}).qty_target||units||0;
+    const frac=target?Math.min(1, rz.units/target):0;
+    progress=`<div class="build-peek-progress"><i style="width:${(frac*100).toFixed(1)}%"></i></div>`;
   }
 
-  $("#build-peek-title").textContent=b.product_name||"Tracked build";
-  $("#build-peek-body").innerHTML=`<p class="build-peek-stage">${authEsc(stageLabel)}</p>`
-    +`<div class="build-peek-grid">${cells}</div>`;
+  // A single quiet meta line: runs, units, cost. That's the whole footnote.
+  const meta=`${n.toLocaleString()}× · ${units!=null?units.toLocaleString()+" units":"—"} · cost ${isk(cost)}`;
+
+  $("#build-peek-body").innerHTML=`
+    <div class="build-peek-stepper">${stepper}</div>
+    <div class="build-peek-hero ${cls}">
+      <div class="bph-label">${heroLabel}${marginTag}</div>
+      <div class="bph-main">${heroHtml}</div>
+      ${heroSub?`<div class="bph-sub">${heroSub}</div>`:""}
+    </div>
+    ${progress}
+    <div class="build-peek-meta">${meta}</div>`;
   modal.classList.remove("hidden");
 }
 function closeBuildPeek(){ const m=$("#buildPeekModal"); if(m) m.classList.add("hidden"); _buildPeekId=null; }

@@ -1294,7 +1294,12 @@ function reconcileBuilds(){
   // adopt a job that a newer, already-linked build owns, because that newer
   // build hasn't added its id to `claimed` yet — leaving two builds on one job.
   IND.builds.forEach(b=>{
-    if(b.job_id!=null && !b.done_at && activeJobIds.has(String(b.job_id)))
+    // Only pre-seed links held by builds that could legitimately still be
+    // building. A built/listed/sold build holding an active job has a *stolen*
+    // link (its own job was delivered long ago) — the main loop releases it, so
+    // don't reserve that job here or the real batch can never claim it.
+    if(b.job_id!=null && !b.done_at && activeJobIds.has(String(b.job_id))
+       && _buildStage(b)!=="sold" && _buildStage(b)!=="listed")
       claimed.add(String(b.job_id));
   });
   let changed=false;
@@ -1302,10 +1307,20 @@ function reconcileBuilds(){
   const ordered=[...IND.builds].sort((a,b)=>(a.created_at||0)-(b.created_at||0));
   ordered.forEach(b=>{
     if(b.done_at){
-      // Self-heal: a build wrongly marked done (e.g. a stale string/number
-      // job_id mismatch from an older build) whose linked job is in fact still
-      // running gets un-marked and reclaimed. A genuinely finished job stays.
       if(b.job_id!=null && activeJobIds.has(String(b.job_id))){
+        // A build that has already progressed to selling can't still be building
+        // its own job — its manufacturing job was delivered long ago. An active
+        // job under its link is therefore a *new* batch's job that got wrongly
+        // adopted: release the link (and let the real batch claim it) rather than
+        // un-marking the sale as "not done".
+        if(_buildStage(b)==="sold"||_buildStage(b)==="listed"){
+          b.job_id=null; b.job_end=null; changed=true;
+          _patchBuildLink(b, {job_id:null, job_end:null});
+          return;
+        }
+        // Otherwise self-heal: a build wrongly marked done (e.g. a stale
+        // string/number job_id mismatch from an older build) whose linked job is
+        // in fact still running gets un-marked and reclaimed.
         b.done_at=null; changed=true; claimed.add(String(b.job_id));
         _patchBuildLink(b, {done_at:null});
       }
@@ -1321,6 +1336,11 @@ function reconcileBuilds(){
       return;
     }
     if(b.job_id!=null) return;                  // linked but jobs unknown — hold
+    // A build that already reached built/listed/sold must NOT adopt a fresh job:
+    // a new in-game batch of the same blueprint (same runs) is a *different*
+    // build. Without this guard an old sold build with no job link would grab the
+    // new job, steal its ETA countdown, and leave the real batch card-less.
+    if(_buildStage(b)!=="planned") return;
     // Not yet linked — try to adopt a matching active job.
     const job=_findJobForBuild(b, claimed);
     if(job){
@@ -1682,8 +1702,12 @@ function _buildCardHtml(b, linked){
   const when=b.created_at?new Date(b.created_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"";
   // Status line: warning if no job yet, live countdown + ETA while building.
   // Once built/listed/sold there's no line — the stepper hover carries the state.
+  // Gate on the lifecycle `stage`, not the raw job status: a linked job can still
+  // sit in ESI's active list after the batch has been listed and fully sold, so
+  // _buildStatus would say "building" and render a live countdown on a Sold card.
+  const stage=_buildStage(b);
   let statusLine="";
-  if(st.key==="awaiting"){
+  if(stage==="planned" && st.key==="awaiting"){
     // If a running job for this blueprint exists with a different run count,
     // offer it as a one-click close match instead of only nagging. `linked` is
     // shared across cards this render, and includes jobs already suggested to an
@@ -1704,7 +1728,7 @@ function _buildCardHtml(b, linked){
     } else {
       statusLine=`<span class="ind-build-warn">No matching in-game job yet — start ${n.toLocaleString()}× run(s) of this blueprint in EVE${AUTH.loggedIn?" and it'll link automatically":"; log in with EVE to link"}.</span>`;
     }
-  } else if(st.key==="building"){
+  } else if(stage==="building"){
     const end=b.job_end?Date.parse(b.job_end):null;
     // The linked live job carries a resolved station/structure name — show where
     // the batch is being built so a multi-location industrialist knows where to
@@ -1720,7 +1744,6 @@ function _buildCardHtml(b, linked){
   // lives in the stepper's hover tooltip.
   const expanded=IND.buildsExpanded.has(b.id);
   const detail=expanded?_buildDetailHtml(b):"";
-  const stage=_buildStage(b);
   const badge=_buildBadge(b, stage);
   const stepper=_buildStepperHtml(b, stage);
   const sellBlock=_buildSellHtml(b, stage);
@@ -1920,7 +1943,7 @@ function _buildSellHtml(b, stage){
       </div>
       ${pick}
       <div class="ind-sell-foot">
-        ${closed?`<span class="ind-sell-done">${closedEarly?`✓ Closed early${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'}):""} · ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`✓ Fully sold${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'}):""}`}</span>`
+        ${closed?`<span class="ind-sell-done">${closedEarly?`✓ Closed early${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""} · ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`✓ Fully sold${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""}`}</span>`
           :`<span class="ind-sell-watching">${watchMsg}</span>`}
         ${!closed&&rz.units>0?`<button class="ind-sell-close" title="Give up on the unsold remainder: mark this sale done. The ${remain.toLocaleString()} unsold unit(s)' cost is written off as a loss so your totals stay honest.">Close out ▸</button>`:""}
         ${closed?"":`<button class="ind-sell-cancel" title="Stop tracking this sale (keeps the build)">Stop tracking sale</button>`}
@@ -1975,7 +1998,7 @@ function _buildDetailHtml(b){
   const bfee=(d.broker_fee!=null)?d.broker_fee:0;
   const beI=(batchCost!=null&&qtyTot>0&&(1-stax)>0)?batchCost/(qtyTot*(1-stax)):null;
   const beL=(batchCost!=null&&qtyTot>0&&(1-stax-bfee)>0)?batchCost/(qtyTot*(1-stax-bfee)):null;
-  const frozen=b.created_at?`frozen ${new Date(b.created_at*1000).toLocaleDateString([],{day:'2-digit',month:'short'})}`:"frozen";
+  const frozen=b.created_at?`frozen ${new Date(b.created_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}`:"frozen";
   // One card per sell strategy (list vs instant), each pairing that strategy's
   // sell revenue with the profit it yields — so a losing strategy reads red as a
   // whole block and the two are compared side by side rather than interleaved.

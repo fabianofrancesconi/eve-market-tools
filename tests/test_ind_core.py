@@ -440,6 +440,36 @@ class TestEvaluateIndustry:
         # 100 units / 50 per day = 2 days
         assert r["days_to_sell"] == pytest.approx(2.0)
 
+    def test_instant_gated_when_buy_book_too_thin(self):
+        # The output market has a bid (buy_max 1800) but the live buy book only
+        # holds 0 units — dumping the batch into it isn't real, so the instant
+        # figures must blank out (no phantom "instant" profit) while the patient
+        # (list) side, which doesn't depend on buy depth, is untouched.
+        prices = _prices({165: {"sell_min": 2000.0, "buy_max": 1800.0,
+                                "buy_volume": 0.0}})
+        r = ind_core.evaluate_industry([_bp()], prices, _ADJUSTED, _params())[0]
+        assert r["profit_patient"] == pytest.approx(812.0)
+        assert r["bid"] is None
+        assert r["profit_instant"] is None
+        assert r["profit_best"] == pytest.approx(812.0)   # falls back to patient
+
+    def test_instant_gated_against_batch_size(self):
+        # A book with 10 units on the bid is fine for 1 run but not for 100 runs
+        # of a 1x blueprint (needs 100). Same item, different batch → gate flips.
+        prices = _prices({165: {"sell_min": 2000.0, "buy_max": 1800.0,
+                                "buy_volume": 10.0}})
+        one = ind_core.evaluate_industry([_bp()], prices, _ADJUSTED, _params())[0]
+        assert one["profit_instant"] is not None          # 1 unit fits in 10
+        many = ind_core.evaluate_industry([_bp()], prices, _ADJUSTED,
+                                          _params(runs=100))[0]
+        assert many["profit_instant"] is None             # 100 > 10 on the book
+
+    def test_instant_not_gated_when_depth_unknown(self):
+        # No buy_volume in the price dict (e.g. pre-verify Fuzzwork miss) → we
+        # don't know the depth, so we must NOT suppress a real-looking bid.
+        r = self._row()
+        assert r["profit_instant"] == pytest.approx(662.0)
+
     def test_buildable_gate(self):
         assert self._row(skill_profile={3380: 1})["buildable"] is True
         assert self._row(skill_profile={})["buildable"] is False
@@ -541,6 +571,21 @@ class TestBuildIndustryDetail:
         d = ind_core.build_industry_detail(_bp(), _prices(), {}, _VOLUMES, params)
         assert d["sales_tax"] == pytest.approx(0.05)
         assert d["broker_fee"] == pytest.approx(0.02)
+
+    def test_detail_instant_depth_gated(self):
+        # The detail/peek panel must apply the same instant-sell depth gate as the
+        # scan: an empty buy book blanks the instant figures (bid, revenue, profit)
+        # while the patient/list side stays intact.
+        params = _params(runs=10, adjusted=_ADJUSTED)
+        prices = _prices({165: {"sell_min": 2000.0, "buy_max": 1800.0,
+                                "buy_volume": 0.0}})
+        d = ind_core.build_industry_detail(_bp(), prices, {}, _VOLUMES, params)
+        assert d["bid"] is None
+        assert d["revenue_instant"] is None
+        assert d["profit_instant"] is None
+        assert d["profit_instant_batch"] is None
+        assert d["revenue_patient"] is not None      # list side untouched
+        assert d["profit_patient"] is not None
 
     def test_matches_evaluate(self):
         # detail and evaluate must agree on the per-run economics
@@ -721,6 +766,17 @@ class TestBlueprintAvailability:
         assert (ind_core.tradeability(10) < ind_core.tradeability(100)
                 < ind_core.tradeability(1000))
         assert ind_core.tradeability(5) < 30               # a thin market scores low
+
+    def test_tradeability_full_from_preset(self):
+        # The preset sets the volume that scores 100 (Quiet 1 / Balanced 50 /
+        # Liquidity 1000). A lower bar makes the same volume look more tradeable.
+        assert ind_core.tradeability(50, full=50) == 100
+        assert ind_core.tradeability(1000, full=1000) == 100
+        # 50/day is fully tradeable on the Balanced bar but middling on Liquidity.
+        assert ind_core.tradeability(50, full=1000) < 70
+        # A tiny full bar never divides by zero and still caps at 100.
+        assert ind_core.tradeability(5, full=1) == 100
+        assert ind_core.tradeability(5, full=0) == 100
 
     def test_cheapest_sell_location(self):
         orders = [

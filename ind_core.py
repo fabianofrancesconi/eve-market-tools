@@ -633,16 +633,21 @@ def assemble_invention(conn, bps):
 # --- evaluation (pure: dicts in, dicts out -- no I/O) ----------------------
 
 
-def tradeability(daily_volume):
+def tradeability(daily_volume, full=TRADEABILITY_FULL):
     """A 0..100 score for how sellable a product is, from the daily UNITS traded
     on the market (not the transaction count). The point is to demote items that
     look profitable on paper but whose market can't absorb meaningful quantity.
+
+    ``full`` is the daily volume that scores 100 — the "fully tradeable" bar. It
+    comes from the user's preset (Quiet/Balanced/Liquidity → 1/50/1000): ammo is
+    only impressive when the market moves thousands, a capital component when it
+    moves a handful. With the default bar:
 
       0 units/day              -> 0   (you can't realistically sell it)
       ~10/day                  -> ~28
       ~100/day                 -> ~54
       ~1000/day                -> ~81
-      >= TRADEABILITY_FULL/day -> 100
+      >= full/day              -> 100
 
     Log scale (traded volume spans orders of magnitude), clamped to [0, 100].
     None in -> None (history unknown)."""
@@ -650,7 +655,7 @@ def tradeability(daily_volume):
         return None
     if daily_volume <= 0:
         return 0
-    score = math.log10(1 + daily_volume) / math.log10(1 + TRADEABILITY_FULL)
+    score = math.log10(1 + daily_volume) / math.log10(1 + max(1.0, full))
     return int(round(max(0.0, min(1.0, score)) * 100))
 
 
@@ -1052,6 +1057,18 @@ def evaluate_industry(candidates, prices, adjusted, params):
 
         p = prices.get(pid, {})
         ask, bid = p.get("sell_min"), p.get("buy_max")
+        buy_vol = p.get("buy_volume")
+        sell_vol = p.get("sell_volume")
+        # Depth gate for the INSTANT sell: dumping the batch into buy orders is
+        # only real if the current buy book can actually absorb what you'd make
+        # (out_qty x runs). A single stale/tiny bid — or a bid that's really in
+        # another region and only lingers in the aggregate — otherwise mints a
+        # phantom "instant" profit for a market that's empty. When we don't know
+        # the depth (None) we don't gate; a zero/thin book suppresses the bid so
+        # the row reads "no market" instead of a made-up number.
+        need_qty = out_qty * n
+        if bid is not None and buy_vol is not None and buy_vol < need_qty:
+            bid = None
         rev_patient = (out_qty * ask * patient_factor) if ask else None
         rev_instant = (out_qty * bid * instant_factor) if bid else None
         profit_patient = (rev_patient - operating_cost) if rev_patient is not None else None
@@ -1128,6 +1145,8 @@ def evaluate_industry(candidates, prices, adjusted, params):
             "out_vol_run": out_vol,
             "daily_vol": dv,
             "days_to_sell": days_to_sell,
+            "buy_volume": buy_vol,     # live buy-book depth (units) at the hub
+            "sell_volume": sell_vol,   # live sell-book depth (units) at the hub
             "tradeability": None,   # patched for the top rows by the web layer
             "buildable": _buildable(bp, skill_profile, default_level),
             "me_used": bp_me,
@@ -1202,6 +1221,14 @@ def build_industry_detail(bp, prices, names, volumes, params):
                             + cost["job_cost"] * n + invention_cost * n)
     p = prices.get(pid, {})
     ask, bid = p.get("sell_min"), p.get("buy_max")
+    buy_vol = p.get("buy_volume")
+    sell_vol = p.get("sell_volume")
+    # Depth gate for the INSTANT sell — identical to evaluate_industry: only treat
+    # the bid as real if the current buy book can absorb the batch (out_qty × n).
+    # Keeps the detail/peek panel honest instead of showing a phantom instant
+    # profit for an empty market. Unknown depth (None) → don't gate.
+    if bid is not None and buy_vol is not None and buy_vol < out_qty * n:
+        bid = None
     rev_patient = (out_qty * ask * (1 - sales_tax - broker)) if ask else None
     rev_instant = (out_qty * bid * (1 - sales_tax)) if bid else None
     profit_patient = None if rev_patient is None else rev_patient - operating_cost

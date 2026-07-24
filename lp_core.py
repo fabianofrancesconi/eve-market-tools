@@ -247,8 +247,13 @@ def fetch_prices_esi(type_ids, session, station_id=JITA_STATION_ID,
             orders = _esi_orders_for_type(tid, session, station_id, region_id)
             out[tid] = _summarise_orders(orders)
         except Exception:
+            # Couldn't verify (rate limit / timeout / transient ESI error). Emit
+            # None volumes — NOT 0.0 — so the caller can tell "we don't know the
+            # depth" apart from "the book is genuinely empty". Scoring a liquid
+            # item 0 (and hiding it under a min-tradeability filter) on a transient
+            # hiccup would be worse than leaving it unscored until the next fill.
             out[tid] = {"sell_min": None, "buy_max": None,
-                        "sell_volume": 0.0, "buy_volume": 0.0}
+                        "sell_volume": None, "buy_volume": None}
         if emit and idx % 20 == 0:
             emit(idx, total)
 
@@ -606,7 +611,12 @@ def enrich_liquidity(sellable, daily_vols):
         dv = daily_vols.get(r["name_id"])
         sell_vol = r.get("sell_volume") or 0
         days = (sell_vol / dv) if (dv and dv > 0) else None
-        out[r["offer_id"]] = {"daily_vol": dv, "days_to_clear": days}
+        # Live order-book depth (buyers/sellers on the book now) so the client's
+        # tradeability score can be gated against the current market, not just
+        # 30-day history — an item nobody is trading right now reads ~0.
+        out[r["offer_id"]] = {"daily_vol": dv, "days_to_clear": days,
+                              "buy_volume": r.get("buy_volume"),
+                              "sell_volume": r.get("sell_volume")}
     return out
 
 

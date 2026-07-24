@@ -85,8 +85,7 @@ async function loadSettings(){
       if(s.hide_illiquid==="1"){ STATE.hideIlliquid=true; $("#toggleIlliquid").checked=true; }
       if(s.hide_unaffordable==="1"){ STATE.hideUnaffordable=true; $("#toggleAffordable").checked=true; }
       if(s.trade_weight!==undefined && s.trade_weight!==""){
-        const tw=parseFloat(s.trade_weight);
-        if([0.25,0.5,0.75].includes(tw)){ STATE.tradeWeight=tw; syncBalanceButtons(); }
+        STATE.tradeWeight=migrateTradeWeight(parseFloat(s.trade_weight)); syncBalanceButtons();
       }
       if(s.col_vis && typeof s.col_vis==="object")
         COLS.forEach(c=>{ if(c.k in s.col_vis) STATE.colVis[c.k]=!!s.col_vis[c.k]; });
@@ -128,7 +127,7 @@ async function loadSettings(){
       if(ind.hide_t2==="1") $("#ind-hidet2").checked=true;
       if(ind.hide_bpc==="1") $("#ind-hidebpc").checked=true;
       if(ind.min_tradeability!==undefined&&ind.min_tradeability!=="") $("#ind-mintrade").value=ind.min_tradeability;
-      if(ind.ind_trade_weight!==undefined){ IND.tradeWeight=parseFloat(ind.ind_trade_weight)||0.5; syncIndBalanceButtons(); }
+      if(ind.ind_trade_weight!==undefined){ IND.tradeWeight=migrateTradeWeight(parseFloat(ind.ind_trade_weight)); syncIndBalanceButtons(); }
       if(ind.profiles){ try{ IND.profiles=JSON.parse(ind.profiles)||[]; }catch(e){} }
       renderIndProfiles();
       if(ind.profile) $("#ind-profile").value=ind.profile;

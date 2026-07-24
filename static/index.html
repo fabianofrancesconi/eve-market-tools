@@ -94,11 +94,11 @@
     <button id="refresh" class="secondary" data-tip="Re-fetch offers and prices from ESI">⟳ Refresh</button>
     <label class="check-field" data-tip="Show or hide illiquid rows"><input type="checkbox" id="toggleIlliquid"> Hide illiquid !</label>
     <label class="check-field" data-tip="Hide offers you can't afford"><input type="checkbox" id="toggleAffordable"> Hide unaffordable</label>
-    <span class="balance-group" data-tip="How the Tradeability score weights liquidity vs competition">
+    <span class="balance-group" data-tip="Expected sales volume the Tradeability score aims for — the daily units traded that counts as fully sellable. Quiet suits ships/rare items (a few/day); Liquidity suits ammo/consumables (thousands/day).">
       <span class="balance-label">Tradeability:</span>
-      <button class="balance-btn" data-w="0.5">Balanced</button>
-      <button class="balance-btn" data-w="0.75">Favor liquidity</button>
-      <button class="balance-btn" data-w="0.25">Favor quiet markets</button>
+      <button class="balance-btn" data-w="50">Balanced</button>
+      <button class="balance-btn" data-w="1000">Favor liquidity</button>
+      <button class="balance-btn" data-w="1">Favor quiet markets</button>
     </span>
     <button id="colPickerBtn" class="secondary" data-tip="Choose visible columns">Columns ▾</button>
     <span class="page-char-slot" data-page="lp"></span>
@@ -200,11 +200,11 @@
       <div class="field" data-tip="Hide items whose tradeability is below this (0–100). 0 = no filter. Tradeability is scored for the top-ranked items; items further down the list (not yet scored) are kept, so this trims the illiquid top picks without wiping out a big scan.">
         <label>Min trade</label><input id="ind-mintrade" type="number" min="0" max="100" value="0" style="width:60px">
       </div>
-      <span class="balance-group ind-balance" data-tip="How the Tradeability score weights liquidity (daily volume) vs competition (days to sell). Ranked within this scan.">
-        <span class="balance-label">Balance:</span>
-        <button class="ind-balance-btn" data-w="0.5">Balanced</button>
-        <button class="ind-balance-btn" data-w="0.75">Favor liquidity</button>
-        <button class="ind-balance-btn" data-w="0.25">Favor quiet</button>
+      <span class="balance-group ind-balance" data-tip="Expected sales volume the Tradeability score aims for — the daily units traded that counts as fully sellable. Quiet suits ships/capital parts you sell a few of; Liquidity suits ammo/charges you make by the thousand. Also gated by the live order book: an empty market scores ~0.">
+        <span class="balance-label">Volume:</span>
+        <button class="ind-balance-btn" data-w="50">Balanced</button>
+        <button class="ind-balance-btn" data-w="1000">Favor liquidity</button>
+        <button class="ind-balance-btn" data-w="1">Favor quiet</button>
       </span>
       <div class="field" data-tip="Search by item name. Overrides every other display filter (min trade, etc.) while typing — matches against all scanned items.">
         <label>Search</label>

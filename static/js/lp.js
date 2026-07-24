@@ -3,43 +3,61 @@
 // ══════════════════════════════════════════════════════════════════════════
 let STATE = {rows:[], sort:{key:"isk_per_lp_best", dir:-1}, ctx:{}, selOffer:null,
              colw:{}, colVis:{}, hideIlliquid:false, hideUnaffordable:false, lastScanData:null,
-             tradeWeight:0.5,  // liquidity↔competition blend: 0=all competition, 1=all liquidity
+             tradeWeight:50,  // tradeability volume target (units/day that scores 100): Quiet 1 / Balanced 50 / Liquidity 1000
              fillTotal:0, fillDone:0,  // background liquidity-fill progress (N / M)
              lotTrackerOpen:false, recipeOpen:false,
              shoppingOpen:true, costOpen:false, cargoOpen:false, saleOpen:false};
 
-// Tradeability = a 0–100 blend of two raw signals, each scored by its rank
-// against the other offers in this store (so there's no invented "good volume"
-// constant): liquidity (higher daily_vol = better) and low competition (lower
-// days_to_clear = better). STATE.tradeWeight sets the proportion. Recomputed
-// here on every render and whenever the user changes the balance preset.
-function _computeTradeability(rows, dayField, weight){
-  const loaded=rows.filter(r=>r.liq_loaded && r.daily_vol!==null);
-  if(!loaded.length){ rows.forEach(r=>r.tradeability=null); return; }
-  const sortedVols=[...loaded.map(r=>r.daily_vol)].sort((a,b)=>a-b);
-  const sortedDays=[...loaded.map(r=>{const d=r[dayField]; return d===null?Infinity:d;})].sort((a,b)=>a-b);
-  // lower_bound / upper_bound on an ascending array: count of elements strictly
-  // less than v, and count strictly greater than v (n - upper_bound).
-  const bisect=(arr,v)=>{let lo=0,hi=arr.length;while(lo<hi){const m=(lo+hi)>>1;if(arr[m]<v)lo=m+1;else hi=m;}return lo;};
-  const bisectRight=(arr,v)=>{let lo=0,hi=arr.length;while(lo<hi){const m=(lo+hi)>>1;if(arr[m]<=v)lo=m+1;else hi=m;}return lo;};
-  const pctRank=(sorted,v,higherBetter)=>{
-    const n=sorted.length; if(n<=1) return 100;
-    // "Beaten" = strictly worse peers. Higher-better: those below v (= lower_bound).
-    // Lower-better: those above v (= n - upper_bound). Using upper_bound discounts
-    // ALL tied peers, not just one — the old `-(sorted[pos]===v?1:0)` only removed
-    // a single tie, inflating the score when several offers shared a value.
-    const beats=higherBetter? bisect(sorted,v) : n-bisectRight(sorted,v);
-    return beats/(n-1)*100;
-  };
+// Tradeability = a 0–100 ABSOLUTE score for "can I actually offload what I
+// make?" — not a rank against the other rows (a batch of dead items used to
+// crown its least-dead member at 80+). Two independent signals, both anchored
+// to real numbers:
+//
+//   liquidity   — daily UNITS traded in the region (history). Scored on a log
+//                 curve against the preset's target volume: `volTarget` is the
+//                 daily volume that scores 100 (Quiet 1 / Balanced 50 /
+//                 Liquidity 1000). Ammo only looks tradeable when the market
+//                 moves thousands; a capital component when it moves a handful.
+//   live book   — is anyone actually buying/selling RIGHT NOW? An empty or
+//                 near-empty order book (buy_volume/sell_volume from the live
+//                 ESI fill) hard-caps the score toward 0 regardless of past
+//                 volume, so a flat-history item with no orders reads ~0.
+//
+// STATE.tradeWeight / IND.tradeWeight now carry the volume target, not a blend
+// weight. The old competition (days-to-clear) signal is gone: an item's own
+// days-to-clear is still shown in its column, but "how much stock others have
+// listed" no longer bends the sellability score — the live book does that job.
+function _tradeScore(dailyVol, volTarget){
+  if(dailyVol===null||dailyVol===undefined) return null;
+  if(dailyVol<=0) return 0;
+  const full=Math.max(1, volTarget||1);
+  const s=Math.log10(1+dailyVol)/Math.log10(1+full);
+  return Math.round(Math.max(0, Math.min(1, s))*100);
+}
+// How much the live book backs up the historical score. Depth unknown — not
+// fetched yet (undefined) OR the verify call failed / the item wasn't in the
+// ESI response (null) — → 1 (don't penalise before we actually know). A
+// genuinely empty book (verified 0) → 0. Otherwise ramps to full credit once
+// the book holds at least the target qty. Using `== null` (not `=== undefined`)
+// is deliberate: a transient ESI error sends null, and scoring a liquid item 0
+// on a hiccup — then hiding it under a min-tradeability filter — is worse than
+// leaving it unpenalised until the next fill lands real depth.
+function _liveBookFactor(r, volTarget){
+  const buy=r.buy_volume, sell=r.sell_volume;
+  if(buy==null && sell==null) return 1;   // depth unknown (not verified / errored)
+  const onBook=Math.max(buy||0, sell||0);
+  if(onBook<=0) return 0;                  // verified: nothing on the market now
+  const need=Math.max(1, volTarget||1);
+  return Math.min(1, onBook/need);
+}
+function _computeTradeability(rows, volTarget){
   for(const r of rows){
-    if(!r.liq_loaded || r.daily_vol===null){ r.tradeability=null; continue; }
-    const dayVal=r[dayField]===null?Infinity:r[dayField];
-    const liq=pctRank(sortedVols, r.daily_vol, true);
-    const comp=pctRank(sortedDays, dayVal, false);
-    r.tradeability=Math.round(weight*liq + (1-weight)*comp);
+    if(!r.liq_loaded || r.daily_vol===null||r.daily_vol===undefined){ r.tradeability=null; continue; }
+    const base=_tradeScore(r.daily_vol, volTarget);
+    r.tradeability=Math.round(base*_liveBookFactor(r, volTarget));
   }
 }
-function computeTradeability(){ _computeTradeability(STATE.rows, 'days_to_clear', STATE.tradeWeight); }
+function computeTradeability(){ _computeTradeability(STATE.rows, STATE.tradeWeight); }
 let LP_RESIZING = false;
 
 const fmtIpl = v => (v===null||v===undefined) ? "—" : v.toLocaleString(undefined,{maximumFractionDigits:1});
@@ -49,7 +67,7 @@ const COLS = [
   {k:"isk_per_lp_instant", t:"Instant-sell ISK/LP",w:120, defvis:true,  tip:"Profit per Loyalty Point if you INSTANT-SELL into a buy order at the bid (pay sales tax only).", f:fmtIpl, pn:true},
   {k:"total_profit_patient",t:"List profit",       w:105, defvis:true,  tip:"Total profit across your whole LP budget, listing sell orders at the ask.", f:(v,r)=>r.max_units===0?"—":(v===null?"—":fmtISK(v)), pn:true, rowCtx:true},
   {k:"total_profit_instant",t:"Instant-sell profit",w:120, defvis:true,  tip:"Total profit across your whole LP budget, instant-selling into buy orders.", f:(v,r)=>r.max_units===0?"—":(v===null?"—":fmtISK(v)), pn:true, rowCtx:true},
-  {k:"tradeability", t:"Tradeability",  w: 95, defvis:true,  tip:"0–100: how realistically you can sell at your price. Blends liquidity (Daily Vol) and low competition (Days to Clear), weighted by the Balance buttons. Higher is better; ranked within this store.", f:fmtTrade, rowCtx:true, cls:"spread"},
+  {k:"tradeability", t:"Tradeability",  w: 95, defvis:true,  tip:"0–100: how realistically you can sell at your price. Scores daily traded volume (Daily Vol) against the Tradeability preset (Quiet 1 / Balanced 50 / Liquidity 1000 units/day = fully tradeable), then gates on the live order book — a market nobody is trading scores ~0. Higher is better.", f:fmtTrade, rowCtx:true, cls:"spread"},
   {k:"daily_vol",    t:"Daily Vol",     w: 90, defvis:true,  tip:"Units traded per day at the hub (30-day median). High = deep market you can sell into; low = thin and hard to offload.", f:fmtVolPerDay, rowCtx:true},
   {k:"days_to_clear",t:"Days to Clear", w: 95, defvis:true,  tip:"Sell-side backlog: units listed ÷ units sold per day. “5 d” = 5 days of stock ahead of you. <1 d sells fast; ∞ = barely trades.", f:fmtDays, rowCtx:true, cls:"spread"},
   {k:"spread_pct",   t:"Spread",        w: 70, defvis:true,  tip:"Ask vs bid gap. ≥25% (!) means the ask isn't backed by real buyers — the patient (sell) figure is unreliable, prefer the buy column.", f:fmtSpread, cls:"spread"},
@@ -333,7 +351,10 @@ function _applyLiquidity(liq){
   for(const r of STATE.rows){
     const e=liq[r.offer_id];
     if(e){ r.daily_vol=e.daily_vol; r.days_to_clear=e.days_to_clear;
-      r.list_price=e.list_price; r.floor_age=e.floor_age; r.liq_loaded=true; }
+      r.list_price=e.list_price; r.floor_age=e.floor_age;
+      if(e.buy_volume!==undefined) r.buy_volume=e.buy_volume;
+      if(e.sell_volume!==undefined) r.sell_volume=e.sell_volume;
+      r.liq_loaded=true; }
   }
 }
 // Stream the market-saturation fill (Daily Vol / Days to Clear / Tradeability /

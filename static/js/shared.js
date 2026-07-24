@@ -114,6 +114,17 @@ function fmtFloorAge(v,r){
   if(!r.liq_loaded) return _SPIN;
   return (v===null||v===undefined) ? "no orders" : fmtAgo(v);
 }
+// Tradeability presets used to be a liquidity↔competition blend weight
+// (0.25/0.5/0.75); they're now an expected daily-volume target — the units/day
+// that scores 100 (Quiet 1 / Balanced 50 / Liquidity 1000). Map any legacy
+// saved weight onto the matching new target so an old pref doesn't land on a
+// nonsense value; a value that's already a target passes through unchanged.
+function migrateTradeWeight(w){
+  if(w===0.25) return 1;      // Favor quiet
+  if(w===0.5)  return 50;     // Balanced
+  if(w===0.75) return 1000;   // Favor liquidity
+  return [1,50,1000].includes(w) ? w : 50;
+}
 // Tradeability: 0–100 blend of liquidity + low-competition, color-graded red→green.
 function fmtTrade(v,r){
   if(!r.liq_loaded) return _SPIN;

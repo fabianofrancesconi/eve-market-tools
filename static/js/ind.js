@@ -7,7 +7,7 @@ let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es
            timers:{}, research:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{}, detailRuns:1,
            sim:{},   // blueprint_id -> {me,te} what-if override; in-memory only, never persisted
-           fillTotal:0, fillDone:0, tradeWeight:0.5,
+           fillTotal:0, fillDone:0, tradeWeight:50,
            builds:[], buildsLoaded:false, buildsExpanded:new Set(),
            buildGroups:{},   // stage key -> true when that status group is collapsed
            mode:"planner",
@@ -31,7 +31,34 @@ const fmtPct1 = v => (v===null||v===undefined) ? "—" : (v*100).toFixed(1)+"%";
 const fmtDaysSell = v => (v===null||v===undefined) ? "—" : (v<1 ? "<1 d" : v.toFixed(1)+" d");
 const fmtTrainTime = h => { if(h<1) return Math.round(h*60)+"m"; if(h<24) return h.toFixed(1)+"h"; return (h/24).toFixed(1)+"d"; };
 
-function computeIndTradeability(){ _computeTradeability(IND.rows, 'days_to_sell', IND.tradeWeight); }
+function computeIndTradeability(){ _computeTradeability(IND.rows, IND.tradeWeight); }
+
+// When the live ESI order-book depth lands for a row, re-gate its instant-sell
+// figures against the CURRENT book. The scan already gated on the (laggy)
+// Fuzzwork aggregate; ESI is the accurate word. If the live buy book can't
+// absorb the batch (out_qty × runs), an "instant sell" isn't real — blank every
+// instant-derived field so the row reads "no market" instead of a phantom
+// profit. We only ever suppress, never fabricate: a book that CAN absorb keeps
+// the server's numbers untouched (we don't have the live bid price here to
+// recompute revenue, and the scan's gate already let a real bid through).
+//
+// Only act on VERIFIED depth. When the verify didn't happen or errored, both
+// volumes come back null/undefined (a rate-limit/timeout sends null, not 0) —
+// leave the scan's figures alone rather than blank a real instant profit on a
+// transient hiccup. `== null` catches both null and undefined.
+function applyLiveDepth(r, e){
+  if(e.buy_volume==null && e.sell_volume==null) return;   // depth unknown
+  const need=(r.out_qty||1)*(r.runs||1);
+  const buyVol=e.buy_volume||0;
+  if(e.bid==null || buyVol<need){
+    for(const k of ["profit_instant","total_profit_instant","isk_per_hour_instant",
+                    "margin_instant","bid","payback_runs_instant"]) r[k]=null;
+    // profit_best / its derivatives fall back to the patient figures.
+    r.profit_best=r.profit_patient;
+    r.margin_best=r.margin_patient;
+    r.isk_per_hour_best=r.isk_per_hour_patient;
+  }
+}
 
 const IND_COLS = [
   {k:"_fav",               t:"★",              w: 30, tip:"Add to Watchlist — track blueprints you don't own. Your owned blueprints appear in 'My Blueprints' automatically.", raw:true},
@@ -52,7 +79,7 @@ const IND_COLS = [
   {k:"in_vol_run",         t:"Cargo in",       w: 85, tip:"m³ of materials to haul in per run.", f:v=>v?fmtVol(v):"—"},
   {k:"out_vol_run",        t:"Cargo out",      w: 85, tip:"m³ of finished items to haul out per run.", f:v=>v?fmtVol(v):"—"},
   {k:"days_to_sell",       t:"Days to sell",   w: 88, tip:"How many days to sell one run's output (output qty ÷ daily volume). Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : fmtDaysSell(v)},
-  {k:"tradeability",       t:"Tradeability",   w: 98, tip:"0–100: how realistically you can sell at your price. Blends liquidity (daily volume) and low competition (days to sell), weighted by the Balance buttons. Higher is better; ranked within this scan.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
+  {k:"tradeability",       t:"Tradeability",   w: 98, tip:"0–100: how realistically you can sell what you make. Scores daily traded volume against the Volume preset (Quiet 1 / Balanced 50 / Liquidity 1000 units/day = fully tradeable), then gates on the live order book — an empty/thin market scores ~0 no matter its history. Higher is better.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
   {k:"buildable",          t:"Buildable?",     w: 72, tip:"Can every required skill (at the Skills level) make it? Shows training time if not.", f:(v,r)=>v?"✓":("✗"+(r.train_hours?`<div class="train-time">${fmtTrainTime(r.train_hours)}</div>`:""))},
 ];
 
@@ -586,6 +613,11 @@ async function fillIndTradeability(){
         if(e){
           r.daily_vol=e.daily_vol;
           r.days_to_sell=(e.daily_vol>0)?((r.out_qty*r.runs)/e.daily_vol):null;
+          // Live order-book depth from the ESI verify — used to gate the phantom
+          // instant-sell price and to score tradeability against the current book.
+          if(e.buy_volume!==undefined) r.buy_volume=e.buy_volume;
+          if(e.sell_volume!==undefined) r.sell_volume=e.sell_volume;
+          applyLiveDepth(r, e);
         }
         r.liq_loaded=true;   // clear the spinner even on a failed/empty fetch
       }

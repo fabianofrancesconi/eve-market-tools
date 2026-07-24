@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.142.1"
+__version__ = "1.143.0"
 
 import argparse
 import base64
@@ -3655,10 +3655,23 @@ def do_ind_liquidity(q):
     raw = q.get("type_ids", [""])[0]
     type_ids = [int(x) for x in raw.split(",") if x.strip().isdigit()]
     daily = fetch_history_volumes(set(type_ids), region_id, SESSION, CACHE_DIR)
+    # Live order-book depth (real bids/asks on the book right now), so the client
+    # can suppress a phantom instant-sell price and score sellability against the
+    # current market — not just 30-day region history. Cached 5 min per station.
+    live = fetch_prices_esi(set(type_ids), SESSION, station_id=station_id,
+                            region_id=region_id, cache_dir=CACHE_DIR)
     out = {}
     for tid in type_ids:
         dv = daily.get(tid)
-        out[str(tid)] = {"daily_vol": dv, "tradeability": ind_core.tradeability(dv)}
+        p = live.get(tid, {})
+        out[str(tid)] = {
+            "daily_vol": dv,
+            "tradeability": ind_core.tradeability(dv),
+            "buy_volume": p.get("buy_volume"),
+            "sell_volume": p.get("sell_volume"),
+            "bid": p.get("buy_max"),
+            "ask": p.get("sell_min"),
+        }
     return {"liquidity": out}
 
 

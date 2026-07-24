@@ -149,9 +149,11 @@ class TestEnrichLiquidity:
         assert out[1]["days_to_clear"] is None
 
     def test_only_raw_signals_returned(self):
-        # No invented constants leak through: just the two raw market signals.
+        # No invented constants leak through: raw market signals + live-book depth
+        # (used to gate tradeability against the current order book, not history).
         out = lp_core.enrich_liquidity([_row()], {101: 200})
-        assert set(out[1]) == {"daily_vol", "days_to_clear"}
+        assert set(out[1]) == {"daily_vol", "days_to_clear",
+                               "buy_volume", "sell_volume"}
 
     def test_keyed_by_offer_id(self):
         rows = [_row(offer_id=7, name_id=1), _row(offer_id=8, name_id=2)]

@@ -473,7 +473,8 @@ class TestDoLiquidity:
         # ask (100) below fair value (120) -> hold the list price at fair value
         assert entry["list_price"] == 120.0
         assert entry["floor_age"] == 28800.0  # 8h, from the order's issued stamp
-        assert set(entry) == {"daily_vol", "days_to_clear", "list_price", "floor_age"}
+        assert set(entry) == {"daily_vol", "days_to_clear", "list_price",
+                              "floor_age", "buy_volume", "sell_volume"}
 
     def test_history_fetched_for_hub_region(self, tmp_path):
         """Amarr station → daily volume pulled from the Domain region, not Forge."""
@@ -1271,7 +1272,8 @@ class TestIndustryTradeabilityFill:
     def test_liquidity_scores_each_type(self, tmp_server):
         base, _ = tmp_server
         fake = {34: 1000.0, 35: None, 36: 0.0}  # traded / never traded / zero vol
-        with patch.object(lp_web, "fetch_history_volumes", return_value=fake):
+        with patch.object(lp_web, "fetch_history_volumes", return_value=fake), \
+             patch.object(lp_web, "fetch_prices_esi", return_value={}):
             data, status = http_get(f"{base}/api/ind/liquidity?type_ids=34,35,36")
         assert status == 200
         liq = data["liquidity"]
@@ -1283,6 +1285,23 @@ class TestIndustryTradeabilityFill:
         # Traded but zero recent volume -> a real, lowest score.
         assert liq["36"]["tradeability"] == 0
 
+    def test_liquidity_returns_live_book_depth(self, tmp_server):
+        # The background fill also carries live order-book depth from ESI so the
+        # client can gate a phantom instant price and score against the current
+        # market — an empty book, not just 30-day history.
+        base, _ = tmp_server
+        vols = {34: 1000.0}
+        live = {34: {"sell_min": 12.0, "buy_max": 11.0,
+                     "sell_volume": 500.0, "buy_volume": 0.0}}
+        with patch.object(lp_web, "fetch_history_volumes", return_value=vols), \
+             patch.object(lp_web, "fetch_prices_esi", return_value=live):
+            data, status = http_get(f"{base}/api/ind/liquidity?type_ids=34")
+        assert status == 200
+        e = data["liquidity"]["34"]
+        assert e["buy_volume"] == 0.0
+        assert e["sell_volume"] == 500.0
+        assert e["bid"] == 11.0 and e["ask"] == 12.0
+
     def test_liquidity_parses_only_integer_ids(self, tmp_server):
         base, _ = tmp_server
         seen = {}
@@ -1291,13 +1310,15 @@ class TestIndustryTradeabilityFill:
             seen["ids"] = set(ids)
             return {}
 
-        with patch.object(lp_web, "fetch_history_volumes", side_effect=fake):
+        with patch.object(lp_web, "fetch_history_volumes", side_effect=fake), \
+             patch.object(lp_web, "fetch_prices_esi", return_value={}):
             http_get(f"{base}/api/ind/liquidity?type_ids=34,abc,,36")
         assert seen["ids"] == {34, 36}
 
     def test_liquidity_empty_when_no_ids(self, tmp_server):
         base, _ = tmp_server
-        with patch.object(lp_web, "fetch_history_volumes", return_value={}):
+        with patch.object(lp_web, "fetch_history_volumes", return_value={}), \
+             patch.object(lp_web, "fetch_prices_esi", return_value={}):
             data, status = http_get(f"{base}/api/ind/liquidity?type_ids=")
         assert status == 200
         assert data["liquidity"] == {}

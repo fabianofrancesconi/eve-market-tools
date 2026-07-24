@@ -1461,9 +1461,11 @@ function indApplyMode(){
   }
 }
 
-// Keep the Tracker button's (N) badge in sync with the current build count.
+// Keep the Tracker button's (N) badge in sync with the count of ACTIVE builds.
+// Archived builds are hidden in the collapsed section and shouldn't inflate the
+// badge — it reflects what's live in the tracker, not the full history.
 function _updateTrackCount(){
-  const n=IND.builds.length;
+  const n=IND.builds.filter(b=>!b.archived).length;
   const badge=$("#ind-track-count");
   if(badge){
     badge.textContent = n?`(${n})`:"";

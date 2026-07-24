@@ -1273,10 +1273,15 @@ function _activeJobIdSet(){
 // if that job isn't in the current fetch. The server resolves facility_id to a
 // name (falling back to "Structure" for unnamed citadels) on each job.
 function _buildJobLocation(b){
-  if(b.job_id==null) return "";
-  const jobs=(AUTH.data&&AUTH.data.jobs)||[];
-  const j=jobs.find(j=>String(j.job_id)===String(b.job_id));
-  return (j&&j.location)||"";
+  // Prefer the live job's resolved location; fall back to the location persisted
+  // when the build first linked, so built/listed/sold builds (whose job has left
+  // ESI's active list) still show where they were made.
+  if(b.job_id!=null){
+    const jobs=(AUTH.data&&AUTH.data.jobs)||[];
+    const j=jobs.find(j=>String(j.job_id)===String(b.job_id));
+    if(j&&j.location) return j.location;
+  }
+  return b.job_location||"";
 }
 
 // Recompute each build's status from live jobs and persist the transitions that
@@ -1349,8 +1354,9 @@ function reconcileBuilds(){
     const job=_findJobForBuild(b, claimed);
     if(job){
       claimed.add(String(job.job_id));
-      b.job_id=job.job_id; b.job_end=job.end; b.char_name=job.character_name; changed=true;
-      _patchBuildLink(b, {job_id:job.job_id, job_end:job.end, char_name:job.character_name});
+      b.job_id=job.job_id; b.job_end=job.end; b.char_name=job.character_name;
+      b.job_location=job.location||b.job_location; changed=true;
+      _patchBuildLink(b, {job_id:job.job_id, job_end:job.end, char_name:job.character_name, job_location:b.job_location});
     }
   });
   renderIndBuilds();
@@ -2299,8 +2305,9 @@ function acceptCloseJob(buildId, jobId, jobRuns){
   b.job_id=job.job_id;
   b.job_end=job.end;
   b.char_name=job.character_name;
+  b.job_location=job.location||b.job_location;
   if(jobRuns && jobRuns>0) b.runs=jobRuns;
-  _patchBuildLink(b, {job_id:job.job_id, job_end:job.end, char_name:job.character_name, runs:b.runs});
+  _patchBuildLink(b, {job_id:job.job_id, job_end:job.end, char_name:job.character_name, job_location:b.job_location, runs:b.runs});
   renderIndBuilds();
 }
 

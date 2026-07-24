@@ -129,12 +129,14 @@ class TestLink:
             {"runs": ["1"], "snapshot": [json.dumps(_snapshot())]})["build"]
         res = lp_web.do_ind_builds_link({
             "id": [b["id"]], "job_id": ["12345"],
-            "job_end": ["2026-07-20T10:00:00Z"], "char_name": ["Tester"]})
+            "job_end": ["2026-07-20T10:00:00Z"], "char_name": ["Tester"],
+            "job_location": ["Jita IV - Moon 4 - Caldari Navy Assembly Plant"]})
         assert res["ok"] is True
         stored = lp_web.do_ind_builds_list({})["builds"][0]
         assert stored["job_id"] == "12345"
         assert stored["job_end"] == "2026-07-20T10:00:00Z"
         assert stored["char_name"] == "Tester"
+        assert stored["job_location"] == "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
 
     def test_link_done_at(self, monkeypatch, tmp_path):
         import json

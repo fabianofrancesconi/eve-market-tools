@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.141.8"
+__version__ = "1.141.9"
 
 import argparse
 import base64
@@ -1440,7 +1440,7 @@ def do_ind_builds_link(q):
         if b.get("id") != build_id:
             continue
         found = True
-        for f in ("job_id", "job_end", "char_name"):
+        for f in ("job_id", "job_end", "char_name", "job_location"):
             if f in q:
                 v = q.get(f, [None])[0]
                 b[f] = None if (v is None or v == "" or v == "null") else v

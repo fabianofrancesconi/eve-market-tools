@@ -1130,6 +1130,31 @@
   .build-peek-progress.done .bpp-track i { background:var(--stg-sold); }
   .build-peek-progress .bpp-count { font-size:11px; color:var(--dim); margin-top:5px;
     text-align:center; font-variant-numeric:tabular-nums; }
+  /* Sell-price breakdown: frozen list/instant per unit vs the live "now" price,
+     with the delta — answers "sell now or wait?" at a glance. */
+  .build-peek-prices { margin-top:16px; border-top:1px solid var(--line);
+    padding-top:12px; }
+  .build-peek-prices .bpr-head,
+  .build-peek-prices .bpr-row { display:grid;
+    grid-template-columns:58px 1fr 16px 1fr; align-items:baseline; gap:8px; }
+  .build-peek-prices .bpr-head { font-size:9.5px; text-transform:uppercase;
+    letter-spacing:.07em; color:var(--dim2); margin-bottom:5px; }
+  .build-peek-prices .bpr-head span:nth-child(2),
+  .build-peek-prices .bpr-then { text-align:right; }
+  .build-peek-prices .bpr-row { font-size:13px; padding:3px 0;
+    font-variant-numeric:tabular-nums; }
+  .build-peek-prices .bpr-row + .bpr-row { border-top:1px solid var(--line); }
+  .build-peek-prices .bpr-k { color:var(--dim); font-size:11.5px;
+    text-transform:uppercase; letter-spacing:.04em; }
+  .build-peek-prices .bpr-then { color:var(--fg); }
+  .build-peek-prices .bpr-arrow { color:var(--dim2); text-align:center; font-size:11px; }
+  .build-peek-prices .bpr-now { color:var(--fg); display:flex; align-items:baseline;
+    gap:6px; }
+  .build-peek-prices .bpr-now b { font-weight:600; }
+  .build-peek-prices .bpr-delta { font-size:10.5px; font-weight:700; }
+  .build-peek-prices .bpr-delta.pos { color:var(--green2); }
+  .build-peek-prices .bpr-delta.neg { color:var(--red); }
+  .build-peek-prices .bpr-na { color:var(--dim2); }
   /* Industry facts pulled from the frozen snapshot — the reason to open the peek:
      blueprint efficiency, run time, and where it's built. */
   .build-peek-facts { display:flex; justify-content:center; flex-wrap:wrap;

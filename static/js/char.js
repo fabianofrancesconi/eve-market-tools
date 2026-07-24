@@ -1098,6 +1098,20 @@ function openBuildPeek(id){
     </div>`;
   }
 
+  // Sell-price breakdown: the frozen list (patient) and instant (into buy
+  // orders) prices per unit. The "now" column + delta are filled in async once
+  // the live quote arrives — so a glance answers "sell now or wait?".
+  const priceRow=(label,frozen)=>`<div class="bpr-row" data-side="${label==="List"?"ask":"bid"}">`
+    +`<span class="bpr-k">${label}</span>`
+    +`<span class="bpr-then">${isk(frozen)}</span>`
+    +`<span class="bpr-arrow">→</span>`
+    +`<span class="bpr-now">…</span></div>`;
+  const priceBlock=(s.ask!=null||s.bid!=null)?`<div class="build-peek-prices">
+    <div class="bpr-head"><span></span><span>frozen</span><span></span><span>now / unit</span></div>
+    ${priceRow("List", s.ask)}
+    ${priceRow("Instant", s.bid)}
+  </div>`:"";
+
   // Industry facts the Character overview doesn't show — the reason to follow the
   // 🔗 in the first place: the blueprint's efficiency, how long a run takes, and
   // where it's built. Each is skipped if the snapshot doesn't carry it.
@@ -1115,11 +1129,52 @@ function openBuildPeek(id){
       ${heroSub?`<div class="bph-sub">${heroSub}</div>`:""}
     </div>
     ${progress}
+    ${priceBlock}
     ${facts.length?`<div class="build-peek-facts">${facts.join("")}</div>`:""}
     <div class="build-peek-meta">${n.toLocaleString()}× · ${units!=null?units.toLocaleString()+" units":"—"} · cost ${isk(cost)}</div>`;
   modal.classList.remove("hidden");
+  if(priceBlock) _fillBuildPeekPrices(b, id);
 }
 function closeBuildPeek(){ const m=$("#buildPeekModal"); if(m) m.classList.add("hidden"); _buildPeekId=null; }
+
+// Fetch the current market quote for a peeked build and fill the "now / unit"
+// column + delta vs the frozen price. Reuses the tracker's refresh_prices detail
+// endpoint. Guards on _buildPeekId so a late response for a since-closed (or
+// swapped) modal is dropped.
+function _fillBuildPeekPrices(b, id){
+  const s=b.snapshot||{};
+  const p=new URLSearchParams({
+    blueprint_id:String(s.blueprint_id||""),
+    station:String(s.station_id||""),
+    job_rate:String(((s.job_rate||0)*100)),
+    sales_tax:String(((s.sales_tax||0)*100)),
+    broker:String(((s.broker_fee||0)*100)),
+    runs:"1", refresh_prices:"1",
+  });
+  const isk=v=>(v==null?"—":fmtISK(v));
+  fetch("/api/ind/detail?"+p).then(r=>r.json()).then(fresh=>{
+    if(_buildPeekId!==id) return;   // modal closed or swapped while fetching
+    const body=$("#build-peek-body"); if(!body) return;
+    const now={ask:fresh&&!fresh.error?fresh.ask:null, bid:fresh&&!fresh.error?fresh.bid:null};
+    const frozen={ask:s.ask, bid:s.bid};
+    body.querySelectorAll(".bpr-row").forEach(row=>{
+      const side=row.dataset.side;             // "ask" (list) or "bid" (instant)
+      const nowV=now[side], thenV=frozen[side];
+      const slot=row.querySelector(".bpr-now");
+      if(nowV==null){ slot.innerHTML=`<span class="bpr-na">—</span>`; return; }
+      const diff=(thenV!=null)?nowV-thenV:null;
+      const dcls=diff>0?"pos":(diff<0?"neg":"");
+      const arrow=diff>0?"▲":(diff<0?"▼":"");
+      const pctTxt=(thenV)?` ${Math.abs(diff/thenV*100).toFixed(1)}%`:"";
+      slot.innerHTML=`<b>${isk(nowV)}</b>`
+        +(diff!=null&&diff!==0?` <span class="bpr-delta ${dcls}">${arrow}${pctTxt}</span>`:"");
+    });
+  }).catch(()=>{
+    if(_buildPeekId!==id) return;
+    const body=$("#build-peek-body"); if(!body) return;
+    body.querySelectorAll(".bpr-now").forEach(el=>{ el.innerHTML=`<span class="bpr-na">—</span>`; });
+  });
+}
 
 // When logged in, drive the LP budget from the character's loyalty points for
 // the selected corp and lock the field read-only. Shows 0 if the character

@@ -1436,10 +1436,21 @@ class TestCharDataOrdersIsolation:
         assert out["market_orders_error"] is None
 
     def test_orders_table_has_total_value_column(self):
-        """Total value = remaining units x listed price, next to the Price column."""
+        """Total value = remaining units x listed price, next to the Price column.
+
+        Order-table headers are generated from the _ORDER_COLS descriptor list
+        (so they can be clicked to sort), so the label lives there rather than
+        as a literal <th>."""
         html = lp_web.FRONTEND_SOURCE
-        assert ">Total value</th>" in html
+        assert "label:'Total value'" in html
         assert "fmtISK((o.volume_remain??0)*o.price)" in html
+
+    def test_orders_table_headers_are_sortable(self):
+        """Column headers are clickable to re-sort; default is newest-posted."""
+        html = lp_web.FRONTEND_SOURCE
+        assert "_ordersSort={key:'posted', dir:'desc'}" in html
+        assert 'data-sort-key="' in html
+        assert "th.onclick" in html
 
 
 # ---------------------------------------------------------------------------

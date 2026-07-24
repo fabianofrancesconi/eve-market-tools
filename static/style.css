@@ -796,6 +796,10 @@
     color:var(--fg); vertical-align:top; }
   table.mini th:first-child, table.mini td:first-child { text-align:left;
     white-space:normal; word-break:break-word; }
+  table.mini th.ord-th { cursor:pointer; user-select:none; white-space:nowrap;
+    transition:color .1s; }
+  table.mini th.ord-th:hover { color:var(--fg); }
+  table.mini th.ord-th-active { color:var(--cyan); }
   table.mini tr:last-child td { border-bottom:none; }
   table.mini tr:hover td { background:var(--panel2); }
   table.mini .total td { font-weight:700; border-top:1px solid var(--line2);

@@ -363,6 +363,61 @@ function _fmtOrdersExpires(httpDate){
   return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
 }
 
+// ── Market-order table sorting ──────────────────────────────────────────
+// Shared across the per-character and combined "All" order tables. Default is
+// newest-posted first; clicking a column header re-sorts, and clicking the
+// active column again flips direction.
+let _ordersSort={key:'posted', dir:'desc'};
+
+// Column descriptors keyed by header. `val` extracts a comparable value from an
+// order (numbers for numeric columns, lowercase strings for text). The optional
+// `char` column is only present in the combined view.
+const _ORDER_COLS=[
+  {key:'char',      label:'Character',   align:'left',  val:o=>(o._char||'').toLowerCase()},
+  {key:'item',      label:'Item',        align:'left',  val:o=>(o.type_name||'').toLowerCase()},
+  {key:'side',      label:'Side',        align:'left',  val:o=>o.is_buy_order?1:0},
+  {key:'remaining', label:'Remaining',   align:'right', val:o=>o.volume_remain??0},
+  {key:'price',     label:'Price',       align:'right', val:o=>o.price||0},
+  {key:'value',     label:'Total value', align:'right', val:o=>(o.volume_remain??0)*(o.price||0)},
+  {key:'jita',      label:'Jita sell',   align:'right', val:o=>o.market_sell??-Infinity},
+  {key:'queue',     label:'Queue',       align:'right', val:o=>o.is_best?-1:(o.queue_rank??Infinity)},
+  {key:'posted',    label:'Posted',      align:'right', val:o=>o.issued?Date.parse(o.issued):-Infinity},
+  {key:'expires',   label:'Expires',     align:'right', val:o=>{
+    const i=o.issued?Date.parse(o.issued):NaN;
+    return isFinite(i)&&o.duration!=null?i+o.duration*86400000:Infinity;
+  }},
+];
+
+// Columns to show; the combined view prepends the Character column.
+function _orderCols(withChar){
+  return withChar?_ORDER_COLS:_ORDER_COLS.filter(c=>c.key!=='char');
+}
+
+// Text columns read naturally ascending (A→Z); numeric columns default to
+// descending (largest/newest first) when first clicked.
+function _defaultSortDir(key){ return (key==='char'||key==='item'||key==='side')?'asc':'desc'; }
+
+function _ordersHeaderHTML(cols){
+  return cols.map(c=>{
+    const active=_ordersSort.key===c.key;
+    const arrow=active?(_ordersSort.dir==='asc'?' ▲':' ▼'):'';
+    const align=c.align==='right'?' style="text-align:right"':'';
+    return `<th class="ord-th${active?' ord-th-active':''}" data-sort-key="${c.key}"${align}>${c.label}${arrow}</th>`;
+  }).join('');
+}
+
+function _sortOrders(orders){
+  const col=_ORDER_COLS.find(c=>c.key===_ordersSort.key);
+  if(!col) return orders.slice();
+  const dir=_ordersSort.dir==='asc'?1:-1;
+  return orders.slice().sort((a,b)=>{
+    const va=col.val(a), vb=col.val(b);
+    if(va<vb) return -dir;
+    if(va>vb) return dir;
+    return 0;
+  });
+}
+
 function _renderCharPanel(c){
   const cJobs=c.jobs||[], cQueue=c.skillqueue||[], cLp=c.loyalty||[], cOrders=c.market_orders||[];
   const cOrdersError=c.market_orders_error;
@@ -436,11 +491,11 @@ function _renderCharPanel(c){
   if(cOrders.length) h+=` <span class="char-card-sub">(${cOrders.length} · ${fmtISK(ordersVal)} ISK)</span>`;
   h+=`</h3>`+(ordersExp?`<span class="char-card-note" title="ESI caches market orders ~20 min. New/changed orders won't appear until this time.">updates at ${ordersExp}</span>`:"")+`</div><div class="char-card-body">`;
   if(cOrders.length){
+    const cols=_orderCols(false);
     h+=`<div class="char-card-scroll char-orders-scroll"><table class="mini char-orders-tbl"><thead><tr>`;
-    h+=`<th>Item</th><th>Side</th><th style="text-align:right">Remaining</th><th style="text-align:right">Price</th>`;
-    h+=`<th style="text-align:right">Total value</th><th style="text-align:right">Jita sell</th>`;
-    h+=`<th style="text-align:right">Queue</th><th style="text-align:right">Posted</th><th style="text-align:right">Expires</th></tr></thead><tbody>`;
-    for(const o of cOrders){
+    h+=_ordersHeaderHTML(cols);
+    h+=`</tr></thead><tbody>`;
+    for(const o of _sortOrders(cOrders)){
       const issuedMs=o.issued?Date.parse(o.issued):NaN;
       const posted=isFinite(issuedMs)?fmtDur((Date.now()-issuedMs)/1000)+" ago":"—";
       const postedTip=isFinite(issuedMs)?` title="${new Date(issuedMs).toLocaleString()}"`:"";
@@ -538,11 +593,11 @@ function _renderAllPanel(chars){
     const buyOrders=allOrders.filter(o=>o.is_buy_order);
     const sellVal=sellOrders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0),0);
     const buyVal=buyOrders.reduce((s,o)=>s+(o.volume_remain??0)*(o.price||0),0);
+    const cols=_orderCols(true);
     h+=`<div class="char-card-scroll char-orders-scroll"><table class="mini char-orders-tbl"><thead><tr>`;
-    h+=`<th>Character</th><th>Item</th><th>Side</th><th style="text-align:right">Remaining</th><th style="text-align:right">Price</th>`;
-    h+=`<th style="text-align:right">Total value</th><th style="text-align:right">Jita sell</th>`;
-    h+=`<th style="text-align:right">Queue</th><th style="text-align:right">Posted</th><th style="text-align:right">Expires</th></tr></thead><tbody>`;
-    for(const o of allOrders){
+    h+=_ordersHeaderHTML(cols);
+    h+=`</tr></thead><tbody>`;
+    for(const o of _sortOrders(allOrders)){
       const issuedMs=o.issued?Date.parse(o.issued):NaN;
       const posted=isFinite(issuedMs)?fmtDur((Date.now()-issuedMs)/1000)+" ago":"—";
       const postedTip=isFinite(issuedMs)?` title="${new Date(issuedMs).toLocaleString()}"`:"";
@@ -814,6 +869,17 @@ function renderCharData(){
       const jid=tr.dataset.jobId;
       const job=((AUTH.data&&AUTH.data.jobs)||[]).find(j=>String(j.job_id)===String(jid));
       if(job) openIndFromJob(job);
+    };
+  });
+
+  // Wire market-order column sorting. Clicking a header sorts by that column;
+  // clicking the active column again flips direction. Re-renders in place.
+  $("#char-body").querySelectorAll(".char-orders-tbl .ord-th").forEach(th=>{
+    th.onclick=()=>{
+      const key=th.dataset.sortKey;
+      if(_ordersSort.key===key) _ordersSort.dir=_ordersSort.dir==='asc'?'desc':'asc';
+      else _ordersSort={key, dir:_defaultSortDir(key)};
+      renderCharData();
     };
   });
 

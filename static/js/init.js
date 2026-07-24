@@ -150,6 +150,11 @@ async function loadSettings(){
         const bg=typeof ind.build_groups==="string"?JSON.parse(ind.build_groups):ind.build_groups;
         if(bg&&typeof bg==="object") Object.assign(IND.buildGroups, bg);
       }catch(e){} }
+      // The Archived group always starts collapsed on a fresh load, whatever its
+      // last persisted state — it's an out-of-the-way declutter bucket, so dropping
+      // the restored value lets the render default (collapsed) take over. It's still
+      // freely expandable within the session.
+      delete IND.buildGroups.archived;
       // Exploration recent lookups — server-authoritative so every device converges.
       if(s.exp_recent!==undefined && typeof EXP!=="undefined"){ try{
         const er=typeof s.exp_recent==="string"?JSON.parse(s.exp_recent):s.exp_recent;

@@ -506,7 +506,10 @@ function _renderCharPanel(c){
         :o.is_best?`<span class="ord-best">Best ✓</span>`:`<span class="ord-queue ${heatClass(o.queue_rank,o.queue_total)}">#${o.queue_rank} / ${o.queue_total}</span>`;
       const saleTip=o.last_sale_ts?` title="Last sale: ${o.last_sale_qty} unit${o.last_sale_qty>1?'s':''} sold ${_fmtAgo(o.last_sale_ts)}" style="text-align:right;color:var(--green2)"`
         :` style="text-align:right"`;
-      h+=`<tr><td>${authEsc(o.type_name)}</td>`
+      const oTracked=_orderIsTracked(o);
+      const oLink=oTracked?` <span class="char-job-tracked" title="You're tracking a build for this order — click to open its tracked build in Industry">🔗</span>`:"";
+      const oCls=oTracked?" char-order-row":"";
+      h+=`<tr class="${oCls.trim()}" data-order-id="${o.order_id!=null?o.order_id:''}"><td>${authEsc(o.type_name)}${oLink}</td>`
         +`<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
         +`<td${saleTip}>${(o.volume_remain??0).toLocaleString()} / ${(o.volume_total??0).toLocaleString()}</td>`
         +`<td style="text-align:right">${fmtISK(o.price)}</td>`
@@ -608,7 +611,10 @@ function _renderAllPanel(chars){
         :o.is_best?`<span class="ord-best">Best ✓</span>`:`<span class="ord-queue ${heatClass(o.queue_rank,o.queue_total)}">#${o.queue_rank} / ${o.queue_total}</span>`;
       const saleTip=o.last_sale_ts?` title="Last sale: ${o.last_sale_qty} unit${o.last_sale_qty>1?'s':''} sold ${_fmtAgo(o.last_sale_ts)}" style="text-align:right;color:var(--green2)"`
         :` style="text-align:right"`;
-      h+=`<tr><td>${authEsc(o._char)}</td><td>${authEsc(o.type_name)}</td>`
+      const oTracked=_orderIsTracked(o);
+      const oLink=oTracked?` <span class="char-job-tracked" title="You're tracking a build for this order — click to open its tracked build in Industry">🔗</span>`:"";
+      const oCls=oTracked?" char-order-row":"";
+      h+=`<tr class="${oCls.trim()}" data-order-id="${o.order_id!=null?o.order_id:''}"><td>${authEsc(o._char)}</td><td>${authEsc(o.type_name)}${oLink}</td>`
         +`<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
         +`<td${saleTip}>${(o.volume_remain??0).toLocaleString()} / ${(o.volume_total??0).toLocaleString()}</td>`
         +`<td style="text-align:right">${fmtISK(o.price)}</td>`
@@ -872,6 +878,12 @@ function renderCharData(){
     };
   });
 
+  // Wire clicking a linked market-order row → open its tracked build in Industry.
+  $("#char-body").querySelectorAll("tr.char-order-row").forEach(tr=>{
+    tr.style.cursor="pointer";
+    tr.onclick=()=>{ openIndFromOrder({order_id:tr.dataset.orderId}); };
+  });
+
   // Wire market-order column sorting. Clicking a header sorts by that column;
   // clicking the active column again flips direction. Re-renders in place.
   $("#char-body").querySelectorAll(".char-orders-tbl .ord-th").forEach(th=>{
@@ -965,6 +977,27 @@ function _trackedBuildForJob(j){
     || null;
 }
 function _jobIsTracked(j){ return !!_trackedBuildForJob(j); }
+
+// Find the tracked build whose sell links to this market order, by the order_id
+// recorded in sell.order_ids (set when a listed sale auto-links to the order).
+// order_id round-trips as a string on the build side, so compare via String().
+function _trackedBuildForOrder(o){
+  const oid=o&&(o.order_id!=null?o.order_id:o.id);
+  if(oid==null || typeof IND==="undefined") return null;
+  const builds=IND.builds||[];
+  return builds.find(b=>((b.sell||{}).order_ids||[]).some(x=>String(x)===String(oid))) || null;
+}
+function _orderIsTracked(o){ return !!_trackedBuildForOrder(o); }
+
+// Clicking a linked market-order row jumps to the Industry tab and opens the
+// tracked build covering that order.
+function openIndFromOrder(o){
+  if(typeof IND==="undefined") return;
+  const build=_trackedBuildForOrder(o);
+  if(typeof switchTab==="function") switchTab("ind");
+  if(!build || typeof openTrackedBuild!=="function") return;
+  setTimeout(()=>openTrackedBuild(build.id), 60);
+}
 
 // Clicking an industry-job row jumps to the Industry tab and opens the detailed
 // view of the tracked build covering that job (not the blueprint catalogue).

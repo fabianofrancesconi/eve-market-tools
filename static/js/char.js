@@ -955,7 +955,11 @@ function _trackedBuildForJob(j){
   // would wrongly link the overview job to the old finished card.
   const stillOpen=b=>typeof _buildStage!=="function"
     || _buildStage(b)==="planned" || _buildStage(b)==="building";
-  return builds.find(b=>b.job_id!=null && String(b.job_id)===String(j.job_id))
+  // Even the exact job_id match is gated on the build still being open: a
+  // sold/listed build can carry a stale link to a *new* live batch's job (same
+  // blueprint/runs) until reconcile releases it — don't show 🔗 on a finished
+  // card in the meantime.
+  return builds.find(b=>b.job_id!=null && String(b.job_id)===String(j.job_id) && stillOpen(b))
     || builds.find(b=>b.blueprint_id===j.blueprint_type_id
                       && (j.runs==null || b.runs===j.runs) && stillOpen(b))
     || null;

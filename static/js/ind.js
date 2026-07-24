@@ -1306,21 +1306,25 @@ function reconcileBuilds(){
   // Order by created_at so the oldest batch claims the oldest matching job.
   const ordered=[...IND.builds].sort((a,b)=>(a.created_at||0)-(b.created_at||0));
   ordered.forEach(b=>{
+    // A built/listed/sold build's own manufacturing job was delivered long ago.
+    // If it still holds an ACTIVE job_id, that link points at a *different* live
+    // batch (same blueprint/runs) that got wrongly adopted — release it so the
+    // link never shows on a finished card and the real batch can claim the job.
+    // `done_at` is irrelevant here: a sale can close from wallet fills while the
+    // job is still active, leaving done_at unset — so this must run before the
+    // done_at branch below, which would otherwise keep the link.
+    const stg=_buildStage(b);
+    if((stg==="sold"||stg==="listed") && b.job_id!=null && activeJobIds.has(String(b.job_id))){
+      b.job_id=null; b.job_end=null; changed=true;
+      _patchBuildLink(b, {job_id:null, job_end:null});
+      return;
+    }
     if(b.done_at){
+      // Self-heal: a build wrongly marked done (e.g. a stale string/number
+      // job_id mismatch from an older build) whose linked job is in fact still
+      // running gets un-marked and reclaimed. (Sold/listed builds are handled
+      // above; this only reaches the "built" stage.)
       if(b.job_id!=null && activeJobIds.has(String(b.job_id))){
-        // A build that has already progressed to selling can't still be building
-        // its own job — its manufacturing job was delivered long ago. An active
-        // job under its link is therefore a *new* batch's job that got wrongly
-        // adopted: release the link (and let the real batch claim it) rather than
-        // un-marking the sale as "not done".
-        if(_buildStage(b)==="sold"||_buildStage(b)==="listed"){
-          b.job_id=null; b.job_end=null; changed=true;
-          _patchBuildLink(b, {job_id:null, job_end:null});
-          return;
-        }
-        // Otherwise self-heal: a build wrongly marked done (e.g. a stale
-        // string/number job_id mismatch from an older build) whose linked job is
-        // in fact still running gets un-marked and reclaimed.
         b.done_at=null; changed=true; claimed.add(String(b.job_id));
         _patchBuildLink(b, {done_at:null});
       }

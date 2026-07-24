@@ -948,8 +948,16 @@ function syncJobTimers(){
 // as a string, so compare via String().
 function _trackedBuildForJob(j){
   const builds=(typeof IND!=="undefined" && IND.builds)||[];
+  // Exact link wins. Failing that, fall back to blueprint (+ runs) — but only
+  // onto a build that could still be awaiting/building this job. A build that
+  // already reached built/listed/sold has had its own job delivered long ago, so
+  // a live active job matching by blueprint is a *different* batch; matching it
+  // would wrongly link the overview job to the old finished card.
+  const stillOpen=b=>typeof _buildStage!=="function"
+    || _buildStage(b)==="planned" || _buildStage(b)==="building";
   return builds.find(b=>b.job_id!=null && String(b.job_id)===String(j.job_id))
-    || builds.find(b=>b.blueprint_id===j.blueprint_type_id && (j.runs==null || b.runs===j.runs))
+    || builds.find(b=>b.blueprint_id===j.blueprint_type_id
+                      && (j.runs==null || b.runs===j.runs) && stillOpen(b))
     || null;
 }
 function _jobIsTracked(j){ return !!_trackedBuildForJob(j); }

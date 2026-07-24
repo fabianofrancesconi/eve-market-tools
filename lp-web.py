@@ -1960,10 +1960,14 @@ def _reconcile_sell_builds(acct, current_orders):
 
 
 # How long before a build finished a transaction may be dated and still count as
-# a sale of that build's output — covers clock skew and pre-selling stock crafted
-# just before the job delivered. Kept tight so an unrelated earlier sale of the
-# same item isn't mis-attributed.
-_INSTANT_SELL_BACKDATE = 6 * 3600
+# a sale of that build's output. Covers clock skew, pre-selling stock crafted just
+# before the job delivered, and — the main reason it's this wide — ESI lag: the
+# build isn't marked "built" (done_at) until its job leaves ESI's active list,
+# which can trail the actual in-game delivery/instant-sell by a long while. A week
+# ensures a legitimate instant sell is still back-filled once the delivery finally
+# registers. The qty_target cap keeps this from over-attributing an unrelated
+# earlier sale of the same item.
+_INSTANT_SELL_BACKDATE = 7 * 86400
 
 
 def _reconcile_instant_sell_builds(acct, transactions):

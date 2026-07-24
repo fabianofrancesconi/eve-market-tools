@@ -789,6 +789,11 @@
   .char-job-row:hover td { background:var(--panel3); }
   .char-job-tracked { color:var(--cyan); font-size:11.5px; margin-left:3px;
     cursor:pointer; }
+  /* A tracked build's name is itself the quick-look trigger — a dotted cyan
+     underline signals it's clickable without shouting like a full link. */
+  .char-peek-name { cursor:pointer; text-decoration:underline dotted;
+    text-decoration-color:var(--cyan); text-underline-offset:2px; }
+  .char-peek-name:hover { color:var(--cyan); }
   table.mini { font-size:13.5px; width:100%; border-collapse:collapse; }
   table.mini th { position:static; background:none; color:var(--dim);
     font-size:10.5px; letter-spacing:.5px; border-bottom:1px solid var(--line); padding:4px 8px; }
@@ -1155,6 +1160,88 @@
   .build-peek-prices .bpr-delta.pos { color:var(--green2); }
   .build-peek-prices .bpr-delta.neg { color:var(--red); }
   .build-peek-prices .bpr-na { color:var(--dim2); }
+  .build-peek-prices .bpr-load { color:var(--dim2); font-size:11px; font-style:italic; }
+  /* Tab switch between the Overview and the Re-price decision tool. Understated
+     underline tabs so the hero/stepper above stay the focus. */
+  .build-peek-tabs { display:flex; gap:2px; margin:2px 0 16px;
+    border-bottom:1px solid var(--line); }
+  .build-peek-tabs.hidden { display:none; }
+  .build-peek-tabs .bpt-tab { flex:0 0 auto; background:none; border:0;
+    border-bottom:2px solid transparent; margin-bottom:-1px; cursor:pointer;
+    padding:6px 12px; font-size:12.5px; font-weight:600; color:var(--dim);
+    letter-spacing:.01em; }
+  .build-peek-tabs .bpt-tab:hover { color:var(--fg); }
+  .build-peek-tabs .bpt-tab.active { color:var(--fg); border-bottom-color:var(--accent,var(--stg-listed)); }
+  /* Re-price tab: scope note, break-even reference, and the what-if simulator. */
+  .build-peek-benote { margin-top:12px; font-size:11.5px; color:var(--dim);
+    line-height:1.5; }
+  .build-peek-benote b { color:var(--fg); font-variant-numeric:tabular-nums; }
+  .build-peek-scope { margin-top:10px; font-size:11px; color:var(--dim2);
+    line-height:1.5; }
+  .build-peek-scope b { color:var(--fg); font-variant-numeric:tabular-nums; }
+  .build-peek-sim { margin-top:14px; border-top:1px solid var(--line);
+    padding-top:14px; }
+  .build-peek-sim .bp-sim-loading { font-size:12px; color:var(--dim2);
+    text-align:center; padding:14px 0; font-style:italic; }
+  .bp-sim-head { font-size:10px; text-transform:uppercase; letter-spacing:.09em;
+    color:var(--dim); text-align:center; }
+  .bp-sim-price { text-align:center; font-size:26px; font-weight:700;
+    font-variant-numeric:tabular-nums; line-height:1.15; margin-top:2px; }
+  .bp-sim-price .bp-sim-unit { font-size:12px; font-weight:400; color:var(--dim);
+    margin-left:5px; }
+  .bp-sim-slider { -webkit-appearance:none; appearance:none; width:100%;
+    height:6px; border-radius:99px; background:var(--panel3); margin:12px 0 4px;
+    outline:none; cursor:pointer; }
+  .bp-sim-slider::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+    width:16px; height:16px; border-radius:50%; background:var(--fg);
+    border:2px solid var(--bg); box-shadow:0 1px 3px rgba(0,0,0,.4); cursor:pointer; }
+  .bp-sim-slider::-moz-range-thumb { width:16px; height:16px; border-radius:50%;
+    background:var(--fg); border:2px solid var(--bg); cursor:pointer; }
+  .bp-sim-chips { display:flex; flex-wrap:wrap; gap:6px; justify-content:center;
+    margin-top:10px; }
+  .bp-sim-chips .bp-chip { background:var(--panel2); border:1px solid var(--line2);
+    border-radius:99px; padding:3px 9px; font-size:10.5px; color:var(--dim);
+    cursor:pointer; font-variant-numeric:tabular-nums; }
+  .bp-sim-chips .bp-chip:hover { color:var(--fg); border-color:var(--dim); }
+  .bp-sim-chips .bp-chip b { color:var(--fg); font-weight:600; margin-left:4px; }
+  .bp-sim-out { margin-top:14px; }
+  .bp-sim-out .bp-metric { display:flex; justify-content:space-between;
+    align-items:baseline; padding:4px 0; font-size:13px; }
+  .bp-sim-out .bp-metric + .bp-metric { border-top:1px solid var(--line); }
+  .bp-sim-out .bp-m-k { color:var(--dim); font-size:12px; }
+  .bp-sim-out .bp-m-k small { color:var(--dim2); font-size:10px; }
+  .bp-sim-out .bp-m-v { font-weight:700; font-variant-numeric:tabular-nums; }
+  .bp-sim-out .bp-m-v.pos { color:var(--green2); }
+  .bp-sim-out .bp-m-v.neg { color:var(--red); }
+  .bp-sim-out .bp-total { margin-top:2px; border-top:1px solid var(--line2)!important; }
+  .bp-sim-out .bp-be-line { margin-top:8px; text-align:center; font-size:11px;
+    line-height:1.4; }
+  .bp-sim-out .bp-be.ok { color:var(--green2); }
+  .bp-sim-out .bp-be.bad { color:var(--red); font-weight:600; }
+  /* The "settle for less" reality check: what the unsold units really fetch. */
+  .bp-sim-floor { margin-top:14px; border-top:1px solid var(--line);
+    padding-top:10px; }
+  .bp-sim-floor .bp-floor-head { font-size:9.5px; text-transform:uppercase;
+    letter-spacing:.07em; color:var(--dim2); margin-bottom:5px; }
+  .bp-sim-floor .bp-floor-row { display:flex; justify-content:space-between;
+    align-items:baseline; font-size:12px; padding:3px 0; color:var(--dim);
+    font-variant-numeric:tabular-nums; }
+  .bp-sim-floor .bp-floor-row span:last-child { font-weight:600; }
+  .bp-sim-floor .bp-floor-row .pos { color:var(--green2); }
+  .bp-sim-floor .bp-floor-row .neg { color:var(--red); }
+  .bp-sim-floor .bp-floor-note { font-size:10.5px; color:var(--dim2);
+    margin-top:6px; line-height:1.4; }
+  .bp-sim-floor .bp-floor-note b { color:var(--fg); font-variant-numeric:tabular-nums; }
+  /* Queue chip on the Overview — the trigger to consider re-pricing. */
+  .build-peek-queue { margin-top:14px; text-align:center; font-size:11.5px;
+    padding:6px 10px; border-radius:6px; background:var(--panel2);
+    border:1px solid var(--line2); color:var(--fg); }
+  .build-peek-queue.best { color:var(--green2); border-color:var(--green2); }
+  .build-peek-queue.heat-1 { color:var(--heat-1); }
+  .build-peek-queue.heat-2 { color:var(--heat-2); }
+  .build-peek-queue.heat-3 { color:var(--heat-3); }
+  .build-peek-queue.heat-4 { color:var(--heat-4); }
+  .build-peek-queue.heat-5 { color:var(--heat-5); }
   /* Industry facts pulled from the frozen snapshot — the reason to open the peek:
      blueprint efficiency, run time, and where it's built. */
   .build-peek-facts { display:flex; justify-content:center; flex-wrap:wrap;

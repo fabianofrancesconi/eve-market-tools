@@ -455,7 +455,7 @@ function _renderCharPanel(c){
       const cls=tracked?" char-job-row":"";
       const tip=tracked?` title="Open its tracked build in Industry"`:"";
       h+=`<tr class="${cls.trim()}" data-job-id="${j.job_id}"${tip}>`
-        +`<td>${authEsc(j.product_name)}${link}</td><td>${authEsc(j.activity)}</td>`
+        +`<td>${_peekName(j.product_name, tb)}${link}</td><td>${authEsc(j.activity)}</td>`
         +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
     }
     h+=`</tbody></table></div>`;
@@ -511,7 +511,7 @@ function _renderCharPanel(c){
       const oTracked=!!oTb;
       const oLink=oTracked?` <span class="char-job-tracked" data-peek="${oTb.id}" title="Quick look at this tracked build">🔗</span>`:"";
       const oCls=oTracked?" char-order-row":"";
-      h+=`<tr class="${oCls.trim()}" data-order-id="${o.order_id!=null?o.order_id:''}"><td>${authEsc(o.type_name)}${oLink}</td>`
+      h+=`<tr class="${oCls.trim()}" data-order-id="${o.order_id!=null?o.order_id:''}"><td>${_peekName(o.type_name, oTb)}${oLink}</td>`
         +`<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
         +`<td${saleTip}>${(o.volume_remain??0).toLocaleString()} / ${(o.volume_total??0).toLocaleString()}</td>`
         +`<td style="text-align:right">${fmtISK(o.price)}</td>`
@@ -571,7 +571,7 @@ function _renderAllPanel(chars){
       const cls=tracked?" char-job-row":"";
       const tip=tracked?` title="Open its tracked build in Industry"`:"";
       h+=`<tr class="${cls.trim()}" data-job-id="${j.job_id}"${tip}>`
-        +`<td>${authEsc(j._char)}</td><td>${authEsc(j.product_name)}${link}</td><td>${authEsc(j.activity)}</td>`
+        +`<td>${authEsc(j._char)}</td><td>${_peekName(j.product_name, tb)}${link}</td><td>${authEsc(j.activity)}</td>`
         +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
     }
     h+=`</tbody></table></div>`;
@@ -618,7 +618,7 @@ function _renderAllPanel(chars){
       const oTracked=!!oTb;
       const oLink=oTracked?` <span class="char-job-tracked" data-peek="${oTb.id}" title="Quick look at this tracked build">🔗</span>`:"";
       const oCls=oTracked?" char-order-row":"";
-      h+=`<tr class="${oCls.trim()}" data-order-id="${o.order_id!=null?o.order_id:''}"><td>${authEsc(o._char)}</td><td>${authEsc(o.type_name)}${oLink}</td>`
+      h+=`<tr class="${oCls.trim()}" data-order-id="${o.order_id!=null?o.order_id:''}"><td>${authEsc(o._char)}</td><td>${_peekName(o.type_name, oTb)}${oLink}</td>`
         +`<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
         +`<td${saleTip}>${(o.volume_remain??0).toLocaleString()} / ${(o.volume_total??0).toLocaleString()}</td>`
         +`<td style="text-align:right">${fmtISK(o.price)}</td>`
@@ -967,6 +967,15 @@ function syncJobTimers(){
   if(IND.openDetail) renderIndDetail(IND.openDetail);
 }
 
+// Render a job/order name cell. When it's a tracked build the name itself
+// becomes the quick-look trigger (data-peek) — same as the 🔗 icon — so there's
+// no behavioural gap between clicking the name and clicking the link. Untracked
+// names stay plain escaped text.
+function _peekName(name, tb){
+  const esc=authEsc(name);
+  return tb?`<span class="char-peek-name" data-peek="${tb.id}" title="Quick look at this tracked build">${esc}</span>`:esc;
+}
+
 // Find the tracked build covering an industry job — by job_id first (exact
 // link), then by blueprint (+ runs when the job reports them). job_id round-trips
 // as a string, so compare via String().
@@ -1024,40 +1033,98 @@ function openIndFromJob(j){
 }
 
 // ── Tracked-build quick-look modal ───────────────────────────────────────────
-// Clicking the 🔗 icon on a job/order opens a lightweight "peek" at the tracked
-// build's fundamentals — no tab switch — with a button to jump into Industry.
+// Clicking the 🔗 icon on a job/order opens a two-tab peek at the tracked build:
+//   • Overview  — high-level: profit, progress, queue, key facts.
+//   • Re-price  — the decision tool: market drift since tracking + a what-if
+//     price simulator that answers "if I drop my price to climb the queue, after
+//     a fresh broker fee, am I still above break-even and how much do I give up?"
+// _PEEK holds the derived model shared by both tabs and by the live-quote fill.
 let _buildPeekId=null;
+let _buildPeekTab="overview";
+let _PEEK=null;
+const _peekIsk=v=>(v==null?"—":fmtISK(v));
+const _peekSign=v=>(v!=null&&v>0?"+":"");
+const _peekPn=v=>(v==null?"":(v>0?"pos":(v<0?"neg":"")));
+const _peekPct=v=>(v==null?"—":(v>0?"+":"")+(v*100).toFixed(0)+"%");
+
 function openBuildPeek(id){
   if(typeof IND==="undefined") return;
   const b=(IND.builds||[]).find(x=>x.id===id);
   const modal=$("#buildPeekModal");
   if(!b || !modal){ if(typeof openTrackedBuild==="function") openTrackedBuild(id); return; }
   _buildPeekId=id;
+  _buildPeekTab="overview";
 
-  const isk=v=>(v==null?"—":fmtISK(v));
-  const pn=v=>(v==null?"":(v>0?"pos":(v<0?"neg":"")));
-  const sign=v=>(v!=null&&v>0?"+":"");
-  const pct=v=>(v==null?null:(v>0?"+":"")+(v*100).toFixed(0)+"%");
   const n=Math.max(1, b.runs||1);
   const s=b.snapshot||{};
   const stage=(typeof _buildStage==="function")?_buildStage(b):"";
   const econ=(typeof _batchEconomics==="function")?_batchEconomics(s, n):{};
   const units=(typeof _buildUnits==="function")?_buildUnits(b):null;
-  const cost=econ.cost;
+  const be=(typeof _buildBreakEven==="function")?_buildBreakEven(b):{list:null,instant:null};
   const rz=((stage==="listed"||stage==="sold") && typeof _buildRealized==="function")?_buildRealized(b):null;
+  const stax=s.sales_tax||0, bfee=s.broker_fee||0;
+  const target=(b.sell||{}).qty_target||units||0;
+  // Units still to sell — the simulator works on these (with realized added on top).
+  const remaining=rz?Math.max(0, target-rz.units):(units||0);
+  // Per-unit cost basis: prefer the frozen sell cost_per_unit, else derive it.
+  const cpu=(b.sell&&b.sell.cost_per_unit!=null)?b.sell.cost_per_unit
+           :(typeof _buildCostPerUnit==="function"?_buildCostPerUnit(b):null);
+  // Live linked order (its queue rank drives the re-price nudge).
+  const order=_peekLinkedOrder(b);
 
-  // Header: reuse the tracker's colored stage badge so the peek reads as the
-  // same object the Industry card shows.
+  _PEEK={b, id, n, s, stage, econ, units, be, rz, stax, bfee, target, remaining, cpu, order,
+         cost:econ.cost, live:null, liveState:"loading"};
+
+  // Pinned header: the tracker's colored stage badge + name + lifecycle stepper.
   const badge=(typeof _buildBadge==="function")?_buildBadge(b, stage):{key:"",label:stage};
   $("#build-peek-title").innerHTML=`<span class="ind-build-status ${badge.key}">${authEsc(badge.label)}</span>`
     +`<span class="build-peek-name">${authEsc(b.product_name||"Tracked build")}</span>`;
+  $("#build-peek-stepper").innerHTML=(typeof _buildStepperHtml==="function")?_buildStepperHtml(b, stage):"";
 
-  // The same lifecycle stepper as the card — instantly recognizable.
-  const stepper=(typeof _buildStepperHtml==="function")?_buildStepperHtml(b, stage):"";
+  // The Re-price tab only earns its place once there's a live/finished sale to
+  // reason about; hide it for planned/building/built.
+  const showReprice=(stage==="listed"||stage==="sold"||stage==="built");
+  const tabs=$("#build-peek-tabs");
+  tabs.classList.toggle("hidden", !showReprice);
+  if(!showReprice) _buildPeekTab="overview";
 
-  // The hero is the one number that matters at this stage: a live countdown while
-  // the job runs, otherwise the money (realized once selling, projected before).
-  // Everything else is a quiet one-line footnote — no pill grid.
+  _renderBuildPeekTab();
+  modal.classList.remove("hidden");
+  _fetchBuildPeekLive(b, id);   // async: fills the live market drift + simulator
+}
+function closeBuildPeek(){ const m=$("#buildPeekModal"); if(m) m.classList.add("hidden"); _buildPeekId=null; _PEEK=null; }
+
+// Which of the character's open sell orders this build is tracking (for queue
+// position). Matches the build's linked order_id against every character bundle.
+function _peekLinkedOrder(b){
+  const oid=((b.sell||{}).order_ids||[])[0];
+  if(oid==null) return null;
+  const chars=(AUTH.data&&AUTH.data.characters)||(AUTH.data?[AUTH.data]:[]);
+  for(const c of chars){
+    const o=(c.market_orders||[]).find(o=>String(o.order_id)===String(oid));
+    if(o) return o;
+  }
+  return null;
+}
+
+function _renderBuildPeekTab(){
+  const body=$("#build-peek-body"); if(!body||!_PEEK) return;
+  $("#build-peek-tabs").querySelectorAll(".bpt-tab").forEach(t=>
+    t.classList.toggle("active", t.dataset.tab===_buildPeekTab));
+  body.innerHTML=(_buildPeekTab==="reprice")?_buildPeekRepriceHtml():_buildPeekOverviewHtml();
+  if(_buildPeekTab==="reprice"){
+    _wireBuildPeekSim();
+    // If the live quote already landed (e.g. it resolved while Overview showed),
+    // fill the freshly-rendered drift cells + sim right away.
+    if(_PEEK.liveState==="done") _applyBuildPeekLive();
+  }
+}
+
+// ── Overview tab — high-level, few numbers ───────────────────────────────────
+function _buildPeekOverviewHtml(){
+  const P=_PEEK, isk=_peekIsk, pn=_peekPn, sign=_peekSign;
+  const {b,s,stage,econ,units,rz,cost,n,order}=P;
+
   let heroLabel, heroHtml, heroSub="", cls="";
   if(stage==="building"){
     const end=b.job_end?Date.parse(b.job_end):null;
@@ -1080,68 +1147,212 @@ function openBuildPeek(id){
   } else {   // listed / sold
     heroLabel=stage==="sold"?"Realized profit":"Profit so far";
     heroHtml=`<span class="bph-val ${pn(rz.profit)}">${sign(rz.profit)}${isk(rz.profit)}</span>`;
-    // No sub here — the sold count lives on the progress bar below, not repeated.
   }
-  // Margin badge rides alongside a money hero (not the countdown).
-  const marginVal=(stage!=="building")?((rz?rz.profit:econ.profitL)!=null&&cost?((rz?rz.profit:econ.profitL)/cost):null):null;
-  const marginTag=(marginVal!=null)?`<span class="bph-margin ${pn(rz?rz.profit:econ.profitL)}">${pct(marginVal)}</span>`:"";
+  const heroBase=rz?rz.profit:econ.profitL;
+  const marginVal=(stage!=="building" && heroBase!=null && cost)?heroBase/cost:null;
+  const marginTag=(marginVal!=null)?`<span class="bph-margin ${pn(heroBase)}">${_peekPct(marginVal)}</span>`:"";
 
-  // Sold-progress bar with its count inline — only while a sale is live/closed.
+  // Sold-progress bar.
   let progress="";
   if(rz){
-    const target=(b.sell||{}).qty_target||units||0;
-    const frac=target?Math.min(1, rz.units/target):0;
+    const frac=P.target?Math.min(1, rz.units/P.target):0;
     const closedEarly=stage==="sold"&&(b.sell||{}).closed_early;
     progress=`<div class="build-peek-progress ${stage==="sold"?"done":""}">
       <div class="bpp-track"><i style="width:${(frac*100).toFixed(1)}%"></i></div>
-      <div class="bpp-count">${rz.units.toLocaleString()} / ${target.toLocaleString()} sold${closedEarly?" · rest written off":""}</div>
+      <div class="bpp-count">${rz.units.toLocaleString()} / ${P.target.toLocaleString()} sold${closedEarly?" · rest written off":""}</div>
     </div>`;
   }
 
-  // Sell-price breakdown: the frozen list (patient) and instant (into buy
-  // orders) prices per unit. The "now" column + delta are filled in async once
-  // the live quote arrives — so a glance answers "sell now or wait?".
-  const priceRow=(label,frozen)=>`<div class="bpr-row" data-side="${label==="List"?"ask":"bid"}">`
-    +`<span class="bpr-k">${label}</span>`
-    +`<span class="bpr-then">${isk(frozen)}</span>`
-    +`<span class="bpr-arrow">→</span>`
-    +`<span class="bpr-now">…</span></div>`;
-  const priceBlock=(s.ask!=null||s.bid!=null)?`<div class="build-peek-prices">
-    <div class="bpr-head"><span></span><span>frozen</span><span></span><span>now / unit</span></div>
-    ${priceRow("List", s.ask)}
-    ${priceRow("Instant", s.bid)}
-  </div>`:"";
+  // Queue chip — the reason to consider re-pricing. Only while genuinely listed.
+  let queue="";
+  if(stage==="listed" && order){
+    queue=order.is_best
+      ? `<div class="build-peek-queue best">◎ Best price in the queue</div>`
+      : (order.queue_rank!=null
+        ? `<div class="build-peek-queue ${heatClass(order.queue_rank,order.queue_total)}">▤ #${order.queue_rank} of ${order.queue_total} in the sell queue — undercut to climb</div>`
+        : "");
+  }
 
-  // Industry facts the Character overview doesn't show — the reason to follow the
-  // 🔗 in the first place: the blueprint's efficiency, how long a run takes, and
-  // where it's built. Each is skipped if the snapshot doesn't carry it.
   const facts=[];
   if(s.me_used!=null||s.te_used!=null) facts.push(`<span class="bpf"><i>ME</i>${s.me_used??0} · <i>TE</i>${s.te_used??0}</span>`);
   if(s.build_time!=null) facts.push(`<span class="bpf"><i>Build</i>${fmtDur(econ.time)}</span>`);
   const loc=(typeof _buildJobLocation==="function"&&_buildJobLocation(b))||s.station_name||"";
   if(loc) facts.push(`<span class="bpf">📍 ${authEsc(loc)}</span>`);
 
-  $("#build-peek-body").innerHTML=`
-    <div class="build-peek-stepper">${stepper}</div>
+  return `
     <div class="build-peek-hero ${cls}">
       <div class="bph-label">${heroLabel}${marginTag}</div>
       <div class="bph-main">${heroHtml}</div>
       ${heroSub?`<div class="bph-sub">${heroSub}</div>`:""}
     </div>
     ${progress}
-    ${priceBlock}
+    ${queue}
     ${facts.length?`<div class="build-peek-facts">${facts.join("")}</div>`:""}
     <div class="build-peek-meta">${n.toLocaleString()}× · ${units!=null?units.toLocaleString()+" units":"—"} · cost ${isk(cost)}</div>`;
-  modal.classList.remove("hidden");
-  if(priceBlock) _fillBuildPeekPrices(b, id);
 }
-function closeBuildPeek(){ const m=$("#buildPeekModal"); if(m) m.classList.add("hidden"); _buildPeekId=null; }
 
-// Fetch the current market quote for a peeked build and fill the "now / unit"
-// column + delta vs the frozen price. Reuses the tracker's refresh_prices detail
-// endpoint. Guards on _buildPeekId so a late response for a since-closed (or
-// swapped) modal is dropped.
-function _fillBuildPeekPrices(b, id){
+// ── Re-price tab — market drift + what-if simulator ──────────────────────────
+function _buildPeekRepriceHtml(){
+  const P=_PEEK, isk=_peekIsk;
+  const {s,be,order,remaining,rz,liveState}=P;
+
+  // Market drift: frozen list/instant → live now, with Δ%. "now" cells fill in
+  // once the live quote lands (liveState); until then a loading dash.
+  const driftRow=(label,side,frozen)=>{
+    return `<div class="bpr-row" data-side="${side}">`
+      +`<span class="bpr-k">${label}</span>`
+      +`<span class="bpr-then">${isk(frozen)}</span>`
+      +`<span class="bpr-arrow">→</span>`
+      +`<span class="bpr-now">${liveState==="loading"?'<span class="bpr-load">fetching…</span>':'<span class="bpr-na">—</span>'}</span></div>`;
+  };
+  const drift=`<div class="build-peek-prices">
+    <div class="bpr-head"><span>Price / unit</span><span>frozen</span><span></span><span>now</span></div>
+    ${driftRow("List","ask",s.ask)}
+    ${driftRow("Instant","bid",s.bid)}
+  </div>`;
+
+  // Break-even reference. The simulator sim body is injected after the live fetch
+  // resolves (it needs the live best-ask to place the slider sensibly), so here
+  // we render a placeholder the fetch replaces.
+  const beNote=(be.list!=null)
+    ? `<div class="build-peek-benote">Break-even (list): <b>${isk(be.list)}</b> / unit — sell above this and the craft paid off.</div>`
+    : "";
+
+  const simSlot=`<div id="bp-sim" class="build-peek-sim">${
+    liveState==="loading"
+      ? `<div class="bp-sim-loading">Fetching current market to build the simulator…</div>`
+      : `<div class="bp-sim-loading">Live market unavailable — can't simulate right now.</div>`
+  }</div>`;
+
+  const scopeNote=rz
+    ? `<div class="build-peek-scope">Simulating the <b>${remaining.toLocaleString()}</b> unsold unit(s). Realized ${isk(rz.profit)} from ${rz.units.toLocaleString()} already sold is added to the total.</div>`
+    : `<div class="build-peek-scope">Simulating all <b>${remaining.toLocaleString()}</b> unit(s).</div>`;
+
+  return drift + beNote + scopeNote + simSlot;
+}
+
+// Build the simulator DOM once the live quote is known. Slider spans a sensible
+// window around break-even / frozen / live prices; dragging recomputes profit,
+// margin and the give-up vs. an instant dump — after a FRESH broker fee, because
+// re-listing pays broker again.
+function _renderBuildPeekSim(){
+  const P=_PEEK; if(!P) return;
+  const slot=$("#bp-sim"); if(!slot) return;
+  const {s,be,live,remaining,stax,bfee}=P;
+  if(!live || (live.ask==null && live.bid==null)){
+    slot.innerHTML=`<div class="bp-sim-loading">Live market unavailable — can't simulate right now.</div>`;
+    return;
+  }
+  const isk=_peekIsk;
+  // Reference prices for the slider ticks.
+  const beList=be.list, frozen=s.ask, bestAsk=live.ask, bid=live.bid!=null?live.bid:s.bid;
+  const undercut=bestAsk!=null?bestAsk*0.9999:null;   // one ISK-ish under best ask
+  const refs=[beList,frozen,bestAsk,bid,undercut].filter(v=>v!=null);
+  if(!refs.length){ slot.innerHTML=`<div class="bp-sim-loading">Not enough price data to simulate.</div>`; return; }
+  // Slider window: a little below break-even (or bid) up to a little above the
+  // highest reference, so every tick is reachable and there's headroom.
+  const lo=Math.min(...refs)*0.9, hi=Math.max(...refs)*1.1;
+  const start=(bestAsk!=null)?bestAsk:(frozen!=null?frozen:be.list);
+  const step=Math.max(0.01, (hi-lo)/1000);
+
+  const chip=(label,val)=> val==null?"" :
+    `<button class="bp-chip" data-price="${val}" title="Set price to ${isk(val)}">${label}<b>${isk(val)}</b></button>`;
+  slot.innerHTML=`
+    <div class="bp-sim-head">If I re-price to</div>
+    <div class="bp-sim-price"><span id="bp-sim-price">${isk(start)}</span><span class="bp-sim-unit">/ unit</span></div>
+    <input id="bp-sim-slider" class="bp-sim-slider" type="range" min="${lo}" max="${hi}" step="${step}" value="${start}"${
+      beList!=null?` style="${_peekRailStyle(lo,hi,beList)}"`:""}>
+    <div class="bp-sim-chips">
+      ${chip("Break-even ",beList)}
+      ${chip("Best ask ",bestAsk)}
+      ${chip("Undercut ",undercut)}
+      ${chip("Frozen ",frozen)}
+    </div>
+    <div class="bp-sim-out" id="bp-sim-out"></div>
+    <div class="bp-sim-floor" id="bp-sim-floor"></div>`;
+  _updateBuildPeekSim(start);
+}
+
+// A track tinted red up to the break-even point and green above it, so the
+// danger zone (selling at a loss) is visible before you even drag.
+function _peekRailStyle(lo,hi,be){
+  const pct=Math.max(0, Math.min(100, (be-lo)/(hi-lo)*100)).toFixed(1);
+  return `--be-pct:${pct}%;background:linear-gradient(90deg,`
+    +`var(--red-soft,rgba(220,80,80,.35)) 0 ${pct}%,`
+    +`var(--green-soft,rgba(80,180,120,.35)) ${pct}% 100%);`;
+}
+
+// Recompute the simulator outputs for a chosen list price.
+function _updateBuildPeekSim(price){
+  const P=_PEEK; if(!P) return;
+  const {be,remaining,rz,stax,bfee,live}=P, isk=_peekIsk, sign=_peekSign, pn=_peekPn;
+  const cpu=P.cpu;
+  const priceEl=$("#bp-sim-price"); if(priceEl) priceEl.textContent=isk(price);
+  const slider=$("#bp-sim-slider"); if(slider && +slider.value!==price) slider.value=price;
+
+  // Net per unit if LISTED at `price`: sales tax + a fresh broker fee (re-listing
+  // always pays broker again). Profit = (net − cost) × remaining, plus realized.
+  const netUnit=price*(1-stax-bfee);
+  const profitUnit=(cpu!=null)?netUnit-cpu:null;
+  const remProfit=(profitUnit!=null)?profitUnit*remaining:null;
+  const totalProfit=(remProfit!=null)?remProfit+(rz?rz.profit:0):null;
+  const aboveBE=(be.list!=null)?price-be.list:null;
+
+  const out=$("#bp-sim-out");
+  if(out){
+    const beCls=(aboveBE==null)?"":(aboveBE>=0?"pos":"neg");
+    const beMsg=(aboveBE==null)?"" : aboveBE>=0
+      ? `<span class="bp-be ok">✓ ${isk(aboveBE)}/unit above break-even</span>`
+      : `<span class="bp-be bad">⚠ ${isk(-aboveBE)}/unit below break-even — losing money on the craft</span>`;
+    out.innerHTML=`
+      <div class="bp-metric"><span class="bp-m-k">Net / unit <small>after tax + broker</small></span>
+        <span class="bp-m-v ${pn(profitUnit)}">${isk(netUnit)}</span></div>
+      <div class="bp-metric"><span class="bp-m-k">Profit on ${remaining.toLocaleString()} left</span>
+        <span class="bp-m-v ${pn(remProfit)}">${sign(remProfit)}${isk(remProfit)}</span></div>
+      ${rz?`<div class="bp-metric bp-total"><span class="bp-m-k">Batch total <small>incl. ${isk(rz.profit)} realized</small></span>
+        <span class="bp-m-v ${pn(totalProfit)}">${sign(totalProfit)}${isk(totalProfit)}</span></div>`:""}
+      <div class="bp-be-line ${beCls}">${beMsg}</div>`;
+  }
+
+  // The "settle for less" floors: instant-dump the remainder into buy orders
+  // (bid, tax only, no broker), and the undercut-best-ask optimistic case.
+  const floor=$("#bp-sim-floor");
+  if(floor){
+    const bid=live&&live.bid!=null?live.bid:P.s.bid;
+    const instUnit=(bid!=null)?bid*(1-stax):null;
+    const instProfit=(instUnit!=null&&cpu!=null)?(instUnit-cpu)*remaining:null;
+    const giveUp=(remProfit!=null&&instProfit!=null)?remProfit-instProfit:null;
+    const bestAsk=live&&live.ask!=null?live.ask:null;
+    const ucUnit=(bestAsk!=null)?bestAsk*0.9999*(1-stax-bfee):null;
+    const ucProfit=(ucUnit!=null&&cpu!=null)?(ucUnit-cpu)*remaining:null;
+    floor.innerHTML=`
+      <div class="bp-floor-head">Reality check on the ${remaining.toLocaleString()} unsold</div>
+      ${instProfit!=null?`<div class="bp-floor-row"><span>⚡ Dump into buy orders now</span>
+        <span class="${pn(instProfit)}">${sign(instProfit)}${isk(instProfit)}</span></div>`:""}
+      ${ucProfit!=null?`<div class="bp-floor-row"><span>↧ Undercut best ask (${isk(bestAsk)})</span>
+        <span class="${pn(ucProfit)}">${sign(ucProfit)}${isk(ucProfit)}</span></div>`:""}
+      ${giveUp!=null&&giveUp>0?`<div class="bp-floor-note">Dumping now gives up <b>${isk(giveUp)}</b> vs. your simulated list price.</div>`:""}`;
+  }
+}
+
+function _wireBuildPeekSim(){
+  // Attach the interaction listeners once. Drawing the sim body is driven by
+  // _applyBuildPeekLive (called from _renderBuildPeekTab when live is already in,
+  // or by _fetchBuildPeekLive once the quote lands) — not from here.
+  const slot=$("#bp-sim");
+  if(!slot) return;
+  slot.addEventListener("input", e=>{
+    if(e.target && e.target.id==="bp-sim-slider") _updateBuildPeekSim(+e.target.value);
+  });
+  slot.addEventListener("click", e=>{
+    const chip=e.target.closest && e.target.closest(".bp-chip");
+    if(chip) _updateBuildPeekSim(+chip.dataset.price);
+  });
+}
+
+// Fetch the live market quote once per open; feeds both the drift table and the
+// simulator. Guards on _buildPeekId so a stale response is dropped.
+function _fetchBuildPeekLive(b, id){
   const s=b.snapshot||{};
   const p=new URLSearchParams({
     blueprint_id:String(s.blueprint_id||""),
@@ -1151,29 +1362,39 @@ function _fillBuildPeekPrices(b, id){
     broker:String(((s.broker_fee||0)*100)),
     runs:"1", refresh_prices:"1",
   });
-  const isk=v=>(v==null?"—":fmtISK(v));
   fetch("/api/ind/detail?"+p).then(r=>r.json()).then(fresh=>{
-    if(_buildPeekId!==id) return;   // modal closed or swapped while fetching
-    const body=$("#build-peek-body"); if(!body) return;
-    const now={ask:fresh&&!fresh.error?fresh.ask:null, bid:fresh&&!fresh.error?fresh.bid:null};
-    const frozen={ask:s.ask, bid:s.bid};
-    body.querySelectorAll(".bpr-row").forEach(row=>{
-      const side=row.dataset.side;             // "ask" (list) or "bid" (instant)
-      const nowV=now[side], thenV=frozen[side];
-      const slot=row.querySelector(".bpr-now");
-      if(nowV==null){ slot.innerHTML=`<span class="bpr-na">—</span>`; return; }
-      const diff=(thenV!=null)?nowV-thenV:null;
-      const dcls=diff>0?"pos":(diff<0?"neg":"");
-      const arrow=diff>0?"▲":(diff<0?"▼":"");
-      const pctTxt=(thenV)?` ${Math.abs(diff/thenV*100).toFixed(1)}%`:"";
-      slot.innerHTML=`<b>${isk(nowV)}</b>`
-        +(diff!=null&&diff!==0?` <span class="bpr-delta ${dcls}">${arrow}${pctTxt}</span>`:"");
-    });
+    if(_buildPeekId!==id || !_PEEK) return;
+    _PEEK.live=(fresh&&!fresh.error)?{ask:fresh.ask, bid:fresh.bid}:null;
+    _PEEK.liveState="done";
+    _applyBuildPeekLive();
   }).catch(()=>{
-    if(_buildPeekId!==id) return;
-    const body=$("#build-peek-body"); if(!body) return;
-    body.querySelectorAll(".bpr-now").forEach(el=>{ el.innerHTML=`<span class="bpr-na">—</span>`; });
+    if(_buildPeekId!==id || !_PEEK) return;
+    _PEEK.live=null; _PEEK.liveState="error";
+    _applyBuildPeekLive();
   });
+}
+
+// Paint the live results into whichever tab is showing.
+function _applyBuildPeekLive(){
+  const P=_PEEK; if(!P) return;
+  // Fill the drift table's "now" cells (present on the Re-price tab).
+  const body=$("#build-peek-body"); if(!body) return;
+  const isk=_peekIsk;
+  const frozen={ask:P.s.ask, bid:P.s.bid};
+  body.querySelectorAll(".bpr-row").forEach(row=>{
+    const side=row.dataset.side, slot=row.querySelector(".bpr-now");
+    if(!slot) return;
+    const nowV=P.live?P.live[side]:null, thenV=frozen[side];
+    if(nowV==null){ slot.innerHTML=`<span class="bpr-na">—</span>`; return; }
+    const diff=(thenV!=null)?nowV-thenV:null;
+    const dcls=diff>0?"pos":(diff<0?"neg":"");
+    const arrow=diff>0?"▲":(diff<0?"▼":"");
+    const pctTxt=(thenV)?` ${Math.abs(diff/thenV*100).toFixed(1)}%`:"";
+    slot.innerHTML=`<b>${isk(nowV)}</b>`
+      +(diff!=null&&diff!==0?` <span class="bpr-delta ${dcls}">${arrow}${pctTxt}</span>`:"");
+  });
+  // (Re)draw the simulator if the Re-price tab is active.
+  if(_buildPeekTab==="reprice") _renderBuildPeekSim();
 }
 
 // When logged in, drive the LP budget from the character's loyalty points for
@@ -1512,6 +1733,14 @@ $("#build-peek-open").onclick=()=>{
   if(typeof switchTab==="function") switchTab("ind");
   if(typeof openTrackedBuild==="function") setTimeout(()=>openTrackedBuild(id), 60);
 };
+$("#build-peek-tabs").addEventListener("click", e=>{
+  const tab=e.target.closest && e.target.closest(".bpt-tab");
+  if(!tab || !_PEEK) return;
+  const which=tab.dataset.tab;
+  if(which===_buildPeekTab) return;
+  _buildPeekTab=which;
+  _renderBuildPeekTab();
+});
 $("#buildPeekModal").addEventListener("click", e=>{ if(e.target.id==="buildPeekModal") closeBuildPeek(); });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#buildPeekModal").classList.contains("hidden")) closeBuildPeek(); });
 function recalcIndProfits(){

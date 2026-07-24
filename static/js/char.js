@@ -1060,9 +1060,19 @@ function openBuildPeek(id){
   const stage=(typeof _buildStage==="function")?_buildStage(b):"";
   const econ=(typeof _batchEconomics==="function")?_batchEconomics(s, n):{};
   const units=(typeof _buildUnits==="function")?_buildUnits(b):null;
-  const be=(typeof _buildBreakEven==="function")?_buildBreakEven(b):{list:null,instant:null};
   const rz=((stage==="listed"||stage==="sold") && typeof _buildRealized==="function")?_buildRealized(b):null;
-  const stax=s.sales_tax||0, bfee=s.broker_fee||0;
+  // Fees are the OWNING character's live skill-derived rates (not the frozen
+  // snapshot), so re-pricing reflects the broker/sales-tax that will actually
+  // be charged when this character re-lists. Falls back to the snapshot rates.
+  const fees=_peekOwnerFees(b);
+  const stax=fees.stax, bfee=fees.bfee;
+  // Break-even at the OWNER's live fees so the rail + warning stay consistent
+  // with the simulator's own tax/broker math (revenue after fees == batch cost).
+  const cost=econ.cost;
+  const be={
+    list:(cost!=null&&units&&(1-stax-bfee)>0)?cost/(units*(1-stax-bfee)):null,
+    instant:(cost!=null&&units&&(1-stax)>0)?cost/(units*(1-stax)):null,
+  };
   const target=(b.sell||{}).qty_target||units||0;
   // Units still to sell — the simulator works on these (with realized added on top).
   const remaining=rz?Math.max(0, target-rz.units):(units||0);
@@ -1072,8 +1082,8 @@ function openBuildPeek(id){
   // Live linked order (its queue rank drives the re-price nudge).
   const order=_peekLinkedOrder(b);
 
-  _PEEK={b, id, n, s, stage, econ, units, be, rz, stax, bfee, target, remaining, cpu, order,
-         cost:econ.cost, live:null, liveState:"loading"};
+  _PEEK={b, id, n, s, stage, econ, units, be, rz, stax, bfee, fees, target, remaining, cpu, order,
+         cost, live:null, liveState:"loading"};
 
   // Pinned header: the tracker's colored stage badge + name + lifecycle stepper.
   const badge=(typeof _buildBadge==="function")?_buildBadge(b, stage):{key:"",label:stage};
@@ -1094,17 +1104,57 @@ function openBuildPeek(id){
 }
 function closeBuildPeek(){ const m=$("#buildPeekModal"); if(m) m.classList.add("hidden"); _buildPeekId=null; _PEEK=null; }
 
+// All loaded character bundles (multi-char array, or the single active char).
+function _peekChars(){
+  return (AUTH.data&&AUTH.data.characters)||(AUTH.data?[AUTH.data]:[]);
+}
+
 // Which of the character's open sell orders this build is tracking (for queue
 // position). Matches the build's linked order_id against every character bundle.
 function _peekLinkedOrder(b){
   const oid=((b.sell||{}).order_ids||[])[0];
   if(oid==null) return null;
-  const chars=(AUTH.data&&AUTH.data.characters)||(AUTH.data?[AUTH.data]:[]);
-  for(const c of chars){
+  for(const c of _peekChars()){
     const o=(c.market_orders||[]).find(o=>String(o.order_id)===String(oid));
     if(o) return o;
   }
   return null;
+}
+
+// The character whose fees govern this build's sale — the one who actually owns
+// the market order (so the broker/sales-tax skills that apply are theirs). We
+// resolve them by the linked order's owner first, then by the build's recorded
+// char_name (the character who ran the job), else the active character.
+function _peekOwnerChar(b){
+  const chars=_peekChars();
+  if(!chars.length) return null;
+  const oid=((b.sell||{}).order_ids||[])[0];
+  if(oid!=null){
+    for(const c of chars){
+      if((c.market_orders||[]).some(o=>String(o.order_id)===String(oid))) return c;
+    }
+  }
+  if(b.char_name){
+    const named=chars.find(c=>c.name===b.char_name);
+    if(named) return named;
+  }
+  return chars.find(c=>c.character_id===(AUTH.data&&AUTH.data.active_char_id)) || chars[0];
+}
+
+// Recompute sales tax + broker fee from the OWNING character's live skills,
+// mirroring the auto-fill formulas: sales tax = 7.5% × (1 − 0.11 × Accounting),
+// broker = 3% − 0.3% × Broker Relations (standings not modelled). Falls back to
+// the build's frozen snapshot rates when the character or a skill level is
+// unavailable, so the sim always has usable numbers. Returns fractions + who.
+function _peekOwnerFees(b){
+  const s=b.snapshot||{};
+  const snapTax=s.sales_tax||0, snapBroker=s.broker_fee||0;
+  const c=_peekOwnerChar(b);
+  const acc=c&&c.accounting_level, bro=c&&c.broker_relations_level;
+  const stax=(acc!=null)?Math.max(0, 7.5*(1-0.11*acc))/100:snapTax;
+  const bfee=(bro!=null)?Math.max(0, 3.0-0.3*bro)/100:snapBroker;
+  return {stax, bfee, who:c?c.name:null,
+          live:(acc!=null||bro!=null), snapTax, snapBroker};
 }
 
 function _renderBuildPeekTab(){
@@ -1218,6 +1268,14 @@ function _buildPeekRepriceHtml(){
     ? `<div class="build-peek-benote">Break-even (list): <b>${isk(be.list)}</b> / unit — sell above this and the craft paid off.</div>`
     : "";
 
+  // Whose fees the sim uses — the owning character's live skill-derived rates,
+  // so a re-price reflects the broker/tax that'll actually be charged.
+  const f=P.fees||{};
+  const feePct=v=>(v*100).toFixed(1)+"%";
+  const feeNote=`<div class="build-peek-fees">Fees: <b>${feePct(P.stax)}</b> sales tax · <b>${feePct(P.bfee)}</b> broker`
+    +(f.live&&f.who?` <span class="bpf-who">from ${authEsc(f.who)}'s skills</span>`
+      :` <span class="bpf-who">from the tracked snapshot</span>`)+`</div>`;
+
   const simSlot=`<div id="bp-sim" class="build-peek-sim">${
     liveState==="loading"
       ? `<div class="bp-sim-loading">Fetching current market to build the simulator…</div>`
@@ -1228,7 +1286,7 @@ function _buildPeekRepriceHtml(){
     ? `<div class="build-peek-scope">Simulating the <b>${remaining.toLocaleString()}</b> unsold unit(s). Realized ${isk(rz.profit)} from ${rz.units.toLocaleString()} already sold is added to the total.</div>`
     : `<div class="build-peek-scope">Simulating all <b>${remaining.toLocaleString()}</b> unit(s).</div>`;
 
-  return drift + beNote + scopeNote + simSlot;
+  return drift + beNote + feeNote + scopeNote + simSlot;
 }
 
 // Build the simulator DOM once the live quote is known. Slider spans a sensible

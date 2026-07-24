@@ -449,8 +449,9 @@ function _renderCharPanel(c){
       if(isFinite(end)) tcell=rem>0
         ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
         :`<span class="timer-cell done">✓ Ready</span>`;
-      const tracked=_jobIsTracked(j);
-      const link=tracked?` <span class="char-job-tracked" title="You're tracking a build for this job — click to open its tracked build in Industry">🔗</span>`:"";
+      const tb=_trackedBuildForJob(j);
+      const tracked=!!tb;
+      const link=tracked?` <span class="char-job-tracked" data-peek="${tb.id}" title="Quick look at this tracked build">🔗</span>`:"";
       const cls=tracked?" char-job-row":"";
       const tip=tracked?` title="Open its tracked build in Industry"`:"";
       h+=`<tr class="${cls.trim()}" data-job-id="${j.job_id}"${tip}>`
@@ -506,8 +507,9 @@ function _renderCharPanel(c){
         :o.is_best?`<span class="ord-best">Best ✓</span>`:`<span class="ord-queue ${heatClass(o.queue_rank,o.queue_total)}">#${o.queue_rank} / ${o.queue_total}</span>`;
       const saleTip=o.last_sale_ts?` title="Last sale: ${o.last_sale_qty} unit${o.last_sale_qty>1?'s':''} sold ${_fmtAgo(o.last_sale_ts)}" style="text-align:right;color:var(--green2)"`
         :` style="text-align:right"`;
-      const oTracked=_orderIsTracked(o);
-      const oLink=oTracked?` <span class="char-job-tracked" title="You're tracking a build for this order — click to open its tracked build in Industry">🔗</span>`:"";
+      const oTb=_trackedBuildForOrder(o);
+      const oTracked=!!oTb;
+      const oLink=oTracked?` <span class="char-job-tracked" data-peek="${oTb.id}" title="Quick look at this tracked build">🔗</span>`:"";
       const oCls=oTracked?" char-order-row":"";
       h+=`<tr class="${oCls.trim()}" data-order-id="${o.order_id!=null?o.order_id:''}"><td>${authEsc(o.type_name)}${oLink}</td>`
         +`<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
@@ -563,8 +565,9 @@ function _renderAllPanel(chars){
       if(isFinite(end)) tcell=rem>0
         ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
         :`<span class="timer-cell done">✓ Ready</span>`;
-      const tracked=_jobIsTracked(j);
-      const link=tracked?` <span class="char-job-tracked" title="You're tracking a build for this job — click to open its tracked build in Industry">🔗</span>`:"";
+      const tb=_trackedBuildForJob(j);
+      const tracked=!!tb;
+      const link=tracked?` <span class="char-job-tracked" data-peek="${tb.id}" title="Quick look at this tracked build">🔗</span>`:"";
       const cls=tracked?" char-job-row":"";
       const tip=tracked?` title="Open its tracked build in Industry"`:"";
       h+=`<tr class="${cls.trim()}" data-job-id="${j.job_id}"${tip}>`
@@ -611,8 +614,9 @@ function _renderAllPanel(chars){
         :o.is_best?`<span class="ord-best">Best ✓</span>`:`<span class="ord-queue ${heatClass(o.queue_rank,o.queue_total)}">#${o.queue_rank} / ${o.queue_total}</span>`;
       const saleTip=o.last_sale_ts?` title="Last sale: ${o.last_sale_qty} unit${o.last_sale_qty>1?'s':''} sold ${_fmtAgo(o.last_sale_ts)}" style="text-align:right;color:var(--green2)"`
         :` style="text-align:right"`;
-      const oTracked=_orderIsTracked(o);
-      const oLink=oTracked?` <span class="char-job-tracked" title="You're tracking a build for this order — click to open its tracked build in Industry">🔗</span>`:"";
+      const oTb=_trackedBuildForOrder(o);
+      const oTracked=!!oTb;
+      const oLink=oTracked?` <span class="char-job-tracked" data-peek="${oTb.id}" title="Quick look at this tracked build">🔗</span>`:"";
       const oCls=oTracked?" char-order-row":"";
       h+=`<tr class="${oCls.trim()}" data-order-id="${o.order_id!=null?o.order_id:''}"><td>${authEsc(o._char)}</td><td>${authEsc(o.type_name)}${oLink}</td>`
         +`<td class="${o.is_buy_order?"tx-buy":"tx-sell"}">${o.is_buy_order?"Buy":"Sell"}</td>`
@@ -884,6 +888,14 @@ function renderCharData(){
     tr.onclick=()=>{ openIndFromOrder({order_id:tr.dataset.orderId}); };
   });
 
+  // Clicking the 🔗 icon itself opens a quick-look modal instead of jumping
+  // straight to Industry. Stop propagation so the row's navigate handler above
+  // doesn't also fire.
+  $("#char-body").querySelectorAll("[data-peek]").forEach(el=>{
+    el.style.cursor="pointer";
+    el.onclick=e=>{ e.stopPropagation(); openBuildPeek(el.dataset.peek); };
+  });
+
   // Wire market-order column sorting. Clicking a header sorts by that column;
   // clicking the active column again flips direction. Re-renders in place.
   $("#char-body").querySelectorAll(".char-orders-tbl .ord-th").forEach(th=>{
@@ -1010,6 +1022,49 @@ function openIndFromJob(j){
   // before we expand + scroll to the card.
   setTimeout(()=>openTrackedBuild(build.id), 60);
 }
+
+// ── Tracked-build quick-look modal ───────────────────────────────────────────
+// Clicking the 🔗 icon on a job/order opens a lightweight "peek" at the tracked
+// build's fundamentals — no tab switch — with a button to jump into Industry.
+let _buildPeekId=null;
+function openBuildPeek(id){
+  if(typeof IND==="undefined") return;
+  const b=(IND.builds||[]).find(x=>x.id===id);
+  const modal=$("#buildPeekModal");
+  if(!b || !modal){ if(typeof openTrackedBuild==="function") openTrackedBuild(id); return; }
+  _buildPeekId=id;
+  const stage=(typeof _buildStage==="function")?_buildStage(b):"";
+  const stageLabel=(typeof _BUILD_GROUP_LABEL!=="undefined" && _BUILD_GROUP_LABEL[stage])||stage||"—";
+  const isk=v=>(v==null?"—":fmtISK(v));
+  const pn=v=>(v==null?"":(v>0?"pos":(v<0?"neg":"")));
+  const n=Math.max(1, b.runs||1);
+  const econ=(typeof _batchEconomics==="function")?_batchEconomics(b.snapshot||{}, n):{};
+  const units=(typeof _buildUnits==="function")?_buildUnits(b):null;
+  const be=(typeof _buildBreakEven==="function")?_buildBreakEven(b):{};
+
+  const cell=(label,val,cls,wide)=>`<div class="build-peek-cell${wide?" bp-wide":""}">`
+    +`<div class="bp-label">${label}</div><div class="bp-val ${cls||""}">${val}</div></div>`;
+  let cells="";
+  cells+=cell("Runs", n.toLocaleString());
+  cells+=cell("Units", units!=null?units.toLocaleString():"—");
+  cells+=cell("Batch cost", isk(econ.cost));
+  cells+=cell("Break-even / unit", isk(be.list));
+  // Realized figures once a sale is under way; projected profit before that.
+  if((stage==="listed"||stage==="sold") && typeof _buildRealized==="function"){
+    const rz=_buildRealized(b);
+    cells+=cell("Sold", `${rz.units.toLocaleString()}${units!=null?` / ${units.toLocaleString()}`:""}`);
+    cells+=cell("Realized profit", isk(rz.profit), pn(rz.profit));
+  } else {
+    cells+=cell("Batch profit (list)", isk(econ.profitL), pn(econ.profitL));
+    cells+=cell("Batch profit (instant)", isk(econ.profitI), pn(econ.profitI));
+  }
+
+  $("#build-peek-title").textContent=b.product_name||"Tracked build";
+  $("#build-peek-body").innerHTML=`<p class="build-peek-stage">${authEsc(stageLabel)}</p>`
+    +`<div class="build-peek-grid">${cells}</div>`;
+  modal.classList.remove("hidden");
+}
+function closeBuildPeek(){ const m=$("#buildPeekModal"); if(m) m.classList.add("hidden"); _buildPeekId=null; }
 
 // When logged in, drive the LP budget from the character's loyalty points for
 // the selected corp and lock the field read-only. Shows 0 if the character
@@ -1338,6 +1393,17 @@ $("#sw-cancel").onclick=closeStructWizard;
 $("#sw-delete").onclick=deleteStruct;
 $("#indStructModal").addEventListener("click", e=>{ if(e.target.id==="indStructModal") closeStructWizard(); });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#indStructModal").classList.contains("hidden")) closeStructWizard(); });
+
+// Tracked-build quick-look modal wiring.
+$("#build-peek-close").onclick=closeBuildPeek;
+$("#build-peek-open").onclick=()=>{
+  const id=_buildPeekId; closeBuildPeek();
+  if(id==null) return;
+  if(typeof switchTab==="function") switchTab("ind");
+  if(typeof openTrackedBuild==="function") setTimeout(()=>openTrackedBuild(id), 60);
+};
+$("#buildPeekModal").addEventListener("click", e=>{ if(e.target.id==="buildPeekModal") closeBuildPeek(); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#buildPeekModal").classList.contains("hidden")) closeBuildPeek(); });
 function recalcIndProfits(){
   if(!IND.rows.length) return;
   const jobRate=parseFloat($("#ind-jobrate").value||"0")/100;

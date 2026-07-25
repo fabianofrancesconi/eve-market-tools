@@ -894,8 +894,8 @@ function renderIndDetail(d, container){
       `<tr><td>${c.name}</td><td class="num">${fmtNum(c.quantity)}</td>`
       +`<td class="num">${isk(c.unit_price)}</td><td class="num">${isk(c.line_cost)}</td></tr>`).join("");
     invHtml=`
-      <div class="ind-d-head" style="margin-top:10px">Invention (T2)</div>
-      <div class="ind-d-grid">
+      <div class="ind-d-sub" style="margin-top:14px">Invention (T2)</div>
+      <div class="ind-d-grid" style="max-width:none">
         <span>Success probability</span><b>${(iv.probability*100).toFixed(1)}% (base ${(iv.base_probability*100).toFixed(1)}%)</b>
         <span>Runs per invented BPC</span><b>${fmtNum(iv.runs_per_bpc)}</b>
         <span>Invention cost / T2 run</span><b>${isk(iv.cost_per_run)}</b>
@@ -903,16 +903,53 @@ function renderIndDetail(d, container){
       <table class="ind-d-mats"><thead><tr><th>Datacore</th><th class="num">Qty</th>
         <th class="num">Unit</th><th class="num">Line</th></tr></thead><tbody>${dcs}</tbody></table>`;
   }
+  // ── Batch verdict (hero) ──────────────────────────────────────────────
+  // The one thing this panel exists to answer: at N runs, is it worth building
+  // and how much does it make? List (patient) sell is the headline; instant and
+  // build time ride alongside. Margin is profit ÷ build cost.
+  const marginL=(batchProfitL!=null && batchCost)?batchProfitL/batchCost:null;
+  const heroVerdict=batchProfitL==null?{txt:"No market price",cls:"na"}
+    : batchProfitL>0?{txt:"Profitable",cls:"pos"}
+    : batchProfitL<0?{txt:"Loss-making",cls:"neg"}:{txt:"Break-even",cls:"na"};
   box.innerHTML=`
     <div class="ind-d-head">
-      <b>${d.product.name}</b>
-      <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
-      <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy name</button>
-      <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
-      <button class="ind-track-btn" title="Freeze these stats for the current run count so you can revisit them after the batch finishes — the numbers stay put even as market prices move. Appears under 'Tracked builds' up top.">＋ Track this build</button>
-      ${tier} · <span class="ind-d-runs-wrap">Runs <input class="ind-d-runs" type="text" inputmode="numeric" pattern="[0-9]*" value="${n}" style="width:68px"><span class="ind-d-runs-step"><button class="ind-d-runs-inc" title="Increase runs" tabindex="-1">▲</button><button class="ind-d-runs-dec" title="Decrease runs" tabindex="-1">▼</button></span><button class="ind-d-runs-add" data-n="10" title="Add 10 runs">+10</button><button class="ind-d-runs-add" data-n="100" title="Add 100 runs">+100</button><button class="ind-d-runs-add" data-n="1000" title="Add 1000 runs">+1000</button><button class="ind-d-runs-mul" data-m="2" title="Double the runs">×2</button><button class="ind-d-runs-mul" data-m="5" title="5× the runs">×5</button><button class="ind-d-runs-mul" data-m="10" title="10× the runs">×10</button></span> · source ${d.station_name}
-      <span class="ind-d-maxwrap">${maxIskRuns!=null?`<button class="ind-d-max-isk" title="Set runs to the most this batch's wallet can afford — materials + job install + broker fee + sales tax at the suggested list price (${isk(costPerRun)}/run against ${isk(walletBal)} in ${maxWho}'s wallet)">💰 Max wallet (${fmtNum(maxIskRuns)})</button>`:""}<span class="ind-d-cargo-box" title="Set runs to the most whose input materials fit this cargo hold. Your m³ is saved across sessions."><span class="ind-d-cargo-ico">📦</span><input class="ind-d-cargo-cap" type="text" inputmode="decimal" placeholder="m³" value="${cargoCap!=null?cargoCap:""}"><button class="ind-d-max-cargo"${inVolRun>0?"":" disabled"}>Max cargo${(()=>{const r=maxCargoRuns(cargoCap);return r!=null?` (${fmtNum(r)})`:"";})()}</button></span></span>
+      <span class="ind-d-title">${tier?`<span class="ind-d-tier">${tier}</span>`:""}<b>${d.product.name}</b></span>
+      <span class="ind-d-acts">
+        <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
+        <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy name</button>
+        <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
+        <button class="ind-track-btn" title="Freeze these stats for the current run count so you can revisit them after the batch finishes — the numbers stay put even as market prices move. Appears under 'Tracked builds' up top.">＋ Track this build</button>
+      </span>
       <span class="ind-d-close" title="Close">✕</span>
+    </div>
+    <div class="ind-d-controls">
+      <span class="ind-d-runs-wrap"><span class="ind-d-ctl-lbl">Batch</span><input class="ind-d-runs" type="text" inputmode="numeric" pattern="[0-9]*" value="${n}" style="width:68px"><span class="ind-d-runs-step"><button class="ind-d-runs-inc" title="Increase runs" tabindex="-1">▲</button><button class="ind-d-runs-dec" title="Decrease runs" tabindex="-1">▼</button></span><button class="ind-d-runs-add" data-n="10" title="Add 10 runs">+10</button><button class="ind-d-runs-add" data-n="100" title="Add 100 runs">+100</button><button class="ind-d-runs-add" data-n="1000" title="Add 1000 runs">+1000</button><button class="ind-d-runs-mul" data-m="2" title="Double the runs">×2</button><button class="ind-d-runs-mul" data-m="5" title="5× the runs">×5</button><button class="ind-d-runs-mul" data-m="10" title="10× the runs">×10</button></span>
+      <span class="ind-d-maxwrap">${maxIskRuns!=null?`<button class="ind-d-max-isk" title="Set runs to the most this batch's wallet can afford — materials + job install + broker fee + sales tax at the suggested list price (${isk(costPerRun)}/run against ${isk(walletBal)} in ${maxWho}'s wallet)">💰 Max wallet (${fmtNum(maxIskRuns)})</button>`:""}<span class="ind-d-cargo-box" title="Set runs to the most whose input materials fit this cargo hold. Your m³ is saved across sessions."><span class="ind-d-cargo-ico">📦</span><input class="ind-d-cargo-cap" type="text" inputmode="decimal" placeholder="m³" value="${cargoCap!=null?cargoCap:""}"><button class="ind-d-max-cargo"${inVolRun>0?"":" disabled"}>Max cargo${(()=>{const r=maxCargoRuns(cargoCap);return r!=null?` (${fmtNum(r)})`:"";})()}</button></span></span>
+      <span class="ind-d-source" title="Trade hub these prices come from">${d.station_name}</span>
+    </div>
+    <div class="ind-d-hero ${heroVerdict.cls}">
+      <div class="ind-d-hero-flow">
+        <div class="ind-d-hero-cell">
+          <div class="ind-d-hero-k">Build cost</div>
+          <div class="ind-d-hero-v">${isk(batchCost)}</div>
+        </div>
+        <div class="ind-d-hero-op">→</div>
+        <div class="ind-d-hero-cell">
+          <div class="ind-d-hero-k">Revenue · list</div>
+          <div class="ind-d-hero-v">${isk(batchRevL)}</div>
+        </div>
+        <div class="ind-d-hero-op">=</div>
+        <div class="ind-d-hero-cell ind-d-hero-profit">
+          <div class="ind-d-hero-k">Profit · ${n.toLocaleString()} run${n===1?"":"s"} <span class="ind-d-hero-tag ${heroVerdict.cls}">${heroVerdict.txt}</span></div>
+          <div class="ind-d-hero-v ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
+        </div>
+      </div>
+      <div class="ind-d-hero-foot">
+        <span>Margin <b class="${pn(marginL)}">${marginL==null?"—":(marginL*100).toFixed(1)+"%"}</b></span>
+        <span>Instant sell <b class="${pn(batchProfitI)}">${isk(batchProfitI)}</b></span>
+        <span>Build time <b>${fmtDur(batchTime)}</b></span>
+        <span>Per unit · list <b>${isk(d.ask)}</b></span>
+      </div>
     </div>
     <div class="ind-d-body">
     <div class="ind-d-note">
@@ -940,13 +977,6 @@ function renderIndDetail(d, container){
       <span>Profit — instant</span><b class="${pn(d.profit_instant)}">${isk(d.profit_instant)}</b>
       <span>Build time</span><b>${fmtDur(d.build_time)}</b>
 
-      <div class="ind-d-sub">Batch — ${n.toLocaleString()} run(s)</div>
-      <span>Total cost</span><b>${isk(batchCost)}</b>
-      <span>Profit — list</span><b class="${pn(batchProfitL)}">${isk(batchProfitL)}</b>
-      <span>Profit — instant</span><b class="${pn(batchProfitI)}">${isk(batchProfitI)}</b>
-      <span>Build time</span><b>${fmtDur(batchTime)}</b>
-      <span>Cargo in / out</span><b>${inputBatch?fmtVol(inputBatch):"—"} / ${outputBatch?fmtVol(outputBatch):"—"}</b>
-
       <div class="ind-d-sub">Blueprint &amp; market</div>
       <span>Blueprint</span><b class="bp-buy">${bpSrc}</b>
       <span>ME / TE used</span><b class="ind-sim-cell">${meTeHtml}</b>
@@ -959,9 +989,11 @@ function renderIndDetail(d, container){
       <span>Tradeability</span><b>${d.tradeability==null?"—":d.tradeability+" / 100"}${d.daily_units!=null?` (${fmtNum(d.daily_units)} units/day)`:""}</b>
     </div>
     ${d.missing_skills&&d.missing_skills.length?`
+    <div class="ind-d-skillbox">
     <div class="ind-d-sub ind-skills-warn">Missing skills — ${d.missing_skills.length} needed</div>
     <table class="ind-d-mats ind-d-skills"><thead><tr><th>Skill</th><th class="num">Have</th><th class="num">Need</th><th class="num">Train time</th></tr></thead><tbody>${d.missing_skills.map(s=>`<tr><td>${s.name}${s.prereq?' <span class="ind-prereq">(prereq)</span>':''}</td><td class="num">${s.current}</td><td class="num">${s.required}</td><td class="num">${s.train_hours<1?(Math.round(s.train_hours*60)+"m"):(s.train_hours<24?s.train_hours.toFixed(1)+"h":(s.train_hours/24).toFixed(1)+"d")}</td></tr>`).join("")}</tbody>
-    <tfoot><tr class="ind-d-total"><td>Total training</td><td></td><td></td><td class="num">${(()=>{const h=d.missing_skills.reduce((s,sk)=>s+sk.train_hours,0);return h<1?(Math.round(h*60)+"m"):(h<24?h.toFixed(1)+"h":(h/24).toFixed(1)+"d");})()}</td></tr></tfoot></table>`:""}
+    <tfoot><tr class="ind-d-total"><td>Total training</td><td></td><td></td><td class="num">${(()=>{const h=d.missing_skills.reduce((s,sk)=>s+sk.train_hours,0);return h<1?(Math.round(h*60)+"m"):(h<24?h.toFixed(1)+"h":(h/24).toFixed(1)+"d");})()}</td></tr></tfoot></table>
+    </div>`:""}
     <aside class="ind-d-side">
       <div class="ind-d-section">
         <div class="ind-d-sub">Craft</div>

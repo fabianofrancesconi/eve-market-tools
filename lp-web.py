@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.144.2"
+__version__ = "1.144.3"
 
 import argparse
 import base64
@@ -3490,9 +3490,15 @@ def do_ind_scan(q, emit=None):
     _emit({"type": "progress", "pct": 2, "msg": "Refreshing blueprint ownership…", "sub": ""})
     _refresh_all_blueprints(acct, force=not (favorites_only or owned_only))
     ind_cid = _ind_target_cid(acct, q)
-    # The assigned character may not be the active one, whose skill profile is
-    # loaded on login/switch — ensure the target's skills are cached before we read.
-    if ind_cid and ind_cid not in acct.skill_profiles:
+    # A full (user-initiated) scan always re-pulls the target's skills so newly
+    # trained skills take effect immediately — a rescan should never compute
+    # against the (up to _CHAR_DATA_TTL/5-min-sweep) stale cached profile. The
+    # tab's lightweight preview scans (favorites/owned) only lazily populate the
+    # profile if it's missing, so tab-open doesn't triple-hit ESI. The assigned
+    # character may not be the active one (whose profile is loaded on
+    # login/switch), so the lazy path still ensures it's present before we read.
+    if ind_cid and (not (favorites_only or owned_only)
+                    or ind_cid not in acct.skill_profiles):
         _refresh_skill_profile(acct, ind_cid)
     with acct.lock:
         ind_skill_profile = dict(acct.skill_profiles.get(ind_cid, {})) if ind_cid else {}

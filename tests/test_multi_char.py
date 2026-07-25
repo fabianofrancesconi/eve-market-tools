@@ -454,6 +454,58 @@ class TestBlueprintRefreshOnScan:
         lp_web._refresh_all_blueprints(acct, force=False)   # interval elapsed → refresh
         assert calls == [1, 1]
 
+
+# ── Skill-profile refresh on scan (newly trained skills take effect at once) ──
+
+class TestSkillRefreshOnScan:
+    """A user-initiated Industry scan must re-pull the target character's skills
+    so a skill trained since the last 5-min background sweep is reflected on the
+    next scan — the reason the buildable flag could lag reality. The tab's
+    lightweight preview scans (favorites/owned) keep the cheap lazy behaviour."""
+
+    _Sentinel = type("_Sentinel", (Exception,), {})
+
+    def _drive(self, monkeypatch, query, cached_profile):
+        """Run do_ind_scan far enough to hit the skill-refresh decision, then
+        abort inside load_sde_industry so we never touch the SDE/network.
+        Returns the list of cids _refresh_skill_profile was called for."""
+        acct = _acct({10: "Main", 20: "Alt"}, active=10)
+        acct.skill_profiles = dict(cached_profile)
+        acct.bp_me_tes = {10: {}, 20: {}}
+        _use_account(acct)
+        refreshed = []
+        monkeypatch.setattr(lp_web, "_refresh_all_blueprints",
+                            lambda a, force=True: None)
+        monkeypatch.setattr(lp_web, "_refresh_skill_profile",
+                            lambda a, cid: (refreshed.append(cid),
+                                            a.skill_profiles.setdefault(cid, {})))
+        def _boom(*a, **k):
+            raise self._Sentinel
+        monkeypatch.setattr(lp_web.ind_core, "load_sde_industry", _boom)
+        with pytest.raises(self._Sentinel):
+            lp_web.do_ind_scan(query)
+        return refreshed
+
+    def test_full_scan_always_refreshes_target(self, monkeypatch):
+        # Profile already cached, yet a full scan re-pulls it anyway.
+        refreshed = self._drive(monkeypatch, {}, {10: {3380: 5}})
+        assert refreshed == [10]
+
+    def test_full_scan_refreshes_assigned_alt(self, monkeypatch):
+        refreshed = self._drive(monkeypatch, {"char_id": ["20"]}, {20: {3380: 5}})
+        assert refreshed == [20]
+
+    def test_preview_scan_skips_refresh_when_cached(self, monkeypatch):
+        # favorites/owned preview scans don't re-pull an already-cached profile.
+        for flag in ("favorites_only", "owned_only"):
+            refreshed = self._drive(monkeypatch, {flag: ["1"]}, {10: {3380: 5}})
+            assert refreshed == [], flag
+
+    def test_preview_scan_lazy_populates_when_missing(self, monkeypatch):
+        # ...but still populates it if the target has no cached profile at all.
+        refreshed = self._drive(monkeypatch, {"favorites_only": ["1"]}, {})
+        assert refreshed == [10]
+
     def test_active_job_bp_keeps_researched_me_te(self, monkeypatch):
         """A researched blueprint tied up in an active manufacturing job is
         omitted from /blueprints/, but its cached ME/TE must survive rather than

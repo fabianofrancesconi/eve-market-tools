@@ -519,6 +519,29 @@ def _median_daily_avg_price(history, days=HISTORY_DAYS):
     return statistics.median(prices)
 
 
+def _daily_price_volume_series(history, days=HISTORY_DAYS):
+    """The last `days` days of history reduced to a compact per-day series the
+    price-conditioned sell-through model consumes: a list of
+    ``{"volume", "low", "high", "average"}`` dicts, newest last, one entry per day
+    that actually traded (ESI omits zero-trade days -- the model treats the full
+    window as the denominator, so gaps read as zero-demand days).
+
+    Keeping low/high/average (not just the mean) is what lets the model ask "on how
+    many recent days did trades happen at or above my list price?" -- the honest,
+    data-driven read of whether the item clears at that price. None when there's no
+    usable history."""
+    out = []
+    for d in history[-days:]:
+        vol = d.get("volume")
+        if not vol:
+            continue
+        out.append({"volume": vol,
+                    "low": d.get("lowest"),
+                    "high": d.get("highest"),
+                    "average": d.get("average")})
+    return out or None
+
+
 def _fetch_history_summary(type_ids, region_id, session, cache_dir, summarize,
                            refresh=False):
     """Shared per-type ESI market-history fetch + cache, reduced to one number
@@ -570,6 +593,15 @@ def fetch_history_prices(type_ids, region_id, session, cache_dir, refresh=False)
     files as fetch_history_volumes, so calling both costs no extra ESI calls."""
     return _fetch_history_summary(type_ids, region_id, session, cache_dir,
                                   _median_daily_avg_price, refresh)
+
+
+def fetch_history_series(type_ids, region_id, session, cache_dir, refresh=False):
+    """type_id -> compact per-day {volume, low, high, average} series (last
+    HISTORY_DAYS) in `region_id`, for the price-conditioned sell-through model.
+    None for a type with no recorded history or on fetch failure. Reuses the same
+    cache files as fetch_history_volumes/_prices, so it costs no extra ESI calls."""
+    return _fetch_history_summary(type_ids, region_id, session, cache_dir,
+                                  _daily_price_volume_series, refresh)
 
 
 def suggested_list_price(ask, fair):

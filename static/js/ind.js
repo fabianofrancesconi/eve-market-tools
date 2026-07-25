@@ -1930,11 +1930,21 @@ function _buildProposedPrice(b){
   return (be!=null)?Math.max(ask, be):ask;
 }
 
-// The sell section of a card. Built-but-unlisted → a "Sell" nudge with the
-// proposed price + copy. Listed/sold → live realized profit and the unsold
-// remainder; needs_pick surfaces the character's open sell orders to link.
+// The sell section of a card. Building → just a "Decide price" peek so you can
+// scout the market before the batch even lands. Built-but-unlisted → a "Sell"
+// nudge with the proposed price + copy. Listed/sold → live realized profit and
+// the unsold remainder; needs_pick surfaces the character's open sell orders to link.
 function _buildSellHtml(b, stage){
   const isk=v=>v===null||v===undefined?"—":fmtISK(v);
+  if(stage==="building"){
+    // The job is still running (or just finished, "ready for delivery"). No sell
+    // action yet, but the market can already be inspected — the peek's Market tab
+    // (trend + sell-through odds) works at any stage, so let the user look ahead.
+    return `<div class="ind-sell ind-sell-peek" data-id="${b.id}">
+      <button class="ind-sell-analyze" title="Open the price decision tool: market trend + the odds this batch sells within a day at a given price — look ahead before it's delivered">📊 Decide price</button>
+      <span class="ind-sell-hint">Scout the market while it builds — pricing and selling unlock once the job is delivered.</span>
+    </div>`;
+  }
   if(stage==="built"){
     const price=_buildProposedPrice(b);
     const units=_buildUnits(b);

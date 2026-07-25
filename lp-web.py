@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.145.1"
+__version__ = "1.146.0"
 
 import argparse
 import base64
@@ -56,7 +56,7 @@ import pg_store
 from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
     TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_prices,
-    fetch_history_volumes,
+    fetch_history_series, fetch_history_volumes,
     fetch_orderbook_jita, fetch_order_rank, fetch_prices, fetch_prices_esi,
     fetch_sell_order_stats, get_offers,
     load_json, resolve_corp_id, resolve_corp_name, resolve_names,
@@ -3244,12 +3244,16 @@ def do_history(q):
 
 def do_ind_sell_analysis(q):
     """Sell-side market analysis for one product at a trade hub: the live sell
-    order book (aggregated price levels), the ~30-day mean daily traded volume,
-    and — for a proposed price + batch size — the chance of selling within a day.
+    order book (aggregated price levels), the recent daily-history series, and —
+    for a proposed price + batch size — the chance of the whole batch selling
+    across EVE's order durations (1d … 3mo).
 
-    The Market tab of the tracked-build modal calls this once per open; the
-    front-end then recomputes the probability live as the price slider moves,
-    reusing the returned `sell_book` + `daily_volume` so no re-fetch is needed.
+    The demand rate is *price-conditioned*: rather than a flat mean, we credit the
+    share of each recent day's volume that plausibly traded at/above the proposed
+    price (from that day's low/high range). A price the market rarely paid yields a
+    low rate and low odds even over 3 months — the data-driven read of "does it
+    actually clear at this price". The Market tab calls this once per open, then
+    recomputes the curve live as the slider moves, reusing the returned `series`.
 
     Params: type_id (required), region/station (hub id; defaults to Jita),
     price (optional proposed per-unit price), qty (optional batch size)."""
@@ -3262,7 +3266,10 @@ def do_ind_sell_analysis(q):
     # Live aggregated sell book (cheapest-first) — the queue a new order joins.
     sell_book = fetch_orderbook_jita(type_id, "sell", SESSION,
                                      station_id=station_id, region_id=region_id)
-    # ~30-day mean daily units traded region-wide — the demand rate the model uses.
+    # Recent per-day {volume, low, high, average} history — feeds both the flat
+    # daily rate (for display) and the price-conditioned rate the model uses.
+    series = fetch_history_series([type_id], region_id, SESSION,
+                                  CACHE_DIR).get(type_id)
     daily_volume = fetch_history_volumes([type_id], region_id, SESSION,
                                          CACHE_DIR).get(type_id)
     price = None
@@ -3277,20 +3284,24 @@ def do_ind_sell_analysis(q):
     except (TypeError, ValueError):
         qty = 1
     units_ahead = ind_core.units_ahead_in_queue(sell_book, price)
-    prob = ind_core.sell_through_probability(units_ahead, daily_volume, qty)
+    # Demand rate that history shows trading at/above the proposed price.
+    rate = ind_core.price_conditioned_daily_rate(series, price)
+    curve = ind_core.sell_through_curve(units_ahead, rate, qty)
     return {
         "type_id": type_id,
         "station_id": station_id,
         "station_name": TRADE_HUBS[station_id]["name"],
         "region_id": region_id,
         "sell_book": sell_book,
+        "series": series,
         "daily_volume": daily_volume,
         "sell_orders_total": sum(v for _, v in sell_book),
         "best_ask": sell_book[0][0] if sell_book else None,
         "price": price,
         "qty": qty,
         "units_ahead": units_ahead,
-        "probability": prob,
+        "price_daily_rate": rate,
+        "curve": curve,
     }
 
 

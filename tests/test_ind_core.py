@@ -835,6 +835,84 @@ class TestBlueprintAvailability:
         deep = ind_core.sell_through_probability(80, 50, qty=1)["any"]
         assert shallow > deep
 
+    def test_sell_through_rises_with_horizon(self):
+        # The same order, listed for longer, has a higher chance of clearing —
+        # the core of the multi-horizon read. Odds grow (never shrink) with time.
+        thin = dict(units_ahead=0, daily_volume=3, qty=5)
+        day = ind_core.sell_through_probability(**thin, horizon_days=1)["all"]
+        week = ind_core.sell_through_probability(**thin, horizon_days=7)["all"]
+        month = ind_core.sell_through_probability(**thin, horizon_days=30)["all"]
+        assert day < week < month
+        assert day < 0.5 and month > 0.95   # a frozen "24%" becomes ~100% given time
+
+    def test_overdispersion_softens_the_tails(self):
+        # The negative-binomial model must be more forgiving than a bare Poisson at
+        # a hard spot (batch >> daily rate): the fattened tail keeps a believable,
+        # not-vanishing chance. Compare against DEMAND_DISPERSION turned off.
+        args = dict(units_ahead=0, daily_volume=3, qty=8, horizon_days=1)
+        nb = ind_core.sell_through_probability(**args)["all"]
+        saved = ind_core.DEMAND_DISPERSION
+        try:
+            ind_core.DEMAND_DISPERSION = 1.0            # collapse to Poisson
+            poisson = ind_core.sell_through_probability(**args)["all"]
+        finally:
+            ind_core.DEMAND_DISPERSION = saved
+        assert nb > poisson
+
+
+class TestPriceConditionedRate:
+    @staticmethod
+    def _series(days):
+        # days: list of (volume, low, high). average unused when range present.
+        return [{"volume": v, "low": lo, "high": hi, "average": (lo + hi) / 2}
+                for (v, lo, hi) in days]
+
+    def test_none_series_is_unknown(self):
+        assert ind_core.price_conditioned_daily_rate(None, 100.0) is None
+        assert ind_core.price_conditioned_daily_rate([], 100.0) is None
+
+    def test_none_price_is_full_rate(self):
+        # No price filter → total volume / the full window (sparse days read low).
+        s = self._series([(300, 90, 110)])   # one trading day in a 30-day window
+        assert ind_core.price_conditioned_daily_rate(s, None) == 300 / 30
+
+    def test_price_below_range_credits_full_volume(self):
+        # Listing at/below where it trades → you capture the whole day's demand.
+        s = self._series([(300, 90, 110)] * 30)   # every day trades 90..110
+        assert ind_core.price_conditioned_daily_rate(s, 80.0) == 300.0
+
+    def test_price_above_range_credits_nothing(self):
+        # Listing above everything the market paid → ~zero demand at that price.
+        s = self._series([(300, 90, 110)] * 30)
+        assert ind_core.price_conditioned_daily_rate(s, 200.0) == 0.0
+
+    def test_price_in_range_is_linear_share(self):
+        # Straddling the day's [low, high]: credit (high - price)/(high - low).
+        s = self._series([(300, 90, 110)] * 30)   # price 105 → (110-105)/20 = .25
+        assert ind_core.price_conditioned_daily_rate(s, 105.0) == pytest.approx(75.0)
+
+    def test_rate_falls_as_price_rises(self):
+        # The monotone knob the UI leans on: higher list price → lower demand rate.
+        s = self._series([(300, 90, 110)] * 30)
+        rates = [ind_core.price_conditioned_daily_rate(s, p)
+                 for p in (80, 95, 105, 120)]
+        assert rates == sorted(rates, reverse=True)
+
+
+class TestSellThroughCurve:
+    def test_curve_covers_eve_durations_and_grows(self):
+        # One row per EVE order duration, each carrying its label + odds; the
+        # full-batch probability is non-decreasing as the duration lengthens.
+        curve = ind_core.sell_through_curve(units_ahead=0, daily_volume=3, qty=5)
+        assert [r["days"] for r in curve] == [1, 3, 7, 14, 30, 90]
+        assert all("label" in r and "all" in r and "any" in r for r in curve)
+        alls = [r["all"] for r in curve]
+        assert alls == sorted(alls)
+
+    def test_curve_unknown_history_all_none(self):
+        curve = ind_core.sell_through_curve(units_ahead=0, daily_volume=None, qty=2)
+        assert all(r["all"] is None and r["any"] is None for r in curve)
+
     def test_requires_invention_flag(self):
         # drives the "Hide T2 / invention" filter in the web layer
         t1 = ind_core.evaluate_industry([_bp()], _prices(), _ADJUSTED, _params())[0]

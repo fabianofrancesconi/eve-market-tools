@@ -679,25 +679,87 @@ def units_ahead_in_queue(sell_levels, price):
     return ahead
 
 
-def sell_through_probability(units_ahead, daily_volume, qty=1, horizon_days=1.0):
-    """Probability that a sell order at a given price fills within `horizon_days`,
-    modelled as a Poisson arrival of buy demand clearing the queue ahead of you.
+# Demand is bursty: a handful of buyers each sweep several units, so real daily
+# trade counts scatter far wider than a pure Poisson (whose variance equals its
+# mean) would predict. We model the window's demand as negative-binomial with a
+# variance-to-mean ratio of DEMAND_DISPERSION, which fattens the tails: the odds
+# then ease across a price range instead of snapping 100%->0% at the mean, and a
+# thin-but-lucky market keeps a believable (not vanishing) chance of clearing.
+DEMAND_DISPERSION = 3.0
 
-    The market absorbs `daily_volume` units/day on average (the ~30-day mean from
-    market history). Over `horizon_days` the expected demand is
-    ``lam = daily_volume * horizon_days`` units, which we treat as Poisson: the
-    number of units bought in the window is random with that mean. Your first unit
-    fills once demand exceeds the `units_ahead` already queued at/below your price;
-    your whole batch fills once demand exceeds ``units_ahead + qty``.
+
+def price_conditioned_daily_rate(series, price):
+    """Units/day that recent history shows trading AT OR ABOVE `price` -- the
+    data-driven demand rate for a sell order listed at that price. This is what
+    captures "does it actually clear at my price": list at or below where it
+    normally trades and you get the full rate; list above the usual range and the
+    rate shrinks toward zero, because history shows few buyers ever paid that much.
+
+    `series` is the compact per-day history from lp_core.fetch_history_series:
+    ``[{"volume", "low", "high", "average"}, ...]`` over the recent window (ESI
+    omits zero-trade days, so len(series) may be < window; we still divide by the
+    full window so sparse trading reads as a low rate). For each day we credit the
+    share of that day's volume plausibly transacted at/above `price`, approximated
+    from where `price` sits in the day's [low, high] range:
+        frac = clamp((high - price) / (high - low), 0, 1)
+    (a day trading entirely above `price` credits its full volume; entirely below,
+    none; straddling, the linear share). `price` None -> the full unconditioned
+    rate (no price filter). Returns None when there's no usable history, so the
+    caller can distinguish "unknown" from a genuine zero.
+
+    window_days is taken from the series' own coverage but floored at len(series)
+    -- we can't see the calendar here, so we assume the caller passed a full window
+    and only shorten it if the series is somehow longer (it never is)."""
+    if not series:
+        return None
+    window = max(len(series), HISTORY_WINDOW_DAYS)
+    if price is None:
+        return sum(d.get("volume") or 0 for d in series) / window
+    total = 0.0
+    for d in series:
+        vol = d.get("volume") or 0
+        if not vol:
+            continue
+        lo, hi = d.get("low"), d.get("high")
+        if hi is None or lo is None:
+            # No range recorded -- fall back to the day's average as a point price.
+            avg = d.get("average")
+            frac = 1.0 if (avg is not None and avg >= price) else 0.0
+        elif hi <= lo:
+            frac = 1.0 if hi >= price else 0.0
+        else:
+            frac = (hi - price) / (hi - lo)
+            frac = 0.0 if frac < 0 else (1.0 if frac > 1 else frac)
+        total += vol * frac
+    return total / window
+
+
+# The recent-history window (calendar days) the price-conditioned rate normalises
+# against. Mirrors lp_core.HISTORY_DAYS; kept here so ind_core has no import of it.
+HISTORY_WINDOW_DAYS = 30
+
+
+def sell_through_probability(units_ahead, daily_volume, qty=1, horizon_days=1.0):
+    """How a sell order at a given price is expected to fill within `horizon_days`,
+    modelled as bursty buy demand clearing the queue ahead of you.
+
+    `daily_volume` is the demand rate in units/day -- either the raw ~30-day mean
+    or, better, the price-conditioned rate from price_conditioned_daily_rate (so a
+    price the market rarely pays yields a low rate and low odds). Over
+    `horizon_days` the expected demand is ``lam = daily_volume * horizon_days``
+    units, treated as overdispersed (negative-binomial, see DEMAND_DISPERSION) so
+    the odds ease across price/time instead of snapping at the mean. Your first
+    unit fills once demand exceeds `units_ahead`; the whole batch once it exceeds
+    ``units_ahead + qty``.
 
     Returns a dict:
-      any   P(at least 1 of your units sells) = P(demand > units_ahead)
-      all   P(all `qty` of your units sell)    = P(demand >= units_ahead + qty)
+      any       P(at least 1 of your units sells) = P(demand > units_ahead)
+      all       P(all `qty` of your units sell)    = P(demand >= units_ahead + qty)
       eta_days  expected days for the queue+batch to clear at the mean rate
-               (units_ahead + qty) / daily_volume, or None if the market is dead.
+                (units_ahead + qty) / daily_volume, or None if the market is dead.
 
     None daily_volume (history unknown) -> all-None (we can't estimate). A dead
-    market (daily_volume == 0) -> zero probabilities, eta None (never clears)."""
+    market (daily_volume == 0) -> zero everything, eta None (never clears)."""
     if daily_volume is None:
         return {"any": None, "all": None, "eta_days": None}
     if units_ahead is None:
@@ -706,34 +768,101 @@ def sell_through_probability(units_ahead, daily_volume, qty=1, horizon_days=1.0)
     if daily_volume <= 0:
         return {"any": 0.0, "all": 0.0, "eta_days": None}
     lam = daily_volume * max(0.0, horizon_days)
-    # P(demand > a) = 1 - P(demand <= a) with demand ~ Poisson(lam). units_ahead
-    # can be fractional (aggregated float volumes) so we compare against the floor:
-    # you fill once STRICTLY more than the whole units ahead of you have been bought.
-    p_any = 1.0 - _poisson_cdf(math.floor(units_ahead), lam)
-    p_all = 1.0 - _poisson_cdf(math.floor(units_ahead + qty) - 1, lam)
+    # units_ahead can be fractional (aggregated float volumes); you fill once
+    # STRICTLY more than the whole units ahead of you have been bought, so floor.
+    a = math.floor(units_ahead)
+    # S(j) = P(demand > j). Your 1st unit needs S(a); the whole batch S(a+qty-1).
+    survivals = _demand_survivals(a, qty, lam)
     eta = (units_ahead + qty) / daily_volume
-    return {"any": max(0.0, min(1.0, p_any)),
-            "all": max(0.0, min(1.0, p_all)),
+    return {"any": max(0.0, min(1.0, survivals[0])),
+            "all": max(0.0, min(1.0, survivals[-1])),
             "eta_days": eta}
 
 
-def _poisson_cdf(k, lam):
-    """P(X <= k) for X ~ Poisson(lam), k a non-negative integer. Summed term by
-    term from the pmf recurrence (p_{i} = p_{i-1} * lam / i) so there's no large
-    factorial or exp overflow. lam can be large; k is bounded by the order-book
-    depth so the loop stays short in practice."""
-    if k < 0:
-        return 0.0
-    if lam <= 0:
-        return 1.0  # all mass at 0
-    # term = e^{-lam} * lam^i / i!, accumulated. e^{-lam} underflows to 0 for very
-    # large lam, which correctly drives the CDF for small k to 0 (queue clears).
+# EVE's sell-order durations, in days -- the horizons the sell-through curve is
+# quoted across (1d, 3d, 1w, 2w, 1mo, 3mo). A longer listing has more days to
+# clear (odds rise), but if the price-conditioned rate is near zero because
+# history shows the item rarely sells that high, even 3 months stays low.
+SELL_HORIZONS = (
+    {"days": 1, "label": "1 day"},
+    {"days": 3, "label": "3 days"},
+    {"days": 7, "label": "1 week"},
+    {"days": 14, "label": "2 weeks"},
+    {"days": 30, "label": "1 month"},
+    {"days": 90, "label": "3 months"},
+)
+
+
+def sell_through_curve(units_ahead, daily_volume, qty=1, horizons=SELL_HORIZONS):
+    """The full-batch sell probability across each duration in `horizons` (default
+    SELL_HORIZONS -- EVE's order durations). Returns a list of
+    ``{"days", "label", "all", "any", "eta_days"}`` so the UI can show the odds
+    growing as the listing runs longer. `daily_volume` should be the
+    price-conditioned rate (price_conditioned_daily_rate) so a too-high price keeps
+    the whole curve low. None daily_volume -> every row's odds are None."""
+    return [
+        {"days": h["days"], "label": h["label"],
+         **sell_through_probability(units_ahead, daily_volume, qty, h["days"])}
+        for h in horizons
+    ]
+
+
+def _demand_survivals(a, qty, lam):
+    """The list [S(a), S(a+1), ..., S(a+qty-1)] where S(j) = P(demand > j) for the
+    window's demand ~ negative-binomial with mean `lam` and variance-to-mean ratio
+    DEMAND_DISPERSION (Poisson when the ratio collapses to 1). Computed in a single
+    pass accumulating the pmf via its recurrence, so no factorials/special
+    functions and the loop is bounded by a+qty (order-book depth + batch)."""
+    a = max(0, int(a))
+    qty = max(1, int(qty))
+    od = DEMAND_DISPERSION
+    if not od or od <= 1.0:
+        pmf_iter = _poisson_pmf_iter(lam)          # dispersion off -> Poisson
+    else:
+        # NB(r, p): mean = r(1-p)/p = lam, var = mean/p, so var/mean = 1/p = od.
+        p = 1.0 / od
+        r = lam * p / (1.0 - p)                     # = lam / (od - 1)
+        pmf_iter = _nbinom_pmf_iter(r, p)
+    out = []
+    cdf = 0.0
+    top = a + qty                                  # need S(a) .. S(a+qty-1)
+    j = 0
+    for pmf in pmf_iter:
+        cdf += pmf
+        if j >= a:
+            out.append(max(0.0, 1.0 - cdf))        # S(j) = 1 - P(X <= j)
+        j += 1
+        if j >= top:
+            break
+    # pmf underflowed to 0 before reaching top (huge lam vs small j): remaining
+    # survivals are ~0. Pad so the list is always length qty.
+    while len(out) < qty:
+        out.append(0.0)
+    return out
+
+
+def _poisson_pmf_iter(lam):
+    """Yield Poisson(lam) pmf values P(X=0), P(X=1), ... via p_i = p_{i-1}*lam/i.
+    e^{-lam} underflows to 0 for very large lam, correctly zeroing small-k mass."""
     term = math.exp(-lam)
-    cdf = term
-    for i in range(1, k + 1):
+    i = 0
+    while True:
+        yield term
+        i += 1
         term *= lam / i
-        cdf += term
-    return min(1.0, cdf)
+
+
+def _nbinom_pmf_iter(r, p):
+    """Yield negative-binomial pmf values P(X=0), P(X=1), ... for real r>0 and
+    success prob p in (0,1), via P(k) = P(k-1) * (k-1+r)/k * (1-p) with
+    P(0) = p^r. No special functions; same shape as the Poisson recurrence."""
+    q = 1.0 - p
+    term = p ** r
+    k = 0
+    while True:
+        yield term
+        k += 1
+        term *= (k - 1 + r) / k * q
 
 
 def cheapest_sell_location(orders):

@@ -1469,14 +1469,15 @@ function _applyBuildPeekLive(){
   if(_buildPeekTab==="reprice") _renderBuildPeekSim();
 }
 
-// ── Market tab — price trend + odds of selling within a day ──────────────────
+// ── Market tab — price trend + odds of the batch selling over time ───────────
 // Answers the tracker's real question at "Ready to sell": not just "what's it
-// worth?" but "if I list at THIS price, will it actually move?" A 90-day price
-// sparkline (reusing the LP-store chart) shows the trend and volatility; a
-// live probability read-out estimates the chance the batch clears within a day
-// at the chosen price, from how many units are queued at/below it vs. the mean
-// daily demand. The price slider drives it, so you can see the odds fall as you
-// price above the market and rise as you undercut.
+// worth?" but "if I list at THIS price, will it actually move — and how long will
+// it take?" A 90-day price sparkline (reusing the LP-store chart) shows the trend
+// and volatility; a live read-out estimates the chance the whole batch clears
+// across EVE's order durations (1d … 3mo), using how much recent trade actually
+// happened at/above the chosen price (the price-conditioned demand rate) vs. how
+// many units are queued at/below it. The price slider drives it, so you can see
+// the odds fall as you price above where the market has been paying.
 function _buildPeekMarketHtml(){
   const P=_PEEK;
   // Chart slot (reuses the LP store's .chart-wrap markup + _attachChart).
@@ -1547,7 +1548,41 @@ function _unitsAheadInQueue(book, price){
   for(const [p,v] of book){ if(p<=price) ahead+=v; else break; }
   return ahead;
 }
-// Client-side mirror of ind_core.sell_through_probability (Poisson queue-clear).
+// Recent-history window (calendar days) the price-conditioned rate normalises
+// against — mirror of ind_core.HISTORY_WINDOW_DAYS / lp_core.HISTORY_DAYS.
+const _HISTORY_WINDOW_DAYS=30;
+// EVE's sell-order durations — the horizons the sell-through curve is quoted
+// across (mirror of ind_core.SELL_HORIZONS).
+const _SELL_HORIZONS=[
+  {days:1,label:"1 day"},{days:3,label:"3 days"},{days:7,label:"1 week"},
+  {days:14,label:"2 weeks"},{days:30,label:"1 month"},{days:90,label:"3 months"},
+];
+// Client-side mirror of ind_core.price_conditioned_daily_rate: units/day recent
+// history shows trading at/above `price` (null price → the full unconditioned
+// rate). Each day credits the share of its volume plausibly transacted at/above
+// the price, from where the price sits in that day's [low,high]. null when there's
+// no usable history so the caller can tell "unknown" from a real zero.
+function _priceConditionedDailyRate(series, price){
+  if(!series || !series.length) return null;
+  const window=Math.max(series.length, _HISTORY_WINDOW_DAYS);
+  if(price==null) return series.reduce((s,d)=>s+(d.volume||0),0)/window;
+  let total=0;
+  for(const d of series){
+    const vol=d.volume||0; if(!vol) continue;
+    const lo=d.low, hi=d.high;
+    let frac;
+    if(hi==null||lo==null){ const a=d.average; frac=(a!=null&&a>=price)?1:0; }
+    else if(hi<=lo) frac=hi>=price?1:0;
+    else { frac=(hi-price)/(hi-lo); frac=frac<0?0:(frac>1?1:frac); }
+    total+=vol*frac;
+  }
+  return total/window;
+}
+// Client-side mirror of ind_core.sell_through_probability. Demand in the window
+// is overdispersed (negative-binomial, variance/mean = _DEMAND_DISPERSION) so the
+// odds ease across price/time instead of snapping 100%->0% at the mean; keep this
+// in lockstep with the server model.
+const _DEMAND_DISPERSION=3.0;
 function _sellThroughProb(unitsAhead, daily, qty, horizon){
   horizon=horizon==null?1:horizon;
   if(daily==null) return {any:null, all:null, eta:null};
@@ -1555,17 +1590,33 @@ function _sellThroughProb(unitsAhead, daily, qty, horizon){
   qty=Math.max(1, qty|0||1);
   if(daily<=0) return {any:0, all:0, eta:null};
   const lam=daily*Math.max(0,horizon);
-  const pAny=1-_poissonCdf(Math.floor(unitsAhead), lam);
-  const pAll=1-_poissonCdf(Math.floor(unitsAhead+qty)-1, lam);
-  return {any:Math.max(0,Math.min(1,pAny)), all:Math.max(0,Math.min(1,pAll)),
+  const surv=_demandSurvivals(Math.floor(unitsAhead), qty, lam);
+  return {any:Math.max(0,Math.min(1,surv[0])), all:Math.max(0,Math.min(1,surv[surv.length-1])),
           eta:(unitsAhead+qty)/daily};
 }
-function _poissonCdf(k, lam){
-  if(k<0) return 0;
-  if(lam<=0) return 1;
-  let term=Math.exp(-lam), cdf=term;
-  for(let i=1;i<=k;i++){ term*=lam/i; cdf+=term; }
-  return Math.min(1, cdf);
+// [S(a), ..., S(a+qty-1)] with S(j)=P(demand>j); demand ~ NB(mean lam, var/mean
+// _DEMAND_DISPERSION), collapsing to Poisson when the ratio is <=1. Accumulates
+// the pmf via its recurrence in one pass — no factorials/special functions.
+function _demandSurvivals(a, qty, lam){
+  a=Math.max(0,a|0); qty=Math.max(1,qty|0);
+  const od=_DEMAND_DISPERSION;
+  let term, step;                              // pmf value + its k->k+1 multiplier
+  if(!od || od<=1){                            // Poisson: p_i = p_{i-1}*lam/i
+    term=Math.exp(-lam);
+    step=(k)=>lam/(k+1);
+  } else {                                     // NB(r,p): mean lam, var/mean = od
+    const p=1/od, r=lam*p/(1-p), q=1-p;
+    term=Math.pow(p,r);
+    step=(k)=>(k+r)/(k+1)*q;                   // P(k+1)=P(k)*(k+r)/(k+1)*q
+  }
+  const out=[]; let cdf=0; const top=a+qty;
+  for(let j=0;j<top;j++){
+    cdf+=term;
+    if(j>=a) out.push(Math.max(0,1-cdf));
+    term*=step(j);
+  }
+  while(out.length<qty) out.push(0);
+  return out;
 }
 
 // Render the sell-through panel: a price slider (defaulting to the proposed
@@ -1574,7 +1625,7 @@ function _renderBuildPeekProb(){
   const P=_PEEK, isk=_peekIsk; const slot=$("#bp-mkt-prob"); if(!slot||!P) return;
   const m=P.market;
   if(!m){ slot.innerHTML=`<div class="bp-sim-loading">Live market unavailable — can't estimate sell-through right now.</div>`; return; }
-  if(m.daily_volume==null){
+  if(!m.series||!m.series.length){
     slot.innerHTML=`<div class="bp-mkt-nodata">No trade history for ${authEsc(P.b.product_name||"this item")} in ${authEsc(m.station_name||"this hub")} — can't estimate how fast it sells. ${m.best_ask!=null?`Best ask is ${isk(m.best_ask)}.`:"Nothing is listed right now."}</div>`;
     return;
   }
@@ -1587,8 +1638,9 @@ function _renderBuildPeekProb(){
   const step=Math.max(0.01,(hi-lo)/1000);
   const chip=(label,val)=> val==null?"" :
     `<button class="bp-chip" data-price="${val}" title="Set price to ${isk(val)}">${label}<b>${isk(val)}</b></button>`;
+  const volTxt=m.daily_volume!=null?`Market moves <b>${Math.round(m.daily_volume).toLocaleString()}</b> units/day here`:"Thin recent trade history here";
   slot.innerHTML=`
-    <div class="bp-mkt-vol">Market moves <b>${Math.round(m.daily_volume).toLocaleString()}</b> units/day here${m.sell_orders_total!=null?` · <b>${Math.round(m.sell_orders_total).toLocaleString()}</b> listed on sell orders`:""}.</div>
+    <div class="bp-mkt-vol">${volTxt}${m.sell_orders_total!=null?` · <b>${Math.round(m.sell_orders_total).toLocaleString()}</b> listed on sell orders`:""}.</div>
     <div class="bp-sim-head">Chance of selling if I list at</div>
     <div class="bp-sim-price"><span id="bp-mkt-price">${isk(start)}</span><span class="bp-sim-unit">/ unit</span></div>
     <input id="bp-mkt-slider" class="bp-sim-slider" type="range" min="${lo}" max="${hi}" step="${step}" value="${start}">
@@ -1599,7 +1651,7 @@ function _renderBuildPeekProb(){
       ${chip("Break-even ",be)}
     </div>
     <div class="bp-mkt-out" id="bp-mkt-out"></div>
-    <div class="bp-mkt-note">Odds model queued supply at/below your price clearing against the mean daily demand (Poisson) — a guide, not a guarantee; a single big buyer or a fresh undercut can change it fast.</div>`;
+    <div class="bp-mkt-note">Odds use how much recent trade actually happened at or above your price, spread over each listing duration — so a price the market rarely pays stays low even over months. A guide, not a guarantee; a fresh undercut can change it fast.</div>`;
   _updateBuildPeekProb(start);
 }
 
@@ -1609,21 +1661,29 @@ function _updateBuildPeekProb(price){
   const slider=$("#bp-mkt-slider"); if(slider && +slider.value!==price) slider.value=price;
   const qty=Math.max(1, P.remaining||1);
   const ahead=_unitsAheadInQueue(m.sell_book, price);
-  const prob=_sellThroughProb(ahead, m.daily_volume, qty, 1);
   const out=$("#bp-mkt-out"); if(!out) return;
-  const pct=v=>v==null?"—":(v*100).toFixed(v>=0.995||v<=0.005?0:0)+"%";
+  // Price-conditioned demand: units/day history shows trading at/above THIS price.
+  // Listing high shrinks it toward zero, so the whole curve drops — that's the
+  // data-driven "does it actually sell this high" the odds hinge on.
+  const rate=_priceConditionedDailyRate(m.series, price);
+  if(rate==null){ out.innerHTML=`<div class="bp-mkt-nodata">Can't estimate sell-through — no demand data.</div>`; return; }
+  const pct=v=>v==null?"—":(v*100).toFixed(0)+"%";
   const bar=(v,cls)=>`<div class="bp-mkt-bar"><i class="${cls}" style="width:${((v||0)*100).toFixed(1)}%"></i></div>`;
-  const anyCls=prob.any>=0.66?"good":(prob.any>=0.33?"warn":"bad");
-  const allCls=prob.all>=0.66?"good":(prob.all>=0.33?"warn":"bad");
-  const eta=prob.eta;
-  const etaTxt=(eta==null)?"—":(eta<1?`~${Math.round(eta*24)}h`:`~${eta.toFixed(eta<10?1:0)}d`);
+  const cls=v=>v>=0.66?"good":(v>=0.33?"warn":"bad");
+  // P(the whole batch sells) grows as the listing runs longer — 1d … 3mo.
+  const rows=_SELL_HORIZONS.map(h=>{
+    const p=_sellThroughProb(ahead, rate, qty, h.days).all;
+    return `<div class="bp-mkt-metric"><span class="bp-mkt-k">within ${h.label}</span><span class="bp-mkt-v ${cls(p)}">${pct(p)}</span></div>${bar(p,cls(p))}`;
+  }).join("");
+  // Expected time to clear at this price's demand rate (a plain-language sibling
+  // to the curve). Uses the whole queue + batch and the price-conditioned rate.
+  const eta=_sellThroughProb(ahead, rate, qty, 1).eta;
+  const etaTxt=(eta==null||!isFinite(eta))?"—":(eta<1?`~${Math.round(eta*24)}h`:(eta<60?`~${eta.toFixed(eta<10?1:0)}d`:"months+"));
   out.innerHTML=`
-    <div class="bp-mkt-metric"><span class="bp-mkt-k">${qty.toLocaleString()} unit(s) queued behind <b>${Math.round(ahead).toLocaleString()}</b></span></div>
-    <div class="bp-mkt-metric"><span class="bp-mkt-k">Sell ≥1 within a day</span><span class="bp-mkt-v ${anyCls}">${pct(prob.any)}</span></div>
-    ${bar(prob.any,anyCls)}
-    <div class="bp-mkt-metric"><span class="bp-mkt-k">Sell all ${qty.toLocaleString()} within a day</span><span class="bp-mkt-v ${allCls}">${pct(prob.all)}</span></div>
-    ${bar(prob.all,allCls)}
-    <div class="bp-mkt-eta">Expected time to clear the queue + your batch at the current rate: <b>${etaTxt}</b></div>`;
+    <div class="bp-mkt-metric"><span class="bp-mkt-k">${qty.toLocaleString()} unit(s) queued behind <b>${Math.round(ahead).toLocaleString()}</b> · sells <b>${rate>=1?Math.round(rate).toLocaleString():rate.toFixed(2)}</b>/day at this price</span></div>
+    <div class="bp-mkt-sub">Chance the whole batch (${qty.toLocaleString()} unit${qty===1?"":"s"}) sells within</div>
+    ${rows}
+    <div class="bp-mkt-eta">Expected time to clear the queue + your batch at this price: <b>${etaTxt}</b></div>`;
 }
 
 // When logged in, drive the LP budget from the character's loyalty points for

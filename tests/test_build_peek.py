@@ -13,15 +13,16 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CHAR_JS = (_ROOT / "static" / "js" / "char.js").read_text()
+_IND_JS = (_ROOT / "static" / "js" / "ind.js").read_text()
 _HTML = (_ROOT / "static" / "index.html").read_text()
 _CSS = (_ROOT / "static" / "style.css").read_text()
 
 
-def _sim_fn(name):
-    """Slice out a named function body from char.js for focused assertions."""
-    start = _CHAR_JS.index(f"function {name}(")
+def _sim_fn(name, src=_CHAR_JS):
+    """Slice out a named function body from a JS source for focused assertions."""
+    start = src.index(f"function {name}(")
     # Crude but sufficient: read to the next top-level "\nfunction " marker.
-    rest = _CHAR_JS[start + 1:]
+    rest = src[start + 1:]
     end = rest.find("\nfunction ")
     return rest if end < 0 else rest[:end]
 
@@ -39,6 +40,24 @@ class TestModalMarkup:
         # tab switch (its own container), not inside a tab body.
         assert 'id="build-peek-stepper"' in _HTML
         assert _HTML.index('id="build-peek-stepper"') < _HTML.index('id="build-peek-tabs"')
+
+
+class TestBuildingStagePeek:
+    def test_building_stage_offers_decide_price(self):
+        # A build that's still running (or "ready for delivery") can already scout
+        # the market — the sell block for the building stage carries the Decide
+        # price button even though there's no sell action yet.
+        fn = _sim_fn("_buildSellHtml", _IND_JS)
+        head = fn[:fn.index('if(stage==="built")')]
+        assert 'stage==="building"' in head
+        assert "ind-sell-analyze" in head
+
+    def test_peek_market_tab_open_at_any_stage(self):
+        # Only the Re-price tab is gated to built/listed/sold; the Market tab
+        # (trend + odds) stays available so the building-stage button lands
+        # somewhere useful.
+        fn = _sim_fn("openBuildPeek")
+        assert 'stage==="listed"||stage==="sold"||stage==="built"' in fn.replace(" ", "")
 
 
 class TestNameTrigger:
@@ -98,6 +117,34 @@ class TestRepriceSimulator:
         assert "Best ask" in fn
         assert "Undercut" in fn
         assert "Frozen" in fn
+
+
+class TestSellThroughMarketTab:
+    def test_client_model_mirrors_server_price_conditioning(self):
+        # The Market tab conditions demand on price client-side (mirroring
+        # ind_core.price_conditioned_daily_rate) so the slider recomputes without a
+        # refetch — the same (high-price → low rate) share-of-[low,high] formula.
+        assert "function _priceConditionedDailyRate(" in _CHAR_JS
+        fn = _sim_fn("_priceConditionedDailyRate")
+        assert "(hi-price)/(hi-lo)" in fn.replace(" ", "")
+
+    def test_curve_spans_eve_order_durations(self):
+        # Odds are quoted across EVE's sell-order durations, not a single day.
+        assert "_SELL_HORIZONS" in _CHAR_JS
+        for label in ("1 day", "3 days", "1 week", "2 weeks", "1 month", "3 months"):
+            assert f'"{label}"' in _CHAR_JS
+
+    def test_render_uses_conditioned_rate_over_horizons(self):
+        # The panel drives the per-horizon rows off the price-conditioned rate,
+        # not a flat daily volume — the fix for the "frozen 96%/23%" readout.
+        fn = _sim_fn("_updateBuildPeekProb")
+        assert "_priceConditionedDailyRate(m.series" in fn
+        assert "_SELL_HORIZONS.map" in fn
+
+    def test_overdispersion_kept_in_lockstep_with_server(self):
+        # Both models share the same variance/mean overdispersion so the client
+        # curve matches the server's; guard the constant stays equal.
+        assert "_DEMAND_DISPERSION=3.0" in _CHAR_JS.replace(" ", "")
 
 
 class TestOwnerFees:

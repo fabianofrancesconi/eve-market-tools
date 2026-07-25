@@ -20,16 +20,29 @@ def _acct():
     return a
 
 
-def _bind(monkeypatch, acct, book, daily):
+def _series_for(daily):
+    """A 30-day history series whose per-day volume averages `daily`, trading in a
+    wide 1..1e12 range so any realistic list price sits inside it (price filter is
+    exercised separately). None `daily` → no history at all."""
+    if daily is None:
+        return None
+    return [{"volume": daily, "low": 1.0, "high": 1e12, "average": daily}
+            for _ in range(30)]
+
+
+def _bind(monkeypatch, acct, book, daily, series="auto"):
     monkeypatch.setattr(lp_web, "current_account", lambda: acct)
     monkeypatch.setattr(lp_web, "fetch_orderbook_jita",
                         lambda *a, **k: book)
     monkeypatch.setattr(lp_web, "fetch_history_volumes",
                         lambda type_ids, *a, **k: {list(type_ids)[0]: daily})
+    ser = _series_for(daily) if series == "auto" else series
+    monkeypatch.setattr(lp_web, "fetch_history_series",
+                        lambda type_ids, *a, **k: {list(type_ids)[0]: ser})
 
 
 class TestSellAnalysis:
-    def test_returns_book_volume_and_probability(self, monkeypatch):
+    def test_returns_book_volume_and_curve(self, monkeypatch):
         book = [[100.0, 5], [101.0, 3], [102.0, 10]]
         _bind(monkeypatch, _acct(), book, daily=50.0)
         out = lp_web.do_ind_sell_analysis(
@@ -39,7 +52,12 @@ class TestSellAnalysis:
         assert out["best_ask"] == 100.0
         assert out["sell_orders_total"] == 18
         assert out["units_ahead"] == 8          # units at/below 101
-        assert 0.0 <= out["probability"]["all"] <= out["probability"]["any"] <= 1.0
+        # The whole EVE-duration curve comes back, ordered and bounded.
+        assert [r["days"] for r in out["curve"]] == [1, 3, 7, 14, 30, 90]
+        for r in out["curve"]:
+            assert 0.0 <= r["all"] <= r["any"] <= 1.0
+        # Price sits far below the wide range → ~full demand rate is credited.
+        assert out["price_daily_rate"] == pytest.approx(50.0)
 
     def test_defaults_station_to_jita_and_qty_to_one(self, monkeypatch):
         _bind(monkeypatch, _acct(), [[10.0, 1]], daily=5.0)
@@ -47,16 +65,29 @@ class TestSellAnalysis:
         assert out["station_id"] == lp_web.JITA_STATION_ID
         assert out["qty"] == 1
         assert out["price"] is None
-        # No candidate price → no queue position to compute (units_ahead None),
-        # but the model still returns odds (treating the queue as empty).
+        # No candidate price → no queue position (units_ahead None) and the rate is
+        # the unconditioned full rate; the curve still comes back populated.
         assert out["units_ahead"] is None
-        assert out["probability"]["any"] is not None
+        assert out["curve"][0]["any"] is not None
 
-    def test_unknown_history_yields_null_probability(self, monkeypatch):
+    def test_unknown_history_yields_null_curve(self, monkeypatch):
         _bind(monkeypatch, _acct(), [[10.0, 1]], daily=None)
         out = lp_web.do_ind_sell_analysis({"type_id": ["34"], "price": ["10"]})
         assert out["daily_volume"] is None
-        assert out["probability"] == {"any": None, "all": None, "eta_days": None}
+        assert out["series"] is None
+        assert out["price_daily_rate"] is None
+        assert all(r["all"] is None and r["any"] is None for r in out["curve"])
+
+    def test_high_price_drops_the_rate_and_odds(self, monkeypatch):
+        # A price above everything the market recently paid → ~zero demand rate and
+        # a near-zero curve even at the longest horizon. This is the whole point.
+        series = [{"volume": 100, "low": 90.0, "high": 110.0, "average": 100.0}
+                  for _ in range(30)]
+        _bind(monkeypatch, _acct(), [[100.0, 1]], daily=100.0, series=series)
+        out = lp_web.do_ind_sell_analysis(
+            {"type_id": ["34"], "price": ["200"], "qty": ["1"]})
+        assert out["price_daily_rate"] == 0.0
+        assert out["curve"][-1]["all"] == 0.0   # 3 months, still ~never
 
     def test_bad_station_falls_back_to_jita(self, monkeypatch):
         _bind(monkeypatch, _acct(), [], daily=1.0)

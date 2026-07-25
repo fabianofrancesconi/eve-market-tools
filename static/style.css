@@ -262,9 +262,12 @@
       color-mix(in srgb, var(--cyan2) 22%, transparent), transparent);
     animation:ind-scan-sweep 1.15s ease-in-out infinite;
   }
+  /* Percentages on `left` are relative to the controls bar, so the probe
+     crosses the whole width; translateX percentages are relative to the
+     element's own 120px, which stalled the sweep near the left edge. */
   @keyframes ind-scan-sweep {
-    0% { transform:translateX(-120px); }
-    100% { transform:translateX(100%); }
+    0% { left:-120px; }
+    100% { left:100%; }
   }
   @media (prefers-reduced-motion: reduce) {
     #ind-controls.scanning::after { animation:none; opacity:0; }

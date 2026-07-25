@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.145.0"
+__version__ = "1.145.1"
 
 import argparse
 import base64
@@ -1812,7 +1812,57 @@ def do_ind_builds_sell_edit(q):
     return {"ok": True, "build": b}
 
 
-def _reconcile_sell_builds(acct, current_orders):
+def _consumed_txn_ids(builds):
+    """Every wallet transaction_id already accrued by any build, across BOTH sell
+    paths: the instant path records a single ``transaction_id`` per fill, the
+    listed path records ``transaction_ids`` (a fill can span several wallet
+    transactions). This shared set is what keeps the two reconcilers mutually
+    exclusive — a transaction consumed by a listed order is invisible to the
+    instant path's own dedup (it keys on transaction_id, which listed fills only
+    gained via stamping), so without this a listed sale's transactions would be
+    re-scooped as a phantom instant sale on a same-item build."""
+    ids = set()
+    for b in builds:
+        for e in ((b.get("sell") or {}).get("realized") or []):
+            if e.get("transaction_id") is not None:
+                ids.add(str(e["transaction_id"]))
+            for t in (e.get("transaction_ids") or []):
+                ids.add(str(t))
+    return ids
+
+
+def _claim_fill_txns(sell_txns, pid, price, units, consumed):
+    """Pick the wallet sell-transaction ids that correspond to a detected
+    listed-order fill so they can be stamped onto it and marked consumed.
+
+    A sell order fills at its listed price, so we match on product + unit price
+    and take (oldest first) up to the fill's unit count, skipping ids already
+    consumed by another build/fill. Best-effort: an order event carries no
+    transaction_id, so a fill that finds no matching wallet row simply records
+    none — the instant path then can't tell it apart, but the price+qty match
+    covers the normal case. Mutates ``consumed`` with the ids taken."""
+    out = []
+    taken = 0
+    for t in sell_txns:
+        if units and taken >= units:
+            break
+        if t.get("type_id") != pid:
+            continue
+        tid = str(t.get("transaction_id"))
+        if tid in consumed:
+            continue
+        # Fill price == listed price for a sell order; guard against grabbing an
+        # unrelated sale of the same item at a different price.
+        up = t.get("unit_price") or 0
+        if price and abs(up - price) > max(0.01, price * 1e-4):
+            continue
+        out.append(t.get("transaction_id"))
+        consumed.add(tid)
+        taken += t.get("quantity") or 0
+    return out
+
+
+def _reconcile_sell_builds(acct, current_orders, transactions=None):
     """Wire the character's live sell orders + detected fills into any builds in
     the 'selling' state. Sell-tracking starts *automatically*: a finished (built)
     build whose product shows up as a single fresh sell order is linked with no
@@ -1856,6 +1906,14 @@ def _reconcile_sell_builds(acct, current_orders):
             if ev.get("is_buy_order"):
                 continue
             events_by_order.setdefault(str(ev.get("order_id")), []).append(ev)
+
+        # Shared consumed-transaction set: as listed fills are accrued we stamp
+        # them with the wallet transaction ids they correspond to and add those
+        # here, so _reconcile_instant_sell_builds (which reads the same set back
+        # off sell.realized) never re-scoops a transaction a listed sale used.
+        sell_txns = sorted((t for t in (transactions or []) if not t.get("is_buy")),
+                           key=lambda t: t.get("date") or "")
+        consumed = _consumed_txn_ids(builds)
 
         changed = False
         # Auto-start pass: a built build + exactly one fresh matching sell order
@@ -1931,12 +1989,19 @@ def _reconcile_sell_builds(acct, current_orders):
                     if evid in seen or sold <= 0:
                         continue
                     price = ev.get("price") or 0
-                    realized.append({
+                    entry = {
                         "event_id": evid, "ts": ev.get("ts"),
                         "order_id": ev.get("order_id"), "units": sold,
                         "price": price, "gross": sold * price,
                         "net": sold * price * (1 - stax),
-                    })
+                    }
+                    # Stamp the wallet transaction ids this fill corresponds to
+                    # (best-effort, by product+price) and mark them consumed so
+                    # the instant path can't re-count them.
+                    txns = _claim_fill_txns(sell_txns, pid, price, sold, consumed)
+                    if txns:
+                        entry["transaction_ids"] = txns
+                    realized.append(entry)
                     seen.add(evid)
                     changed = True
             # A linked order that expired with units left is dropped so the next
@@ -2021,11 +2086,11 @@ def _reconcile_instant_sell_builds(acct, transactions):
         # Oldest-finished first, so concurrent batches of the same item claim
         # transactions in a stable order.
         candidates.sort(key=lambda b: b.get("done_at") or 0)
-        # A transaction already accrued by ANY build must not be re-claimed.
-        claimed = {str(e.get("transaction_id"))
-                   for b in builds
-                   for e in ((b.get("sell") or {}).get("realized") or [])
-                   if e.get("transaction_id") is not None}
+        # A transaction already accrued by ANY build must not be re-claimed —
+        # including ids a *listed* sale stamped onto its fills (transaction_ids),
+        # so a listed order's transactions are never re-scooped here as a phantom
+        # instant sale on a same-item build.
+        claimed = _consumed_txn_ids(builds)
         changed = False
         for b in candidates:
             pid = b.get("product_type_id")
@@ -2448,7 +2513,7 @@ def _fetch_one_char_data_uncached(acct, cid):
         # Fold this character's live sell orders + detected fills into any
         # tracked builds in the selling state (auto-link + accrue realized P&L).
         try:
-            _reconcile_sell_builds(acct, orders_out)
+            _reconcile_sell_builds(acct, orders_out, transactions)
         except Exception:
             pass
     # Instant sells (selling into a buy order) leave no market order, so accrue

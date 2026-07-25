@@ -881,6 +881,43 @@ class TestInstantSell:
         assert sell.get("mode") != "instant"
         assert not any(e.get("transaction_id") for e in sell.get("realized", []))
 
+    def test_listed_fill_txn_not_rescooped_by_second_batch(self, monkeypatch, tmp_path):
+        # The reported bug: batch A sold via a LISTED order (fills accrued by
+        # event id, wallet transactions left unclaimed). A fresh batch B of the
+        # SAME item is then built; feeding the wallet must NOT re-scoop batch A's
+        # transactions as a phantom instant sale on B.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        # Batch A: built, then listed and fully sold (10 units @ 160).
+        a = self._built(runs=10)
+        orders0 = [_sell_order(700, 587, 10, 10, 160.0)]
+        lp_web._track_order_changes(acct, 1, orders0, {})
+        # Wallet carries A's sale as transactions (same product+price as the fill).
+        txns = [_txn(9001, 587, 10, 160.0)]
+        lp_web._reconcile_sell_builds(acct, orders0, txns)   # auto-starts listed sale
+        orders1 = [_sell_order(700, 587, 0, 10, 160.0)]      # 10 sold
+        lp_web._track_order_changes(acct, 1, orders1, {})
+        lp_web._reconcile_sell_builds(acct, orders1, txns)
+        # The listed fill stamped A's transaction id as consumed.
+        a_sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
+        assert a_sell.get("mode") != "instant"
+        assert "9001" in {str(t) for e in a_sell["realized"]
+                          for t in (e.get("transaction_ids") or [])}
+        # Batch B: a second build of the same item, freshly built (added
+        # alongside A — _built() replaces the whole list, so build B by hand).
+        b = _save_build(runs=10)
+        stored = lp_web.do_ind_builds_list({})["builds"]
+        b_rec = next(x for x in stored if x["id"] == b["id"])
+        b_rec["job_id"] = "456"
+        b_rec["done_at"] = time.time()
+        lp_web._save_tracked_builds(acct, stored)
+        # Same wallet feed (ESI re-returns recent transactions) — B must NOT
+        # adopt A's already-consumed transaction as an instant sale.
+        lp_web._reconcile_instant_sell_builds(acct, txns)
+        builds = lp_web.do_ind_builds_list({})["builds"]
+        b_stored = next(x for x in builds if x["id"] == b["id"])
+        assert (b_stored.get("sell") or {}).get("started_at") is None
+
     def test_one_transaction_not_split_across_builds(self, monkeypatch, tmp_path):
         # Two concurrent built batches of the same item; each transaction id is
         # claimed by at most one build (oldest-finished first). Build the two

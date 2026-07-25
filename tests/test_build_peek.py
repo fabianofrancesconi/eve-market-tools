@@ -146,6 +146,16 @@ class TestSellThroughMarketTab:
         # curve matches the server's; guard the constant stays equal.
         assert "_DEMAND_DISPERSION=3.0" in _CHAR_JS.replace(" ", "")
 
+    def test_large_mean_uses_normal_approx_not_underflow(self):
+        # Regression: a large demand mean underflows the pmf seed, which used to
+        # peg every survival at a bogus 1.0 ("always 100%"). The client must
+        # switch to the normal approximation at the same seam as the server, and
+        # ship its own erfc (JS has no Math.erfc).
+        assert "_NORMAL_APPROX_MEAN=60" in _CHAR_JS.replace(" ", "")
+        assert "function _erfc(" in _CHAR_JS
+        fn = _sim_fn("_demandSurvivals")
+        assert "_NORMAL_APPROX_MEAN" in fn and "_erfc(" in fn
+
 
 class TestOwnerFees:
     def test_fees_recomputed_from_owning_characters_skills(self):

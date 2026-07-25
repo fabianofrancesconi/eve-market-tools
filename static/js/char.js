@@ -1594,12 +1594,30 @@ function _sellThroughProb(unitsAhead, daily, qty, horizon){
   return {any:Math.max(0,Math.min(1,surv[0])), all:Math.max(0,Math.min(1,surv[surv.length-1])),
           eta:(unitsAhead+qty)/daily};
 }
+// Above this demand mean, switch from the exact pmf recurrence to a normal
+// approximation — mirror of ind_core._NORMAL_APPROX_MEAN. Without it the pmf seed
+// (exp(-lam)/p^r) underflows to 0 for a large mean, leaving every survival stuck
+// at a bogus 1.0 (the "always 100%" bug), and the exact loop would run a+qty times.
+const _NORMAL_APPROX_MEAN=60;
 // [S(a), ..., S(a+qty-1)] with S(j)=P(demand>j); demand ~ NB(mean lam, var/mean
-// _DEMAND_DISPERSION), collapsing to Poisson when the ratio is <=1. Accumulates
-// the pmf via its recurrence in one pass — no factorials/special functions.
+// _DEMAND_DISPERSION), collapsing to Poisson when the ratio is <=1. Exact pmf
+// recurrence for a modest mean; normal approximation (continuity-corrected) above
+// _NORMAL_APPROX_MEAN. Kept in lockstep with ind_core._demand_survivals.
 function _demandSurvivals(a, qty, lam){
   a=Math.max(0,a|0); qty=Math.max(1,qty|0);
   const od=_DEMAND_DISPERSION;
+  const mean=lam, variance=(!od||od<=1)?lam:od*lam;   // Poisson var==mean; NB var/mean==od
+  if(mean>=_NORMAL_APPROX_MEAN){
+    const sd=variance>0?Math.sqrt(variance):0;
+    if(sd<=0){ const out=[]; for(let k=0;k<qty;k++) out.push(a+k<mean?1:0); return out; }
+    const inv=1/(sd*Math.SQRT2);                 // S(j)~=P(Z>(j+0.5-mean)/sd)
+    const out=[];
+    for(let k=0;k<qty;k++){
+      const z=(a+k+0.5-mean)*inv;
+      out.push(Math.max(0,Math.min(1,0.5*_erfc(z))));
+    }
+    return out;
+  }
   let term, step;                              // pmf value + its k->k+1 multiplier
   if(!od || od<=1){                            // Poisson: p_i = p_{i-1}*lam/i
     term=Math.exp(-lam);
@@ -1617,6 +1635,16 @@ function _demandSurvivals(a, qty, lam){
   }
   while(out.length<qty) out.push(0);
   return out;
+}
+// Complementary error function — JS has no Math.erfc. Abramowitz & Stegun 7.1.26
+// rational approximation (|error| < 1.5e-7), enough for a probability read-out.
+function _erfc(x){
+  const z=Math.abs(x);
+  const t=1/(1+0.3275911*z);
+  const y=t*(0.254829592+t*(-0.284496736+t*(1.421413741+t*(-1.453152027+t*1.061405429))));
+  const erf=1-y*Math.exp(-z*z);
+  const e=x>=0?erf:-erf;                        // erf is odd
+  return 1-e;
 }
 
 // Render the sell-through panel: a price slider (defaulting to the proposed

@@ -845,6 +845,40 @@ class TestBlueprintAvailability:
         assert day < week < month
         assert day < 0.5 and month > 0.95   # a frozen "24%" becomes ~100% given time
 
+    def test_deep_queue_thin_market_is_not_always_100(self):
+        # Regression: for a large demand mean the pmf seed (exp(-lam)/p^r)
+        # underflows to 0, which used to leave every survival stuck at a bogus
+        # 1.0 — a batch sitting behind 275k units at a ~2.5k/day rate wrongly read
+        # "100% within a day". With ~110 days to clear, a day's odds must be ~0.
+        p = ind_core.sell_through_probability(units_ahead=275_091,
+                                              daily_volume=2518, qty=2700,
+                                              horizon_days=1)
+        assert p["all"] < 0.01
+        # ...and the odds must agree with the ETA: ~110 days to clear means even a
+        # month is hopeless, but the answer stays a real probability (never NaN).
+        month = ind_core.sell_through_probability(275_091, 2518, 2700, 30)["all"]
+        assert 0.0 <= month < 0.01
+        # A brisk market with nothing ahead genuinely is ~100% — the fix must not
+        # break the honest high case.
+        easy = ind_core.sell_through_probability(0, 38619, 2700, 1)["all"]
+        assert easy > 0.99
+
+    def test_normal_approx_seam_is_continuous(self):
+        # The exact-recurrence / normal-approximation switch (mean ~60) must not
+        # jump: probabilities a hair below and above the seam stay within 1e-3.
+        below = ind_core.sell_through_probability(0, 59, 1, 1)["all"]
+        above = ind_core.sell_through_probability(0, 61, 1, 1)["all"]
+        assert abs(below - above) < 1e-3
+
+    def test_sell_through_graded_in_the_middle(self):
+        # A batch that takes a few days to clear should read as a smooth ramp
+        # across horizons (not a 0/100 cliff), and stay consistent with the ETA.
+        mid = dict(units_ahead=5000, daily_volume=2518, qty=2700)  # eta ~3 days
+        day = ind_core.sell_through_probability(**mid, horizon_days=1)["all"]
+        three = ind_core.sell_through_probability(**mid, horizon_days=3)["all"]
+        week = ind_core.sell_through_probability(**mid, horizon_days=7)["all"]
+        assert day < 0.05 < three < 0.95 < week
+
     def test_overdispersion_softens_the_tails(self):
         # The negative-binomial model must be more forgiving than a bare Poisson at
         # a hard spot (batch >> daily rate): the fattened tail keeps a believable,

@@ -807,15 +807,46 @@ def sell_through_curve(units_ahead, daily_volume, qty=1, horizons=SELL_HORIZONS)
     ]
 
 
+# Above this mean we switch from the exact pmf recurrence to a normal
+# approximation. Two reasons: (1) the pmf seed (exp(-lam), or p^r) underflows to
+# 0.0 for large means, which would leave the accumulated CDF stuck at 0 and make
+# EVERY survival read as a bogus 1.0 (the "always 100%" bug); (2) the exact loop
+# is bounded by units_ahead+qty, which can be hundreds of thousands in a deep
+# book. The normal approximation is already accurate by mean ~30, so switching at
+# 60 keeps both branches in close agreement across the seam.
+_NORMAL_APPROX_MEAN = 60.0
+
+
 def _demand_survivals(a, qty, lam):
     """The list [S(a), S(a+1), ..., S(a+qty-1)] where S(j) = P(demand > j) for the
     window's demand ~ negative-binomial with mean `lam` and variance-to-mean ratio
-    DEMAND_DISPERSION (Poisson when the ratio collapses to 1). Computed in a single
-    pass accumulating the pmf via its recurrence, so no factorials/special
-    functions and the loop is bounded by a+qty (order-book depth + batch)."""
+    DEMAND_DISPERSION (Poisson when the ratio collapses to 1).
+
+    For a modest mean this is exact: accumulate the pmf via its recurrence in a
+    single pass (no factorials/special functions). For a large mean we use a
+    normal approximation with a continuity correction -- both because the pmf seed
+    underflows to 0 for large means (which would wrongly peg every survival at 1)
+    and because the exact loop would otherwise run a+qty times."""
     a = max(0, int(a))
     qty = max(1, int(qty))
     od = DEMAND_DISPERSION
+    if not od or od <= 1.0:
+        mean, var = lam, lam                       # Poisson: var == mean
+    else:
+        mean, var = lam, od * lam                  # NB: var/mean == od
+
+    if mean >= _NORMAL_APPROX_MEAN:
+        sd = math.sqrt(var) if var > 0 else 0.0
+        if sd <= 0:
+            return [1.0 if a + k < mean else 0.0 for k in range(qty)]
+        # S(j) = P(X > j) = P(X >= j+1) ~= P(Z > (j + 0.5 - mean)/sd).
+        inv = 1.0 / (sd * math.sqrt(2.0))
+        out = []
+        for k in range(qty):
+            z = (a + k + 0.5 - mean) * inv
+            out.append(max(0.0, min(1.0, 0.5 * math.erfc(z))))
+        return out
+
     if not od or od <= 1.0:
         pmf_iter = _poisson_pmf_iter(lam)          # dispersion off -> Poisson
     else:

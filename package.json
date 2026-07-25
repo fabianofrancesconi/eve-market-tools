@@ -1,0 +1,17 @@
+{
+  "name": "eve-market-tools",
+  "version": "1.0.0",
+  "description": "> **Try it now** — no install required: **[eve-market-tools-production.up.railway.app](https://eve-market-tools-production.up.railway.app/)**",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {},
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.62.0",
+    "@types/node": "^26.1.1"
+  }
+}

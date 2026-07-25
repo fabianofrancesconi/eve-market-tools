@@ -561,10 +561,33 @@ function reloadIndDetail(bpId){
   }).catch(()=>{});
 }
 
+// Lock (or release) the controls that re-fire a scan while one is in flight —
+// Category, Source hub, Build location, Job cost and Refresh SDE — so a second
+// scan can't be kicked off over the top of a running one. `inert` blocks pointer
+// AND keyboard interaction and removes the node from the accessibility tree
+// (correct for a region that's temporarily unusable). The Scan button, the
+// client-side display filters and search stay live. The .scanning class drives
+// the dimming + the cyan sweep in CSS. The set is derived from the DOM (closest
+// scan-triggering control → its group) so it survives control-bar reordering.
+function setIndScanning(on){
+  const bar=$("#ind-controls"); if(!bar) return;
+  bar.classList.toggle("scanning", on);
+  const groups=new Set();
+  // One control per scan-triggering group → lock the whole group. Scope (Category
+  // + Source hub) and Costs & fees (Build location + Job cost) are the two groups.
+  ["#ind-group","#ind-station","#ind-profile","#ind-jobrate"].forEach(sel=>{
+    const el=$(sel), g=el&&el.closest(".ctrl-group"); if(g) groups.add(g);
+  });
+  groups.forEach(g=>{ g.inert=on; });
+  const refresh=$("#ind-refresh"); if(refresh) refresh.inert=on;
+  const btn=$("#ind-go");
+  if(btn){ btn.disabled=on; btn.innerHTML=on?`${_SPIN} Scanning…`:"Scan"; }
+}
+
 function scanInd(refreshSde){
   if(IND.es){ IND.es.close(); IND.es=null; }
   IND_FILL_TOKEN++; IND.fillTotal=0; IND._lazyRendered=0;
-  const btn=$("#ind-go"); btn.disabled=true; btn.textContent="Scanning…";
+  setIndScanning(true);
   const p=indParams(refreshSde?{refresh_sde:"1"}:null);
   showIndProgress("Loading blueprint database…","",1);
   setStatus("Scanning…");
@@ -575,19 +598,19 @@ function scanInd(refreshSde){
       showIndProgress(data.msg, data.sub||"", data.pct||0);
       setStatus(data.msg+(data.sub?" — "+data.sub:""));
     } else if(data.type==="result"){
-      es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
+      es.close(); IND.es=null; setIndScanning(false);
       IND.rows=data.rows; IND.lastData=data;
       computeIndTradeability();
       persistScan("ind", {...IND.lastData, rows:IND.rows});
       hideIndProgress(); renderIndStatus(); renderIndTable();
       fillIndTradeability();   // score the long tail in the background
     } else if(data.type==="error"){
-      es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
+      es.close(); IND.es=null; setIndScanning(false);
       hideIndProgress(); setStatus(data.error, true);
     }
   };
   es.onerror=()=>{
-    es.close(); IND.es=null; btn.disabled=false; btn.textContent="Scan";
+    es.close(); IND.es=null; setIndScanning(false);
     hideIndProgress(); setStatus("Connection error — server may have stopped.", true);
   };
 }

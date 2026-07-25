@@ -243,6 +243,33 @@
     color:var(--cyan); font-weight:700; opacity:.65; }
   .ctrl-fields { display:flex; gap:10px; align-items:flex-end; flex:1; }
   .ctrl-actions .ctrl-fields { gap:8px; }
+
+  /* ── Control bar locked while a scan runs ─────────────────────────────
+     The scan hides the table and shows the progress overlay; leaving the
+     scan-triggering controls live invites a second, conflicting scan
+     (Category / hub / job cost / Refresh SDE each re-fire one). While
+     .scanning is set those inputs are made inert — [inert] blocks pointer +
+     keyboard AND drops the node from the a11y tree — and dimmed. The
+     display-filter checkboxes stay live (client-side, harmless mid-scan). A
+     thin cyan probe sweep — the verb this tool is named for — travels the bar
+     so "busy" reads at a glance without a heavy modal. */
+  #ind-controls.scanning { position:relative; }
+  #ind-controls.scanning [inert] { opacity:.4; transition:opacity .15s; }
+  #ind-controls.scanning::after {
+    content:""; position:absolute; left:0; top:0; bottom:0; width:120px;
+    pointer-events:none; z-index:1;
+    background:linear-gradient(90deg, transparent,
+      color-mix(in srgb, var(--cyan2) 22%, transparent), transparent);
+    animation:ind-scan-sweep 1.15s ease-in-out infinite;
+  }
+  @keyframes ind-scan-sweep {
+    0% { transform:translateX(-120px); }
+    100% { transform:translateX(100%); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #ind-controls.scanning::after { animation:none; opacity:0; }
+    #ind-controls.scanning [inert] { transition:none; }
+  }
   input, select {
     background:var(--panel2); border:1px solid var(--line2); color:var(--fg);
     border-radius:4px; padding:4px 8px; font:inherit; font-size:14.5px;
@@ -824,9 +851,12 @@
   .muted { color:var(--dim); font-size:12.5px; line-height:1.5; margin-top:10px; }
 
   /* ── Scan progress overlay (Arb / Industry / LP) ─────────────────── */
-  #arb-progress, #lp-progress {
+  /* #ind-progress lives inside #ind-planner-view, not directly in .tablewrap,
+     so it needs the wrapper to fill the viewport for min-height:100% to center. */
+  #ind-planner-view { min-height:100%; }
+  #arb-progress, #lp-progress, #ind-progress {
     display:flex; flex-direction:column; align-items:center; justify-content:center;
-    height:100%; gap:10px; padding:24px;
+    min-height:100%; gap:10px; padding:24px;
   }
   .prog-label { font-size:15.5px; font-weight:600; color:var(--fg); text-align:center; }
   .prog-track {

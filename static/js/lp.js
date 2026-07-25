@@ -50,9 +50,20 @@ function _liveBookFactor(r, volTarget){
   const need=Math.max(1, volTarget||1);
   return Math.min(1, onBook/need);
 }
+// "Can I sell it?" only matters once "is it worth making?" is yes. Score
+// tradeability only for rows that turn a profit in at least one sell mode
+// (list OR instant); an item that loses ISK however you offload it gets no
+// score (null → "—"), so the column never ranks unprofitable rows against each
+// other. profit_patient/_instant are the per-unit (LP) / per-run (Industry)
+// figures both tabs carry; either being > 0 qualifies. null (unknown) doesn't.
+function _isProfitable(r){
+  return (r.profit_patient!=null && r.profit_patient>0)
+      || (r.profit_instant!=null && r.profit_instant>0);
+}
 function _computeTradeability(rows, volTarget){
   for(const r of rows){
-    if(!r.liq_loaded || r.daily_vol===null||r.daily_vol===undefined){ r.tradeability=null; continue; }
+    if(!r.liq_loaded || r.daily_vol===null||r.daily_vol===undefined
+       || !_isProfitable(r)){ r.tradeability=null; continue; }
     const base=_tradeScore(r.daily_vol, volTarget);
     r.tradeability=Math.round(base*_liveBookFactor(r, volTarget));
   }

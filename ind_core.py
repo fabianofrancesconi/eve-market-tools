@@ -659,6 +659,83 @@ def tradeability(daily_volume, full=TRADEABILITY_FULL):
     return int(round(max(0.0, min(1.0, score)) * 100))
 
 
+def units_ahead_in_queue(sell_levels, price):
+    """How many units are listed at or below `price` on the sell side -- the
+    queue that must clear (or be undercut) before a fresh order at `price` starts
+    filling. `sell_levels` is [[price, volume], ...] cheapest-first (the shape
+    fetch_orderbook_jita returns). A buyer sweeps the book bottom-up, so every
+    unit priced strictly below yours, plus everything already sitting AT your
+    price (you'd join the back of that tie), sits ahead of you.
+
+    None price -> None (can't place a queue)."""
+    if price is None or not sell_levels:
+        return 0 if price is not None else None
+    ahead = 0
+    for lvl_price, vol in sell_levels:
+        if lvl_price <= price:
+            ahead += vol
+        else:
+            break  # levels are cheapest-first; nothing past here is <= price
+    return ahead
+
+
+def sell_through_probability(units_ahead, daily_volume, qty=1, horizon_days=1.0):
+    """Probability that a sell order at a given price fills within `horizon_days`,
+    modelled as a Poisson arrival of buy demand clearing the queue ahead of you.
+
+    The market absorbs `daily_volume` units/day on average (the ~30-day mean from
+    market history). Over `horizon_days` the expected demand is
+    ``lam = daily_volume * horizon_days`` units, which we treat as Poisson: the
+    number of units bought in the window is random with that mean. Your first unit
+    fills once demand exceeds the `units_ahead` already queued at/below your price;
+    your whole batch fills once demand exceeds ``units_ahead + qty``.
+
+    Returns a dict:
+      any   P(at least 1 of your units sells) = P(demand > units_ahead)
+      all   P(all `qty` of your units sell)    = P(demand >= units_ahead + qty)
+      eta_days  expected days for the queue+batch to clear at the mean rate
+               (units_ahead + qty) / daily_volume, or None if the market is dead.
+
+    None daily_volume (history unknown) -> all-None (we can't estimate). A dead
+    market (daily_volume == 0) -> zero probabilities, eta None (never clears)."""
+    if daily_volume is None:
+        return {"any": None, "all": None, "eta_days": None}
+    if units_ahead is None:
+        units_ahead = 0
+    qty = max(1, int(qty))
+    if daily_volume <= 0:
+        return {"any": 0.0, "all": 0.0, "eta_days": None}
+    lam = daily_volume * max(0.0, horizon_days)
+    # P(demand > a) = 1 - P(demand <= a) with demand ~ Poisson(lam). units_ahead
+    # can be fractional (aggregated float volumes) so we compare against the floor:
+    # you fill once STRICTLY more than the whole units ahead of you have been bought.
+    p_any = 1.0 - _poisson_cdf(math.floor(units_ahead), lam)
+    p_all = 1.0 - _poisson_cdf(math.floor(units_ahead + qty) - 1, lam)
+    eta = (units_ahead + qty) / daily_volume
+    return {"any": max(0.0, min(1.0, p_any)),
+            "all": max(0.0, min(1.0, p_all)),
+            "eta_days": eta}
+
+
+def _poisson_cdf(k, lam):
+    """P(X <= k) for X ~ Poisson(lam), k a non-negative integer. Summed term by
+    term from the pmf recurrence (p_{i} = p_{i-1} * lam / i) so there's no large
+    factorial or exp overflow. lam can be large; k is bounded by the order-book
+    depth so the loop stays short in practice."""
+    if k < 0:
+        return 0.0
+    if lam <= 0:
+        return 1.0  # all mass at 0
+    # term = e^{-lam} * lam^i / i!, accumulated. e^{-lam} underflows to 0 for very
+    # large lam, which correctly drives the CDF for small k to 0 (queue clears).
+    term = math.exp(-lam)
+    cdf = term
+    for i in range(1, k + 1):
+        term *= lam / i
+        cdf += term
+    return min(1.0, cdf)
+
+
 def cheapest_sell_location(orders):
     """From a list of ESI region orders for one type, the cheapest SELL order's
     price, location_id and how many sell orders exist -- i.e. where (and for how

@@ -1954,6 +1954,7 @@ function _buildSellHtml(b, stage){
       <span class="ind-sell-be" title="Selling below this loses money">break-even ${isk(be.list)}/unit</span>
       <button class="ind-sell-copy" title="Copy the proposed list price to paste into EVE's sell order">⧉ Copy price</button>
       ${instantRow}
+      <button class="ind-sell-analyze" title="Open the price decision tool: market trend + the odds this batch sells within a day at a given price">📊 Decide price</button>
       <button class="ind-sell-start" title="Only needed to sell a partial batch or to start before the order appears — a full-batch sell order links on its own">Track a partial sale ▸</button>
       <div class="ind-sell-hint">List it in-game and your sell order links automatically; or instant-sell into buy orders and the app back-fills it at the real price once the job shows delivered. (Use “partial” only to track fewer than the full ${units!=null?units.toLocaleString():""} units.)</div>
     </div>`;
@@ -2027,6 +2028,7 @@ function _buildSellHtml(b, stage){
       <div class="ind-sell-foot">
         ${closed?`<span class="ind-sell-done">${closedEarly?`✓ Closed early${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""} · ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`✓ Fully sold${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""}`}</span>`
           :`<span class="ind-sell-watching">${watchMsg}</span>`}
+        ${!closed?`<button class="ind-sell-analyze" title="Open the price decision tool: market trend + the odds the remaining units sell within a day at a given price">📊 Decide price</button>`:""}
         ${!closed&&rz.units>0?`<button class="ind-sell-close" title="Give up on the unsold remainder: mark this sale done. The ${remain.toLocaleString()} unsold unit(s)' cost is written off as a loss so your totals stay honest.">Close out ▸</button>`:""}
         ${closed?"":`<button class="ind-sell-cancel" title="Stop tracking this sale (keeps the build)">Stop tracking sale</button>`}
         <button class="ind-sell-edit" title="Correct the tracked sale — set how many actually sold and/or the target quantity. Lowering below the target reopens the sale so a re-listed order can keep tracking.">Edit sale</button>
@@ -2166,6 +2168,14 @@ function _wireSellCard(card, b){
             ()=>_buildProposedPrice(b));
   _wireCopy(card.querySelector(".ind-sell-copy-instant"),
             ()=>(b.snapshot||{}).bid);
+  // "Decide price" — open the tracked-build modal straight on its Market tab
+  // (price trend + odds of selling within a day). Falls back to the Industry
+  // detail view if the modal isn't available (e.g. not logged in).
+  const analyze=card.querySelector(".ind-sell-analyze");
+  if(analyze) analyze.onclick=()=>{
+    if(typeof openBuildPeek==="function") openBuildPeek(b.id, "market");
+    else if(typeof openTrackedBuild==="function") openTrackedBuild(b.id);
+  };
   const start=card.querySelector(".ind-sell-start");
   if(start) start.onclick=()=>startSellTracking(b, start);
   const cancel=card.querySelector(".ind-sell-cancel");

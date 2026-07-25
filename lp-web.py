@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.144.3"
+__version__ = "1.145.0"
 
 import argparse
 import base64
@@ -3177,6 +3177,58 @@ def do_history(q):
     return {"history": data}
 
 
+def do_ind_sell_analysis(q):
+    """Sell-side market analysis for one product at a trade hub: the live sell
+    order book (aggregated price levels), the ~30-day mean daily traded volume,
+    and — for a proposed price + batch size — the chance of selling within a day.
+
+    The Market tab of the tracked-build modal calls this once per open; the
+    front-end then recomputes the probability live as the price slider moves,
+    reusing the returned `sell_book` + `daily_volume` so no re-fetch is needed.
+
+    Params: type_id (required), region/station (hub id; defaults to Jita),
+    price (optional proposed per-unit price), qty (optional batch size)."""
+    require_account()
+    type_id = int(q["type_id"][0])
+    station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
+    if station_id not in TRADE_HUBS:
+        station_id = JITA_STATION_ID
+    region_id = TRADE_HUBS[station_id]["region_id"]
+    # Live aggregated sell book (cheapest-first) — the queue a new order joins.
+    sell_book = fetch_orderbook_jita(type_id, "sell", SESSION,
+                                     station_id=station_id, region_id=region_id)
+    # ~30-day mean daily units traded region-wide — the demand rate the model uses.
+    daily_volume = fetch_history_volumes([type_id], region_id, SESSION,
+                                         CACHE_DIR).get(type_id)
+    price = None
+    raw_price = q.get("price", [None])[0]
+    if raw_price not in (None, ""):
+        try:
+            price = float(raw_price)
+        except (TypeError, ValueError):
+            price = None
+    try:
+        qty = max(1, int(float(q.get("qty", ["1"])[0])))
+    except (TypeError, ValueError):
+        qty = 1
+    units_ahead = ind_core.units_ahead_in_queue(sell_book, price)
+    prob = ind_core.sell_through_probability(units_ahead, daily_volume, qty)
+    return {
+        "type_id": type_id,
+        "station_id": station_id,
+        "station_name": TRADE_HUBS[station_id]["name"],
+        "region_id": region_id,
+        "sell_book": sell_book,
+        "daily_volume": daily_volume,
+        "sell_orders_total": sum(v for _, v in sell_book),
+        "best_ask": sell_book[0][0] if sell_book else None,
+        "price": price,
+        "qty": qty,
+        "units_ahead": units_ahead,
+        "probability": prob,
+    }
+
+
 # ── Arbitrage scanner ───────────────────────────────────────────────────────
 
 def _parse_arb_params(q):
@@ -3910,6 +3962,7 @@ _GET_ROUTES = {
     "/api/ind/groups": do_ind_groups,
     "/api/ind/liquidity": do_ind_liquidity,
     "/api/ind/detail": do_ind_detail,
+    "/api/ind/sell-analysis": do_ind_sell_analysis,
     "/api/ind/bpo-search": do_ind_bpo_search,
     "/api/ind/builds": do_ind_builds_list,
     "/api/ind/summary": do_ind_summary,

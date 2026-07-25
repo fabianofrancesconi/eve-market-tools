@@ -793,6 +793,48 @@ class TestBlueprintAvailability:
         assert ind_core.cheapest_sell_location(
             [{"is_buy_order": True, "price": 5.0, "location_id": 1}]) is None
 
+    # ── Sell-through probability model (Market tab) ──────────────────────────
+    def test_units_ahead_counts_at_or_below_price(self):
+        # Cheapest-first sell book; a fresh order at `price` sits behind every
+        # unit priced at or below it (you join the back of a tie at your price).
+        book = [[100.0, 5], [101.0, 3], [102.0, 10]]
+        assert ind_core.units_ahead_in_queue(book, 100.0) == 5
+        assert ind_core.units_ahead_in_queue(book, 101.0) == 8   # 5 + 3
+        assert ind_core.units_ahead_in_queue(book, 101.5) == 8   # nothing at 101.5..102
+        assert ind_core.units_ahead_in_queue(book, 102.0) == 18
+        assert ind_core.units_ahead_in_queue(book, 99.0) == 0    # undercut everyone
+        assert ind_core.units_ahead_in_queue([], 100.0) == 0
+        assert ind_core.units_ahead_in_queue(book, None) is None
+
+    def test_sell_through_unknown_and_dead_market(self):
+        # No history → can't estimate (all None). Dead market → zero odds, no ETA.
+        unknown = ind_core.sell_through_probability(0, None, qty=1)
+        assert unknown == {"any": None, "all": None, "eta_days": None}
+        dead = ind_core.sell_through_probability(0, 0, qty=5)
+        assert dead["any"] == 0.0 and dead["all"] == 0.0 and dead["eta_days"] is None
+
+    def test_sell_through_probabilities_bounded_and_ordered(self):
+        # P(sell ≥1) is always ≥ P(sell all); both in [0,1]; ETA at the mean rate.
+        p = ind_core.sell_through_probability(units_ahead=10, daily_volume=100,
+                                              qty=5, horizon_days=1.0)
+        assert 0.0 <= p["all"] <= p["any"] <= 1.0
+        assert p["eta_days"] == (10 + 5) / 100
+
+    def test_sell_through_empty_queue_high_odds(self):
+        # Nothing ahead + brisk market → very likely to sell at least one unit.
+        p = ind_core.sell_through_probability(units_ahead=0, daily_volume=50, qty=1)
+        assert p["any"] > 0.99
+        # A deep queue in a thin market → the batch almost certainly won't clear.
+        q = ind_core.sell_through_probability(units_ahead=500, daily_volume=2, qty=10)
+        assert q["all"] < 0.01
+        assert q["any"] < 0.01
+
+    def test_sell_through_monotonic_in_queue_depth(self):
+        # More units queued ahead of you → lower odds of selling within the window.
+        shallow = ind_core.sell_through_probability(5, 50, qty=1)["any"]
+        deep = ind_core.sell_through_probability(80, 50, qty=1)["any"]
+        assert shallow > deep
+
     def test_requires_invention_flag(self):
         # drives the "Hide T2 / invention" filter in the web layer
         t1 = ind_core.evaluate_industry([_bp()], _prices(), _ADJUSTED, _params())[0]

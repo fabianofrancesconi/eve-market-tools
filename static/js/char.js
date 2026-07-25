@@ -1047,13 +1047,13 @@ const _peekSign=v=>(v!=null&&v>0?"+":"");
 const _peekPn=v=>(v==null?"":(v>0?"pos":(v<0?"neg":"")));
 const _peekPct=v=>(v==null?"—":(v>0?"+":"")+(v*100).toFixed(0)+"%");
 
-function openBuildPeek(id){
+function openBuildPeek(id, initialTab){
   if(typeof IND==="undefined") return;
   const b=(IND.builds||[]).find(x=>x.id===id);
   const modal=$("#buildPeekModal");
   if(!b || !modal){ if(typeof openTrackedBuild==="function") openTrackedBuild(id); return; }
   _buildPeekId=id;
-  _buildPeekTab="overview";
+  _buildPeekTab=(initialTab==="market"||initialTab==="reprice")?initialTab:"overview";
 
   const n=Math.max(1, b.runs||1);
   const s=b.snapshot||{};
@@ -1083,7 +1083,10 @@ function openBuildPeek(id){
   const order=_peekLinkedOrder(b);
 
   _PEEK={b, id, n, s, stage, econ, units, be, rz, stax, bfee, fees, target, remaining, cpu, order,
-         cost, live:null, liveState:"loading"};
+         cost, live:null, liveState:"loading",
+         // Market tab: sell-book + daily volume for the sell-through model, loaded
+         // lazily the first time the tab is opened.
+         market:null, marketState:"idle"};
 
   // Pinned header: the tracker's colored stage badge + name + lifecycle stepper.
   const badge=(typeof _buildBadge==="function")?_buildBadge(b, stage):{key:"",label:stage};
@@ -1091,15 +1094,22 @@ function openBuildPeek(id){
     +`<span class="build-peek-name">${authEsc(b.product_name||"Tracked build")}</span>`;
   $("#build-peek-stepper").innerHTML=(typeof _buildStepperHtml==="function")?_buildStepperHtml(b, stage):"";
 
-  // The Re-price tab only earns its place once there's a live/finished sale to
-  // reason about; hide it for planned/building/built.
+  // The Re-price tab only earns its place once there's a price to decide on
+  // (built/listed/sold); the Market tab (trend + sell-through odds) is useful at
+  // any stage. The tab bar always shows now — we just hide Re-price when it
+  // doesn't apply, and never leave the hidden tab selected.
   const showReprice=(stage==="listed"||stage==="sold"||stage==="built");
   const tabs=$("#build-peek-tabs");
-  tabs.classList.toggle("hidden", !showReprice);
-  if(!showReprice) _buildPeekTab="overview";
+  tabs.classList.remove("hidden");
+  const repriceTab=tabs.querySelector('.bpt-tab[data-tab="reprice"]');
+  if(repriceTab) repriceTab.classList.toggle("hidden", !showReprice);
+  if(!showReprice && _buildPeekTab==="reprice") _buildPeekTab="overview";
 
-  _renderBuildPeekTab();
+  // Show the modal BEFORE rendering the tab so the Market tab's canvas has a
+  // real width when _attachChart measures it (a hidden canvas reports 0 and the
+  // chart would draw at the fallback size and never resize).
   modal.classList.remove("hidden");
+  _renderBuildPeekTab();
   _fetchBuildPeekLive(b, id);   // async: fills the live market drift + simulator
 }
 function closeBuildPeek(){ const m=$("#buildPeekModal"); if(m) m.classList.add("hidden"); _buildPeekId=null; _PEEK=null; }
@@ -1161,12 +1171,16 @@ function _renderBuildPeekTab(){
   const body=$("#build-peek-body"); if(!body||!_PEEK) return;
   $("#build-peek-tabs").querySelectorAll(".bpt-tab").forEach(t=>
     t.classList.toggle("active", t.dataset.tab===_buildPeekTab));
-  body.innerHTML=(_buildPeekTab==="reprice")?_buildPeekRepriceHtml():_buildPeekOverviewHtml();
+  body.innerHTML=(_buildPeekTab==="reprice")?_buildPeekRepriceHtml()
+              :(_buildPeekTab==="market")?_buildPeekMarketHtml()
+              :_buildPeekOverviewHtml();
   if(_buildPeekTab==="reprice"){
     _wireBuildPeekSim();
     // If the live quote already landed (e.g. it resolved while Overview showed),
     // fill the freshly-rendered drift cells + sim right away.
     if(_PEEK.liveState==="done") _applyBuildPeekLive();
+  } else if(_buildPeekTab==="market"){
+    _wireBuildPeekMarket();
   }
 }
 
@@ -1453,6 +1467,163 @@ function _applyBuildPeekLive(){
   });
   // (Re)draw the simulator if the Re-price tab is active.
   if(_buildPeekTab==="reprice") _renderBuildPeekSim();
+}
+
+// ── Market tab — price trend + odds of selling within a day ──────────────────
+// Answers the tracker's real question at "Ready to sell": not just "what's it
+// worth?" but "if I list at THIS price, will it actually move?" A 90-day price
+// sparkline (reusing the LP-store chart) shows the trend and volatility; a
+// live probability read-out estimates the chance the batch clears within a day
+// at the chosen price, from how many units are queued at/below it vs. the mean
+// daily demand. The price slider drives it, so you can see the odds fall as you
+// price above the market and rise as you undercut.
+function _buildPeekMarketHtml(){
+  const P=_PEEK;
+  // Chart slot (reuses the LP store's .chart-wrap markup + _attachChart).
+  const chart=`<div class="bp-mkt-chart">
+    <div class="chart-wrap" style="height:150px">
+      <canvas class="chart-canvas" id="bp-mkt-canvas"></canvas>
+      <div class="chart-tip" id="bp-mkt-tip"></div>
+      <div class="chart-cross"></div>
+    </div>
+    <div class="chart-stats bp-mkt-stats" id="bp-mkt-stats"></div>
+  </div>`;
+  const probSlot=`<div id="bp-mkt-prob" class="bp-mkt-prob">${
+    P.marketState==="error"
+      ? `<div class="bp-sim-loading">Live market unavailable — can't estimate sell-through right now.</div>`
+      : `<div class="bp-sim-loading">Loading the order book to estimate sell-through…</div>`
+  }</div>`;
+  return chart + probSlot;
+}
+
+// Kick the market fetch (once) and draw the trend chart when the tab first shows.
+function _wireBuildPeekMarket(){
+  const P=_PEEK; if(!P) return;
+  if(P.marketState==="idle"){ P.marketState="loading"; _fetchBuildPeekMarket(P.b, P.id); }
+  else if(P.marketState==="done") _renderBuildPeekProb();
+  // Draw the price sparkline. region_id comes from the market response once it
+  // lands; until then fall back to The Forge (Jita) so the chart isn't blocked
+  // on the order-book call.
+  _drawBuildPeekChart();
+}
+
+// Attach the LP-store chart to the market canvas for this build's product.
+function _drawBuildPeekChart(){
+  const P=_PEEK; if(!P) return;
+  const canvas=$("#bp-mkt-canvas"); if(!canvas || typeof _attachChart!=="function") return;
+  const tid=P.b.product_type_id;
+  const region=(P.market&&P.market.region_id)||10000002; // Jita/The Forge default
+  const cur=(P.live&&P.live.ask!=null)?P.live.ask:(P.s.ask!=null?P.s.ask:null);
+  _attachChart(canvas, $("#bp-mkt-tip"), $("#bp-mkt-stats"), tid, region, cur,
+               P.b.product_name||"");
+}
+
+function _fetchBuildPeekMarket(b, id){
+  const s=b.snapshot||{};
+  const price=_buildProposedPrice?_buildProposedPrice(b):s.ask;
+  const p=new URLSearchParams({
+    type_id:String(b.product_type_id||""),
+    station:String(s.station_id||""),
+    qty:String(_PEEK?_PEEK.remaining||1:1),
+  });
+  if(price!=null) p.set("price", String(price));
+  fetch("/api/ind/sell-analysis?"+p).then(r=>r.json()).then(m=>{
+    if(_buildPeekId!==id || !_PEEK) return;
+    _PEEK.market=(m&&!m.error)?m:null;
+    _PEEK.marketState=(m&&!m.error)?"done":"error";
+    if(_buildPeekTab==="market"){ _renderBuildPeekProb(); _drawBuildPeekChart(); }
+  }).catch(()=>{
+    if(_buildPeekId!==id || !_PEEK) return;
+    _PEEK.market=null; _PEEK.marketState="error";
+    if(_buildPeekTab==="market") _renderBuildPeekProb();
+  });
+}
+
+// Client-side mirror of ind_core.units_ahead_in_queue: units listed at/below a
+// price on the (cheapest-first) sell book — the queue a fresh order must clear.
+function _unitsAheadInQueue(book, price){
+  if(price==null || !book || !book.length) return price==null?null:0;
+  let ahead=0;
+  for(const [p,v] of book){ if(p<=price) ahead+=v; else break; }
+  return ahead;
+}
+// Client-side mirror of ind_core.sell_through_probability (Poisson queue-clear).
+function _sellThroughProb(unitsAhead, daily, qty, horizon){
+  horizon=horizon==null?1:horizon;
+  if(daily==null) return {any:null, all:null, eta:null};
+  if(unitsAhead==null) unitsAhead=0;
+  qty=Math.max(1, qty|0||1);
+  if(daily<=0) return {any:0, all:0, eta:null};
+  const lam=daily*Math.max(0,horizon);
+  const pAny=1-_poissonCdf(Math.floor(unitsAhead), lam);
+  const pAll=1-_poissonCdf(Math.floor(unitsAhead+qty)-1, lam);
+  return {any:Math.max(0,Math.min(1,pAny)), all:Math.max(0,Math.min(1,pAll)),
+          eta:(unitsAhead+qty)/daily};
+}
+function _poissonCdf(k, lam){
+  if(k<0) return 0;
+  if(lam<=0) return 1;
+  let term=Math.exp(-lam), cdf=term;
+  for(let i=1;i<=k;i++){ term*=lam/i; cdf+=term; }
+  return Math.min(1, cdf);
+}
+
+// Render the sell-through panel: a price slider (defaulting to the proposed
+// list price) and the live odds for that price, recomputed as it moves.
+function _renderBuildPeekProb(){
+  const P=_PEEK, isk=_peekIsk; const slot=$("#bp-mkt-prob"); if(!slot||!P) return;
+  const m=P.market;
+  if(!m){ slot.innerHTML=`<div class="bp-sim-loading">Live market unavailable — can't estimate sell-through right now.</div>`; return; }
+  if(m.daily_volume==null){
+    slot.innerHTML=`<div class="bp-mkt-nodata">No trade history for ${authEsc(P.b.product_name||"this item")} in ${authEsc(m.station_name||"this hub")} — can't estimate how fast it sells. ${m.best_ask!=null?`Best ask is ${isk(m.best_ask)}.`:"Nothing is listed right now."}</div>`;
+    return;
+  }
+  const be=P.be&&P.be.list, bestAsk=m.best_ask, frozen=P.s.ask;
+  const proposed=(_buildProposedPrice?_buildProposedPrice(P.b):frozen);
+  const undercut=bestAsk!=null?bestAsk*0.9999:null;
+  const refs=[be,bestAsk,frozen,undercut,proposed].filter(v=>v!=null);
+  const lo=refs.length?Math.min(...refs)*0.9:0, hi=refs.length?Math.max(...refs)*1.15:1;
+  const start=(proposed!=null)?proposed:(bestAsk!=null?bestAsk:hi);
+  const step=Math.max(0.01,(hi-lo)/1000);
+  const chip=(label,val)=> val==null?"" :
+    `<button class="bp-chip" data-price="${val}" title="Set price to ${isk(val)}">${label}<b>${isk(val)}</b></button>`;
+  slot.innerHTML=`
+    <div class="bp-mkt-vol">Market moves <b>${Math.round(m.daily_volume).toLocaleString()}</b> units/day here${m.sell_orders_total!=null?` · <b>${Math.round(m.sell_orders_total).toLocaleString()}</b> listed on sell orders`:""}.</div>
+    <div class="bp-sim-head">Chance of selling if I list at</div>
+    <div class="bp-sim-price"><span id="bp-mkt-price">${isk(start)}</span><span class="bp-sim-unit">/ unit</span></div>
+    <input id="bp-mkt-slider" class="bp-sim-slider" type="range" min="${lo}" max="${hi}" step="${step}" value="${start}">
+    <div class="bp-sim-chips">
+      ${chip("Best ask ",bestAsk)}
+      ${chip("Undercut ",undercut)}
+      ${chip("Proposed ",proposed)}
+      ${chip("Break-even ",be)}
+    </div>
+    <div class="bp-mkt-out" id="bp-mkt-out"></div>
+    <div class="bp-mkt-note">Odds model queued supply at/below your price clearing against the mean daily demand (Poisson) — a guide, not a guarantee; a single big buyer or a fresh undercut can change it fast.</div>`;
+  _updateBuildPeekProb(start);
+}
+
+function _updateBuildPeekProb(price){
+  const P=_PEEK; if(!P||!P.market) return; const m=P.market, isk=_peekIsk;
+  const priceEl=$("#bp-mkt-price"); if(priceEl) priceEl.textContent=isk(price);
+  const slider=$("#bp-mkt-slider"); if(slider && +slider.value!==price) slider.value=price;
+  const qty=Math.max(1, P.remaining||1);
+  const ahead=_unitsAheadInQueue(m.sell_book, price);
+  const prob=_sellThroughProb(ahead, m.daily_volume, qty, 1);
+  const out=$("#bp-mkt-out"); if(!out) return;
+  const pct=v=>v==null?"—":(v*100).toFixed(v>=0.995||v<=0.005?0:0)+"%";
+  const bar=(v,cls)=>`<div class="bp-mkt-bar"><i class="${cls}" style="width:${((v||0)*100).toFixed(1)}%"></i></div>`;
+  const anyCls=prob.any>=0.66?"good":(prob.any>=0.33?"warn":"bad");
+  const allCls=prob.all>=0.66?"good":(prob.all>=0.33?"warn":"bad");
+  const eta=prob.eta;
+  const etaTxt=(eta==null)?"—":(eta<1?`~${Math.round(eta*24)}h`:`~${eta.toFixed(eta<10?1:0)}d`);
+  out.innerHTML=`
+    <div class="bp-mkt-metric"><span class="bp-mkt-k">${qty.toLocaleString()} unit(s) queued behind <b>${Math.round(ahead).toLocaleString()}</b></span></div>
+    <div class="bp-mkt-metric"><span class="bp-mkt-k">Sell ≥1 within a day</span><span class="bp-mkt-v ${anyCls}">${pct(prob.any)}</span></div>
+    ${bar(prob.any,anyCls)}
+    <div class="bp-mkt-metric"><span class="bp-mkt-k">Sell all ${qty.toLocaleString()} within a day</span><span class="bp-mkt-v ${allCls}">${pct(prob.all)}</span></div>
+    ${bar(prob.all,allCls)}
+    <div class="bp-mkt-eta">Expected time to clear the queue + your batch at the current rate: <b>${etaTxt}</b></div>`;
 }
 
 // When logged in, drive the LP budget from the character's loyalty points for
@@ -1798,6 +1969,15 @@ $("#build-peek-tabs").addEventListener("click", e=>{
   if(which===_buildPeekTab) return;
   _buildPeekTab=which;
   _renderBuildPeekTab();
+});
+// Market-tab slider + chips (delegated on the body, which is re-rendered per tab).
+$("#build-peek-body").addEventListener("input", e=>{
+  if(e.target && e.target.id==="bp-mkt-slider") _updateBuildPeekProb(+e.target.value);
+});
+$("#build-peek-body").addEventListener("click", e=>{
+  if(_buildPeekTab!=="market") return;
+  const chip=e.target.closest && e.target.closest(".bp-chip");
+  if(chip) _updateBuildPeekProb(+chip.dataset.price);
 });
 $("#buildPeekModal").addEventListener("click", e=>{ if(e.target.id==="buildPeekModal") closeBuildPeek(); });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && !$("#buildPeekModal").classList.contains("hidden")) closeBuildPeek(); });

@@ -319,6 +319,22 @@ function renderIndTable(){
     favs=favs.filter(r=>!isBpc(r)); myBps=myBps.filter(r=>!isBpc(r));
     hiddenBps=hiddenBps.filter(r=>!isBpc(r)); rest=rest.filter(r=>!isBpc(r));
   }
+  // Buildable only / Include unobtainable / Hide T2 are client-side filters now:
+  // the scan returns the full superset, so toggling them re-renders instantly
+  // with no rescan. These mirror the old server rules exactly — favourites are
+  // exempt from all three (always visible), and owned blueprints are additionally
+  // exempt from the unobtainable filter. `keep(pred)` applies a predicate across
+  // every group, always sparing favourites (a fav can sit in the Hidden group).
+  const keep=pred=>{
+    const p=r=>isFav(r)||pred(r);
+    myBps=myBps.filter(p); hiddenBps=hiddenBps.filter(p); rest=rest.filter(p);
+  };
+  if($("#ind-buildable").checked)
+    keep(r=>r.buildable);
+  if(!$("#ind-unobtainable").checked)
+    keep(r=>r.bp_available||r.owned_bp_me_te);
+  if($("#ind-hidet2").checked)
+    keep(r=>!(r.requires_invention||r.tech_level===2));
   favs=indSortRows(favs); myBps=indSortRows(myBps);
   hiddenBps=indSortRows(hiddenBps); rest=indSortRows(rest);
 
@@ -503,10 +519,9 @@ function indParams(extra){
     sales_tax:    $("#g-tax").value||"0",
     broker:       $("#g-broker").value||"0",
     runs:         "1",
-    buildable_only:$("#ind-buildable").checked?"1":"0",
-    include_unbuildable:$("#ind-unobtainable").checked?"1":"0",
-    hide_t2:      $("#ind-hidet2").checked?"1":"0",
-    min_tradeability: $("#ind-mintrade").value||"0",
+    // Buildable only / Include unobtainable / Hide T2 / Min trade are client-side
+    // filters (see renderIndTable) — the scan returns the full superset, so these
+    // are no longer sent as scan params.
     favorites:    JSON.stringify([...IND.favorites]),
   };
   // Compute against the character assigned to the Industry page (its skills &

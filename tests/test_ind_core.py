@@ -802,6 +802,16 @@ class TestBlueprintAvailability:
         t2 = ind_core.evaluate_industry([bp], merged, _ADJUSTED, _params())[0]
         assert t2["requires_invention"] is True
 
+    def test_row_carries_client_filter_fields(self):
+        # Buildable only / Include unobtainable / Hide T2 are applied CLIENT-side
+        # over the scan's full superset (do_ind_scan no longer drops rows), so
+        # every row must carry the fields those filters test. Guard the contract:
+        # if any of these ever stops being emitted, the web filters silently break.
+        r = ind_core.evaluate_industry([_bp()], _prices(), _ADJUSTED, _params())[0]
+        for k in ("buildable", "bp_available", "tech_level",
+                  "requires_invention", "owned_bp_me_te"):
+            assert k in r, f"row missing client-filter field {k!r}"
+
 
 # ---------------------------------------------------------------------------
 # training_time_hours / missing_skills

@@ -1837,9 +1837,12 @@ function recalcIndProfits(){
 $("#ind-group").addEventListener("change", ()=>setPref('ind.market_group', $("#ind-group").value));
 $("#ind-station").addEventListener("change", ()=>setPref('ind.station', $("#ind-station").value));
 $("#ind-jobrate").addEventListener("change", ()=>{ setPref('ind.job_rate', $("#ind-jobrate").value); recalcIndProfits(); });
-$("#ind-buildable").addEventListener("change", ()=>setPref('ind.buildable_only', $("#ind-buildable").checked?'1':'0'));
-$("#ind-unobtainable").addEventListener("change", ()=>setPref('ind.include_unbuildable', $("#ind-unobtainable").checked?'1':'0'));
-$("#ind-hidet2").addEventListener("change", ()=>setPref('ind.hide_t2', $("#ind-hidet2").checked?'1':'0'));
+// Buildable only / Include unobtainable / Hide T2 / Hide my BPCs are all
+// client-side filters over the scan's full superset — re-render immediately, no
+// rescan needed.
+$("#ind-buildable").addEventListener("change", ()=>{ setPref('ind.buildable_only', $("#ind-buildable").checked?'1':'0'); renderIndTable(); });
+$("#ind-unobtainable").addEventListener("change", ()=>{ setPref('ind.include_unbuildable', $("#ind-unobtainable").checked?'1':'0'); renderIndTable(); });
+$("#ind-hidet2").addEventListener("change", ()=>{ setPref('ind.hide_t2', $("#ind-hidet2").checked?'1':'0'); renderIndTable(); });
 $("#ind-hidebpc").addEventListener("change", ()=>{ setPref('ind.hide_bpc', $("#ind-hidebpc").checked?'1':'0'); renderIndTable(); });
 // Min-tradeability is a client-side filter — re-render immediately (no rescan).
 $("#ind-mintrade").addEventListener("input", ()=>{ setPref('ind.min_tradeability', $("#ind-mintrade").value); renderIndTable(); });

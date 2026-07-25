@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.143.1"
+__version__ = "1.144.0"
 
 import argparse
 import base64
@@ -3468,9 +3468,9 @@ def do_ind_scan(q, emit=None):
         station_id = JITA_STATION_ID
     region_id = TRADE_HUBS[station_id]["region_id"]
     refresh_sde = q.get("refresh_sde", ["0"])[0] in ("1", "true", "on")
-    buildable_only = q.get("buildable_only", ["0"])[0] in ("1", "true", "on")
-    include_unbuildable = q.get("include_unbuildable", ["0"])[0] in ("1", "true", "on")
-    hide_t2 = q.get("hide_t2", ["0"])[0] in ("1", "true", "on")
+    # Buildable-only / Include-unobtainable / Hide-T2 are applied client-side now
+    # (see renderIndTable) — the scan returns the full superset (every candidate,
+    # obtainable or not) so toggling any of the three never triggers a rescan.
     # A lightweight scan that evaluates ONLY the favorited blueprints, regardless
     # of category — used to show favorites immediately on tab load, before the
     # user runs a real scan. Doesn't touch saved settings.
@@ -3580,13 +3580,13 @@ def do_ind_scan(q, emit=None):
         # they're always visible regardless of the current settings.
         for r in rows:
             r["favorite"] = r["blueprint_id"] in fav_ids
-        if buildable_only:
-            rows = [r for r in rows if r["buildable"] or r["favorite"]]
-        if not include_unbuildable:
-            rows = [r for r in rows if r["bp_available"] or r["owned_bp_me_te"] or r["favorite"]]
-        if hide_t2:
-            rows = [r for r in rows
-                    if r["favorite"] or not (r["requires_invention"] or r["tech_level"] == 2)]
+        # NOTE: Buildable-only / Include-unobtainable / Hide-T2 are NOT applied
+        # here anymore. Each row already carries every field those toggles test
+        # (buildable, bp_available, owned_bp_me_te, requires_invention,
+        # tech_level), so the scan returns the full superset and the front end
+        # filters live in renderIndTable() — toggling them no longer costs a
+        # rescan. (Category / hub / cost rates still require a scan: they change
+        # which candidates load or the profit math itself.)
     finally:
         conn.close()
 

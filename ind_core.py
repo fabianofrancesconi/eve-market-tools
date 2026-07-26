@@ -1510,6 +1510,11 @@ def build_industry_detail(bp, prices, names, volumes, params):
         "missing_price": cost["missing_price"] or invention_datacores_missing(inv, prices),
         "ask": ask,
         "bid": bid,
+        # Live order-book depth at the hub (units), so the detail panel can show
+        # market competition (units already listed to sell) and instant-sell
+        # capacity (units wanted on buy orders) without a second ESI call.
+        "sell_volume": sell_vol,
+        "buy_volume": buy_vol,
         "sales_tax": sales_tax,
         "broker_fee": broker,
         "revenue_patient": rev_patient,

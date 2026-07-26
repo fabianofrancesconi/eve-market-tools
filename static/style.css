@@ -1063,55 +1063,79 @@
     background:var(--panel); border:1px solid var(--line2); border-radius:5px; color:var(--cyan); }
   .ind-copy:hover, .ind-own:hover, .ind-pull-prices:hover { border-color:var(--cyan2); }
   .ind-pull-prices.on { color:#5fb85f; border-color:#5fb85f; }
-  /* ── Build ledger: the signature ──────────────────────────────────────────
-     An accounting waterfall for the batch — gross sale at the top, every fee and
-     build cost subtracted line by line, landing on net profit as the bottom
-     line. It reads straight down in the order ISK moves, so there's no left/right
-     hunting; composition (where the ISK goes) is what a lone number can't show.
-     Boldness lives here — everything below is a quiet spec strip. */
-  .ind-led { border:1px solid var(--line2); border-radius:9px; overflow:hidden;
+  /* ── Sell decision: the signature ─────────────────────────────────────────
+     Selling in EVE is a fork — list patiently at the ask, or dump instantly into
+     buy orders — so the hero IS that fork: two paths side by side, each stating
+     the net ISK, the price it uses, and the margin. The winning path is accented
+     so the answer to "which way pays more" is pre-read. A reference rail and a
+     market strip sit under it; the fee/material breakdown moved to the tables
+     below. Boldness lives here — everything after is a quiet spec strip. */
+  .ind-sell { border:1px solid var(--line2); border-radius:10px; overflow:hidden;
     margin-bottom:16px; background:var(--panel); }
-  .ind-led.pos { box-shadow:inset 3px 0 0 var(--green2); }
-  .ind-led.neg { box-shadow:inset 3px 0 0 var(--red); }
-  .ind-led.na { box-shadow:inset 3px 0 0 var(--dim2); }
-  .ind-led-head { display:flex; align-items:baseline; gap:10px; padding:10px 16px 9px;
+  .ind-sell-head { display:flex; align-items:baseline; gap:10px; padding:10px 16px 9px;
     background:var(--panel2); border-bottom:1px solid var(--line2); flex-wrap:wrap; }
-  .ind-led-title { font-size:10.5px; font-weight:700; text-transform:uppercase;
+  .ind-sell-title { font-size:10.5px; font-weight:700; text-transform:uppercase;
     letter-spacing:.9px; color:var(--cyan); }
-  .ind-led-scope { font-family:"IBM Plex Mono",monospace; font-size:11.5px;
+  .ind-sell-scope { font-family:"IBM Plex Mono",monospace; font-size:11.5px;
     color:var(--dim); margin-right:auto; }
-  .ind-led-verdict { font-size:9.5px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.5px; padding:2px 9px; border-radius:20px; }
-  .ind-led-verdict.pos { color:var(--green2); background:color-mix(in srgb, var(--green2) 15%, transparent); }
-  .ind-led-verdict.neg { color:var(--red); background:color-mix(in srgb, var(--red) 15%, transparent); }
-  .ind-led-verdict.na { color:var(--dim); background:var(--panel3); }
-  .ind-led-body { padding:8px 16px 10px; }
-  /* One ledger line: label · plain-language qualifier · signed amount, columns
-     aligned so the ISK forms a single right rail you can scan straight down. */
-  .ind-led-row { display:grid; grid-template-columns:minmax(120px,auto) 1fr auto;
-    align-items:baseline; gap:12px; padding:3.5px 0; }
-  .ind-led-k { font-size:13px; color:var(--fg); }
-  .ind-led-n { font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--dim);
-    text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .ind-led-a { font-family:"IBM Plex Mono",monospace; font-size:14px; font-weight:600;
-    color:var(--fg); font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
-  .ind-led-a.pos { color:var(--green2); } .ind-led-a.neg { color:var(--red); }
-  /* Fees are subtractions the eye should skim past — dim them so materials/job
-     (the costs you can actually act on) stay legible. */
-  .ind-led-a.dim { color:var(--dim); font-weight:400; }
-  .ind-led-rule { height:1px; background:var(--line2); margin:6px 0; }
-  .ind-led-rule.strong { background:var(--line); height:2px; margin:8px 0 4px; }
-  .ind-led-row.net { padding:4px 0 2px; }
-  .ind-led-row.net .ind-led-k { font-size:14px; font-weight:700; }
-  .ind-led-row.net .ind-led-a { font-size:20px; letter-spacing:-.3px; }
-  .ind-led-foot { display:flex; gap:24px; flex-wrap:wrap; padding:9px 16px;
-    background:var(--panel2); border-top:1px solid var(--line2);
-    font-size:11.5px; color:var(--dim); }
-  .ind-led-foot b { font-family:"IBM Plex Mono",monospace; color:var(--fg); font-weight:600;
-    margin-left:5px; font-variant-numeric:tabular-nums; }
-  .ind-led-foot b.pos { color:var(--green2); } .ind-led-foot b.neg { color:var(--red); }
-  .ind-led-foot b.warn { color:var(--gold); }
-  .ind-led-foot i { font-style:normal; color:var(--dim2); margin-left:3px; }
+  /* The two sell paths — a responsive pair, hairline between them. */
+  .ind-sell-paths { display:grid; grid-template-columns:1fr 1fr; }
+  @media(max-width:560px){ .ind-sell-paths { grid-template-columns:1fr; } }
+  .ind-sell-path { padding:13px 16px 14px; border-right:1px solid var(--line2);
+    position:relative; }
+  .ind-sell-paths > .ind-sell-path:last-child { border-right:0; }
+  @media(max-width:560px){ .ind-sell-path { border-right:0;
+    border-bottom:1px solid var(--line2); } }
+  /* The winning path is lifted: a top accent bar + faint tint, so the eye lands
+     on the more profitable way to sell before reading a single figure. */
+  .ind-sell-path.win::before { content:""; position:absolute; left:0; right:0; top:0;
+    height:2px; background:var(--cyan2); }
+  .ind-sell-path.win { background:color-mix(in srgb, var(--cyan) 6%, transparent); }
+  .ind-sell-path-top { display:flex; align-items:center; gap:8px; margin-bottom:5px;
+    min-height:16px; }
+  .ind-sell-tag { font-size:9.5px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.6px; color:var(--dim); }
+  .ind-sell-best { font-size:9px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.4px; color:var(--cyan); background:color-mix(in srgb, var(--cyan) 16%, transparent);
+    border-radius:20px; padding:1px 8px; margin-left:auto; }
+  .ind-sell-way { font-size:13px; font-weight:600; color:var(--fg); margin-bottom:2px; }
+  .ind-sell-net { font-family:"IBM Plex Mono",monospace; font-size:26px; font-weight:700;
+    letter-spacing:-.5px; line-height:1.05; font-variant-numeric:tabular-nums; color:var(--fg); }
+  .ind-sell-net.pos { color:var(--green2); } .ind-sell-net.neg { color:var(--red); }
+  .ind-sell-net.na { color:var(--dim); }
+  .ind-sell-sub { margin:1px 0 9px; }
+  .ind-sell-margin { font-family:"IBM Plex Mono",monospace; font-size:12px; font-weight:600;
+    font-variant-numeric:tabular-nums; }
+  .ind-sell-margin.pos { color:var(--green2); } .ind-sell-margin.neg { color:var(--red); }
+  .ind-sell-margin.na { color:var(--dim); }
+  .ind-sell-price { display:flex; align-items:baseline; gap:6px; font-size:11.5px;
+    color:var(--dim); padding-top:7px; border-top:1px solid var(--line2); }
+  .ind-sell-price b { font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--fg);
+    font-weight:600; font-variant-numeric:tabular-nums; margin-left:auto; }
+  .ind-sell-note { font-size:11px; color:var(--dim2); line-height:1.35; margin-top:6px; }
+  /* Reference rail — the facts you check against the decision, not part of it. */
+  .ind-sell-rail { display:flex; gap:26px; flex-wrap:wrap; padding:9px 16px;
+    background:var(--panel2); border-top:1px solid var(--line2); }
+  .ind-rail-cell { display:inline-flex; align-items:baseline; gap:6px; font-size:11.5px; }
+  .ind-rail-cell i { font-style:normal; font-size:10px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.5px; color:var(--dim); }
+  .ind-rail-cell b { font-family:"IBM Plex Mono",monospace; font-size:13px; color:var(--fg);
+    font-weight:600; font-variant-numeric:tabular-nums; }
+  .ind-rail-cell b.warn { color:var(--gold); }
+  .ind-rail-cell em { font-style:normal; font-size:10.5px; color:var(--dim2); }
+  /* Market strip — can the market take it? A label + a row of value/label cells. */
+  .ind-sell-market { display:flex; align-items:stretch; gap:0; flex-wrap:wrap;
+    padding:2px 16px 3px; background:var(--panel); border-top:1px solid var(--line2); }
+  .ind-mkt-lbl { align-self:center; font-size:10px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.7px; color:var(--cyan); opacity:.75; margin-right:16px; padding:8px 0; }
+  .ind-mkt-cell { display:flex; flex-direction:column; gap:1px; padding:8px 16px 8px 0;
+    min-width:0; }
+  .ind-mkt-cell b { font-family:"IBM Plex Mono",monospace; font-size:14px; font-weight:600;
+    color:var(--fg); font-variant-numeric:tabular-nums; }
+  .ind-mkt-cell b.pos { color:var(--green2); } .ind-mkt-cell b.warn { color:var(--gold); }
+  .ind-mkt-cell b.neg { color:var(--red); } .ind-mkt-cell b.na { color:var(--dim); }
+  .ind-mkt-cell span { font-size:10px; color:var(--dim); text-transform:uppercase;
+    letter-spacing:.4px; white-space:nowrap; }
   /* Body is a single top-to-bottom column now (ledger → note → timer → specs →
      skills → materials): no more left/right split to hunt across. */
   .ind-d-body { display:flex; flex-direction:column; gap:14px; margin-bottom:14px; }

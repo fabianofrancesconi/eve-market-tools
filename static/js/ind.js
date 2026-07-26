@@ -79,6 +79,7 @@ const IND_COLS = [
   {k:"ask",                t:"Sell price",     w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
   {k:"in_vol_run",         t:"Cargo in",       w: 85, tip:"m³ of materials to haul in per run.", f:v=>v?fmtVol(v):"—"},
   {k:"out_vol_run",        t:"Cargo out",      w: 85, tip:"m³ of finished items to haul out per run.", f:v=>v?fmtVol(v):"—"},
+  {k:"daily_vol",          t:"Vol/day",        w: 84, tip:"Units of this item traded per day on the market (~30-day median), at the source hub. The market's appetite — how much it can absorb. Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"no data":fmtNum(v))},
   {k:"days_to_sell",       t:"Days to sell",   w: 88, tip:"How many days to sell one run's output (output qty ÷ daily volume). Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : fmtDaysSell(v)},
   {k:"tradeability",       t:"Tradeability",   w: 98, tip:"0–100: how realistically you can sell what you make. Scores daily traded volume against the Volume preset (Quiet 1 / Balanced 50 / Liquidity 1000 units/day = fully tradeable), then gates on the live order book — an empty/thin market scores ~0 no matter its history. Higher is better.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
   {k:"buildable",          t:"Buildable?",     w: 72, tip:"Can every required skill (at the Skills level) make it? Shows training time if not.", f:(v,r)=>v?"✓":("✗"+(r.train_hours?`<div class="train-time">${fmtTrainTime(r.train_hours)}</div>`:""))},
@@ -904,32 +905,58 @@ function renderIndDetail(d, container){
       <table class="ind-d-mats"><thead><tr><th>Datacore</th><th class="num">Qty</th>
         <th class="num">Unit</th><th class="num">Line</th></tr></thead><tbody>${dcs}</tbody></table>`;
   }
-  // ── Build ledger (signature) ──────────────────────────────────────────────
-  // The panel's one memorable element: a single-column accounting waterfall for
-  // the whole batch. Gross sale, minus the fees to sell it, minus every build
-  // cost, landing on profit — read top-to-bottom in the order ISK moves, so
-  // there's no left/right hunting between a stats grid and a wall of cards. The
-  // composition (where the ISK goes) is the value a lone profit number can't add.
+  // ── Sell decision (signature) ─────────────────────────────────────────────
+  // The panel's one loud element. Selling in EVE is a real fork: list patiently
+  // at the ask, or dump instantly into standing buy orders. So the hero IS that
+  // fork — two paths side by side, each answering "sell this way → you net X, at
+  // price Y, for Z% margin." The winning path gets an accent so the eye lands on
+  // the answer, not on a column of fees. Fees/materials move out of the hero into
+  // the tables below; the composition question is answered there, the *decision*
+  // here. A market strip underneath says whether the market can actually take it.
   const marginL=(batchProfitL!=null && batchCost)?batchProfitL/batchCost:null;
-  const verdict=batchProfitL==null?{txt:"No market price",cls:"na"}
-    : batchProfitL>0?{txt:"Profitable",cls:"pos"}
-    : batchProfitL<0?{txt:"Loss-making",cls:"neg"}:{txt:"Break-even",cls:"na"};
-  // Gross list revenue before fees (revenue_patient already nets broker + tax).
-  const grossL=(d.ask!=null)? qtyBatchTot*d.ask : null;
-  // Signed ISK for a ledger line: "+1.2M" / "−800K". The sign is explicit so the
-  // waterfall reads as additions and subtractions, not a column of bare numbers.
-  const sIsk=(v,sign)=> v==null?"—":(sign||"")+fmtISK(Math.abs(v));
-  const netStr=batchProfitL==null?"—"
-    :(batchProfitL>0?"+":batchProfitL<0?"−":"")+fmtISK(Math.abs(batchProfitL));
-  const instStr=batchProfitI==null?"—"
-    :(batchProfitI>0?"+":batchProfitI<0?"−":"")+fmtISK(Math.abs(batchProfitI));
-  // One ledger line: what it is · a plain-language qualifier · the signed amount.
-  const led=(k,note,amount,cls)=>
-    `<div class="ind-led-row"><span class="ind-led-k">${k}</span>`
-    +`<span class="ind-led-n">${note||""}</span>`
-    +`<b class="ind-led-a ${cls||""}">${amount}</b></div>`;
-  const tradeStr=d.tradeability==null?"—"
-    :`${d.tradeability} / 100${d.daily_units!=null?` · ${fmtNum(d.daily_units)}/day`:""}`;
+  const marginI=(batchProfitI!=null && batchCost)?batchProfitI/batchCost:null;
+  // Signed ISK for a hero figure: "+1.2M" / "−800K", sign explicit so profit vs
+  // loss reads at a glance without hunting for a colour.
+  const sProfit=v=> v==null?"—":(v>0?"+":v<0?"−":"")+fmtISK(Math.abs(v));
+  const sPct=v=> v==null?"—":(v>0?"+":v<0?"−":"")+(Math.abs(v)*100).toFixed(1)+"%";
+  // Which path pays more (defined side beats a null side) — but only accent it as
+  // "best" when it's actually profitable. Accenting a loss-making path would
+  // celebrate the lesser loss; when both lose, the red figures carry the message.
+  const listBetter=batchProfitL!=null && (batchProfitI==null || batchProfitL>=batchProfitI);
+  const instBetter=batchProfitI!=null && (batchProfitL==null || batchProfitI>batchProfitL);
+  const listWins=listBetter && batchProfitL>0;
+  const instWins=instBetter && batchProfitI>0;
+  const pnCls=v=> v==null?"na":(v>0?"pos":v<0?"neg":"na");
+  // One sell path: how you sell · the per-unit price it uses · the batch net +
+  // margin. `note` is the fee mix folded into that net, in plain language.
+  const sellPath=(cls,tag,label,price,priceLbl,profit,margin,note,win,extra)=>`
+    <div class="ind-sell-path ${cls}${win?" win":""}">
+      <div class="ind-sell-path-top">
+        <span class="ind-sell-tag">${tag}</span>
+        ${win?'<span class="ind-sell-best" title="The more profitable of the two sell methods at these prices">▲ best</span>':""}
+      </div>
+      <div class="ind-sell-way">${label}</div>
+      <div class="ind-sell-net ${pnCls(profit)}">${sProfit(profit)}</div>
+      <div class="ind-sell-sub"><span class="ind-sell-margin ${pnCls(margin)}">${sPct(margin)} margin</span></div>
+      <div class="ind-sell-price"><span>${priceLbl}</span><b>${price==null?"—":isk(price)}</b>${extra||""}</div>
+      <div class="ind-sell-note">${note}</div>
+    </div>`;
+  // Batch capacity of the instant path: standing buy orders can only absorb so
+  // many units before you'd be dumping below the top bid. buy_volume is the live
+  // buy-book depth (units). Unknown → no note.
+  const instantDepthNote=(d.buy_volume==null)?"paid to buy orders, sales tax only — no broker fee"
+    : d.buy_volume>=qtyBatchTot ? `buy orders can take all ${fmtNum(qtyBatchTot)} — sales tax only`
+    : `only ${fmtNum(d.buy_volume)} wanted on buy orders vs ${fmtNum(qtyBatchTot)} made — the rest needs listing`;
+  // Market health strip — can the market actually absorb this batch? Units traded
+  // per day, days to offload the whole batch at that rate, competing sell orders
+  // already listed, and buy-side depth for an instant exit.
+  const daily=d.daily_units;
+  const daysToOffload=(daily!=null && daily>0)?qtyBatchTot/daily:null;
+  const tradeCls=d.tradeability==null?"na":d.tradeability>=70?"pos":d.tradeability>=40?"warn":"neg";
+  const fmtDaysOff=v=> v==null?"—":v<1?"< 1 day":v<10?v.toFixed(1)+" days":Math.round(v)+" days";
+  // One market cell: value + label, with an optional colour class.
+  const mkt=(val,lbl,cls,tip)=>`<div class="ind-mkt-cell"${tip?` title="${tip}"`:""}>`
+    +`<b class="${cls||""}">${val}</b><span>${lbl}</span></div>`;
   const ownStr=d.owned_me_te
       ? `<span class="ind-yours">✓ You own this blueprint${isBpo?" (Original — infinite runs)":" (Copy)"}</span>`
       : (d.other_owners&&d.other_owners.length
@@ -975,31 +1002,36 @@ function renderIndDetail(d, container){
         : `<span class="ind-bpc-buy">No BPO on the market in ${d.region_name}. <button class="ind-bpo-expand" data-bp="${d.blueprint_id}">Search other regions</button></span>`}
     </div>` : ""}
     <div class="ind-d-body">
-    <div class="ind-led ${verdict.cls}">
-      <div class="ind-led-head">
-        <span class="ind-led-title">Build ledger</span>
-        <span class="ind-led-scope">${n.toLocaleString()} run${n===1?"":"s"} → ${fmtNum(qtyBatchTot)}× ${d.product.name}</span>
-        <span class="ind-led-verdict ${verdict.cls}">${verdict.txt}</span>
+    <div class="ind-sell">
+      <div class="ind-sell-head">
+        <span class="ind-sell-title">Sell this batch</span>
+        <span class="ind-sell-scope">${n.toLocaleString()} run${n===1?"":"s"} → ${fmtNum(qtyBatchTot)}× ${d.product.name}</span>
       </div>
-      <div class="ind-led-body">
-        ${led("Sale — list", `${fmtNum(qtyBatchTot)} @ ${isk(d.ask)} ask`, sIsk(grossL,"+"), "pos")}
-        ${led("Broker fee", fmtPct1(d.broker_fee), sIsk(brokerIsk,"−"), "neg dim")}
-        ${led("Sales tax", fmtPct1(d.sales_tax), sIsk(taxListIsk,"−"), "neg dim")}
-        <div class="ind-led-rule"></div>
-        ${led("Materials", `${d.required_items.length} item${d.required_items.length===1?"":"s"}`, sIsk(matTotCost,"−"), "neg")}
-        ${led("Job install", `EIV ${isk(d.eiv)} × ${(d.job_rate*100).toFixed(1)}%`, sIsk(jobCostBatch,"−"), "neg")}
-        ${d.invention?led("Invention", `${(d.invention.probability*100).toFixed(1)}% success`, sIsk(inventionCostBatch,"−"), "neg"):""}
-        <div class="ind-led-rule strong"></div>
-        <div class="ind-led-row net">
-          <span class="ind-led-k">Net profit — list</span>
-          <span class="ind-led-n">margin ${marginL==null?"—":(marginL*100).toFixed(1)+"%"}</span>
-          <b class="ind-led-a ${pn(batchProfitL)}">${netStr}</b>
-        </div>
+      <div class="ind-sell-paths">
+        ${sellPath("list", "① List", "List &amp; wait", d.ask, "at ask", batchProfitL, marginL,
+          `${fmtNum(qtyBatchTot)} × ${isk(d.ask)}, less broker ${fmtPct1(d.broker_fee)} + tax ${fmtPct1(d.sales_tax)}`,
+          listWins)}
+        ${sellPath("instant", "② Instant", "Dump now", d.bid, "at bid", batchProfitI, marginI,
+          instantDepthNote, instWins)}
       </div>
-      <div class="ind-led-foot">
-        <span>Sell instant <b class="${pn(batchProfitI)}">${instStr}</b> <i>@ ${isk(d.bid)} bid</i></span>
-        <span>Build time <b>${fmtDur(batchTime)}</b></span>
-        ${minPriceList!=null?`<span>Break-even <b class="warn">${isk(minPriceList)}</b> <i>/unit</i></span>`:`<span>Per unit <b>${isk(d.ask)}</b> <i>ask</i></span>`}
+      <div class="ind-sell-rail">
+        ${minPriceList!=null?`<span class="ind-rail-cell"><i>Break-even</i><b class="warn">${isk(minPriceList)}</b><em>/unit to list</em></span>`:""}
+        <span class="ind-rail-cell"><i>Build cost</i><b>${isk(batchCost)}</b><em>${fmtNum(qtyBatchTot)} units</em></span>
+        <span class="ind-rail-cell"><i>Build time</i><b>${fmtDur(batchTime)}</b></span>
+      </div>
+      <div class="ind-sell-market">
+        <span class="ind-mkt-lbl" title="Whether the market can actually absorb what you'd make — history and the live order book at ${d.station_name}.">Market</span>
+        ${mkt(daily==null?"—":fmtNum(daily)+"/d", "traded", "",
+          "Units traded per day (~30-day median). The market's daily appetite for this item.")}
+        ${mkt(fmtDaysOff(daysToOffload), "to offload batch",
+          daysToOffload==null?"":daysToOffload>14?"neg":daysToOffload>4?"warn":"pos",
+          "How long your whole batch would take to clear at the recent daily volume — lower is more liquid.")}
+        ${mkt(d.sell_volume==null?"—":fmtNum(d.sell_volume), "listed vs you",
+          "", "Units already on sell orders here — your competition. Fewer means less undercutting.")}
+        ${mkt(d.buy_volume==null?"—":fmtNum(d.buy_volume), "wanted now",
+          "", "Units standing on buy orders — how many you could dump instantly before the price drops.")}
+        ${mkt(d.tradeability==null?"—":d.tradeability, "liquidity", tradeCls,
+          "0–100 liquidity score from daily volume vs your Volume preset, gated on the live book. Higher sells more reliably.")}
       </div>
     </div>
     <div class="ind-d-note">
@@ -1015,7 +1047,6 @@ function renderIndDetail(d, container){
           <span>ME / TE used</span><b class="ind-sim-cell">${meTeHtml}</b>
           <span>Ownership</span><b>${ownStr}</b>
           <span>Payback</span><b>${payback}</b>
-          <span>Tradeability</span><b>${tradeStr}</b>
         </div>
       </div>
       <div class="ind-spec-col">

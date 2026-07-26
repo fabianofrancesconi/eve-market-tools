@@ -596,6 +596,17 @@ class TestBuildIndustryDetail:
         assert d["profit_patient"] == pytest.approx(row["profit_patient"])
         assert d["job_cost"] == pytest.approx(row["job_cost"])
 
+    def test_exposes_live_book_depth(self):
+        # The redesigned detail panel's market strip shows competition (units
+        # already listed to sell) and instant-sell capacity (units wanted on buy
+        # orders), so the builder must surface the live book depth from prices.
+        params = _params(runs=10, adjusted=_ADJUSTED)
+        prices = _prices({165: {"sell_min": 2000.0, "buy_max": 1800.0,
+                                "sell_volume": 4200.0, "buy_volume": 900.0}})
+        d = ind_core.build_industry_detail(_bp(), prices, {}, _VOLUMES, params)
+        assert d["sell_volume"] == pytest.approx(4200.0)
+        assert d["buy_volume"] == pytest.approx(900.0)
+
 
 # ---------------------------------------------------------------------------
 # invention_cost_per_run (Milestone 4 — T2)

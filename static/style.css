@@ -1440,37 +1440,125 @@
   .ind-hide-btn { cursor:pointer; color:var(--dim); font-size:11.5px; padding:0 3px; opacity:.5; transition:opacity .12s; }
   .ind-hide-btn:hover { opacity:1; color:var(--orange,#e8a040); }
   /* ── Tracked builds ──────────────────────────────────────────────── */
-  .ind-builds { margin:4px 0 10px; }
+  .ind-builds { margin:2px 0 10px; padding:0 16px; }
   .ind-builds.hidden { display:none; }
-  /* Section header — always shown, no collapse toggle. */
-  .ind-builds-head { font-size:11.5px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.05em; color:var(--cyan); user-select:none;
-    padding:6px 2px; border-bottom:1px solid var(--line2); }
-  .ind-builds-head .chip-count { opacity:.55; font-weight:400; }
-  .ind-builds-list { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
-  .ind-builds-list.hidden { display:none; }
-  /* Status groups — collapsible header per lifecycle stage (planned → sold). */
-  .ind-build-group { margin-top:10px; }
-  .ind-build-grp-head { font-size:11.5px; font-weight:700; text-transform:uppercase;
+
+  /* ── Pipeline board ───────────────────────────────────────────────────
+     Five lanes, one per lifecycle stage, laid left→right so a build reads as
+     flowing through the pipeline. Each lane is a slim column of compact tiles;
+     an empty lane keeps its rail so the pipeline's shape never shifts as tiles
+     move. On narrow screens the lanes wrap; the whole board scrolls if needed. */
+  .ind-board { display:grid; grid-template-columns:repeat(5,minmax(0,1fr));
+    gap:10px; margin-top:8px; align-items:start; }
+  .ind-lane { min-width:0; display:flex; flex-direction:column; }
+  /* A lane header is a small stage name + count, over a hairline tinted to the
+     stage colour so the columns are legible without a heavy chrome. */
+  .ind-lane-head { display:flex; align-items:baseline; gap:6px; padding:3px 2px 6px;
+    border-bottom:2px solid var(--line2); margin-bottom:8px; }
+  .ind-lane-name { font-size:11px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--dim); }
+  .ind-lane-count { font-size:11px; font-weight:700; color:var(--dim2);
+    font-variant-numeric:tabular-nums; margin-left:auto; }
+  .ind-lane.stage-planned  .ind-lane-head { border-bottom-color:var(--stg-planned); }
+  .ind-lane.stage-building .ind-lane-head { border-bottom-color:var(--stg-building); }
+  .ind-lane.stage-built    .ind-lane-head { border-bottom-color:var(--stg-built); }
+  .ind-lane.stage-listed   .ind-lane-head { border-bottom-color:var(--stg-listed); }
+  .ind-lane.stage-sold     .ind-lane-head { border-bottom-color:var(--stg-sold); }
+  .ind-lane.stage-planned  .ind-lane-name { color:var(--stg-planned); }
+  .ind-lane.stage-building .ind-lane-name { color:var(--stg-building); }
+  .ind-lane.stage-built    .ind-lane-name { color:var(--stg-built); }
+  .ind-lane.stage-listed   .ind-lane-name { color:var(--stg-listed); }
+  .ind-lane.stage-sold     .ind-lane-name { color:var(--stg-sold); }
+  .ind-lane-tiles { display:flex; flex-direction:column; gap:7px; min-height:8px; }
+  .ind-lane-empty { color:var(--dim2); font-size:13px; text-align:center;
+    padding:10px 0; border:1px dashed var(--line); border-radius:6px; opacity:.5; }
+
+  /* ── Tile — the compact face of a build in its lane ─────────────────── */
+  .ind-tile { background:var(--panel2); border:1px solid var(--line2);
+    border-left:3px solid var(--line2); border-radius:6px; padding:8px 10px;
+    cursor:pointer; user-select:none; transition:border-color .12s, background .12s, transform .06s; }
+  .ind-tile:hover { border-color:var(--line2); background:var(--panel3); }
+  .ind-tile:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
+  .ind-tile:active { transform:translateY(1px); }
+  .ind-tile.stage-planned  { border-left-color:var(--stg-planned); }
+  .ind-tile.stage-building { border-left-color:var(--stg-building); }
+  .ind-tile.stage-built    { border-left-color:var(--stg-built); }
+  .ind-tile.stage-listed   { border-left-color:var(--stg-listed); }
+  .ind-tile.stage-sold     { border-left-color:var(--stg-sold); }
+  /* Focused tile: lit border in its stage hue so it's obvious which one the
+     panel below belongs to. */
+  .ind-tile.focused { background:var(--panel3); }
+  .ind-tile.focused.stage-planned  { border-color:var(--stg-planned); }
+  .ind-tile.focused.stage-building { border-color:var(--stg-building); }
+  .ind-tile.focused.stage-built    { border-color:var(--stg-built); }
+  .ind-tile.focused.stage-listed   { border-color:var(--stg-listed); }
+  .ind-tile.focused.stage-sold     { border-color:var(--stg-sold); }
+  .ind-tile-name { font-weight:700; color:var(--fg); font-size:13px; line-height:1.25;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ind-tile-runs { color:var(--dim); font-size:11px; margin-top:1px; }
+  .ind-tile-line { font-size:12px; margin-top:5px; color:var(--fg);
+    font-variant-numeric:tabular-nums; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ind-tile-line b { font-weight:700; }
+  .ind-tile-line b.pos { color:var(--green2,#4caf76); }
+  .ind-tile-line b.neg { color:var(--red); }
+  .ind-tile-dim { color:var(--dim); }
+  .ind-tile-warn { color:var(--gold,#c8a040); font-weight:600; }
+  .ind-tile-live { color:var(--cyan); font-weight:700; }
+  /* Mini progress bar — build elapsed (building) or sold/target (listed). */
+  .ind-tile-bar { height:4px; border-radius:2px; background:var(--panel);
+    border:1px solid var(--line); overflow:hidden; margin-top:6px; }
+  .ind-tile-bar-fill { display:block; height:100%; border-radius:2px; }
+  .ind-tile-bar-fill.building { background:var(--stg-building); }
+  .ind-tile-bar-fill.listed { background:var(--stg-listed); }
+
+  /* ── Focus panel — the full card docked below the board ─────────────── */
+  .ind-focus { margin-top:14px; background:var(--panel);
+    border:1px solid var(--line2); border-radius:8px; padding:4px 12px 12px;
+    animation:indFocusIn .14s ease-out; }
+  @keyframes indFocusIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:none; } }
+  @media (prefers-reduced-motion: reduce){ .ind-focus { animation:none; } }
+  .ind-focus-head { display:flex; align-items:center; justify-content:space-between;
+    padding:8px 2px; }
+  .ind-focus-lbl { font-size:11px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--dim); }
+  .ind-focus-close { padding:2px 10px; font-size:11.5px; cursor:pointer;
+    background:var(--panel2); border:1px solid var(--line2); border-radius:4px; color:var(--dim); }
+  .ind-focus-close:hover { border-color:var(--cyan); color:var(--cyan); }
+  /* Inside the focus panel the card carries no extra frame (the panel is the
+     frame) — keep only its stage left-border accent. */
+  .ind-focus .ind-build-card { background:transparent; border:none;
+    border-left:3px solid var(--line2); border-radius:0; padding:6px 10px; }
+  .ind-focus .ind-build-card.awaiting { border-left-color:var(--stg-planned); }
+  .ind-focus .ind-build-card.building { border-left-color:var(--stg-building); }
+  .ind-focus .ind-build-card.built { border-left-color:var(--stg-built); }
+  .ind-focus .ind-build-card.listed { border-left-color:var(--stg-listed); }
+  .ind-focus .ind-build-card.sold, .ind-focus .ind-build-card.done { border-left-color:var(--stg-sold); }
+
+  /* ── Archived drawer ──────────────────────────────────────────────── */
+  .ind-archive-drawer { margin-top:16px; }
+  .ind-archive-head { font-size:11.5px; font-weight:700; text-transform:uppercase;
     letter-spacing:.05em; color:var(--dim); cursor:pointer; user-select:none;
     padding:5px 2px; border-bottom:1px solid var(--line2);
     display:flex; align-items:center; gap:6px; }
-  .ind-build-grp-head:hover { color:var(--fg); }
-  .ind-build-grp-head .grp-arrow { display:inline-block; transition:transform .15s; }
-  .ind-build-grp-head .chip-count { opacity:.55; font-weight:400; }
-  .ind-build-group.collapsed .grp-arrow { transform:rotate(-90deg); }
-  .ind-build-group.collapsed .ind-builds-list { display:none; }
-  /* Indent each group's cards under its header so the stage reads as a tree
-     branch rather than a flat list flush with the header text. */
-  .ind-build-group .ind-builds-list { margin-left:16px; }
-  /* Tint each group's header to match its cards' left-border accent. */
-  .ind-build-group.planned .ind-build-grp-head { color:var(--stg-planned); }
-  .ind-build-group.building .ind-build-grp-head { color:var(--stg-building); }
-  .ind-build-group.built .ind-build-grp-head { color:var(--stg-built); }
-  .ind-build-group.listed .ind-build-grp-head { color:var(--stg-listed); }
-  .ind-build-group.sold .ind-build-grp-head { color:var(--stg-sold); }
-  .ind-build-group.archived .ind-build-grp-head { color:var(--dim); }
-  .ind-build-group.archived .ind-build-card { opacity:.7; }
+  .ind-archive-head:hover { color:var(--fg); }
+  .ind-archive-head .grp-arrow { display:inline-block; transition:transform .15s; }
+  .ind-archive-head .chip-count { opacity:.55; font-weight:400; }
+  .ind-archive-drawer.collapsed .grp-arrow { transform:rotate(-90deg); }
+  .ind-archive-drawer.collapsed .ind-archive-tiles { display:none; }
+  .ind-archive-tiles { display:grid; grid-template-columns:repeat(5,minmax(0,1fr));
+    gap:7px; margin-top:8px; }
+  .ind-archive-tiles .ind-tile { opacity:.7; }
+  .ind-archive-tiles .ind-tile:hover { opacity:1; }
+
+  /* Board wraps to fewer columns as width drops; tiles stay readable. */
+  @media (max-width:1000px){
+    .ind-board, .ind-archive-tiles { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  }
+  @media (max-width:620px){
+    .ind-board, .ind-archive-tiles { grid-template-columns:1fr 1fr; }
+    .ind-builds { padding:0 10px; }
+  }
+
   .ind-track-btn { margin:0 6px; padding:1px 8px; font-size:11.5px; cursor:pointer;
     background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--green2,#4caf76); }
   .ind-track-btn:hover { border-color:var(--green2,#4caf76); }
@@ -1631,87 +1719,46 @@
   .mode-count { margin-left:5px; font-size:11px; font-weight:700; opacity:.8; }
   .mode-count.hidden { display:none; }
 
-  /* ── Tracker (industry portfolio P&L + tracked-build cards) ───────── */
-  .sum-wrap { padding:14px 16px; max-width:1100px; }
-  .sum-loading, .sum-empty-note, .sum-none { color:var(--dim); padding:20px 4px; }
-  .sum-kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
-  @media (max-width:820px){ .sum-kpis { grid-template-columns:repeat(2,1fr); } }
-  .sum-kpi { background:var(--panel2); border:1px solid var(--line2);
-    border-radius:8px; padding:12px 14px; position:relative; }
-  .sum-kpi-label { color:var(--dim); font-size:11px; font-weight:700;
-    text-transform:uppercase; letter-spacing:.5px; }
-  .sum-range-lbl { color:var(--dim2); font-weight:600; text-transform:none;
-    letter-spacing:0; }
-  .sum-kpi-val { font-size:24px; font-weight:800; color:var(--fg); margin-top:4px;
-    font-variant-numeric:tabular-nums; }
-  .sum-kpi-val.pos { color:var(--green2,#4caf76); }
-  .sum-kpi-val.neg { color:var(--red); }
-  .sum-kpi-sub { color:var(--dim); font-size:11px; margin-top:3px; }
-  .sum-kpi-sub b.pos { color:var(--green2,#4caf76); }
-  .sum-kpi-sub b.neg { color:var(--red); }
-  /* The headline "estimated total" tile gets a subtle cyan lift. */
-  .sum-kpi-accent { border-color:var(--cyan); background:linear-gradient(180deg,
-    rgba(80,200,255,.06), transparent 60%), var(--panel2); }
-  .sum-range { display:flex; gap:4px; margin-top:8px; }
-  .sum-range-btn { padding:1px 9px; font-size:10.5px; cursor:pointer; border-radius:4px;
+  /* ── Tracker readout strip (portfolio P&L, one ribbon above the board) ──
+     Four readings on one line — booked / tied up / to earn / estimate. Each is
+     a small uppercase label over a tabular figure, divided by hairlines. It's a
+     glance, not a dashboard: the pipeline board below carries the per-build
+     detail. Wraps to a 2×2 grid on narrow screens. */
+  .sum-loading, .sum-empty-note, .sum-none { color:var(--dim); padding:20px 16px; }
+  .sum-strip { display:flex; align-items:stretch; margin:12px 16px 0;
+    background:var(--panel2); border:1px solid var(--line2); border-radius:8px;
+    overflow:hidden; }
+  .sum-read { flex:1; min-width:0; padding:10px 16px; position:relative; }
+  .sum-read + .sum-read { border-left:1px solid var(--line2); }
+  /* The estimate reading — the bottom line — gets a subtle cyan lift. */
+  .sum-read:last-child { background:linear-gradient(180deg,
+    rgba(80,200,255,.06), transparent 70%); }
+  .sum-read-label { color:var(--dim); font-size:10.5px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.5px; white-space:nowrap; }
+  .sum-read-val { font-size:21px; font-weight:800; color:var(--fg); margin-top:3px;
+    font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .sum-read-val.pos { color:var(--green2,#4caf76); }
+  .sum-read-val.neg { color:var(--red); }
+  .sum-read-val.dim { color:var(--fg); opacity:.9; }
+  .sum-read-note { color:var(--dim); font-size:11px; margin-top:2px; white-space:nowrap; }
+  .sum-read-note b.pos { color:var(--green2,#4caf76); }
+  .sum-read-note b.neg { color:var(--red); }
+  /* Compact range toggle, tucked under the Realized figure. */
+  .sum-strip-range { display:inline-flex; gap:4px; margin-top:6px; }
+  .sum-range-btn { padding:1px 8px; font-size:10.5px; cursor:pointer; border-radius:4px;
     background:var(--panel); border:1px solid var(--line2); color:var(--dim); }
+  .sum-range-btn:hover { border-color:var(--cyan2,var(--cyan)); color:var(--fg); }
   .sum-range-btn.on { border-color:var(--cyan); color:var(--cyan); }
-  /* Capital-by-stage stacked bar (where the frozen ISK sits). */
-  .sum-capbar-wrap { margin-top:14px; }
-  .sum-capbar { display:flex; height:12px; border-radius:6px; overflow:hidden;
-    background:var(--panel2); border:1px solid var(--line2); }
-  .sum-capseg { height:100%; }
-  .sum-capseg.stage-planned { background:var(--stg-planned); }
-  .sum-capseg.stage-building { background:var(--stg-building); }
-  .sum-capseg.stage-built { background:var(--stg-built); }
-  .sum-capseg.stage-listed { background:var(--stg-listed); }
-  .sum-caplegend { display:flex; gap:14px; flex-wrap:wrap; margin-top:7px; }
-  .sum-caplbl { font-size:11px; color:var(--dim); display:flex; align-items:center; gap:5px; }
-  .sum-caplbl::before { content:""; width:9px; height:9px; border-radius:2px; display:inline-block; }
-  .sum-caplbl.stage-planned::before { background:var(--stg-planned); }
-  .sum-caplbl.stage-building::before { background:var(--stg-building); }
-  .sum-caplbl.stage-built::before { background:var(--stg-built); }
-  .sum-caplbl.stage-listed::before { background:var(--stg-listed); }
-  .sum-caplbl b { color:var(--fg); font-weight:700; }
-  .sum-stagestrip { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
-  .sum-stagepill { font-size:11px; color:var(--dim); background:var(--panel2);
-    border:1px solid var(--line2); border-radius:20px; padding:3px 11px;
-    border-left-width:3px; }
-  .sum-stagepill b { color:var(--fg); font-weight:800; margin-right:2px; }
-  .sum-stagepill.stage-planned { border-left-color:var(--stg-planned); }
-  .sum-stagepill.stage-building { border-left-color:var(--stg-building); }
-  .sum-stagepill.stage-built { border-left-color:var(--stg-built); }
-  .sum-stagepill.stage-listed { border-left-color:var(--stg-listed); }
-  .sum-stagepill.stage-sold { border-left-color:var(--stg-sold); }
-  .sum-section { margin-top:20px; }
-  .sum-section-head { font-size:11px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.8px; color:var(--cyan); opacity:.85; padding-bottom:6px;
-    border-bottom:1px solid var(--line2); margin-bottom:8px; }
-  .sum-queue { display:flex; flex-direction:column; gap:6px; }
-  .sum-queue-row { display:flex; align-items:center; gap:12px; cursor:pointer;
-    background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
-    padding:7px 12px; font-size:12.5px; }
-  .sum-queue-row:hover { border-color:var(--cyan2,var(--cyan)); }
-  .sum-q-badge { font-size:10px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.5px; padding:2px 8px; border-radius:4px; white-space:nowrap; }
-  .sum-q-badge.list { background:#0e2a1c; color:var(--green2,#4caf76);
-    border:1px solid var(--green2,#4caf76); }
-  .sum-q-badge.pick { background:#2a220e; color:var(--gold,#c8a040);
-    border:1px solid var(--gold,#c8a040); }
-  .sum-q-name { font-weight:700; color:var(--fg); min-width:140px; }
-  .sum-q-runs { color:var(--dim); }
-  .sum-q-msg { color:var(--dim); }
-  .sum-q-open { margin-left:auto; padding:2px 10px; font-size:11px; cursor:pointer;
-    background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--dim); }
-  .sum-q-open:hover { border-color:var(--cyan); color:var(--cyan); }
-  .sum-table { width:100%; border-collapse:collapse; font-size:12.5px; }
-  .sum-table th { text-align:left; color:var(--dim); font-size:10.5px;
-    text-transform:uppercase; letter-spacing:.5px; padding:4px 8px;
-    border-bottom:1px solid var(--line2); }
-  .sum-table th.num, .sum-table td.num { text-align:right; }
-  .sum-table td { padding:5px 8px; border-bottom:1px solid var(--line); color:var(--fg); }
-  .sum-table td.pos { color:var(--green2,#4caf76); }
-  .sum-table td.neg { color:var(--red); }
+  @media (max-width:820px){
+    .sum-strip { flex-wrap:wrap; }
+    .sum-read { flex-basis:50%; }
+    .sum-read:nth-child(3) { border-left:none; }
+    .sum-read:nth-child(n+3) { border-top:1px solid var(--line2); }
+  }
+  @media (max-width:460px){
+    .sum-read { flex-basis:100%; border-left:none; }
+    .sum-read + .sum-read { border-top:1px solid var(--line2); }
+  }
 
   /* ── Notes tab ───────────────────────────────────────────────────── */
   #notes-tablewrap { display:flex; height:100%; overflow:hidden; }

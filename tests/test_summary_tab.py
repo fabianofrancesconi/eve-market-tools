@@ -37,7 +37,7 @@ def test_summary_module_bundled():
     src = lp_web.FRONTEND_SOURCE
     assert "/static/js/summary.js" in src
     assert "function renderSummary" in src
-    assert "_sumNeedsAction" in src
+    assert "_sumFigures" in src   # the strip's portfolio-figures helper
 
 
 def test_mode_button_renamed_to_tracker():
@@ -98,13 +98,30 @@ def test_instant_sale_rendering_wired():
     assert "sell.needs_pick && !instant" in src
 
 
-def test_tracker_dashboard_has_est_profit_and_capital_bar():
+def test_tracker_readout_strip_shows_portfolio_figures():
     src = lp_web.FRONTEND_SOURCE
-    assert "Est. total profit" in src        # new headline KPI
-    assert "sum-capbar" in src               # capital-by-stage stacked bar
-    # The redundant "Tracked builds" count KPI is gone from the dashboard tiles
-    # (the count now rides on the mode button + stage strip instead). The KPI
-    # region runs from the first tile's label to the capital-bar comment.
-    start = src.index('sum-kpi-label">Realized profit')
-    kpi_html = src[start:src.index('"Where your capital sits"', start)]
-    assert "Tracked builds" not in kpi_html
+    # The heavy dashboard is now a single slim readout strip: four figures on one
+    # ribbon — realized / capital / ready / estimate.
+    assert 'class="sum-strip"' in src
+    assert 'read("Realized"' in src
+    assert 'read("Capital in flight"' in src
+    assert 'read("Ready to realize"' in src
+    assert 'read("Est. total"' in src
+    # The old dashboard chrome (KPI grid, capital-by-stage bar, stage strip,
+    # needs-action queue, by-item table) is gone.
+    assert "sum-capbar" not in src
+    assert "sum-stagestrip" not in src
+    assert "sum-queue" not in src
+    assert "sum-table" not in src
+
+
+def test_tracker_renders_a_pipeline_board():
+    src = lp_web.FRONTEND_SOURCE
+    # Builds render as a pipeline board of lanes + compact tiles, with a focus
+    # panel for the clicked build, instead of collapsible stage groups.
+    assert 'class="ind-board"' in src
+    assert "_buildTileHtml" in src
+    assert 'class="ind-lane' in src
+    assert "ind-focus" in src
+    # A clicked tile focuses that build; the focus panel reuses the full card.
+    assert "IND.focusedBuild" in src

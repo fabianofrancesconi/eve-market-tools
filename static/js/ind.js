@@ -9,7 +9,8 @@ let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es
            sim:{},   // blueprint_id -> {me,te} what-if override; in-memory only, never persisted
            fillTotal:0, fillDone:0, tradeWeight:50,
            builds:[], buildsLoaded:false, buildsExpanded:new Set(),
-           buildGroups:{},   // stage key -> true when that status group is collapsed
+           focusedBuild:null,   // pipeline board: id of the tile expanded into the focus panel
+           buildGroups:{},   // stage key -> true when that status group is collapsed (legacy prefs; archived still uses it)
            mode:"planner",
            sections:{fav:true, owned:true, hidden:false, all:true, builds:true}};
 // IND.mode is seeded from server prefs by loadSettings (getPref 'ind_mode').
@@ -1224,13 +1225,15 @@ setInterval(()=>{
   document.querySelectorAll(".ind-live-timer[data-end]").forEach(el=>{
     const rem=(+el.dataset.end)-Date.now();
     const isCell=el.classList.contains("timer-cell");
+    const isTile=el.classList.contains("ind-tile-live");   // pipeline board tile
     const inBuildCard=!!el.closest(".ind-build-card");
     if(rem<=0){
       if(isCell){ el.textContent="✓ Ready"; el.classList.add("done"); el.removeAttribute("data-end"); }
+      else if(isTile){ el.textContent="✓ ready"; el.removeAttribute("data-end"); }
       else if(inBuildCard){ el.textContent="ready for delivery"; el.removeAttribute("data-end"); }
       else if(IND.openDetail) renderIndDetail(IND.openDetail);
     } else {
-      el.textContent=isCell?fmtCountdownShort(rem):fmtCountdown(rem);
+      el.textContent=(isCell||isTile)?fmtCountdownShort(rem):fmtCountdown(rem);
     }
   });
   tickCharRefreshTimer();
@@ -1645,18 +1648,29 @@ function _buildBreakEven(b){
   };
 }
 
-// Render the tracked-builds cards. These live in the Tracker view now (below the
-// portfolio dashboard), so only render them while the Tracker is active; the
-// Planner shows a link-across hint instead. Always expanded — no collapse toggle.
-// If the Character overview is the active tab, refresh it too so its 🔗
-// tracked-job markers reflect the current builds.
-// Group order + labels for the tracker. Follows the build lifecycle so the most
-// "needs-your-attention" work (planned/building) sits at the top and finished
-// sales sink to the bottom. Keyed by _buildStage()'s output.
+// Render the tracked builds as a PIPELINE BOARD: one lane per lifecycle stage
+// (planned → building → built → listed → sold), each holding compact tiles that
+// flow top-to-bottom. Clicking a tile expands it into a focus panel below the
+// board — that panel reuses the full card (_buildCardHtml/_wireBuildCard) so
+// every sell / close / edit / compare action stays exactly where it was. The
+// board answers "what's in here?" at a glance; the focus panel answers "what
+// about this one?" on demand. Only rendered while the Tracker is active; the
+// Planner shows a link-across hint instead. If the Character overview is the
+// active tab, refresh it too so its 🔗 tracked-job markers stay in sync.
+//
+// Lane order follows the pipeline left→right so work reads like a flow: the
+// stages that need you (planned/building/built) sit up front, finished sales at
+// the end. Keyed by _buildStage()'s output.
 const _BUILD_GROUP_ORDER=["planned","building","built","listed","sold"];
 const _BUILD_GROUP_LABEL={
   planned:"⚠ Planned", building:"⏳ Building", built:"✓ Built — ready to list",
   listed:"🏷 Listed for sale", sold:"💰 Sold",
+};
+// Terse lane headers for the board — the full labels above are used elsewhere
+// (e.g. the peek). A lane header is a stage name + tile count, nothing more.
+const _LANE_LABEL={
+  planned:"Planned", building:"Building", built:"Built",
+  listed:"Listed", sold:"Sold",
 };
 // A representative timestamp for ordering builds *within* a status group, newest
 // first. Uses the stage-relevant moment (finish/list/sale) when known so the most
@@ -1679,65 +1693,168 @@ function renderIndBuilds(){
   if(box){
     if(IND.mode!=="summary" || !IND.builds.length){
       box.classList.add("hidden"); box.innerHTML="";
+      IND.focusedBuild=null;
     } else {
       box.classList.remove("hidden");
       // Jobs already linked to a build must not be offered as a close match to
       // an awaiting one. Collect the linked ids (as strings) up front.
       const linked=new Set(IND.builds.filter(b=>b.job_id!=null).map(b=>String(b.job_id)));
-      // Archived builds live in their own collapsed section, out of the normal
-      // stage buckets (they still count in the portfolio stats — archive is a
-      // declutter, not a delete).
+      // Archived builds sit in their own collapsed drawer below the board, out
+      // of the lane buckets (they still count in the portfolio stats — archive
+      // is a declutter, not a delete).
       const archived=IND.builds.filter(b=>b.archived);
       const active=IND.builds.filter(b=>!b.archived);
-      // Bucket every build by lifecycle stage, then order each bucket newest-first.
+      // A dropped/deleted build could still be the focused one — forget it so the
+      // panel doesn't try to render a card that no longer exists.
+      if(IND.focusedBuild && !IND.builds.some(b=>b.id===IND.focusedBuild))
+        IND.focusedBuild=null;
+      // Bucket every active build by lifecycle stage.
       const buckets={};
       active.forEach(b=>{ (buckets[_buildStage(b)]||(buckets[_buildStage(b)]=[])).push(b); });
-      let html=`<div class="ind-builds-head static">Tracked builds <span class="chip-count">(${active.length})</span></div>`;
-      for(const key of _BUILD_GROUP_ORDER){
-        const list=buckets[key];
-        if(!list||!list.length) continue;
-        // Building jobs sort by soonest finish first (the next one to complete
-        // leads); every other group stays newest-progress-first.
+
+      // ── Lanes ────────────────────────────────────────────────────────────
+      // One column per stage. An empty lane still shows (as a thin "—" rail) so
+      // the pipeline's shape is constant and a build visibly moves rightward as
+      // it progresses, rather than lanes appearing and vanishing.
+      const laneHtml=_BUILD_GROUP_ORDER.map(key=>{
+        const list=buckets[key]||[];
+        // Building lane: soonest-to-finish leads. Every other: newest progress first.
         if(key==="building") list.sort((a,b)=>_buildFinishTs(a)-_buildFinishTs(b));
         else list.sort((a,b)=>_buildSortTs(b)-_buildSortTs(a));
-        const collapsed=IND.buildGroups[key]===true;
-        const rows=list.map(b=>_buildCardHtml(b, linked)).join("");
-        html+=`<div class="ind-build-group ${key}${collapsed?" collapsed":""}" data-grp="${key}">
-          <div class="ind-build-grp-head" data-grp="${key}">
-            <span class="grp-arrow">▾</span>${_BUILD_GROUP_LABEL[key]||key}
-            <span class="chip-count">(${list.length})</span></div>
-          <div class="ind-builds-list">${rows}</div></div>`;
+        const tiles=list.length
+          ? list.map(b=>_buildTileHtml(b, linked)).join("")
+          : `<div class="ind-lane-empty">—</div>`;
+        return `<section class="ind-lane stage-${key}" data-stage="${key}">
+          <header class="ind-lane-head">
+            <span class="ind-lane-name">${_LANE_LABEL[key]||key}</span>
+            <span class="ind-lane-count">${list.length}</span>
+          </header>
+          <div class="ind-lane-tiles">${tiles}</div>
+        </section>`;
+      }).join("");
+      let html=`<div class="ind-board" role="list">${laneHtml}</div>`;
+
+      // ── Focus panel ──────────────────────────────────────────────────────
+      // The full card for whichever tile is focused, docked under the board.
+      const fb=IND.focusedBuild ? IND.builds.find(b=>b.id===IND.focusedBuild) : null;
+      if(fb){
+        html+=`<div class="ind-focus" data-id="${fb.id}">
+          <div class="ind-focus-head">
+            <span class="ind-focus-lbl">Build detail</span>
+            <button class="ind-focus-close" title="Close (Esc)">✕ Close</button>
+          </div>
+          ${_buildCardHtml(fb, linked)}
+        </div>`;
       }
-      // Archived section — collapsed by default, at the very bottom.
+
+      // ── Archived drawer ──────────────────────────────────────────────────
       if(archived.length){
         archived.sort((a,b)=>_buildSortTs(b)-_buildSortTs(a));
-        // Default collapsed: normalise unset → true so the generic toggle (which
-        // flips the value) opens/closes it consistently with the other groups.
         if(IND.buildGroups.archived===undefined) IND.buildGroups.archived=true;
         const collapsed=IND.buildGroups.archived===true;
-        const rows=archived.map(b=>_buildCardHtml(b, linked)).join("");
-        html+=`<div class="ind-build-group archived${collapsed?" collapsed":""}" data-grp="archived">
-          <div class="ind-build-grp-head" data-grp="archived">
+        const tiles=archived.map(b=>_buildTileHtml(b, linked)).join("");
+        html+=`<div class="ind-archive-drawer${collapsed?" collapsed":""}" data-grp="archived">
+          <div class="ind-archive-head" data-grp="archived">
             <span class="grp-arrow">▾</span>📦 Archived
             <span class="chip-count">(${archived.length})</span></div>
-          <div class="ind-builds-list">${rows}</div></div>`;
+          <div class="ind-archive-tiles">${tiles}</div></div>`;
       }
       box.innerHTML=html;
-      // Collapse/expand a whole status group; the choice is persisted server-side
-      // so every device opens the tracker the same way.
-      box.querySelectorAll(".ind-build-grp-head").forEach(h=>{
-        h.onclick=()=>{
-          const k=h.dataset.grp;
-          IND.buildGroups[k]=!IND.buildGroups[k];
-          setPref('ind.build_groups', IND.buildGroups);
+
+      // Tile click → focus that build (toggle off if it's already focused).
+      box.querySelectorAll(".ind-tile").forEach(tile=>{
+        tile.onclick=ev=>{
+          if(ev.target.closest("button,input,a")) return;
+          const id=tile.dataset.id;
+          IND.focusedBuild = (IND.focusedBuild===id) ? null : id;
+          // The focus panel is the detailed view — open the card's full frozen
+          // breakdown by default when a tile is focused.
+          if(IND.focusedBuild) IND.buildsExpanded.add(IND.focusedBuild);
           renderIndBuilds();
+          if(IND.focusedBuild){
+            const panel=box.querySelector(".ind-focus");
+            if(panel) panel.scrollIntoView({block:"nearest", behavior:"smooth"});
+          }
+        };
+        tile.onkeydown=ev=>{
+          if(ev.key==="Enter"||ev.key===" "){ ev.preventDefault(); tile.click(); }
         };
       });
-      IND.builds.forEach(b=>_wireBuildCard(box, b));
+      // Focus panel: close button + the full card's own wiring.
+      const closeBtn=box.querySelector(".ind-focus-close");
+      if(closeBtn) closeBtn.onclick=()=>{ IND.focusedBuild=null; renderIndBuilds(); };
+      if(IND.focusedBuild){
+        const fbid=IND.focusedBuild;
+        const fbuild=IND.builds.find(b=>b.id===fbid);
+        if(fbuild) _wireBuildCard(box, fbuild);
+      }
+      // Archived drawer collapse toggle (persisted server-side).
+      const ah=box.querySelector(".ind-archive-head");
+      if(ah) ah.onclick=()=>{
+        IND.buildGroups.archived=!IND.buildGroups.archived;
+        setPref('ind.build_groups', IND.buildGroups);
+        renderIndBuilds();
+      };
     }
   }
   // Keep the overview's job 🔗 markers in sync (only when it's showing).
   if(ACTIVE_TAB==="char" && AUTH.data && typeof renderCharData==="function") renderCharData();
+}
+
+// ── Pipeline tile ────────────────────────────────────────────────────────────
+// The compact face of a build in its lane. Shows only what tells you the build's
+// state at a glance: its name, run count, and one stage-appropriate readout —
+// a "start it" nudge (planned), a live countdown + progress bar (building),
+// the ready profit (built), a sold/target progress bar (listed), or the realized
+// profit (sold). Clicking opens the full card in the focus panel below.
+function _buildTileHtml(b, linked){
+  const s=b.snapshot||{}, n=Math.max(1, b.runs||1);
+  const isk=v=>v===null||v===undefined?"—":fmtISK(v);
+  const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
+  const stage=_buildStage(b);
+  const be=_batchEconomics(s, n);
+  const focused=IND.focusedBuild===b.id;
+
+  // The one stage-specific readout line + optional bar.
+  let line="", bar="";
+  if(stage==="planned"){
+    const st=_buildStatus(b);
+    line = st.key==="awaiting"
+      ? `<span class="ind-tile-warn">⚠ Start it in EVE</span>`
+      : `<span class="ind-tile-dim">${st.label}</span>`;
+  } else if(stage==="building"){
+    const end=b.job_end?Date.parse(b.job_end):null;
+    if(end && isFinite(end)){
+      // Progress bar from tracked-at → job end; fraction of the build elapsed.
+      const total=end-((b.created_at||0)*1000);
+      const done=Date.now()-((b.created_at||0)*1000);
+      const pct=(total>0)?Math.max(0,Math.min(100,done/total*100)):0;
+      line=`<span class="ind-tile-live ind-live-timer" data-end="${end}">${fmtCountdownShort(end-Date.now())}</span>`;
+      bar=`<div class="ind-tile-bar"><span class="ind-tile-bar-fill building" style="width:${pct.toFixed(1)}%"></span></div>`;
+    } else {
+      line=`<span class="ind-tile-live">running</span>`;
+    }
+  } else if(stage==="built"){
+    line=`<span class="ind-tile-dim">ready ·</span> <b class="${pn(be.profitL)}">${isk(be.profitL)}</b>`;
+  } else if(stage==="listed"){
+    const rz=_buildRealized(b);
+    const target=(b.sell||{}).qty_target||_buildUnits(b)||0;
+    const pct=target>0?Math.min(100,rz.units/target*100):0;
+    line=`<span class="ind-tile-dim">${rz.units.toLocaleString()} / ${target.toLocaleString()} sold</span>`;
+    bar=`<div class="ind-tile-bar"><span class="ind-tile-bar-fill listed" style="width:${pct.toFixed(1)}%"></span></div>`;
+  } else { // sold
+    const rz=_buildRealized(b);
+    const early=(b.sell||{}).closed_early;
+    line=`<span class="ind-tile-dim">${early?"closed":"sold"} ·</span> <b class="${pn(rz.profit)}">${isk(rz.profit)}</b>`;
+  }
+
+  return `<div class="ind-tile stage-${stage}${focused?" focused":""}" role="listitem"
+      tabindex="0" data-id="${b.id}" title="${(b.product_name||"").replace(/"/g,'&quot;')} — click for full detail">
+    <div class="ind-tile-name">${b.product_name||"?"}</div>
+    <div class="ind-tile-runs">${n.toLocaleString()} run${n===1?"":"s"}</div>
+    <div class="ind-tile-line">${line}</div>
+    ${bar}
+  </div>`;
 }
 
 // Expand a tracked build's detailed view and scroll to it. Used when arriving
@@ -1746,14 +1863,20 @@ function renderIndBuilds(){
 function openTrackedBuild(id){
   const b=IND.builds.find(x=>x.id===id);
   if(!b) return;
+  // Focus its tile so the full card opens in the panel below the board. An
+  // archived build's tile lives in the (default-collapsed) drawer — open it so
+  // the tile we're about to scroll to is visible.
+  IND.focusedBuild=id;
   IND.buildsExpanded.add(id);
-  // The card lives inside its status group — make sure that group is expanded,
-  // or the card we're about to scroll to would be hidden.
-  IND.buildGroups[_buildStage(b)]=false;
+  if(b.archived) IND.buildGroups.archived=false;
   if(IND.mode!=="summary") indSetMode("summary"); else renderIndBuilds();
   const box=$("#ind-builds");
-  const card=box&&box.querySelector(`.ind-build-card[data-id="${CSS.escape(id)}"]`);
-  if(card) card.scrollIntoView({block:"center", behavior:"smooth"});
+  const panel=box&&box.querySelector(".ind-focus");
+  if(panel) panel.scrollIntoView({block:"center", behavior:"smooth"});
+  else {
+    const tile=box&&box.querySelector(`.ind-tile[data-id="${CSS.escape(id)}"]`);
+    if(tile) tile.scrollIntoView({block:"center", behavior:"smooth"});
+  }
 }
 
 // Batch economics for a detail blob `d` at run count `n`, applying EVE's

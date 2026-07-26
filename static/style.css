@@ -1052,47 +1052,68 @@
     background:var(--panel); border:1px solid var(--line2); border-radius:5px; color:var(--cyan); }
   .ind-copy:hover, .ind-own:hover, .ind-pull-prices:hover { border-color:var(--cyan2); }
   .ind-pull-prices.on { color:#5fb85f; border-color:#5fb85f; }
-  /* ── Hero: the batch verdict ──────────────────────────────────────────────
-     The single element the panel is remembered by — cost → revenue = profit,
-     read as an equation, with a left rail whose colour IS the verdict. Boldness
-     is spent here; everything below stays quiet. */
-  .ind-d-hero { position:relative; background:
-      linear-gradient(180deg, color-mix(in srgb, var(--panel2) 82%, transparent), var(--panel));
-    border:1px solid var(--line2); border-radius:9px; padding:16px 20px 13px;
-    margin-bottom:16px; overflow:hidden; }
-  .ind-d-hero::before { content:""; position:absolute; left:0; top:0; bottom:0; width:4px;
-    background:var(--dim); }
-  .ind-d-hero.pos::before { background:var(--green2); }
-  .ind-d-hero.neg::before { background:var(--red); }
-  .ind-d-hero.pos { box-shadow:inset 0 0 44px -30px var(--green2); }
-  .ind-d-hero.neg { box-shadow:inset 0 0 44px -30px var(--red); }
-  .ind-d-hero-flow { display:flex; align-items:center; gap:20px; flex-wrap:wrap; }
-  .ind-d-hero-cell { min-width:0; }
-  .ind-d-hero-k { font-size:10.5px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.7px; color:var(--dim); margin-bottom:3px;
-    display:flex; align-items:center; gap:7px; }
-  .ind-d-hero-v { font-family:"IBM Plex Mono",monospace; font-size:20px; font-weight:600;
-    color:var(--fg); font-variant-numeric:tabular-nums; letter-spacing:-.3px; }
-  .ind-d-hero-op { font-family:"IBM Plex Mono",monospace; font-size:18px; color:var(--dim2);
-    font-weight:400; align-self:center; margin-top:14px; }
-  .ind-d-hero-profit .ind-d-hero-v { font-size:27px; font-weight:600; }
-  .ind-d-hero-v.pos { color:var(--green2); } .ind-d-hero-v.neg { color:var(--red); }
-  .ind-d-hero-tag { font-size:9.5px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.5px; padding:1px 7px; border-radius:20px; }
-  .ind-d-hero-tag.pos { color:var(--green2); background:color-mix(in srgb, var(--green2) 16%, transparent); }
-  .ind-d-hero-tag.neg { color:var(--red); background:color-mix(in srgb, var(--red) 16%, transparent); }
-  .ind-d-hero-tag.na { color:var(--dim); background:var(--panel3); }
-  .ind-d-hero-foot { display:flex; gap:26px; flex-wrap:wrap; margin-top:13px;
-    padding-top:11px; border-top:1px solid var(--line); font-size:12px; color:var(--dim); }
-  .ind-d-hero-foot b { font-family:"IBM Plex Mono",monospace; color:var(--fg); font-weight:600;
+  /* ── Build ledger: the signature ──────────────────────────────────────────
+     An accounting waterfall for the batch — gross sale at the top, every fee and
+     build cost subtracted line by line, landing on net profit as the bottom
+     line. It reads straight down in the order ISK moves, so there's no left/right
+     hunting; composition (where the ISK goes) is what a lone number can't show.
+     Boldness lives here — everything below is a quiet spec strip. */
+  .ind-led { border:1px solid var(--line2); border-radius:9px; overflow:hidden;
+    margin-bottom:16px; background:var(--panel); }
+  .ind-led.pos { box-shadow:inset 3px 0 0 var(--green2); }
+  .ind-led.neg { box-shadow:inset 3px 0 0 var(--red); }
+  .ind-led.na { box-shadow:inset 3px 0 0 var(--dim2); }
+  .ind-led-head { display:flex; align-items:baseline; gap:10px; padding:10px 16px 9px;
+    background:var(--panel2); border-bottom:1px solid var(--line2); flex-wrap:wrap; }
+  .ind-led-title { font-size:10.5px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.9px; color:var(--cyan); }
+  .ind-led-scope { font-family:"IBM Plex Mono",monospace; font-size:11.5px;
+    color:var(--dim); margin-right:auto; }
+  .ind-led-verdict { font-size:9.5px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.5px; padding:2px 9px; border-radius:20px; }
+  .ind-led-verdict.pos { color:var(--green2); background:color-mix(in srgb, var(--green2) 15%, transparent); }
+  .ind-led-verdict.neg { color:var(--red); background:color-mix(in srgb, var(--red) 15%, transparent); }
+  .ind-led-verdict.na { color:var(--dim); background:var(--panel3); }
+  .ind-led-body { padding:8px 16px 10px; }
+  /* One ledger line: label · plain-language qualifier · signed amount, columns
+     aligned so the ISK forms a single right rail you can scan straight down. */
+  .ind-led-row { display:grid; grid-template-columns:minmax(120px,auto) 1fr auto;
+    align-items:baseline; gap:12px; padding:3.5px 0; }
+  .ind-led-k { font-size:13px; color:var(--fg); }
+  .ind-led-n { font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--dim);
+    text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ind-led-a { font-family:"IBM Plex Mono",monospace; font-size:14px; font-weight:600;
+    color:var(--fg); font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
+  .ind-led-a.pos { color:var(--green2); } .ind-led-a.neg { color:var(--red); }
+  /* Fees are subtractions the eye should skim past — dim them so materials/job
+     (the costs you can actually act on) stay legible. */
+  .ind-led-a.dim { color:var(--dim); font-weight:400; }
+  .ind-led-rule { height:1px; background:var(--line2); margin:6px 0; }
+  .ind-led-rule.strong { background:var(--line); height:2px; margin:8px 0 4px; }
+  .ind-led-row.net { padding:4px 0 2px; }
+  .ind-led-row.net .ind-led-k { font-size:14px; font-weight:700; }
+  .ind-led-row.net .ind-led-a { font-size:20px; letter-spacing:-.3px; }
+  .ind-led-foot { display:flex; gap:24px; flex-wrap:wrap; padding:9px 16px;
+    background:var(--panel2); border-top:1px solid var(--line2);
+    font-size:11.5px; color:var(--dim); }
+  .ind-led-foot b { font-family:"IBM Plex Mono",monospace; color:var(--fg); font-weight:600;
     margin-left:5px; font-variant-numeric:tabular-nums; }
-  .ind-d-hero-foot b.pos { color:var(--green2); } .ind-d-hero-foot b.neg { color:var(--red); }
-  /* Body splits the stats grid (left) from the crafting timer (right) so the
-     wide empty space beside the two-column grid is put to use. Wraps on narrow. */
-  .ind-d-body { display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap;
-    margin-bottom:12px; }
-  /* Note editor — full-width row at the top of the detail body, autosaves. */
-  .ind-d-note { flex:1 1 100%; display:flex; align-items:flex-start; gap:8px; }
+  .ind-led-foot b.pos { color:var(--green2); } .ind-led-foot b.neg { color:var(--red); }
+  .ind-led-foot b.warn { color:var(--gold); }
+  .ind-led-foot i { font-style:normal; color:var(--dim2); margin-left:3px; }
+  /* Body is a single top-to-bottom column now (ledger → note → timer → specs →
+     skills → materials): no more left/right split to hunt across. */
+  .ind-d-body { display:flex; flex-direction:column; gap:14px; margin-bottom:14px; }
+  /* Two quiet spec columns — reference facts, deliberately understated so the
+     ledger stays the one loud thing. They sit side by side but each is a plain
+     key/value list, not a card the eye has to bounce between. */
+  .ind-d-specs { display:grid; grid-template-columns:1fr 1fr; gap:14px 32px; }
+  @media(max-width:640px){ .ind-d-specs { grid-template-columns:1fr; } }
+  .ind-spec-col { min-width:0; }
+  .ind-spec-col .ind-d-grid { max-width:none; margin-top:4px; }
+  .ind-spec-note { color:var(--dim); font-size:11px; margin-left:4px; }
+  /* Note editor — a row within the single body column, autosaves. */
+  .ind-d-note { display:flex; align-items:flex-start; gap:8px; }
   .ind-d-note-lbl { font-size:11px; font-weight:700; text-transform:uppercase;
     letter-spacing:.05em; color:var(--dim); padding-top:5px; white-space:nowrap; }
   .ind-d-note-box { flex:1 1 auto; resize:vertical; min-height:34px; font:inherit;
@@ -1103,29 +1124,10 @@
     display:grid; grid-template-columns:auto auto; gap:3px 18px;
     font-size:12.5px; max-width:560px;
   }
-  /* Missing-skills warning is its own full-width band so it never wedges between
-     the stats grid and the craft/resell cards (which would force those to wrap
-     to a new row and strand empty space beside the grid). */
-  .ind-d-skillbox { flex:1 1 100%; order:3; }
-  .ind-d-side { flex:2 1 480px; min-width:320px; display:flex; flex-direction:column; gap:4px; }
-  .ind-d-section { display:flex; flex-direction:column; gap:8px; }
+  /* Timer card — a slim strip in the single body column; the countdown/ETA of
+     any manufacturing job already running for this blueprint. */
   .ind-d-timer-card { background:var(--panel); border:1px solid var(--line2);
     border-radius:6px; padding:10px 12px; }
-  .ind-d-cards { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
-  .ind-d-card { background:var(--panel); border:1px solid var(--line2);
-    border-radius:6px; padding:8px 10px; font-size:12.5px; }
-  .ind-d-card-label { color:var(--dim); font-size:10.5px; font-weight:700;
-    text-transform:uppercase; letter-spacing:.6px; margin-bottom:3px; }
-  .ind-d-card-val { font-family:"IBM Plex Mono",monospace; font-size:15.5px; font-weight:600;
-    color:var(--fg); font-variant-numeric:tabular-nums; }
-  .ind-d-card-val.pos { color:var(--green2,#4caf76); }
-  .ind-d-card-val.neg { color:var(--red); }
-  .ind-d-card-sub { color:var(--dim); font-size:11.5px; margin-top:1px; }
-  .ind-d-card-sub.ind-d-card-warn { color:var(--gold); font-weight:600; }
-  .ind-d-card-grid { display:grid; grid-template-columns:auto auto; gap:2px 10px; }
-  .ind-d-card-grid span { color:var(--dim); }
-  .ind-d-card-grid b { text-align:right; color:var(--fg); font-weight:600;
-    font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; }
   .ind-d-grid span { color:var(--dim); }
   .ind-d-grid b { text-align:right; color:var(--fg);
     font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; }

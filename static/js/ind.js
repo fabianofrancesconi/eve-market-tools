@@ -903,14 +903,37 @@ function renderIndDetail(d, container){
       <table class="ind-d-mats"><thead><tr><th>Datacore</th><th class="num">Qty</th>
         <th class="num">Unit</th><th class="num">Line</th></tr></thead><tbody>${dcs}</tbody></table>`;
   }
-  // ── Batch verdict (hero) ──────────────────────────────────────────────
-  // The one thing this panel exists to answer: at N runs, is it worth building
-  // and how much does it make? List (patient) sell is the headline; instant and
-  // build time ride alongside. Margin is profit ÷ build cost.
+  // ── Build ledger (signature) ──────────────────────────────────────────────
+  // The panel's one memorable element: a single-column accounting waterfall for
+  // the whole batch. Gross sale, minus the fees to sell it, minus every build
+  // cost, landing on profit — read top-to-bottom in the order ISK moves, so
+  // there's no left/right hunting between a stats grid and a wall of cards. The
+  // composition (where the ISK goes) is the value a lone profit number can't add.
   const marginL=(batchProfitL!=null && batchCost)?batchProfitL/batchCost:null;
-  const heroVerdict=batchProfitL==null?{txt:"No market price",cls:"na"}
+  const verdict=batchProfitL==null?{txt:"No market price",cls:"na"}
     : batchProfitL>0?{txt:"Profitable",cls:"pos"}
     : batchProfitL<0?{txt:"Loss-making",cls:"neg"}:{txt:"Break-even",cls:"na"};
+  // Gross list revenue before fees (revenue_patient already nets broker + tax).
+  const grossL=(d.ask!=null)? qtyBatchTot*d.ask : null;
+  // Signed ISK for a ledger line: "+1.2M" / "−800K". The sign is explicit so the
+  // waterfall reads as additions and subtractions, not a column of bare numbers.
+  const sIsk=(v,sign)=> v==null?"—":(sign||"")+fmtISK(Math.abs(v));
+  const netStr=batchProfitL==null?"—"
+    :(batchProfitL>0?"+":batchProfitL<0?"−":"")+fmtISK(Math.abs(batchProfitL));
+  const instStr=batchProfitI==null?"—"
+    :(batchProfitI>0?"+":batchProfitI<0?"−":"")+fmtISK(Math.abs(batchProfitI));
+  // One ledger line: what it is · a plain-language qualifier · the signed amount.
+  const led=(k,note,amount,cls)=>
+    `<div class="ind-led-row"><span class="ind-led-k">${k}</span>`
+    +`<span class="ind-led-n">${note||""}</span>`
+    +`<b class="ind-led-a ${cls||""}">${amount}</b></div>`;
+  const tradeStr=d.tradeability==null?"—"
+    :`${d.tradeability} / 100${d.daily_units!=null?` · ${fmtNum(d.daily_units)}/day`:""}`;
+  const ownStr=d.owned_me_te
+      ? `<span class="ind-yours">✓ You own this blueprint${isBpo?" (Original — infinite runs)":" (Copy)"}</span>`
+      : (d.other_owners&&d.other_owners.length
+        ? `<span class="ind-alt-owns">✓ Owned by ${d.other_owners.map(o=>`${o.name} (${o.is_bpo?"BPO":"BPC"}${o.is_bpo?"":", "+o.max_runs+" runs"} · ME ${o.me} / TE ${o.te})`).join(", ")}</span>`
+        : `<span class="ind-not-yours">✗ Not in your blueprints</span>`);
   box.innerHTML=`
     <div class="ind-d-head">
       <span class="ind-d-title">${tier?`<span class="ind-d-tier">${tier}</span>`:""}<b>${d.product.name}</b></span>
@@ -927,35 +950,6 @@ function renderIndDetail(d, container){
       <span class="ind-d-maxwrap">${maxIskRuns!=null?`<button class="ind-d-max-isk" title="Set runs to the most this batch's wallet can afford — materials + job install + broker fee + sales tax at the suggested list price (${isk(costPerRun)}/run against ${isk(walletBal)} in ${maxWho}'s wallet)">💰 Max wallet (${fmtNum(maxIskRuns)})</button>`:""}<span class="ind-d-cargo-box" title="Set runs to the most whose input materials fit this cargo hold. Your m³ is saved across sessions."><span class="ind-d-cargo-ico">📦</span><input class="ind-d-cargo-cap" type="text" inputmode="decimal" placeholder="m³" value="${cargoCap!=null?cargoCap:""}"><button class="ind-d-max-cargo"${inVolRun>0?"":" disabled"}>Max cargo${(()=>{const r=maxCargoRuns(cargoCap);return r!=null?` (${fmtNum(r)})`:"";})()}</button></span></span>
       <span class="ind-d-source" title="Trade hub these prices come from">${d.station_name}</span>
     </div>
-    <div class="ind-d-hero ${heroVerdict.cls}">
-      <div class="ind-d-hero-flow">
-        <div class="ind-d-hero-cell">
-          <div class="ind-d-hero-k">Build cost</div>
-          <div class="ind-d-hero-v">${isk(batchCost)}</div>
-        </div>
-        <div class="ind-d-hero-op">→</div>
-        <div class="ind-d-hero-cell">
-          <div class="ind-d-hero-k">Revenue · list</div>
-          <div class="ind-d-hero-v">${isk(batchRevL)}</div>
-        </div>
-        <div class="ind-d-hero-op">=</div>
-        <div class="ind-d-hero-cell ind-d-hero-profit">
-          <div class="ind-d-hero-k">Profit · ${n.toLocaleString()} run${n===1?"":"s"} <span class="ind-d-hero-tag ${heroVerdict.cls}">${heroVerdict.txt}</span></div>
-          <div class="ind-d-hero-v ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
-        </div>
-      </div>
-      <div class="ind-d-hero-foot">
-        <span>Margin <b class="${pn(marginL)}">${marginL==null?"—":(marginL*100).toFixed(1)+"%"}</b></span>
-        <span>Instant sell <b class="${pn(batchProfitI)}">${isk(batchProfitI)}</b></span>
-        <span>Build time <b>${fmtDur(batchTime)}</b></span>
-        <span>Per unit · list <b>${isk(d.ask)}</b></span>
-      </div>
-    </div>
-    <div class="ind-d-body">
-    <div class="ind-d-note">
-      <label class="ind-d-note-lbl">📝 Note</label>
-      <textarea class="ind-d-note-box" rows="2" placeholder="Add a note for this blueprint…">${(indNote(d.blueprint_id)||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}</textarea>
-    </div>
     ${researchHtml}
     ${esiOwned && !isBpo ? `<div class="ind-bpc-warn">
       ⚠ You only have a <b>Blueprint Copy</b> with <b>${bpcRuns} run${bpcRuns===1?"":"s"}</b> remaining — it will be consumed.
@@ -963,30 +957,58 @@ function renderIndDetail(d, container){
         ? `<span class="ind-bpc-buy">Buy permanent BPO: ${isk(d.bp_market.price)} at ${d.bp_market.station} (${fmtNum(d.bp_market.orders)} on sale in ${d.bp_market.region})</span>`
         : `<span class="ind-bpc-buy">No BPO on the market in ${d.region_name}. <button class="ind-bpo-expand" data-bp="${d.blueprint_id}">Search other regions</button></span>`}
     </div>` : ""}
-    <div class="ind-d-grid">
-      <div class="ind-d-sub">Per unit (sell price)</div>
-      <span>Sell @ ask — list</span><b>${isk(d.ask)}</b>
-      <span>Sell @ bid — instant</span><b>${isk(d.bid)}</b>
-
-      <div class="ind-d-sub">Per run — ${fmtNum(d.product.quantity)}× ${d.product.name}</div>
-      <span>Material cost</span><b>${isk(d.material_cost)}</b>
-      <span>Job install (EIV ${isk(d.eiv)} × ${(d.job_rate*100).toFixed(1)}%)</span><b>${isk(d.job_cost)}</b>
-      ${d.invention?`<span>Invention cost</span><b>${isk(d.invention_cost)}</b>`:""}
-      <span>Total cost</span><b>${isk(d.total_cost)}</b>
-      <span>Profit — list</span><b class="${pn(d.profit_patient)}">${isk(d.profit_patient)}</b>
-      <span>Profit — instant</span><b class="${pn(d.profit_instant)}">${isk(d.profit_instant)}</b>
-      <span>Build time</span><b>${fmtDur(d.build_time)}</b>
-
-      <div class="ind-d-sub">Blueprint &amp; market</div>
-      <span>Blueprint</span><b class="bp-buy">${bpSrc}</b>
-      <span>ME / TE used</span><b class="ind-sim-cell">${meTeHtml}</b>
-      <span>Ownership</span><b>${d.owned_me_te
-          ? `<span class="ind-yours">✓ You own this blueprint${isBpo?" (Original — infinite runs)":" (Copy)"}</span>`
-          : (d.other_owners&&d.other_owners.length
-            ? `<span class="ind-alt-owns">✓ Owned by ${d.other_owners.map(o=>`${o.name} (${o.is_bpo?"BPO":"BPC"}${o.is_bpo?"":", "+o.max_runs+" runs"} · ME ${o.me} / TE ${o.te})`).join(", ")}</span>`
-            : `<span class="ind-not-yours">✗ Not in your blueprints</span>`)}</b>
-      <span>Blueprint payback</span><b>${payback}</b>
-      <span>Tradeability</span><b>${d.tradeability==null?"—":d.tradeability+" / 100"}${d.daily_units!=null?` (${fmtNum(d.daily_units)} units/day)`:""}</b>
+    <div class="ind-d-body">
+    <div class="ind-led ${verdict.cls}">
+      <div class="ind-led-head">
+        <span class="ind-led-title">Build ledger</span>
+        <span class="ind-led-scope">${n.toLocaleString()} run${n===1?"":"s"} → ${fmtNum(qtyBatchTot)}× ${d.product.name}</span>
+        <span class="ind-led-verdict ${verdict.cls}">${verdict.txt}</span>
+      </div>
+      <div class="ind-led-body">
+        ${led("Sale — list", `${fmtNum(qtyBatchTot)} @ ${isk(d.ask)} ask`, sIsk(grossL,"+"), "pos")}
+        ${led("Broker fee", fmtPct1(d.broker_fee), sIsk(brokerIsk,"−"), "neg dim")}
+        ${led("Sales tax", fmtPct1(d.sales_tax), sIsk(taxListIsk,"−"), "neg dim")}
+        <div class="ind-led-rule"></div>
+        ${led("Materials", `${d.required_items.length} item${d.required_items.length===1?"":"s"}`, sIsk(matTotCost,"−"), "neg")}
+        ${led("Job install", `EIV ${isk(d.eiv)} × ${(d.job_rate*100).toFixed(1)}%`, sIsk(jobCostBatch,"−"), "neg")}
+        ${d.invention?led("Invention", `${(d.invention.probability*100).toFixed(1)}% success`, sIsk(inventionCostBatch,"−"), "neg"):""}
+        <div class="ind-led-rule strong"></div>
+        <div class="ind-led-row net">
+          <span class="ind-led-k">Net profit — list</span>
+          <span class="ind-led-n">margin ${marginL==null?"—":(marginL*100).toFixed(1)+"%"}</span>
+          <b class="ind-led-a ${pn(batchProfitL)}">${netStr}</b>
+        </div>
+      </div>
+      <div class="ind-led-foot">
+        <span>Sell instant <b class="${pn(batchProfitI)}">${instStr}</b> <i>@ ${isk(d.bid)} bid</i></span>
+        <span>Build time <b>${fmtDur(batchTime)}</b></span>
+        ${minPriceList!=null?`<span>Break-even <b class="warn">${isk(minPriceList)}</b> <i>/unit</i></span>`:`<span>Per unit <b>${isk(d.ask)}</b> <i>ask</i></span>`}
+      </div>
+    </div>
+    <div class="ind-d-note">
+      <label class="ind-d-note-lbl">📝 Note</label>
+      <textarea class="ind-d-note-box" rows="2" placeholder="Add a note for this blueprint…">${(indNote(d.blueprint_id)||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}</textarea>
+    </div>
+    <div class="ind-d-timer-card">${timerHtml}</div>
+    <div class="ind-d-specs">
+      <div class="ind-spec-col">
+        <div class="ind-d-sub">Blueprint</div>
+        <div class="ind-d-grid">
+          <span>Source</span><b class="bp-buy">${bpSrc}</b>
+          <span>ME / TE used</span><b class="ind-sim-cell">${meTeHtml}</b>
+          <span>Ownership</span><b>${ownStr}</b>
+          <span>Payback</span><b>${payback}</b>
+          <span>Tradeability</span><b>${tradeStr}</b>
+        </div>
+      </div>
+      <div class="ind-spec-col">
+        <div class="ind-d-sub">Logistics — ${n.toLocaleString()} run${n===1?"":"s"}</div>
+        <div class="ind-d-grid">
+          <span>Cargo in</span><b>${inputBatch?fmtVol(inputBatch):"—"}</b>
+          <span>Cargo out</span><b>${outputBatch?fmtVol(outputBatch):"—"}</b>
+          <span title="Cumulative runs delivered for this item since the app started watching. Log in with EVE to track.">Runs delivered</span><b>${prodTrack?`${prodTrack.runs.toLocaleString()} <span class="ind-spec-note">${prodTrack.jobs.toLocaleString()} job${prodTrack.jobs===1?"":"s"}</span>`:(AUTH.loggedIn?"0":"—")}</b>
+        </div>
+      </div>
     </div>
     ${d.missing_skills&&d.missing_skills.length?`
     <div class="ind-d-skillbox">
@@ -994,69 +1016,6 @@ function renderIndDetail(d, container){
     <table class="ind-d-mats ind-d-skills"><thead><tr><th>Skill</th><th class="num">Have</th><th class="num">Need</th><th class="num">Train time</th></tr></thead><tbody>${d.missing_skills.map(s=>`<tr><td>${s.name}${s.prereq?' <span class="ind-prereq">(prereq)</span>':''}</td><td class="num">${s.current}</td><td class="num">${s.required}</td><td class="num">${s.train_hours<1?(Math.round(s.train_hours*60)+"m"):(s.train_hours<24?s.train_hours.toFixed(1)+"h":(s.train_hours/24).toFixed(1)+"d")}</td></tr>`).join("")}</tbody>
     <tfoot><tr class="ind-d-total"><td>Total training</td><td></td><td></td><td class="num">${(()=>{const h=d.missing_skills.reduce((s,sk)=>s+sk.train_hours,0);return h<1?(Math.round(h*60)+"m"):(h<24?h.toFixed(1)+"h":(h/24).toFixed(1)+"d");})()}</td></tr></tfoot></table>
     </div>`:""}
-    <aside class="ind-d-side">
-      <div class="ind-d-section">
-        <div class="ind-d-sub">Craft</div>
-        <div class="ind-d-timer-card">${timerHtml}</div>
-        <div class="ind-d-cards">
-          <div class="ind-d-card">
-            <div class="ind-d-card-label">Job duration</div>
-            <div class="ind-d-card-val">${fmtDur(batchTime)}</div>
-            <div class="ind-d-card-sub">${n.toLocaleString()} run(s)</div>
-          </div>
-          <div class="ind-d-card">
-            <div class="ind-d-card-label">Build cost</div>
-            <div class="ind-d-card-val">${isk(batchCost)}</div>
-            <div class="ind-d-card-sub">mats ${isk(matTotCost)} + job ${isk(jobCostBatch)}${d.invention?` + invent ${isk(inventionCostBatch)}`:""}</div>
-          </div>
-          <div class="ind-d-card" data-tip="Job installation fee charged by the station/structure when you start the manufacturing job. Calculated as EIV × job cost % (system index × bonuses + facility tax + SCC surcharge).">
-            <div class="ind-d-card-label">Job install fee</div>
-            <div class="ind-d-card-val">${isk(jobCostBatch)}</div>
-            <div class="ind-d-card-sub">EIV ${isk(d.eiv)} × ${(d.job_rate*100).toFixed(2)}% × ${n.toLocaleString()} run(s)</div>
-          </div>
-          <div class="ind-d-card">
-            <div class="ind-d-card-label">Cargo in</div>
-            <div class="ind-d-card-val">${inputBatch?fmtVol(inputBatch):"—"}</div>
-            <div class="ind-d-card-sub">${n.toLocaleString()} run(s)</div>
-          </div>
-          <div class="ind-d-card" data-tip="Cumulative runs you've delivered for this item, tracked since the app started watching — it can't see deliveries from before that. Log in with EVE to track.">
-            <div class="ind-d-card-label">Runs delivered</div>
-            <div class="ind-d-card-val">${prodTrack?prodTrack.runs.toLocaleString():(AUTH.loggedIn?"0":"—")}</div>
-            <div class="ind-d-card-sub">${prodTrack?prodTrack.jobs.toLocaleString()+" job(s)":(AUTH.loggedIn?"none yet":"log in to track")}</div>
-          </div>
-        </div>
-      </div>
-      <div class="ind-d-section">
-        <div class="ind-d-sub">Resell</div>
-        <div class="ind-d-cards">
-          <div class="ind-d-card">
-            <div class="ind-d-card-label">Profit — instant</div>
-            <div class="ind-d-card-val ${pn(batchProfitI)}">${isk(batchProfitI)}</div>
-            <div class="ind-d-card-sub">${qtyBatchTot.toLocaleString()}× @ bid ${isk(d.bid)} − tax ${fmtPct1(d.sales_tax)} − cost ${isk(batchCost)} = ${isk(batchProfitI)}</div>
-            ${minPriceInstant!=null?`<div class="ind-d-card-sub ind-d-card-warn">Break-even sell: ${isk(minPriceInstant)}/unit</div>`:""}
-          </div>
-          <div class="ind-d-card">
-            <div class="ind-d-card-label">Profit — sell (list)</div>
-            <div class="ind-d-card-val ${pn(batchProfitL)}">${isk(batchProfitL)}</div>
-            <div class="ind-d-card-sub">${qtyBatchTot.toLocaleString()}× @ ask ${isk(d.ask)} − tax ${fmtPct1(d.sales_tax)} − broker ${fmtPct1(d.broker_fee)} − cost ${isk(batchCost)} = ${isk(batchProfitL)}</div>
-            ${minPriceList!=null?`<div class="ind-d-card-sub ind-d-card-warn">Break-even sell: ${isk(minPriceList)}/unit</div>`:""}
-          </div>
-          <div class="ind-d-card">
-            <div class="ind-d-card-label">Fees &amp; taxes</div>
-            <div class="ind-d-card-grid">
-              <span>Broker fee (list)</span><b>${isk(brokerIsk)}</b>
-              <span>Sales tax (list)</span><b>${isk(taxListIsk)}</b>
-              <span>Sales tax (instant)</span><b>${isk(taxInstantIsk)}</b>
-            </div>
-          </div>
-          <div class="ind-d-card">
-            <div class="ind-d-card-label">Cargo out</div>
-            <div class="ind-d-card-val">${outputBatch?fmtVol(outputBatch):"—"}</div>
-            <div class="ind-d-card-sub">batch of ${n.toLocaleString()} run(s)</div>
-          </div>
-        </div>
-      </div>
-    </aside>
     </div>
     <div class="ind-d-sub">Materials to buy — ${n.toLocaleString()} run(s)</div>
     <table class="ind-d-mats"><thead><tr><th>Material</th><th class="num">Qty needed</th>

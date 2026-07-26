@@ -944,10 +944,11 @@ function renderIndDetail(d, container){
         <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
         ${(()=>{
           // Persistent "already tracking" state: most players own one blueprint,
-          // so a build for it should read as already-tracked on reopen — not a
-          // fresh "＋ Track" every time. Only active builds count (a Sold one is
-          // history, not something you're still tracking).
-          const active=IND.builds.filter(b=>b.blueprint_id===d.blueprint_id && _buildStage(b)!=="sold");
+          // so an in-progress build for it should read as already-tracked on
+          // reopen — not a fresh "＋ Track" every time. Only builds still on the
+          // blueprint count (planned/building); once built, listed or sold the
+          // blueprint is free again, so the button reverts to "＋ Track".
+          const active=IND.builds.filter(b=>b.blueprint_id===d.blueprint_id && _isInProgressStage(_buildStage(b)));
           if(active.length){
             const runsList=active.map(b=>Math.max(1,b.runs||1));
             const stg=_STAGE_LABEL[_buildStage(active[0])]||"tracked";
@@ -1255,15 +1256,16 @@ setInterval(()=>{
 // build never jumps straight to done.
 
 // Guard against tracking the same blueprint twice. The premise is one blueprint
-// per player, so ANY active build of it (planned, building, built or listed —
-// anything not yet sold-and-closed) is treated as an existing track the user
-// should be warned about up front. A Sold build is history, not a live clash.
-// An exact match (same blueprint AND run count) is the hard warning; a different
-// run count is the softer "already tracking this, separate batch?" nudge.
-// Returns true if the user chose to go ahead (or there was no clash).
+// per player, so a build that is still *in progress* (planned or building) is
+// treated as an existing track the user should be warned about up front. Once
+// the batch is built (delivered), listed or sold it no longer occupies the
+// blueprint — the player can start a fresh batch — so those stages are not a
+// clash. An exact match (same blueprint AND run count) is the hard warning; a
+// different run count is the softer "already tracking this, separate batch?"
+// nudge. Returns true if the user chose to go ahead (or there was no clash).
 function _confirmTrackNotDuplicate(d, runs){
   const bp=d.blueprint_id, name=(d.product||{}).name||"this blueprint";
-  const active=IND.builds.filter(b=>b.blueprint_id===bp && _buildStage(b)!=="sold");
+  const active=IND.builds.filter(b=>b.blueprint_id===bp && _isInProgressStage(_buildStage(b)));
   if(!active.length) return true;
   const stageOf=b=>(_STAGE_LABEL[_buildStage(b)]||"tracked").toLowerCase();
   const exact=active.find(b=>Math.max(1,b.runs||1)===runs);
@@ -1605,6 +1607,10 @@ function _buildBadge(b, stage){
 // building and a delivered one falls back to "built".
 const _BUILD_STAGES=["planned","building","built","listed","sold"];
 const _STAGE_LABEL={planned:"Planned",building:"Building",built:"Built",listed:"Listed",sold:"Sold"};
+// A build is "in progress" only while it still occupies the blueprint — planned
+// or building. Once it's built (delivered), listed or sold the blueprint is free
+// for a new batch, so those stages don't count as a duplicate-tracking clash.
+function _isInProgressStage(stage){ return stage==="planned" || stage==="building"; }
 function _buildStage(b){
   // Not yet delivered → the live-job view (client-authoritative) decides.
   if(!b.done_at){

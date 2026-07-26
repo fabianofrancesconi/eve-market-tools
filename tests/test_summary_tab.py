@@ -65,11 +65,14 @@ def test_track_guards_against_duplicate_builds():
     src = lp_web.FRONTEND_SOURCE
     # trackThisBuild runs a duplicate guard before saving: exact (same bp + runs)
     # is a hard warning, same bp / different runs is a softer nudge. The premise is
-    # one blueprint per player, so ANY active (not-yet-sold) build counts as a clash.
+    # one blueprint per player, so a build still ON the blueprint (planned/building)
+    # counts as a clash — but a built/listed/sold batch frees the blueprint, so it
+    # does NOT block tracking a fresh one.
     assert "_confirmTrackNotDuplicate" in src
     guard = src.index("function _confirmTrackNotDuplicate")
     body = src[guard:src.index("function trackThisBuild", guard)]
-    assert '_buildStage(b)!=="sold"' in body   # any active build, not just planned
+    assert "_isInProgressStage(_buildStage(b))" in body   # only planned/building clash
+    assert 'stage==="planned" || stage==="building"' in src  # in-progress definition
     assert "⚠ Already tracking" in body        # hard, near-error warning (exact runs)
     assert "may be double-tracking" in body     # soft nudge (different run count)
     # trackThisBuild bails out when the guard is declined.

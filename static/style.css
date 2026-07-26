@@ -1475,6 +1475,11 @@
     background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--green2,#4caf76); }
   .ind-track-btn:hover { border-color:var(--green2,#4caf76); }
   .ind-track-btn:disabled { opacity:.7; cursor:default; }
+  /* Persistent "already tracking" state — filled green so it reads as an active
+     status, not a fresh call to action, when a build of this BP is being tracked. */
+  .ind-track-btn.on { color:var(--bg); background:var(--green2,#4caf76);
+    border-color:var(--green2,#4caf76); font-weight:600; }
+  .ind-track-btn.on:hover { background:var(--green,#4caf76); border-color:var(--green,#4caf76); }
   .ind-build-card { background:var(--panel2); border:1px solid var(--line2);
     border-left-width:3px; border-radius:6px; padding:8px 12px; }
   /* Card border + badge colour track the whole sell lifecycle, not just the job.

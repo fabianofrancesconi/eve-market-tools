@@ -941,7 +941,22 @@ function renderIndDetail(d, container){
         <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
         <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy name</button>
         <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
-        <button class="ind-track-btn" title="Freeze these stats for the current run count so you can revisit them after the batch finishes — the numbers stay put even as market prices move. Appears under 'Tracked builds' up top.">＋ Track this build</button>
+        ${(()=>{
+          // Persistent "already tracking" state: most players own one blueprint,
+          // so a build for it should read as already-tracked on reopen — not a
+          // fresh "＋ Track" every time. Only active builds count (a Sold one is
+          // history, not something you're still tracking).
+          const active=IND.builds.filter(b=>b.blueprint_id===d.blueprint_id && _buildStage(b)!=="sold");
+          if(active.length){
+            const runsList=active.map(b=>Math.max(1,b.runs||1));
+            const stg=_STAGE_LABEL[_buildStage(active[0])]||"tracked";
+            const tip=active.length===1
+              ? `Already tracking a build of ${d.product.name} — ${runsList[0].toLocaleString()} run${runsList[0]===1?"":"s"}, ${stg.toLowerCase()}. Click to track another (you'll be asked to confirm).`
+              : `Already tracking ${active.length} builds of ${d.product.name} (${runsList.map(r=>r.toLocaleString()).join(", ")} runs). Click to track another (you'll be asked to confirm).`;
+            return `<button class="ind-track-btn on" title="${tip}">✓ Tracking${active.length>1?` (${active.length})`:""}</button>`;
+          }
+          return `<button class="ind-track-btn" title="Freeze these stats for the current run count so you can revisit them after the batch finishes — the numbers stay put even as market prices move. Appears under 'Tracked builds' up top.">＋ Track this build</button>`;
+        })()}
       </span>
       <span class="ind-d-close" title="Close">✕</span>
     </div>
@@ -1236,31 +1251,33 @@ setInterval(()=>{
 // Only a build that was actually linked can become "done", so a freshly-tracked
 // build never jumps straight to done.
 
-// Guard against tracking the same thing twice. Only *pending* builds (still in
-// the "planned" stage — no live job, not built/listed/sold yet) count as a clash:
-// once a batch is building or beyond it's a real, distinct run. An exact match
-// (same blueprint AND run count) is a hard, near-error warning; the same
-// blueprint at a different run count is a softer "you already plan to build this"
-// nudge. Returns true if the user chose to go ahead (or there was no clash).
+// Guard against tracking the same blueprint twice. The premise is one blueprint
+// per player, so ANY active build of it (planned, building, built or listed —
+// anything not yet sold-and-closed) is treated as an existing track the user
+// should be warned about up front. A Sold build is history, not a live clash.
+// An exact match (same blueprint AND run count) is the hard warning; a different
+// run count is the softer "already tracking this, separate batch?" nudge.
+// Returns true if the user chose to go ahead (or there was no clash).
 function _confirmTrackNotDuplicate(d, runs){
   const bp=d.blueprint_id, name=(d.product||{}).name||"this blueprint";
-  const pending=IND.builds.filter(b=>b.blueprint_id===bp && _buildStage(b)==="planned");
-  if(!pending.length) return true;
-  const exact=pending.find(b=>Math.max(1,b.runs||1)===runs);
+  const active=IND.builds.filter(b=>b.blueprint_id===bp && _buildStage(b)!=="sold");
+  if(!active.length) return true;
+  const stageOf=b=>(_STAGE_LABEL[_buildStage(b)]||"tracked").toLowerCase();
+  const exact=active.find(b=>Math.max(1,b.runs||1)===runs);
   if(exact){
     return confirm(
-      `⚠ Already planned\n\n`
-      +`You already have a pending build of ${name} at exactly ${runs} run${runs===1?"":"s"} `
-      +`(not started in-game yet). Tracking it again will create a duplicate.\n\n`
+      `⚠ Already tracking\n\n`
+      +`You're already tracking a build of ${name} at exactly ${runs} run${runs===1?"":"s"} `
+      +`(${stageOf(exact)}). Tracking it again creates a duplicate.\n\n`
       +`Track a second identical build anyway?`);
   }
-  const others=pending.map(b=>Math.max(1,b.runs||1)).sort((a,b)=>a-b);
-  const runList=others.length===1?`${others[0]} runs`
-    :`${others.slice(0,-1).join(", ")} and ${others[others.length-1]} runs`;
+  const others=active.map(b=>`${Math.max(1,b.runs||1).toLocaleString()} run${Math.max(1,b.runs||1)===1?"":"s"} (${stageOf(b)})`);
+  const runList=others.length===1?others[0]
+    :`${others.slice(0,-1).join(", ")} and ${others[others.length-1]}`;
   return confirm(
-    `Similar build already planned\n\n`
-    +`You already plan to build ${name} (${runList}), but this one is ${runs} run${runs===1?"":"s"}. `
-    +`If that's a separate batch, go ahead — otherwise you may be double-tracking.\n\n`
+    `Already tracking ${name}\n\n`
+    +`You're already tracking ${others.length===1?"a build":others.length+" builds"} of ${name}: ${runList}. `
+    +`This one is ${runs} run${runs===1?"":"s"}. If it's a separate batch, go ahead — otherwise you may be double-tracking.\n\n`
     +`Track this ${runs}-run build too?`);
 }
 
@@ -1279,7 +1296,10 @@ function trackThisBuild(d, runs, btn){
         IND.builds=IND.builds.filter(b=>b.id!==res.build.id);
         IND.builds.unshift(res.build);
         renderIndBuilds();
-        if(btn){ btn.textContent="✓ Tracked"; setTimeout(()=>{ btn.textContent="＋ Track this build"; btn.disabled=false; },1400); }
+        // Re-render the detail so the action button flips to its persistent
+        // "✓ Tracking" state (survives reopening the panel) rather than a fleeting
+        // toast that reverts to "＋ Track this build".
+        if(IND.openDetail && IND.openDetail.blueprint_id===d.blueprint_id) renderIndDetail(d);
       } else if(btn){
         btn.textContent=res && res.error?("⚠ "+res.error):"⚠ Failed"; btn.disabled=false;
       }

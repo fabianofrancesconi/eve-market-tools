@@ -61,19 +61,31 @@ def test_tracked_build_cards_live_in_tracker():
     assert "_updateTrackCount" in src
 
 
-def test_track_guards_against_duplicate_pending_builds():
+def test_track_guards_against_duplicate_builds():
     src = lp_web.FRONTEND_SOURCE
     # trackThisBuild runs a duplicate guard before saving: exact (same bp + runs)
-    # is a hard warning, same bp / different runs is a softer nudge. Only pending
-    # ("planned") builds count as a clash.
+    # is a hard warning, same bp / different runs is a softer nudge. The premise is
+    # one blueprint per player, so ANY active (not-yet-sold) build counts as a clash.
     assert "_confirmTrackNotDuplicate" in src
     guard = src.index("function _confirmTrackNotDuplicate")
     body = src[guard:src.index("function trackThisBuild", guard)]
-    assert '_buildStage(b)==="planned"' in body
-    assert "Already planned" in body          # hard, near-error warning
-    assert "Similar build already planned" in body  # soft nudge
+    assert '_buildStage(b)!=="sold"' in body   # any active build, not just planned
+    assert "⚠ Already tracking" in body        # hard, near-error warning (exact runs)
+    assert "may be double-tracking" in body     # soft nudge (different run count)
     # trackThisBuild bails out when the guard is declined.
     assert "if(!_confirmTrackNotDuplicate(d, runs)) return;" in src
+
+
+def test_track_button_shows_persistent_already_tracking_state():
+    src = lp_web.FRONTEND_SOURCE
+    # An active build of the open blueprint flips the action button to a
+    # persistent "✓ Tracking" state (survives reopening the panel), instead of a
+    # fresh "＋ Track this build" every time.
+    assert "✓ Tracking" in src
+    assert '.ind-track-btn.on' in src          # filled-green status styling
+    # After a successful track the detail re-renders so the button reflects it.
+    assert ("IND.openDetail && IND.openDetail.blueprint_id===d.blueprint_id) "
+            "renderIndDetail(d)") in src
 
 
 def test_instant_sale_rendering_wired():

@@ -1701,26 +1701,18 @@
      copyable options read as distinct. */
   .ind-sell-price-instant { border-left:1px solid var(--line2); padding-left:12px; }
   .ind-sell-be { color:var(--gold,#c8a040); font-size:11.5px; }
-  .ind-sell-copy, .ind-sell-start, .ind-sell-analyze, .ind-sell-cancel, .ind-sell-close, .ind-sell-edit, .ind-sell-archive, .ind-sell-delete, .ind-sell-pickbtn {
+  .ind-sell-copy, .ind-sell-analyze, .ind-sell-abandon, .ind-sell-archive, .ind-sell-delete {
     padding:2px 10px; font-size:11px; cursor:pointer; border-radius:4px;
     background:var(--panel2); border:1px solid var(--line2); color:var(--dim); }
   .ind-sell-analyze:hover { border-color:var(--cyan); color:var(--cyan); }
-  .ind-sell-edit:hover:not(:disabled) { border-color:var(--cyan); color:var(--cyan); }
-  .ind-sell-edit:disabled { opacity:.6; cursor:default; }
   .ind-sell-archive:hover:not(:disabled) { border-color:var(--gold,#c8a040); color:var(--gold,#c8a040); }
   .ind-sell-delete:hover:not(:disabled) { border-color:var(--red); color:var(--red); }
-  /* Delete + Stop-tracking are destructive → push them to the right of the foot. */
+  /* Delete is destructive → push it to the right of the foot. */
   .ind-sell-delete { margin-left:auto; }
-  .ind-sell-copy:hover, .ind-sell-pickbtn:hover { border-color:var(--cyan); color:var(--cyan); }
-  .ind-sell-start { background:#0e2a1c; border-color:var(--green2,#4caf76); color:var(--green2,#4caf76); }
-  .ind-sell-start:hover:not(:disabled) { background:#12351f; color:var(--green,#6bd898); }
-  .ind-sell-start:disabled { opacity:.6; cursor:default; }
-  .ind-sell-cancel:hover { border-color:var(--red); color:var(--red); }
-  .ind-sell-close:hover:not(:disabled) { border-color:var(--gold,#c8a040); color:var(--gold,#c8a040); }
-  .ind-sell-close:disabled { opacity:.6; cursor:default; }
-  /* A lapsed listing awaiting a re-list: amber left rule so it reads as "needs you". */
-  .ind-sell-relist { border-left:2px solid var(--gold,#c8a040); padding-left:8px; }
-  .ind-sell-relist .ind-sell-watching { color:var(--gold,#c8a040); }
+  .ind-sell-copy:hover { border-color:var(--cyan); color:var(--cyan); }
+  /* Abandon (write off the unsold remainder) is a soft-destructive gold action. */
+  .ind-sell-abandon:hover:not(:disabled) { border-color:var(--gold,#c8a040); color:var(--gold,#c8a040); }
+  .ind-sell-abandon:disabled { opacity:.6; cursor:default; }
   .ind-sell-hint { flex-basis:100%; color:var(--dim2); font-size:10.5px; margin-top:2px; }
   .ind-sell-cards { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
   @media (max-width:600px){ .ind-sell-cards { grid-template-columns:1fr; } }
@@ -1732,15 +1724,10 @@
   .ind-sell-card-val.pos { color:var(--green2,#4caf76); }
   .ind-sell-card-val.neg { color:var(--red); }
   .ind-sell-card-sub { color:var(--dim); font-size:10.5px; margin-top:1px; }
-  .ind-sell-pick { margin-top:8px; }
   .ind-sell-warn { color:var(--gold,#c8a040); font-size:11.5px; }
-  .ind-sell-pick-list { display:inline-flex; gap:6px; flex-wrap:wrap; margin-left:6px; }
   .ind-sell-foot { display:flex; align-items:center; gap:12px; margin-top:8px;
     flex-wrap:wrap; }
   .ind-sell-watching { color:var(--cyan); font-size:11.5px; }
-  .ind-sell-unlink { padding:0 6px; margin-left:4px; font-size:10.5px; cursor:pointer;
-    border-radius:4px; background:transparent; border:1px solid var(--line2); color:var(--dim); }
-  .ind-sell-unlink:hover { border-color:var(--red); color:var(--red); }
   .ind-sell-done { color:var(--green2,#4caf76); font-size:11.5px; font-weight:700; }
 
   /* Tracker mode: count badge on the mode button + Planner's link-across hint. */
@@ -1771,12 +1758,6 @@
   .sum-read-note { color:var(--dim); font-size:11px; margin-top:2px; white-space:nowrap; }
   .sum-read-note b.pos { color:var(--green2,#4caf76); }
   .sum-read-note b.neg { color:var(--red); }
-  /* Compact range toggle, tucked under the Realized figure. */
-  .sum-strip-range { display:inline-flex; gap:4px; margin-top:6px; }
-  .sum-range-btn { padding:1px 8px; font-size:10.5px; cursor:pointer; border-radius:4px;
-    background:var(--panel); border:1px solid var(--line2); color:var(--dim); }
-  .sum-range-btn:hover { border-color:var(--cyan2,var(--cyan)); color:var(--fg); }
-  .sum-range-btn.on { border-color:var(--cyan); color:var(--cyan); }
   @media (max-width:820px){
     .sum-strip { flex-wrap:wrap; }
     .sum-read { flex-basis:50%; }

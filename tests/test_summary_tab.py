@@ -88,14 +88,20 @@ def test_track_button_shows_persistent_already_tracking_state():
             "renderIndDetail(d)") in src
 
 
-def test_instant_sale_rendering_wired():
+def test_automatic_sale_rendering_wired():
     src = lp_web.FRONTEND_SOURCE
-    # The sell panel distinguishes an instant sale (accrued from wallet
-    # transactions, no order to link) from a listed one.
-    assert 'sell.mode==="instant"' in src
-    assert "Instant sale" in src            # the watch message
-    # The needs-pick order chooser is suppressed for instant sales.
-    assert "sell.needs_pick && !instant" in src
+    # Sales are fully automatic in the pooled model: money accrues from wallet
+    # transactions with no order linking, so both instant and listed sales are
+    # treated uniformly — the panel just says sales accrue from the wallet.
+    assert "accrue from your wallet" in src
+    # The only sell action is Abandon (write off the unsold remainder); the old
+    # start/link/unlink/cancel/close/edit machinery is gone.
+    assert "ind-sell-abandon" in src
+    assert "sell/abandon" in src
+    for gone in ("ind-sell-start", "ind-sell-cancel", "ind-sell-close",
+                 "ind-sell-edit", "ind-sell-unlink", "ind-sell-pick",
+                 'sell.mode==="instant"', "needs_pick"):
+        assert gone not in src, gone
 
 
 def test_tracker_readout_strip_shows_portfolio_figures():

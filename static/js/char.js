@@ -1029,14 +1029,20 @@ function _trackedBuildForJob(j){
 }
 function _jobIsTracked(j){ return !!_trackedBuildForJob(j); }
 
-// Find the tracked build whose sell links to this market order, by the order_id
-// recorded in sell.order_ids (set when a listed sale auto-links to the order).
-// order_id round-trips as a string on the build side, so compare via String().
+// Find a tracked build this open sell order corresponds to. Sales aren't linked
+// to specific orders in the pooled model (EVE items are fungible — an order sells
+// "a unit of type T", not "a unit from batch A"), so we match by PRODUCT TYPE
+// onto a delivered build that's still on the market (listed). Among several lots
+// of the same product we surface the oldest un-sold-out one (FIFO — the batch a
+// sale would draw from first), so the 🔗 jumps to the build actually earning.
 function _trackedBuildForOrder(o){
-  const oid=o&&(o.order_id!=null?o.order_id:o.id);
-  if(oid==null || typeof IND==="undefined") return null;
-  const builds=IND.builds||[];
-  return builds.find(b=>((b.sell||{}).order_ids||[]).some(x=>String(x)===String(oid))) || null;
+  if(o==null || o.is_buy_order || typeof IND==="undefined") return null;
+  const pid=o.type_id;
+  if(pid==null) return null;
+  const builds=(IND.builds||[]).filter(b=>b.product_type_id===pid && b.done_at
+    && (typeof _buildStage!=="function" || _buildStage(b)==="listed"));
+  builds.sort((a,b)=>(a.done_at||0)-(b.done_at||0));
+  return builds[0] || null;
 }
 function _orderIsTracked(o){ return !!_trackedBuildForOrder(o); }
 
@@ -1103,11 +1109,13 @@ function openBuildPeek(id, initialTab){
     list:(cost!=null&&units&&(1-stax-bfee)>0)?cost/(units*(1-stax-bfee)):null,
     instant:(cost!=null&&units&&(1-stax)>0)?cost/(units*(1-stax)):null,
   };
-  const target=(b.sell||{}).qty_target||units||0;
+  // The batch's full produced quantity is the sale target — the pooled model
+  // sells the whole lot, there's no per-order partial target any more.
+  const target=units||0;
   // Units still to sell — the simulator works on these (with realized added on top).
   const remaining=rz?Math.max(0, target-rz.units):(units||0);
-  // Per-unit cost basis: prefer the frozen sell cost_per_unit, else derive it.
-  const cpu=(b.sell&&b.sell.cost_per_unit!=null)?b.sell.cost_per_unit
+  // Per-unit cost basis: prefer the server's frozen cost_per_unit, else derive it.
+  const cpu=(b.cost_per_unit!=null)?b.cost_per_unit
            :(typeof _buildCostPerUnit==="function"?_buildCostPerUnit(b):null);
   // Live linked order (its queue rank drives the re-price nudge).
   const order=_peekLinkedOrder(b);
@@ -1149,30 +1157,38 @@ function _peekChars(){
   return (AUTH.data&&AUTH.data.characters)||(AUTH.data?[AUTH.data]:[]);
 }
 
-// Which of the character's open sell orders this build is tracking (for queue
-// position). Matches the build's linked order_id against every character bundle.
+// An open sell order that corresponds to this build (for queue position). Sales
+// aren't order-linked in the pooled model, so we match by PRODUCT TYPE across
+// every character bundle and prefer the character's own order over another's.
+// Returns null when nothing of this product is on the market.
 function _peekLinkedOrder(b){
-  const oid=((b.sell||{}).order_ids||[])[0];
-  if(oid==null) return null;
+  const pid=b.product_type_id;
+  if(pid==null) return null;
+  let fallback=null;
   for(const c of _peekChars()){
-    const o=(c.market_orders||[]).find(o=>String(o.order_id)===String(oid));
-    if(o) return o;
+    const o=(c.market_orders||[]).find(o=>!o.is_buy_order && o.type_id===pid);
+    if(!o) continue;
+    if(c.name===b.char_name) return o;   // the builder's own listing wins
+    fallback=fallback||o;
   }
-  return null;
+  return fallback;
 }
 
 // The character whose fees govern this build's sale — the one who actually owns
 // the market order (so the broker/sales-tax skills that apply are theirs). We
-// resolve them by the linked order's owner first, then by the build's recorded
-// char_name (the character who ran the job), else the active character.
+// resolve them by an open order of the build's product first, then by the
+// build's recorded char_name (who ran the job), else the active character.
 function _peekOwnerChar(b){
   const chars=_peekChars();
   if(!chars.length) return null;
-  const oid=((b.sell||{}).order_ids||[])[0];
-  if(oid!=null){
-    for(const c of chars){
-      if((c.market_orders||[]).some(o=>String(o.order_id)===String(oid))) return c;
-    }
+  const pid=b.product_type_id;
+  if(pid!=null){
+    // Prefer the builder's own listing; otherwise any character listing it.
+    const own=chars.find(c=>c.name===b.char_name
+      && (c.market_orders||[]).some(o=>!o.is_buy_order && o.type_id===pid));
+    if(own) return own;
+    const any=chars.find(c=>(c.market_orders||[]).some(o=>!o.is_buy_order && o.type_id===pid));
+    if(any) return any;
   }
   if(b.char_name){
     const named=chars.find(c=>c.name===b.char_name);
@@ -1250,7 +1266,7 @@ function _buildPeekOverviewHtml(){
   let progress="";
   if(rz){
     const frac=P.target?Math.min(1, rz.units/P.target):0;
-    const closedEarly=stage==="sold"&&(b.sell||{}).closed_early;
+    const closedEarly=stage==="sold"&&b.abandoned;
     progress=`<div class="build-peek-progress ${stage==="sold"?"done":""}">
       <div class="bpp-track"><i style="width:${(frac*100).toFixed(1)}%"></i></div>
       <div class="bpp-count">${rz.units.toLocaleString()} / ${P.target.toLocaleString()} sold${closedEarly?" · rest written off":""}</div>

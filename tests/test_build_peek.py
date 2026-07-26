@@ -171,10 +171,12 @@ class TestOwnerFees:
         assert "3.0-0.3*bro" in compact
 
     def test_owner_resolution_prefers_the_order_owner(self):
-        # Resolve the owner by the linked order first, then the recorded
+        # Sales aren't order-linked in the pooled model, so the owner is resolved
+        # by an open order of the build's PRODUCT first, then the recorded
         # char_name, then the active character.
         fn = _sim_fn("_peekOwnerChar")
-        assert "order_ids" in fn          # match the order's owner first
+        assert "product_type_id" in fn    # match by the product on the market
+        assert "market_orders" in fn      # against the characters' open orders
         assert "char_name" in fn          # then the char who ran the job
         assert "active_char_id" in fn     # else the active character
 

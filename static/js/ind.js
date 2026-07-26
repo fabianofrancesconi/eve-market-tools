@@ -1317,7 +1317,39 @@ function loadIndBuilds(){
     // If jobs are already loaded, reconcile now (links jobs, marks done);
     // otherwise just render — the next char-data refresh will reconcile.
     if(AUTH.data && AUTH.data.jobs) reconcileBuilds(); else renderIndBuilds();
+    // Pull the derived per-build state (stage / realized profit / abandoned)
+    // from the summary and fold it in, so the board's sell state is populated
+    // even before the user opens the Tracker.
+    if(typeof loadSummary==="function") loadSummary();
   }).catch(()=>{ IND.buildsLoaded=true; });
+}
+
+// Fold the server's derived per-build fields from a /api/ind/summary payload
+// into IND.builds: the FIFO-allocated realized profit, the lifecycle stage
+// (built/listed/sold — the ledger-driven part the client can't compute), the
+// abandoned flag, and the frozen units/cost. Job-linkage fields (job_id,
+// done_at, job_end) stay client-authoritative — the client tracks live jobs the
+// server can't see, so we never let a lagging server snapshot regress them.
+// Returns true if anything changed (so the caller can re-render).
+function mergeSummaryBuilds(summary){
+  const rows=(summary&&summary.builds)||[];
+  if(!rows.length && !IND.builds.length) return false;
+  const byId=Object.fromEntries(rows.map(r=>[r.id, r]));
+  let changed=false;
+  IND.builds.forEach(b=>{
+    const r=byId[b.id];
+    if(!r) return;
+    const before=JSON.stringify([b.stage, b.abandoned, b.realized,
+                                 b.units_produced, b.cost_per_unit]);
+    b.stage=r.stage;
+    b.abandoned=r.abandoned;
+    b.realized=r.realized;
+    b.units_produced=r.units_produced;
+    b.cost_per_unit=r.cost_per_unit;
+    if(JSON.stringify([b.stage, b.abandoned, b.realized,
+                       b.units_produced, b.cost_per_unit])!==before) changed=true;
+  });
+  return changed;
 }
 
 // Match a tracked build to one of the character's live manufacturing jobs, by
@@ -1444,40 +1476,14 @@ function reconcileBuilds(){
     }
   });
   renderIndBuilds();
-  // Fills/auto-links accrue server-side during the background refresh, so re-pull
-  // the frozen list to reflect the latest realized profit + order linkage. This
-  // also surfaces a button-free auto-start: a *built* build (done, not yet
-  // selling, not opted out) may have just been auto-linked to its sell order
-  // server-side, so we pull those too — not only builds already selling.
-  const needsSellPull=IND.builds.some(b=>
-    (b.sell && b.sell.started_at && !b.sell.closed_at) ||
-    (b.done_at && !(b.sell&&b.sell.started_at) && !b.no_auto_sell));
-  if(needsSellPull) refreshSellingBuilds();
+  // Sales accrue server-side from wallet transactions (per-product FIFO ledger),
+  // and a delivered build's stage (built → listed → sold) is derived there too.
+  // Re-pull the summary so the merged per-build realized profit + stage reflect
+  // the latest sweep. Any delivered build could have just gained a fill, so we
+  // refresh whenever anything is past planning.
+  const needsSellPull=IND.builds.some(b=>b.done_at);
+  if(needsSellPull && typeof loadSummary==="function") loadSummary();
   return changed;
-}
-
-// Re-fetch tracked builds (to surface server-accrued sale fills) without
-// clobbering local job-linkage in flight: replace only the sell state + realized
-// history, keep the client's live job fields. Skipped if nothing is selling.
-let _refreshingSelling=false;
-function refreshSellingBuilds(){
-  if(_refreshingSelling) return;
-  _refreshingSelling=true;
-  fetch("/api/ind/builds").then(r=>r.json()).then(res=>{
-    _refreshingSelling=false;
-    const fresh=(res&&res.builds)||[];
-    const byId=Object.fromEntries(fresh.map(b=>[b.id,b]));
-    let changed=false;
-    IND.builds.forEach(b=>{
-      const f=byId[b.id];
-      if(!f) return;
-      if(JSON.stringify(b.sell||null)!==JSON.stringify(f.sell||null)){
-        b.sell=f.sell; changed=true;
-      }
-      if(!!b.no_auto_sell!==!!f.no_auto_sell){ b.no_auto_sell=f.no_auto_sell; changed=true; }
-    });
-    if(changed) renderIndBuilds();
-  }).catch(()=>{ _refreshingSelling=false; });
 }
 
 // ── Industry Planner ⇄ Tracker mode ──────────────────────────────────────────
@@ -1587,23 +1593,25 @@ function _buildBadge(b, stage){
     return {key:"listed", label:rz.units>0?"◑ Selling":"◔ Listed"};
   }
   // sold
-  return {key:"sold", label:(b.sell||{}).closed_early?"✓ Closed early":"✓ Sold"};
+  return {key:"sold", label:b.abandoned?"✓ Closed early":"✓ Sold"};
 }
 
 // Explicit lifecycle stage for the stepper: planned → building → built →
-// listed → sold. Mirrors the server's _build_stage but refines building/built
-// against live jobs (the server can't see them). "planned" collapses the
-// awaiting/building split from _buildStatus down to the pre-job stage.
+// listed → sold. The server derives built/listed/sold from the wallet sell
+// ledger + live open-order volume (things the client can't see) and returns it
+// as `b.stage`; the client refines only the pre-delivery split (planned vs
+// building) against live jobs, which the server can't observe. Until the
+// summary has merged its derived stage in, an undelivered build reads planned/
+// building and a delivered one falls back to "built".
 const _BUILD_STAGES=["planned","building","built","listed","sold"];
 const _STAGE_LABEL={planned:"Planned",building:"Building",built:"Built",listed:"Listed",sold:"Sold"};
 function _buildStage(b){
-  const sell=b.sell||null;
-  if(sell&&sell.closed_at) return "sold";
-  if(sell&&sell.started_at) return "listed";
-  const st=_buildStatus(b);
-  if(st.key==="done") return "built";
-  if(st.key==="building") return "building";
-  return "planned";
+  // Not yet delivered → the live-job view (client-authoritative) decides.
+  if(!b.done_at){
+    return _buildStatus(b).key==="building" ? "building" : "planned";
+  }
+  // Delivered → trust the server's ledger-derived stage (built/listed/sold).
+  return b.stage || "built";
 }
 
 // Total units this batch yields (product qty per run × runs) and the frozen
@@ -1618,20 +1626,16 @@ function _buildCostPerUnit(b){
   return (cost==null||!units)?null:cost/units;
 }
 
-// Realized sale totals accrued server-side: units sold, net revenue after
-// sales tax, frozen cost of those units, and profit.
+// Realized sale totals accrued server-side (FIFO allocation of the wallet sell
+// ledger onto this build's lot): units sold, net revenue after sales tax, frozen
+// cost of those units, the abandoned-remainder write-off, and profit. Merged
+// onto the build as `b.realized` by the summary pull; zero-filled until then.
 function _buildRealized(b){
-  const sell=b.sell||{};
-  const entries=sell.realized||[];
-  const units=entries.reduce((s,e)=>s+(e.units||0),0);
-  const net=entries.reduce((s,e)=>s+(e.net||0),0);
-  const cpu=sell.cost_per_unit;
-  const cost=(cpu!=null)?units*cpu:null;
-  // A build closed out early writes off the frozen cost of the unsold remainder
-  // as a realized loss (mirrors the server's _build_realized) so profit is honest.
-  const writeoff=sell.writeoff_cost||0;
-  return {units, net, cost, writeoff,
-          profit:(cost!=null)?net-cost-writeoff:null};
+  const r=b.realized||{};
+  return {units:r.units||0, net:r.net||0,
+          cost:(r.cost_of_sold!=null)?r.cost_of_sold:null,
+          writeoff:r.writeoff||0,
+          profit:(r.profit!=null)?r.profit:null};
 }
 
 // Break-even sell price per unit (revenue exactly covers total batch cost).
@@ -1676,8 +1680,7 @@ const _LANE_LABEL={
 // first. Uses the stage-relevant moment (finish/list/sale) when known so the most
 // recently-progressed build leads, falling back to when it was first tracked.
 function _buildSortTs(b){
-  const sell=b.sell||{};
-  return sell.closed_at || sell.started_at || b.done_at
+  return b.done_at
       || (b.job_end?Date.parse(b.job_end)/1000:0) || b.created_at || 0;
 }
 // Finish time (epoch seconds) of a building job, for soonest-first ordering.
@@ -1838,13 +1841,13 @@ function _buildTileHtml(b, linked){
     line=`<span class="ind-tile-dim">ready ·</span> <b class="${pn(be.profitL)}">${isk(be.profitL)}</b>`;
   } else if(stage==="listed"){
     const rz=_buildRealized(b);
-    const target=(b.sell||{}).qty_target||_buildUnits(b)||0;
+    const target=_buildUnits(b)||0;
     const pct=target>0?Math.min(100,rz.units/target*100):0;
     line=`<span class="ind-tile-dim">${rz.units.toLocaleString()} / ${target.toLocaleString()} sold</span>`;
     bar=`<div class="ind-tile-bar"><span class="ind-tile-bar-fill listed" style="width:${pct.toFixed(1)}%"></span></div>`;
   } else { // sold
     const rz=_buildRealized(b);
-    const early=(b.sell||{}).closed_early;
+    const early=b.abandoned;
     line=`<span class="ind-tile-dim">${early?"closed":"sold"} ·</span> <b class="${pn(rz.profit)}">${isk(rz.profit)}</b>`;
   }
 
@@ -1982,8 +1985,8 @@ function _buildCardHtml(b, linked){
 
 // The lifecycle stepper: planned → building → built → listed → sold, with the
 // current stage highlighted and everything up to it marked done. The stage that
-// needs the user (built → "list it in game"; listed with needs_pick) is styled
-// as "active" so the card reads as a guided flow, not just a status label.
+// needs the user (built → "list it in game") is styled as "active" so the card
+// reads as a guided flow, not just a status label.
 // Each step carries a data-tip: hovering a stage shows what it means and when it
 // happened (completed / started / ETA), so the timestamps live in a popup rather
 // than cluttering the card.
@@ -2006,7 +2009,6 @@ function _stageTs(ts){
 // timing — when it completed (done), when it started / its ETA (active/ongoing),
 // or that it hasn't happened yet (todo).
 function _stageTip(b, s, cls){
-  const sell=b.sell||{};
   const done=cls==="done", active=cls==="active";
   if(s==="planned"){
     const when=_stageTs(b.created_at);
@@ -2027,26 +2029,24 @@ function _stageTip(b, s, cls){
   }
   if(s==="built"){
     if(active) return `Built — job delivered${b.done_at?" "+_stageTs(b.done_at):""}; ready to list for sale.`;
-    if(done) return `Built — completed${b.done_at?" "+_stageTs(b.done_at):""}, now listed.`;
+    if(done) return `Built — completed${b.done_at?" "+_stageTs(b.done_at):""}, now selling.`;
     return "Built — waiting on the manufacturing job.";
   }
   if(s==="listed"){
     const rz=_buildRealized(b);
-    const target=sell.qty_target||_buildUnits(b)||0;
+    const target=_buildUnits(b)||0;
     if(active){
-      const started=_stageTs(sell.started_at);
       const sold=rz.units>0?` · ${rz.units.toLocaleString()}/${target.toLocaleString()} sold`:"";
-      return `Listed — sell order tracked${started?" since "+started:""}${sold}.`;
+      return `Listed — units of this item are on the market${sold}. Sales accrue from your wallet automatically.`;
     }
-    if(done) return `Listed — sale complete${sell.closed_at?" "+_stageTs(sell.closed_at):""}.`;
+    if(done) return "Listed — all units sold.";
     return "Listed — not on the market yet.";
   }
   // sold
   if(active){
-    const when=_stageTs(sell.closed_at);
-    return sell.closed_early
-      ? `Sold — closed early${when?" "+when:""}; unsold remainder written off.`
-      : `Sold — fully sold${when?" "+when:""}.`;
+    return b.abandoned
+      ? "Sold — closed early; unsold remainder written off."
+      : "Sold — every produced unit has sold.";
   }
   return "Sold — sale not finished yet.";
 }
@@ -2061,10 +2061,14 @@ function _buildProposedPrice(b){
   return (be!=null)?Math.max(ask, be):ask;
 }
 
-// The sell section of a card. Building → just a "Decide price" peek so you can
-// scout the market before the batch even lands. Built-but-unlisted → a "Sell"
-// nudge with the proposed price + copy. Listed/sold → live realized profit and
-// the unsold remainder; needs_pick surfaces the character's open sell orders to link.
+// The sell section of a card. Sales are FULLY AUTOMATIC in the pooled model:
+// money accrues from wallet transactions (per-product FIFO ledger) with no order
+// linking, so there are no start/link/close/edit buttons — only price scouting
+// and a single Abandon action to write off a remainder you've given up on.
+//  • building → a "Decide price" peek to scout the market before delivery.
+//  • built    → the proposed list/instant prices to copy into EVE; selling
+//               tracks itself once units start moving through your wallet.
+//  • listed/sold → the realized profit + unsold remainder, plus Abandon.
 function _buildSellHtml(b, stage){
   const isk=v=>v===null||v===undefined?"—":fmtISK(v);
   if(stage==="building"){
@@ -2096,58 +2100,32 @@ function _buildSellHtml(b, stage){
       <button class="ind-sell-copy" title="Copy the proposed list price to paste into EVE's sell order">⧉ Copy price</button>
       ${instantRow}
       <button class="ind-sell-analyze" title="Open the price decision tool: market trend + the odds this batch sells within a day at a given price">📊 Decide price</button>
-      <button class="ind-sell-start" title="Only needed to sell a partial batch or to start before the order appears — a full-batch sell order links on its own">Track a partial sale ▸</button>
-      <div class="ind-sell-hint">List it in-game and your sell order links automatically; or instant-sell into buy orders and the app back-fills it at the real price once the job shows delivered. (Use “partial” only to track fewer than the full ${units!=null?units.toLocaleString():""} units.)</div>
+      <div class="ind-sell-hint">List it in-game (or instant-sell into buy orders) and the app tracks the sale automatically — profit accrues from your wallet transactions at the real fill price, oldest batch first. Nothing to link.</div>
     </div>`;
   }
   if(stage==="listed"||stage==="sold"){
     const rz=_buildRealized(b);
-    const sell=b.sell||{};
-    const instant=sell.mode==="instant";
-    const target=sell.qty_target||_buildUnits(b)||0;
-    const cpu=sell.cost_per_unit;
+    const target=_buildUnits(b)||0;
+    const cpu=b.cost_per_unit;
     const remain=Math.max(0, target-rz.units);
     const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
-    // Projected profit on the unsold remainder. Instant sales are valued at the
-    // frozen bid (sold into buy orders, sales tax only); listed at the frozen ask
-    // (patient order, tax + broker fee).
+    // Projected profit on the unsold remainder, valued at the frozen ask (patient
+    // list order, tax + broker fee).
     const d=b.snapshot||{};
     const stax=d.sales_tax||0, bfee=d.broker_fee||0;
-    const projRemain=instant
-      ? ((d.bid!=null&&cpu!=null)?remain*(d.bid*(1-stax)-cpu):null)
-      : ((d.ask!=null&&cpu!=null)?remain*(d.ask*(1-stax-bfee)-cpu):null);
-    let pick="";
-    if(sell.needs_pick && !instant){
-      pick=`<div class="ind-sell-pick" data-id="${b.id}">
-        <span class="ind-sell-warn">Several open sell orders match ${b.product_name||"this item"} — pick the one to track:</span>
-        <span class="ind-sell-pick-list"></span></div>`;
-    }
+    const projRemain=(d.ask!=null&&cpu!=null)?remain*(d.ask*(1-stax-bfee)-cpu):null;
     const closed=stage==="sold";
-    const closedEarly=closed&&sell.closed_early;
-    const linkedId=(sell.order_ids||[])[0];
-    // Once an order is linked, offer a one-click unlink (mis-link recovery). The
-    // order is tombstoned server-side so it isn't auto-grabbed again next sweep.
-    const unlinkBtn=linkedId?`<button class="ind-sell-unlink" data-order="${linkedId}" title="Wrong order? Detach it — it won't be auto-linked again.">✕ unlink</button>`:"";
-    // A cost line for the realized card: when closed early, the written-off
+    const closedEarly=closed&&b.abandoned;
+    // A cost line for the realized card: when abandoned, the written-off
     // remainder is shown so the profit number's loss component is explicit.
     const costSub=closedEarly&&rz.writeoff>0
       ? `net ${isk(rz.net)} − sold cost ${isk(rz.cost)} − write-off ${isk(rz.writeoff)}`
       : `net ${isk(rz.net)} − cost ${isk(rz.cost)}`;
-    // While listed with a remainder but no live linked order, the previous
-    // listing lapsed (expired) — nudge the user to re-list; the new order links
-    // itself. This is the resell-at-a-different-price path.
-    const relisting=!instant && !closed && !linkedId && rz.units>0 && remain>0;
     let watchMsg;
-    if(instant){
-      // Instant sales accrue from wallet transactions — no order to link.
-      watchMsg=closed
-        ? "⚡ Sold instantly (into buy orders)"
-        : `⚡ Instant sale — accruing wallet transactions for ${b.product_name||"this item"} at their real sale price${remain>0?` · ${remain.toLocaleString()} still to sell`:""}`;
-    }
-    else if(linkedId) watchMsg=`${sell.auto?"🔗 Auto-linked":"⏳ Linked to"} your sell order${sell.auto?"":" — tracking fills"} ${unlinkBtn}`;
-    else if(relisting) watchMsg=`⚠ Previous listing ended with ${remain.toLocaleString()} unsold — re-list them in-game (at any price) and the new order links automatically.`;
-    else watchMsg="⏳ Watching for your sell order…";
-    return `<div class="ind-sell ind-sell-live${relisting?" ind-sell-relist":""}" data-id="${b.id}">
+    if(closed) watchMsg="";
+    else if(rz.units>0) watchMsg=`↻ Selling — ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold; sales accrue from your wallet automatically${remain>0?` · ${remain.toLocaleString()} still to sell`:""}.`;
+    else watchMsg=`⏳ On the market — sales will accrue here from your wallet as units of ${b.product_name||"this item"} sell.`;
+    return `<div class="ind-sell ind-sell-live" data-id="${b.id}">
       <div class="ind-sell-cards">
         <div class="ind-sell-card">
           <div class="ind-sell-card-label">${closed?"Sold":"Sold so far"}</div>
@@ -2162,19 +2140,17 @@ function _buildSellHtml(b, stage){
         ${closed?"":`<div class="ind-sell-card">
           <div class="ind-sell-card-label">Remainder (proj.)</div>
           <div class="ind-sell-card-val ${pn(projRemain)}">${remain>0?isk(projRemain):"—"}</div>
-          <div class="ind-sell-card-sub">${remain>0?`${remain.toLocaleString()} @ frozen ${instant?"bid":"ask"}`:"nothing left"}</div>
+          <div class="ind-sell-card-sub">${remain>0?`${remain.toLocaleString()} @ frozen ask`:"nothing left"}</div>
         </div>`}
       </div>
-      ${pick}
       <div class="ind-sell-foot">
-        ${closed?`<span class="ind-sell-done">${closedEarly?`✓ Closed early${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""} · ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`✓ Fully sold${sell.closed_at?" "+new Date(sell.closed_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""}`}</span>`
+        ${closed?`<span class="ind-sell-done">${closedEarly?`✓ Closed early · ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`✓ Fully sold`}</span>`
           :`<span class="ind-sell-watching">${watchMsg}</span>`}
-        ${!closed?`<button class="ind-sell-analyze" title="Open the price decision tool: market trend + the odds the remaining units sell within a day at a given price">📊 Decide price</button>`:""}
-        ${!closed&&rz.units>0?`<button class="ind-sell-close" title="Give up on the unsold remainder: mark this sale done. The ${remain.toLocaleString()} unsold unit(s)' cost is written off as a loss so your totals stay honest.">Close out ▸</button>`:""}
-        ${closed?"":`<button class="ind-sell-cancel" title="Stop tracking this sale (keeps the build)">Stop tracking sale</button>`}
-        <button class="ind-sell-edit" title="Correct the tracked sale — set how many actually sold and/or the target quantity. Lowering below the target reopens the sale so a re-listed order can keep tracking.">Edit sale</button>
+        <button class="ind-sell-analyze" title="Open the price decision tool: market trend + the odds the remaining units sell within a day at a given price">📊 Decide price</button>
+        ${!closed&&remain>0?`<button class="ind-sell-abandon" title="Give up on the ${remain.toLocaleString()} unsold unit(s): write off their frozen cost as a loss so capital-in-flight clears and later sales of this item flow to your next batch. Reversible.">Abandon remainder ▸</button>`:""}
+        ${closedEarly?`<button class="ind-sell-abandon" data-undo="1" title="Undo the write-off: restore the unsold remainder as held stock.">Undo abandon</button>`:""}
         ${closed?`<button class="ind-sell-archive" title="${b.archived?"Move this build back into the active tracker":"Hide this finished build in the collapsed Archived section. It still counts in your portfolio stats."}">${b.archived?"Unarchive":"Archive"}</button>`:""}
-        <button class="ind-sell-delete" title="Delete this build and its sale — the tracked realized profit/data is removed from your stats. Can't be undone.">Delete</button>
+        <button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>
       </div>
     </div>`;
   }
@@ -2276,9 +2252,9 @@ function _wireBuildCard(box, b){
   if(!card) return;
   const del=card.querySelector(".ind-build-del");
   if(del) del.onclick=()=>{
-    const hasSale=!!(b.sell&&b.sell.started_at);
-    const msg=hasSale
-      ? `Delete this build of ${b.product_name||"?"}? This removes the build and its sale — the tracked realized profit/data goes with it. This can't be undone.`
+    const rz=_buildRealized(b);
+    const msg=rz.units>0
+      ? `Delete this build of ${b.product_name||"?"}? This removes the build and its share of the tracked realized profit. This can't be undone.`
       : `Stop tracking this build of ${b.product_name||"?"}?`;
     if(confirm(msg)) deleteBuild(b.id);
   };
@@ -2323,140 +2299,42 @@ function _wireSellCard(card, b){
     if(typeof openBuildPeek==="function") openBuildPeek(b.id, "market");
     else if(typeof openTrackedBuild==="function") openTrackedBuild(b.id);
   };
-  const start=card.querySelector(".ind-sell-start");
-  if(start) start.onclick=()=>startSellTracking(b, start);
-  const cancel=card.querySelector(".ind-sell-cancel");
-  if(cancel) cancel.onclick=()=>{
-    if(confirm(`Stop tracking the sale of ${b.product_name||"this build"}? (The build itself stays.)`))
-      cancelSellTracking(b);
-  };
-  const close=card.querySelector(".ind-sell-close");
-  if(close) close.onclick=()=>{
+  const abandon=card.querySelector(".ind-sell-abandon");
+  if(abandon) abandon.onclick=()=>{
+    if(abandon.dataset.undo){ setBuildAbandoned(b, false, abandon); return; }
     const rz=_buildRealized(b);
-    const target=(b.sell||{}).qty_target||_buildUnits(b)||0;
-    const remain=Math.max(0, target-rz.units);
-    if(confirm(`Close out this sale? ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold — the ${remain.toLocaleString()} unsold unit(s) will be written off as a loss and the sale marked done.`))
-      closeSellTracking(b, close);
+    const remain=Math.max(0, (_buildUnits(b)||0)-rz.units);
+    if(confirm(`Abandon the ${remain.toLocaleString()} unsold unit(s) of ${b.product_name||"this build"}? Their frozen cost is written off as a loss (so capital-in-flight clears), and later sales of this item flow to your next batch. You can undo this.`))
+      setBuildAbandoned(b, true, abandon);
   };
-  const edit=card.querySelector(".ind-sell-edit");
-  if(edit) edit.onclick=()=>editSellTracking(b, edit);
   const archive=card.querySelector(".ind-sell-archive");
   if(archive) archive.onclick=()=>archiveBuild(b, !b.archived);
   const sdel=card.querySelector(".ind-sell-delete");
   if(sdel) sdel.onclick=()=>{
-    if(confirm(`Delete this build of ${b.product_name||"?"}? This removes the build and its sale — the tracked realized profit/data is removed from your stats. This can't be undone.`))
+    if(confirm(`Delete this build of ${b.product_name||"?"}? This removes the build and its share of the tracked realized profit from your stats. This can't be undone.`))
       deleteBuild(b.id);
   };
-  const unlink=card.querySelector(".ind-sell-unlink");
-  if(unlink) unlink.onclick=()=>unlinkSellOrder(b, unlink.dataset.order);
-  const pick=card.querySelector(".ind-sell-pick");
-  if(pick) _renderSellPickList(pick, b);
 }
 
-// Begin sell-tracking a built batch. Optionally asks for a partial quantity, then
-// flips the card to the live realized-profit view; the background refresh will
-// auto-link the in-game order and accrue fills.
-function startSellTracking(b, btn){
-  const units=_buildUnits(b);
-  let qty=units;
-  const ans=prompt(`How many units are you listing for sale?\n(Enter for all ${units!=null?units.toLocaleString():""}.)`, units!=null?String(units):"");
-  if(ans===null) return;                        // cancelled
-  const parsed=parseInt(ans,10);
-  if(!isNaN(parsed) && parsed>0) qty=parsed;
-  if(btn){ btn.disabled=true; btn.textContent="Starting…"; }
-  const body={id:b.id};
-  if(qty!=null) body.qty_target=String(qty);
-  fetch("/api/ind/builds/sell/start",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify(body)}).then(r=>r.json()).then(res=>{
-    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); _refreshSummary(); }
-    else if(btn){ btn.disabled=false; btn.textContent=res&&res.error?("⚠ "+res.error):"⚠ Failed"; }
+// Abandon (or un-abandon) a delivered build's unsold remainder. Sale tracking is
+// otherwise fully automatic — money accrues from wallet transactions — so this
+// is the only sell action: it writes off the frozen cost of the never-sold units
+// as a realized loss (clearing capital-in-flight) and stops the lot absorbing
+// future fills, so later sales of the same item flow to the next batch. Passing
+// abandon=false undoes it. The server returns the updated build; we merge its
+// flags in and re-pull the summary so realized/stage recompute.
+function setBuildAbandoned(b, abandon, btn){
+  if(btn){ btn.disabled=true; btn.textContent=abandon?"Abandoning…":"Restoring…"; }
+  fetch("/api/ind/builds/sell/abandon",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:b.id, abandoned:abandon?"1":"0"})}).then(r=>r.json()).then(res=>{
+    if(res && res.build){
+      b.abandoned=!!res.build.abandoned;
+      renderIndBuilds();
+      // Realized profit + stage are derived from the ledger + this flag, so pull
+      // the summary to refresh them (and the portfolio strip) in one shot.
+      if(typeof loadSummary==="function") loadSummary(); else _refreshSummary();
+    } else if(btn){ btn.disabled=false; btn.textContent=res&&res.error?("⚠ "+res.error):"⚠ Failed"; }
   }).catch(()=>{ if(btn){ btn.disabled=false; btn.textContent="⚠ Failed"; } });
-}
-
-function cancelSellTracking(b){
-  fetch("/api/ind/builds/sell/cancel",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({id:b.id})}).then(r=>r.json()).then(()=>{
-    // Mirror the server tombstone locally so the auto-start pull doesn't re-fire
-    // every reconcile cycle (and the card doesn't bounce back into selling).
-    if(b.sell) delete b.sell; b.no_auto_sell=true; renderIndBuilds(); _refreshSummary();
-  }).catch(()=>{});
-}
-
-// Correct a tracked sale: prompt for the real units-sold count and the target,
-// then post them. Lowering units below the target reopens a closed sale (the
-// server unlinks + tombstones the stale orders) so a re-listed order tracks the
-// rest — the fix for a false "sold" after an order was cancelled, not bought out.
-function editSellTracking(b, btn){
-  const sell=b.sell||{};
-  const rz=_buildRealized(b);
-  const curTarget=sell.qty_target||_buildUnits(b)||0;
-  const tAns=prompt(`Target quantity for this sale?\n(How many units you're selling in total.)`, String(curTarget));
-  if(tAns===null) return;                         // cancelled
-  const target=parseInt(tAns,10);
-  const uAns=prompt(`How many have actually sold so far?\n(0 = none yet. Lowering below the target reopens the sale so a re-listed order keeps tracking.)`, String(rz.units));
-  if(uAns===null) return;
-  const units=parseInt(uAns,10);
-  const body={id:b.id};
-  if(!isNaN(target)&&target>0) body.qty_target=String(target);
-  if(!isNaN(units)&&units>=0) body.units=String(units);
-  if(btn){ btn.disabled=true; btn.textContent="Saving…"; }
-  fetch("/api/ind/builds/sell/edit",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify(body)}).then(r=>r.json()).then(res=>{
-    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); _refreshSummary(); }
-    else if(btn){ btn.disabled=false; btn.textContent=res&&res.error?("⚠ "+res.error):"⚠ Failed"; }
-  }).catch(()=>{ if(btn){ btn.disabled=false; btn.textContent="⚠ Failed"; } });
-}
-
-// Close out a partial sale: mark it done, write off the unsold remainder as a
-// realized loss. The card flips to the "closed early" sold state.
-function closeSellTracking(b, btn){
-  if(btn){ btn.disabled=true; btn.textContent="Closing…"; }
-  fetch("/api/ind/builds/sell/close",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({id:b.id})}).then(r=>r.json()).then(res=>{
-    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); _refreshSummary(); }
-    else if(btn){ btn.disabled=false; btn.textContent=res&&res.error?("⚠ "+res.error):"⚠ Failed"; }
-  }).catch(()=>{ if(btn){ btn.disabled=false; btn.textContent="⚠ Failed"; } });
-}
-
-// The needs_pick case: list the character's open sell orders for this product so
-// the user links the right one. Reads AUTH.data.market_orders (already fetched).
-function _renderSellPickList(pickEl, b){
-  const slot=pickEl.querySelector(".ind-sell-pick-list");
-  if(!slot) return;
-  const orders=((AUTH.data&&AUTH.data.market_orders)||[])
-    .filter(o=>!o.is_buy_order && o.type_id===b.product_type_id);
-  if(!orders.length){ slot.textContent="No open sell orders found — refreshing…"; return; }
-  slot.innerHTML=orders.map(o=>{
-    const price=(o.price!=null)?fmtISK(o.price):"?";
-    const rem=(o.volume_remain!=null)?o.volume_remain.toLocaleString():"?";
-    return `<button class="ind-sell-pickbtn" data-order="${o.order_id}" title="Track this order">`
-      +`${price}/u · ${rem} left${o.character_name?" · "+o.character_name:""}</button>`;
-  }).join("");
-  slot.querySelectorAll(".ind-sell-pickbtn").forEach(btn=>{
-    btn.onclick=()=>linkSellOrder(b, btn.dataset.order);
-  });
-}
-
-function linkSellOrder(b, orderId){
-  fetch("/api/ind/builds/sell/link",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({id:b.id, order_id:String(orderId)})}).then(r=>r.json()).then(res=>{
-    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); }
-  }).catch(()=>{});
-}
-
-// Detach a mis-linked order. The server tombstones it so the background sweep
-// won't immediately re-link the same order the user just rejected.
-function unlinkSellOrder(b, orderId){
-  fetch("/api/ind/builds/sell/unlink",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({id:b.id, order_id:String(orderId)})}).then(r=>r.json()).then(res=>{
-    if(res && res.build){ _replaceBuild(res.build); renderIndBuilds(); }
-  }).catch(()=>{});
-}
-
-// Swap a freshly-returned build record into IND.builds in place (preserving order).
-function _replaceBuild(build){
-  const i=IND.builds.findIndex(x=>x.id===build.id);
-  if(i>=0) IND.builds[i]=build; else IND.builds.unshift(build);
 }
 
 // Fetch current market prices for a tracked build and compare its frozen values

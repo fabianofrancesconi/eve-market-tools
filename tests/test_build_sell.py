@@ -1,7 +1,12 @@
-"""Tests for tracked-build sell tracking (realized profit): the cost-basis /
-stage helpers, the sell/start|link|unlink|cancel routes, the fill-accrual
-reconcile, and the portfolio summary roll-up."""
-import datetime
+"""Tests for tracked-build sell tracking under the pooled, wallet-driven model.
+
+Money comes only from wallet sell transactions (deduped by transaction_id into a
+per-product ledger); sold units are FIFO-allocated across the product's built
+lots; stages and realized profit are recomputed on read. This exercises the
+server integration (ledger reconcile → summary), the cost/stage helpers, the
+one-time migration from the legacy per-build sell blobs, and the abandon route.
+The pure allocation math lives in tests/test_ind_track.py.
+"""
 import importlib
 import json
 import os
@@ -21,7 +26,10 @@ def _acct():
 
 def _bind(monkeypatch, tmp_path, acct):
     monkeypatch.setattr(lp_web, "IND_BUILDS_PATH", tmp_path / "builds.json")
+    monkeypatch.setattr(lp_web, "IND_SELL_LEDGER_PATH", tmp_path / "ledger.json")
+    monkeypatch.setattr(lp_web, "IND_LISTED_UNITS_PATH", tmp_path / "listed.json")
     monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", tmp_path / "ev.json")
+    monkeypatch.setattr(lp_web, "IND_TRACK_MIGRATED_PATH", tmp_path / "migrated.json")
     monkeypatch.setattr(lp_web, "current_account", lambda: acct)
 
 
@@ -44,16 +52,47 @@ def _snapshot(**over):
     return snap
 
 
-def _save_build(runs=10, **snap_over):
+_ID_SEQ = [0]
+
+
+def _save_build(runs=10, bid=None, **snap_over):
+    if bid is None:
+        _ID_SEQ[0] += 1
+        bid = f"test-build-{_ID_SEQ[0]}"
     return lp_web.do_ind_builds_save(
-        {"runs": [str(runs)], "snapshot": [json.dumps(_snapshot(**snap_over))]})["build"]
+        {"id": [bid], "runs": [str(runs)],
+         "snapshot": [json.dumps(_snapshot(**snap_over))]})["build"]
 
 
+def _built(runs=10, done_at=None, bid=None, **snap_over):
+    """Save a build and mark it delivered (persisted)."""
+    b = _save_build(runs=runs, bid=bid, **snap_over)
+    acct = lp_web.current_account()
+    builds = lp_web._load_tracked_builds(acct)
+    rec = next(x for x in builds if x["id"] == b["id"])
+    rec["done_at"] = done_at if done_at is not None else time.time()
+    lp_web._save_tracked_builds(acct, builds)
+    return rec
+
+
+def _txn(tid, pid=587, qty=1, price=150.0, date="2026-07-20T00:00:00Z", is_buy=False):
+    return {"transaction_id": tid, "type_id": pid, "quantity": qty,
+            "unit_price": price, "date": date, "is_buy": is_buy}
+
+
+def _reconcile(acct, txns):
+    lp_web._reconcile_sell_ledger(acct, txns)
+
+
+def _summary_build(res, build_id):
+    return next(b for b in res["builds"] if b["id"] == build_id)
+
+
+# ── Cost / units helpers (unchanged from the batch-economics model) ──────────
 class TestCostHelpers:
     def test_units_produced(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
-        b = _save_build(runs=10)
-        assert lp_web._build_units_produced(b) == 10  # 1/run × 10 runs
+        assert lp_web._build_units_produced(_save_build(runs=10)) == 10
 
     def test_units_produced_multi_output(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
@@ -63,22 +102,20 @@ class TestCostHelpers:
     def test_batch_cost_from_materials(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build(runs=10)
-        # 100 Trit/run × 10 runs × 0.9 = 900 material; + job 10 × 10 runs = 100.
+        # 10 runs × 100 Trit × 0.9 = 900 mat + 10×10 job = 1000
         assert lp_web._build_batch_cost(b) == 1000.0
 
-    def test_batch_cost_fallback_total_cost(self, monkeypatch, tmp_path):
+    def test_batch_cost_fallback_total(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
-        # No base_qty on materials → falls back to total_cost × runs.
-        b = _save_build(runs=4, required_items=[
-            {"name": "Trit", "eff_qty": 100, "unit_price": 0.9}])
-        assert lp_web._build_batch_cost(b) == 400.0
+        b = _save_build(runs=4, required_items=[], total_cost=50.0)
+        assert lp_web._build_batch_cost(b) == 200.0
 
     def test_cost_per_unit(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
-        b = _save_build(runs=10)
-        assert lp_web._build_cost_per_unit(b) == 100.0  # 1000 / 10 units
+        assert lp_web._build_cost_per_unit(_save_build(runs=10)) == 100.0
 
 
+# ── Stage: the manufacturing job is checked FIRST ────────────────────────────
 class TestStage:
     def test_planned(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
@@ -90,853 +127,307 @@ class TestStage:
         b["job_id"] = "123"
         assert lp_web._build_stage(b) == "building"
 
-    def test_built(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        b = _save_build()
-        b["job_id"] = "123"
-        b["done_at"] = time.time()
-        assert lp_web._build_stage(b) == "built"
-
-    def test_listed_and_sold(self, monkeypatch, tmp_path):
+    def test_built_when_delivered_and_unsold(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build()
         b["done_at"] = time.time()
-        b["sell"] = {"started_at": time.time()}
-        assert lp_web._build_stage(b) == "listed"
-        b["sell"]["closed_at"] = time.time()
-        assert lp_web._build_stage(b) == "sold"
+        assert lp_web._build_stage(b, alloc={"sold": 0}, listed_units=0) == "built"
 
-
-class TestSellRoutes:
-    def test_start_freezes_cost_basis(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        b = _save_build(runs=10)
-        res = lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        assert res["ok"] is True
-        sell = res["build"]["sell"]
-        assert sell["cost_per_unit"] == 100.0
-        assert sell["qty_target"] == 10  # defaults to full production
-        assert sell["order_ids"] == []
-        assert sell["realized"] == []
-
-    def test_start_partial_target(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        b = _save_build(runs=10)
-        res = lp_web.do_ind_builds_sell_start({"id": [b["id"]], "qty_target": ["4"]})
-        assert res["build"]["sell"]["qty_target"] == 4
-
-    def test_start_unknown_build(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        assert "error" in lp_web.do_ind_builds_sell_start({"id": ["nope"]})
-
-    def test_manual_link_and_unlink(self, monkeypatch, tmp_path):
+    def test_building_job_never_shows_listed(self, monkeypatch, tmp_path):
+        # The reported bug: a still-running job must never read as listed/sold,
+        # regardless of market activity on the same item.
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build()
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        lp_web.do_ind_builds_sell_link({"id": [b["id"]], "order_id": ["555"]})
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        assert stored["sell"]["order_ids"] == ["555"]
-        assert stored["sell"]["needs_pick"] is False
-        lp_web.do_ind_builds_sell_unlink({"id": [b["id"]], "order_id": ["555"]})
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        assert stored["sell"]["order_ids"] == []
+        b["job_id"] = "123"   # active job, done_at still None
+        assert lp_web._build_stage(b, alloc={"sold": 5}, listed_units=99) == "building"
 
-    def test_link_dedups(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        b = _save_build()
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        lp_web.do_ind_builds_sell_link({"id": [b["id"]], "order_id": ["555"]})
-        lp_web.do_ind_builds_sell_link({"id": [b["id"]], "order_id": ["555"]})
-        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == ["555"]
-
-    def test_cancel_drops_sell_state(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        b = _save_build()
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        lp_web.do_ind_builds_sell_cancel({"id": [b["id"]]})
-        assert "sell" not in lp_web.do_ind_builds_list({})["builds"][0]
-
-
-def _now_iso(delta_s=0):
-    return (datetime.datetime.now(datetime.timezone.utc)
-            + datetime.timedelta(seconds=delta_s)).isoformat()
-
-
-def _sell_order(order_id, type_id, remain, total, price, issued=None):
-    return {"order_id": order_id, "type_id": type_id, "type_name": "Rifter",
-            "volume_remain": remain, "volume_total": total, "price": price,
-            "is_buy_order": False, "issued": issued or _now_iso(), "duration": 90}
-
-
-class TestReconcileAutoMatch:
-    def test_single_order_auto_links(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        orders = [_sell_order(700, 587, 10, 10, 160.0)]
-        # Seed the order-diff baseline, then reconcile.
-        lp_web._track_order_changes(acct, 1, orders, {})
-        lp_web._reconcile_sell_builds(acct, orders)
-        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-        assert sell["order_ids"] == ["700"]
-        assert sell["needs_pick"] is False
-
-    def test_multiple_orders_need_pick(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        orders = [_sell_order(700, 587, 5, 5, 160.0),
-                  _sell_order(701, 587, 5, 5, 162.0)]
-        lp_web._reconcile_sell_builds(acct, orders)
-        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-        assert sell["order_ids"] == []
-        assert sell["needs_pick"] is True
-
-    def test_different_item_not_matched(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        orders = [_sell_order(700, 999999, 10, 10, 160.0)]  # wrong type_id
-        lp_web._reconcile_sell_builds(acct, orders)
-        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-        assert sell["order_ids"] == []
-        assert sell["needs_pick"] is False
-
-    def test_stale_order_before_start_not_matched(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        # Issued two hours before Sell was clicked → outside the match margin.
-        orders = [_sell_order(700, 587, 10, 10, 160.0, issued=_now_iso(-7200))]
-        lp_web._reconcile_sell_builds(acct, orders)
-        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == []
-
-    def test_manual_link_respects_unlink_tombstone(self, monkeypatch, tmp_path):
-        # After an explicit unlink, the auto-linker must not re-grab that order.
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        orders = [_sell_order(700, 587, 10, 10, 160.0)]
-        lp_web._reconcile_sell_builds(acct, orders)
-        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == ["700"]
-        lp_web.do_ind_builds_sell_unlink({"id": [b["id"]], "order_id": ["700"]})
-        # Same order still present in-game — but it was rejected, so stays unlinked.
-        lp_web._reconcile_sell_builds(acct, orders)
-        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == []
-
-
-class TestAutoStart:
-    """A finished build auto-starts sell-tracking when its product appears as a
-    single fresh sell order — no 'Start tracking' click required."""
-
-    def _built(self, runs=10, **snap):
-        b = _save_build(runs=runs, **snap)
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        stored["job_id"] = "123"
-        stored["done_at"] = time.time()
-        lp_web._save_tracked_builds(lp_web.current_account(), [stored])
-        return stored
-
-    def test_built_single_order_auto_starts(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        orders = [_sell_order(700, 587, 10, 10, 160.0)]
-        lp_web._track_order_changes(acct, 1, orders, {})
-        lp_web._reconcile_sell_builds(acct, orders)
-        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-        assert sell["started_at"] is not None
-        assert sell["auto"] is True
-        assert sell["order_ids"] == ["700"]
-        assert sell["qty_target"] == 10
-        assert sell["cost_per_unit"] == 100.0
-
-    def test_built_multiple_orders_do_not_auto_start(self, monkeypatch, tmp_path):
-        # Ambiguous → leave it for the user; don't guess which order is the batch.
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        orders = [_sell_order(700, 587, 5, 5, 160.0),
-                  _sell_order(701, 587, 5, 5, 162.0)]
-        lp_web._reconcile_sell_builds(acct, orders)
-        assert (lp_web.do_ind_builds_list({})["builds"][0].get("sell") or {}) \
-            .get("started_at") is None
-
-    def test_not_yet_built_does_not_auto_start(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)          # planned, no done_at
-        orders = [_sell_order(700, 587, 10, 10, 160.0)]
-        lp_web._reconcile_sell_builds(acct, orders)
-        assert (lp_web.do_ind_builds_list({})["builds"][0].get("sell") or {}) \
-            .get("started_at") is None
-
-    def test_auto_start_accrues_real_fill_price(self, monkeypatch, tmp_path):
-        # Profit is computed from the order's actual fill price, not our proposal.
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        orders0 = [_sell_order(700, 587, 10, 10, 137.0)]  # listed at 137, not our ask
-        lp_web._track_order_changes(acct, 1, orders0, {})
-        lp_web._reconcile_sell_builds(acct, orders0)
-        orders1 = [_sell_order(700, 587, 6, 10, 137.0)]   # 4 sold @ 137
-        lp_web._track_order_changes(acct, 1, orders1, {})
-        lp_web._reconcile_sell_builds(acct, orders1)
-        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
-        assert rz["units"] == 4
-        assert rz["net"] == 4 * 137.0
-        assert rz["profit"] == 4 * (137.0 - 100.0)
-
-    def test_cancel_tombstone_blocks_reauto(self, monkeypatch, tmp_path):
-        # Cancelling an auto-started sale must not silently re-start it next sweep.
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        orders = [_sell_order(700, 587, 10, 10, 160.0)]
-        lp_web._track_order_changes(acct, 1, orders, {})
-        lp_web._reconcile_sell_builds(acct, orders)
-        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["auto"] is True
-        b = lp_web.do_ind_builds_list({})["builds"][0]
-        lp_web.do_ind_builds_sell_cancel({"id": [b["id"]]})
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        assert "sell" not in stored
-        assert stored["no_auto_sell"] is True
-        # Order still live → but the user opted out, so no re-auto-start.
-        lp_web._reconcile_sell_builds(acct, orders)
-        assert "sell" not in lp_web.do_ind_builds_list({})["builds"][0]
-
-    def test_manual_start_clears_cancel_tombstone(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = self._built(runs=10)
-        b["no_auto_sell"] = True
-        lp_web._save_tracked_builds(acct, [b])
-        res = lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        assert res["ok"] is True
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        assert stored.get("no_auto_sell") in (None, False) \
-            and "no_auto_sell" not in stored
-        assert stored["sell"]["started_at"] is not None
-
-
-class TestReconcileAccrual:
-    def _setup(self, monkeypatch, tmp_path, sales_tax=0.0):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10, sales_tax=sales_tax)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        # Baseline order (10 units listed) + auto-link it.
-        orders0 = [_sell_order(700, 587, 10, 10, 160.0)]
-        lp_web._track_order_changes(acct, 1, orders0, {})
-        lp_web._reconcile_sell_builds(acct, orders0)
-        return acct, b
-
-    def test_partial_fill_accrues(self, monkeypatch, tmp_path):
-        acct, b = self._setup(monkeypatch, tmp_path)
-        # 4 units sell (remain 10 → 6).
-        orders1 = [_sell_order(700, 587, 6, 10, 160.0)]
-        lp_web._track_order_changes(acct, 1, orders1, {})
-        lp_web._reconcile_sell_builds(acct, orders1)
-        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
-        assert rz["units"] == 4
-        assert rz["net"] == 4 * 160.0            # 0% tax
-        assert rz["cost_of_sold"] == 4 * 100.0   # cost_per_unit 100
-        assert rz["profit"] == 4 * 60.0
-
-    def test_accrual_applies_sales_tax(self, monkeypatch, tmp_path):
-        acct, b = self._setup(monkeypatch, tmp_path, sales_tax=0.05)
-        orders1 = [_sell_order(700, 587, 6, 10, 160.0)]
-        lp_web._track_order_changes(acct, 1, orders1, {})
-        lp_web._reconcile_sell_builds(acct, orders1)
-        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
-        assert rz["net"] == 4 * 160.0 * 0.95
-
-    def test_no_double_count_on_rerun(self, monkeypatch, tmp_path):
-        acct, b = self._setup(monkeypatch, tmp_path)
-        orders1 = [_sell_order(700, 587, 6, 10, 160.0)]
-        lp_web._track_order_changes(acct, 1, orders1, {})
-        lp_web._reconcile_sell_builds(acct, orders1)
-        # Reconcile again with the SAME order state — no new fill event, so no
-        # change; and even a redundant reconcile must not re-accrue.
-        lp_web._reconcile_sell_builds(acct, orders1)
-        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
-        assert rz["units"] == 4
-
-    def test_fills_accumulate_and_close(self, monkeypatch, tmp_path):
-        acct, b = self._setup(monkeypatch, tmp_path)
-        # Advance the clock between syncs so each fill event gets a distinct id
-        # ({order}_{int(now)}); real sweeps are minutes apart, but the test runs
-        # sub-second, which would otherwise collide the two events' ids.
-        clock = [time.time() + 100]
-        monkeypatch.setattr(lp_web.time, "time", lambda: clock[0])
-        # Sell 6 (→4 remain), then the last 4 (order vanishes).
-        orders1 = [_sell_order(700, 587, 4, 10, 160.0)]
-        lp_web._track_order_changes(acct, 1, orders1, {})
-        lp_web._reconcile_sell_builds(acct, orders1)
-        clock[0] += 300
-        lp_web._track_order_changes(acct, 1, [], {})     # fully filled
-        lp_web._reconcile_sell_builds(acct, [])
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        rz = lp_web._build_realized(stored)
-        assert rz["units"] == 10
-        assert stored["sell"]["closed_at"] is not None
-        assert lp_web._build_stage(stored) == "sold"
-
-    def test_expired_fill_not_accrued(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        # Order issued 91 days ago w/ 90-day duration → vanishing = expired.
-        issued = _now_iso(-91 * 86400)
-        orders0 = [_sell_order(700, 587, 10, 10, 160.0, issued=issued)]
-        lp_web._track_order_changes(acct, 1, orders0, {})
-        lp_web._reconcile_sell_builds(acct, orders0)
-        lp_web._track_order_changes(acct, 1, [], {})     # vanishes → expired
-        lp_web._reconcile_sell_builds(acct, [])
-        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
-        assert rz["units"] == 0
-
-
-class TestRelistAfterExpiry:
-    """A linked order that expires with units unsold is dropped so the user's
-    re-listed order (at any new price) auto-links and keeps accruing — the sale
-    stays open, not closed."""
-
-    def test_expired_order_unlinks_and_stays_open(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        # A 90-day order past its expiry can't also be freshly-issued enough to
-        # auto-link, so link it manually (the accrual loop keys off the link, not
-        # the issued date). issued 91 days ago → vanishing counts as expired.
-        issued = _now_iso(-91 * 86400)
-        lp_web.do_ind_builds_sell_link({"id": [b["id"]], "order_id": ["700"]})
-        orders0 = [_sell_order(700, 587, 10, 10, 160.0, issued=issued)]
-        lp_web._track_order_changes(acct, 1, orders0, {})
-        lp_web._reconcile_sell_builds(acct, orders0)
-        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == ["700"]
-        # Order vanishes past its expiry → expired event; the linked id is dropped.
-        lp_web._track_order_changes(acct, 1, [], {})
-        lp_web._reconcile_sell_builds(acct, [])
-        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-        assert sell["order_ids"] == []
-        assert sell["closed_at"] is None                 # still selling, not done
-        assert lp_web._build_stage(lp_web.do_ind_builds_list({})["builds"][0]) == "listed"
-
-    def test_relisted_order_autolinks_at_new_price(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        clock = [time.time()]
-        monkeypatch.setattr(lp_web.time, "time", lambda: clock[0])
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        # First listing: 4 sell @ 160, then it expires with 6 unsold. Linked
-        # manually (an already-expiring order isn't fresh enough to auto-link).
-        issued = _now_iso(-91 * 86400)
-        lp_web.do_ind_builds_sell_link({"id": [b["id"]], "order_id": ["700"]})
-        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 10, 10, 160.0, issued=issued)], {})
-        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 10, 10, 160.0, issued=issued)])
-        clock[0] += 100
-        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 6, 10, 160.0, issued=issued)], {})
-        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 6, 10, 160.0, issued=issued)])
-        clock[0] += 100
-        lp_web._track_order_changes(acct, 1, [], {})     # expires, 6 unsold
-        lp_web._reconcile_sell_builds(acct, [])
-        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == []
-        # Re-list the remaining 6 at a DIFFERENT price (155) — a fresh order.
-        clock[0] += 100
-        relist = [_sell_order(701, 587, 6, 6, 155.0, issued=_now_iso())]
-        lp_web._track_order_changes(acct, 1, relist, {})
-        lp_web._reconcile_sell_builds(acct, relist)
-        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-        assert sell["order_ids"] == ["701"]              # new order auto-linked
-        # Those 6 now sell at 155.
-        clock[0] += 100
-        lp_web._track_order_changes(acct, 1, [_sell_order(701, 587, 0, 6, 155.0, issued=_now_iso())], {})
-        lp_web._reconcile_sell_builds(acct, [])
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        rz = lp_web._build_realized(stored)
-        assert rz["units"] == 10                         # 4 @ 160 + 6 @ 155
-        assert rz["net"] == 4 * 160.0 + 6 * 155.0        # mixed prices booked
-        assert stored["sell"]["closed_at"] is not None   # target met → closed
-
-
-class TestCloseOut:
-    """Closing out a partial sale marks it sold and writes off the unsold
-    remainder's frozen cost as a realized loss ('closed early')."""
-
-    def _partial(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)                          # cost/unit 100
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 10, 10, 160.0)], {})
-        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 10, 10, 160.0)])
-        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 6, 10, 160.0)], {})  # 4 sold
-        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 6, 10, 160.0)])
-        return acct, b
-
-    def test_close_writes_off_remainder(self, monkeypatch, tmp_path):
-        acct, b = self._partial(monkeypatch, tmp_path)
-        res = lp_web.do_ind_builds_sell_close({"id": [b["id"]]})
-        assert res["ok"] is True
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        sell = stored["sell"]
-        assert sell["closed_at"] is not None
-        assert sell["closed_early"] is True
-        assert sell["writeoff_units"] == 6                # 10 target − 4 sold
-        assert sell["writeoff_cost"] == 6 * 100.0
-        assert lp_web._build_stage(stored) == "sold"
-        rz = lp_web._build_realized(stored)
-        assert rz["units"] == 4
-        # Profit = 4 sold @ 60 each − 600 written off = 240 − 600 = −360.
-        assert rz["profit"] == 4 * 60.0 - 6 * 100.0
-
-    def test_close_clears_capital_in_flight(self, monkeypatch, tmp_path):
-        acct, b = self._partial(monkeypatch, tmp_path)
-        lp_web.do_ind_builds_sell_close({"id": [b["id"]]})
-        s = lp_web.do_ind_summary({})
-        assert s["totals"]["capital_in_flight"] == 0.0    # sold stage → nothing in flight
-        assert s["totals"]["realized_profit"] == 4 * 60.0 - 6 * 100.0
-
-    def test_close_requires_active_sale(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        b = _save_build(runs=10)                          # never started selling
-        assert "error" in lp_web.do_ind_builds_sell_close({"id": [b["id"]]})
-
-    def test_close_is_idempotent(self, monkeypatch, tmp_path):
-        acct, b = self._partial(monkeypatch, tmp_path)
-        lp_web.do_ind_builds_sell_close({"id": [b["id"]]})
-        first = lp_web.do_ind_builds_list({})["builds"][0]["sell"]["closed_at"]
-        lp_web.do_ind_builds_sell_close({"id": [b["id"]]})   # no-op
-        second = lp_web.do_ind_builds_list({})["builds"][0]["sell"]["closed_at"]
-        assert first == second
-
-
-class TestTrimRealized:
-    def test_trim_to_zero_empties(self):
-        entries = [{"units": 4, "gross": 400.0, "net": 380.0}]
-        assert lp_web._trim_realized(entries, 0) == []
-
-    def test_trim_keeps_all_when_at_or_above_total(self):
-        entries = [{"units": 4, "gross": 400.0, "net": 380.0},
-                   {"units": 6, "gross": 600.0, "net": 570.0}]
-        assert lp_web._trim_realized(entries, 10) == entries
-        assert lp_web._trim_realized(entries, 99) == entries
-
-    def test_trim_keeps_whole_entries_on_boundary(self):
-        entries = [{"units": 4, "gross": 400.0, "net": 380.0},
-                   {"units": 6, "gross": 600.0, "net": 570.0}]
-        kept = lp_web._trim_realized(entries, 4)
-        assert len(kept) == 1 and kept[0]["units"] == 4
-
-    def test_trim_splits_boundary_entry_proportionally(self):
-        entries = [{"units": 10, "gross": 1000.0, "net": 950.0}]
-        kept = lp_web._trim_realized(entries, 4)
-        assert len(kept) == 1
-        assert kept[0]["units"] == 4
-        assert kept[0]["gross"] == 400.0
-        assert kept[0]["net"] == 380.0
-
-
-class TestSellEdit:
-    def test_edit_requires_active_sale(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        b = _save_build(runs=10)                          # never started selling
-        assert "error" in lp_web.do_ind_builds_sell_edit({"id": [b["id"]]})
-
-    def test_edit_target_only(self, monkeypatch, tmp_path):
+    def test_listed_when_stock_on_market(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        res = lp_web.do_ind_builds_sell_edit({"id": [b["id"]], "qty_target": ["8900"]})
-        assert res["build"]["sell"]["qty_target"] == 8900
+        b["done_at"] = time.time()
+        assert lp_web._build_stage(b, alloc={"sold": 2}, listed_units=8) == "listed"
 
-    def test_edit_units_trims_ledger(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 10, 10, 160.0)], {})
-        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 10, 10, 160.0)])
-        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 4, 10, 160.0)], {})  # 6 sold
-        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 4, 10, 160.0)])
-        # Correct 6 → 2 sold.
-        lp_web.do_ind_builds_sell_edit({"id": [b["id"]], "units": ["2"]})
-        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
-        assert rz["units"] == 2
-        assert rz["net"] == 2 * 160.0
-
-    def test_false_sold_reopens_and_tombstones_stale_order(self, monkeypatch, tmp_path):
-        # The recovery path: an order was cancelled (counted as fully sold); the
-        # user zeroes the sold count. The sale reopens and the stale order is
-        # tombstoned so its old fill events don't re-accrue on the next sweep.
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        clock = [time.time()]
-        monkeypatch.setattr(lp_web.time, "time", lambda: clock[0])
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 10, 10, 160.0)], {})
-        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 10, 10, 160.0)])
-        clock[0] += 300
-        lp_web._track_order_changes(acct, 1, [], {})       # vanishes → counted sold
-        lp_web._reconcile_sell_builds(acct, [])
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        assert stored["sell"]["closed_at"] is not None     # falsely fully sold
-        # Undo: it wasn't sold — set units to 0.
-        clock[0] += 300
-        lp_web.do_ind_builds_sell_edit({"id": [b["id"]], "units": ["0"]})
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        sell = stored["sell"]
-        assert sell["closed_at"] is None                   # reopened
-        assert sell["order_ids"] == []                     # stale order dropped
-        assert "700" in stored["unlinked_ids"]             # …and tombstoned
-        assert lp_web._build_realized(stored)["units"] == 0
-        assert lp_web._build_stage(stored) == "listed"
-        # A re-sweep with the (still-gone) order must not re-accrue the old fill.
-        clock[0] += 300
-        lp_web._reconcile_sell_builds(acct, [])
-        assert lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])["units"] == 0
-
-    def test_edit_reopen_then_relist_consolidates(self, monkeypatch, tmp_path):
-        # After reopening at a new (larger) target, a fresh order auto-links and
-        # accrues toward the new target — the consolidation flow.
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        clock = [time.time()]
-        monkeypatch.setattr(lp_web.time, "time", lambda: clock[0])
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        lp_web._track_order_changes(acct, 1, [_sell_order(700, 587, 10, 10, 160.0)], {})
-        lp_web._reconcile_sell_builds(acct, [_sell_order(700, 587, 10, 10, 160.0)])
-        clock[0] += 300
-        lp_web._track_order_changes(acct, 1, [], {})       # cancelled → counted sold
-        lp_web._reconcile_sell_builds(acct, [])
-        clock[0] += 300
-        lp_web.do_ind_builds_sell_edit(
-            {"id": [b["id"]], "units": ["0"], "qty_target": ["20"]})
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        assert stored["sell"]["qty_target"] == 20
-        assert stored["sell"]["closed_at"] is None
-        # New order (id 701, freshly issued) auto-links and fills.
-        clock[0] += 300
-        relist = [_sell_order(701, 587, 20, 20, 155.0, issued=_now_iso())]
-        lp_web._track_order_changes(acct, 1, relist, {})
-        lp_web._reconcile_sell_builds(acct, relist)
-        assert lp_web.do_ind_builds_list({})["builds"][0]["sell"]["order_ids"] == ["701"]
-
-
-class TestArchive:
-    def test_archive_sets_flag(self, monkeypatch, tmp_path):
+    def test_sold_when_all_units_sold(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build(runs=10)
-        res = lp_web.do_ind_builds_archive({"id": [b["id"]]})
-        assert res["ok"] is True
-        assert lp_web.do_ind_builds_list({})["builds"][0]["archived"] is True
+        b["done_at"] = time.time()
+        assert lp_web._build_stage(b, alloc={"sold": 10}, listed_units=0) == "sold"
 
-    def test_unarchive_removes_flag(self, monkeypatch, tmp_path):
+    def test_abandoned_is_sold(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build(runs=10)
-        lp_web.do_ind_builds_archive({"id": [b["id"]]})
-        lp_web.do_ind_builds_archive({"id": [b["id"]], "archived": ["0"]})
-        assert "archived" not in lp_web.do_ind_builds_list({})["builds"][0]
+        b["done_at"] = time.time()
+        b["abandoned"] = True
+        assert lp_web._build_stage(b, alloc={"sold": 3}, listed_units=5) == "sold"
 
-    def test_archive_unknown_build(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        assert "error" in lp_web.do_ind_builds_archive({"id": ["nope"]})
 
-    def test_archived_build_still_counts_in_stats(self, monkeypatch, tmp_path):
-        # Archiving is a declutter, not a delete — realized profit stays in totals.
+# ── Ledger reconcile: wallet transactions in, deduped by transaction_id ──────
+class TestLedgerReconcile:
+    def test_sell_txn_accrues_realized_profit(self, monkeypatch, tmp_path):
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)
-        b_stored = lp_web.do_ind_builds_list({})["builds"][0]
-        b_stored["sell"] = {"started_at": 1.0, "closed_at": 2.0,
-                            "qty_target": 10, "cost_per_unit": 100.0,
-                            "realized": [{"event_id": "x", "units": 10,
-                                          "price": 160.0, "net": 1600.0}]}
-        lp_web._save_tracked_builds(acct, [b_stored])
-        before = lp_web.do_ind_summary({})["totals"]["realized_profit"]
-        lp_web.do_ind_builds_archive({"id": [b["id"]]})
-        after = lp_web.do_ind_summary({})["totals"]["realized_profit"]
-        assert before == after == 600.0
-
-
-class TestSummary:
-    def test_empty(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        assert lp_web.do_ind_summary({})["builds"] == []
-
-    def test_capital_in_flight_counts_unsold(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        _save_build(runs=10)  # batch cost 1000, nothing sold
-        s = lp_web.do_ind_summary({})
-        assert s["totals"]["capital_in_flight"] == 1000.0
-        assert s["totals"]["realized_profit"] == 0.0
-
-    def test_realized_profit_rolls_up(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        orders0 = [_sell_order(700, 587, 10, 10, 160.0)]
-        lp_web._track_order_changes(acct, 1, orders0, {})
-        lp_web._reconcile_sell_builds(acct, orders0)
-        orders1 = [_sell_order(700, 587, 6, 10, 160.0)]  # 4 sold
-        lp_web._track_order_changes(acct, 1, orders1, {})
-        lp_web._reconcile_sell_builds(acct, orders1)
-        s = lp_web.do_ind_summary({})
-        assert s["totals"]["realized_profit"] == 4 * 60.0
-        # 4 of 10 units sold → 600 of the 1000 batch cost still in flight.
-        assert s["totals"]["capital_in_flight"] == 600.0
-        assert s["by_product"][0]["units_sold"] == 4
-        assert s["by_product"][0]["realized_profit"] == 240.0
-
-    def test_summary_exposes_raw_fills_for_time_filter(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        b = _save_build(runs=10)
-        lp_web.do_ind_builds_sell_start({"id": [b["id"]]})
-        orders0 = [_sell_order(700, 587, 10, 10, 160.0)]
-        lp_web._track_order_changes(acct, 1, orders0, {})
-        lp_web._reconcile_sell_builds(acct, orders0)
-        orders1 = [_sell_order(700, 587, 6, 10, 160.0)]  # 4 sold
-        lp_web._track_order_changes(acct, 1, orders1, {})
-        lp_web._reconcile_sell_builds(acct, orders1)
-        s = lp_web.do_ind_summary({})
-        sell = s["builds"][0]["sell"]
-        assert sell["cost_per_unit"] == 100.0
-        assert len(sell["fills"]) == 1
-        assert sell["fills"][0]["units"] == 4
-        assert sell["fills"][0]["net"] == 4 * 160.0
-        assert sell["fills"][0]["ts"] is not None
-
-    def test_sold_build_no_capital(self, monkeypatch, tmp_path):
-        _bind(monkeypatch, tmp_path, _acct())
-        b = _save_build(runs=10)
-        b_stored = lp_web.do_ind_builds_list({})["builds"][0]
-        b_stored["sell"] = {"started_at": 1.0, "closed_at": 2.0,
-                            "qty_target": 10, "cost_per_unit": 100.0,
-                            "realized": [{"event_id": "x", "units": 10,
-                                          "price": 160.0, "net": 1600.0}]}
-        lp_web._save_tracked_builds(lp_web.current_account(), [b_stored])
-        s = lp_web.do_ind_summary({})
-        assert s["totals"]["capital_in_flight"] == 0.0
-        assert s["totals"]["realized_profit"] == 600.0
-
-
-def _txn(transaction_id, type_id, quantity, unit_price, date=None, is_buy=False):
-    """One wallet transaction, ESI shape. Note: no order_id (ESI omits it)."""
-    return {"transaction_id": transaction_id, "type_id": type_id,
-            "quantity": quantity, "unit_price": unit_price,
-            "date": date or _now_iso(), "is_buy": is_buy}
-
-
-class TestInstantSell:
-    """Instant sells (into buy orders) leave no market order, so they're accrued
-    from wallet transactions by _reconcile_instant_sell_builds — a separate path
-    that must never touch a listed sale and never double-count."""
-
-    def _built(self, runs=10, **snap):
-        b = _save_build(runs=runs, **snap)
-        stored = lp_web.do_ind_builds_list({})["builds"][0]
-        stored["job_id"] = "123"
-        stored["done_at"] = time.time()
-        lp_web._save_tracked_builds(lp_web.current_account(), [stored])
-        return stored
-
-    def test_auto_adopts_instant_sale_from_transactions(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        txns = [_txn(9001, 587, 4, 130.0)]        # 4 Rifters sold instantly @ 130
-        lp_web._reconcile_instant_sell_builds(acct, txns)
-        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-        assert sell["mode"] == "instant"
-        assert sell["auto"] is True
-        assert sell["cost_per_unit"] == 100.0
-        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
-        assert rz["units"] == 4
-        assert rz["net"] == 4 * 130.0
-        assert rz["profit"] == 4 * (130.0 - 100.0)
-
-    def test_real_received_price_used(self, monkeypatch, tmp_path):
-        # Revenue is the actual per-unit sale price from the wallet, not our bid.
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        lp_web._reconcile_instant_sell_builds(acct, [_txn(9001, 587, 2, 118.0)])
-        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
-        assert rz["net"] == 2 * 118.0
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=4, price=150.0)])
+        res = lp_web.do_ind_summary({})
+        sb = _summary_build(res, b["id"])
+        assert sb["realized"]["units"] == 4
+        assert sb["realized"]["net"] == 600.0        # 4×150, tax 0
+        assert sb["realized"]["profit"] == 200.0     # 600 − 4×100
 
     def test_sales_tax_applied(self, monkeypatch, tmp_path):
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10, sales_tax=0.08)
-        lp_web._reconcile_instant_sell_builds(acct, [_txn(9001, 587, 5, 130.0)])
-        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
-        assert rz["net"] == 5 * 130.0 * (1 - 0.08)
+        b = _built(runs=10, sales_tax=0.05)
+        _reconcile(acct, [_txn(1, qty=10, price=200.0)])
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert sb["realized"]["net"] == 10 * 200.0 * 0.95
 
-    def test_dedup_by_transaction_id(self, monkeypatch, tmp_path):
-        # ESI re-returns the same recent transactions each poll — never re-accrue.
+    def test_dedup_across_reruns(self, monkeypatch, tmp_path):
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        txns = [_txn(9001, 587, 4, 130.0)]
-        lp_web._reconcile_instant_sell_builds(acct, txns)
-        lp_web._reconcile_instant_sell_builds(acct, txns)   # same feed again
-        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
-        assert rz["units"] == 4
-
-    def test_closes_at_target(self, monkeypatch, tmp_path):
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)              # target = 10 units
-        lp_web._reconcile_instant_sell_builds(acct, [_txn(9001, 587, 6, 130.0)])
-        assert (lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-                .get("closed_at")) is None
-        lp_web._reconcile_instant_sell_builds(acct, [_txn(9002, 587, 4, 131.0)])
-        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-        assert sell["closed_at"] is not None
-        assert lp_web._build_stage(lp_web.do_ind_builds_list({})["builds"][0]) == "sold"
-
-    def test_does_not_exceed_target(self, monkeypatch, tmp_path):
-        # A larger sale than the batch (item also flipped) is capped at the target.
-        acct = _acct()
-        _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        lp_web._reconcile_instant_sell_builds(acct, [_txn(9001, 587, 25, 130.0)])
-        rz = lp_web._build_realized(lp_web.do_ind_builds_list({})["builds"][0])
-        assert rz["units"] == 10
+        b = _built(runs=10)
+        t = _txn(1, qty=4, price=150.0)
+        _reconcile(acct, [t])
+        _reconcile(acct, [t])   # same transaction next sweep
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert sb["realized"]["units"] == 4
 
     def test_buy_transactions_ignored(self, monkeypatch, tmp_path):
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        lp_web._reconcile_instant_sell_builds(
-            acct, [_txn(9001, 587, 5, 130.0, is_buy=True)])   # a purchase
-        assert (lp_web.do_ind_builds_list({})["builds"][0].get("sell") or {}) \
-            .get("started_at") is None
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=4, price=150.0, is_buy=True)])
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert sb["realized"]["units"] == 0
 
-    def test_wrong_type_not_matched(self, monkeypatch, tmp_path):
+    def test_reprice_is_invisible(self, monkeypatch, tmp_path):
+        # Two fills of the same item at different prices (a re-priced listing):
+        # both accrue at their real wallet price — price is never a matching key.
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        lp_web._reconcile_instant_sell_builds(acct, [_txn(9001, 999999, 5, 130.0)])
-        assert (lp_web.do_ind_builds_list({})["builds"][0].get("sell") or {}) \
-            .get("started_at") is None
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=5, price=150.0)])
+        _reconcile(acct, [_txn(2, qty=5, price=130.0)])   # dropped the price
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert sb["realized"]["units"] == 10
+        assert sb["realized"]["net"] == 5 * 150 + 5 * 130
 
-    def test_transaction_before_built_not_matched(self, monkeypatch, tmp_path):
-        # A sale dated well before the job finished isn't this batch's output.
+
+# ── Parallel batches of the same item: FIFO, no order linking ────────────────
+class TestParallelBatches:
+    def test_two_batches_fifo_by_done_at(self, monkeypatch, tmp_path):
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        old = _now_iso(-(lp_web._INSTANT_SELL_BACKDATE + 3600))
-        lp_web._reconcile_instant_sell_builds(acct, [_txn(9001, 587, 5, 130.0, date=old)])
-        assert (lp_web.do_ind_builds_list({})["builds"][0].get("sell") or {}) \
-            .get("started_at") is None
+        old = _built(runs=40, done_at=1000.0)
+        new = _built(runs=40, done_at=2000.0)
+        # 50 units sold across (re-priced) orders — no order id anywhere.
+        _reconcile(acct, [_txn(1, qty=50, price=150.0, date="2026-07-20T00:00:00Z")])
+        res = lp_web.do_ind_summary({})
+        assert _summary_build(res, old["id"])["realized"]["units"] == 40
+        assert _summary_build(res, new["id"])["realized"]["units"] == 10
 
-    def test_not_built_does_not_adopt(self, monkeypatch, tmp_path):
+    def test_user_40_40_30_scenario(self, monkeypatch, tmp_path):
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        _save_build(runs=10)              # planned, no done_at
-        lp_web._reconcile_instant_sell_builds(acct, [_txn(9001, 587, 5, 130.0)])
-        assert (lp_web.do_ind_builds_list({})["builds"][0].get("sell") or {}) \
-            .get("started_at") is None
+        b1 = _built(runs=40, done_at=1000.0)
+        b2 = _built(runs=40, done_at=2000.0)
+        b3 = _built(runs=30, done_at=3000.0, total_cost=90.0, required_items=[])
+        _reconcile(acct, [
+            _txn(1, qty=25, price=150.0, date="2026-07-01T00:00:00Z"),
+            _txn(2, qty=30, price=140.0, date="2026-07-02T00:00:00Z"),
+            _txn(3, qty=20, price=160.0, date="2026-07-03T00:00:00Z"),
+        ])
+        res = lp_web.do_ind_summary({})
+        assert _summary_build(res, b1["id"])["realized"]["units"] == 40
+        assert _summary_build(res, b2["id"])["realized"]["units"] == 35
+        assert _summary_build(res, b3["id"])["realized"]["units"] == 0
+        # Product roll-up: 75 sold, net independent of order attribution.
+        prod = next(p for p in res["by_product"] if p["type_id"] == 587)
+        assert prod["units_sold"] == 75
 
-    def test_cancel_tombstone_blocks_adopt(self, monkeypatch, tmp_path):
+    def test_overflow_not_over_attributed(self, monkeypatch, tmp_path):
+        # One 10-unit batch, 15 units sold (5 flipped from untracked stock).
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        b = self._built(runs=10)
-        b["no_auto_sell"] = True
-        lp_web._save_tracked_builds(acct, [b])
-        lp_web._reconcile_instant_sell_builds(acct, [_txn(9001, 587, 5, 130.0)])
-        assert (lp_web.do_ind_builds_list({})["builds"][0].get("sell") or {}) \
-            .get("started_at") is None
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=15, price=150.0)])
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert sb["realized"]["units"] == 10   # capped at production
 
-    def test_listed_sale_untouched_by_instant_path(self, monkeypatch, tmp_path):
-        # A build already in a listed sale (has a real order) must be skipped by
-        # the instant path — otherwise a wallet transaction would double-count
-        # the same fill the order-diff engine already booked.
+
+# ── Summary: totals, capital in flight, pipeline flow ────────────────────────
+class TestSummary:
+    def test_empty(self, monkeypatch, tmp_path):
+        _bind(monkeypatch, tmp_path, _acct())
+        res = lp_web.do_ind_summary({})
+        assert res["builds"] == []
+        assert res["totals"]["realized_profit"] == 0.0
+
+    def test_capital_in_flight_planned(self, monkeypatch, tmp_path):
+        _bind(monkeypatch, tmp_path, _acct())
+        _save_build(runs=10)   # planned, nothing produced
+        res = lp_web.do_ind_summary({})
+        assert res["totals"]["capital_in_flight"] == 1000.0
+
+    def test_capital_in_flight_drops_as_units_sell(self, monkeypatch, tmp_path):
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        self._built(runs=10)
-        orders = [_sell_order(700, 587, 10, 10, 160.0)]
-        lp_web._track_order_changes(acct, 1, orders, {})
-        lp_web._reconcile_sell_builds(acct, orders)      # auto-starts a LISTED sale
-        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-        assert sell.get("mode") != "instant"
-        assert sell["order_ids"] == ["700"]
-        # Now a matching transaction arrives — must NOT be accrued here.
-        lp_web._reconcile_instant_sell_builds(acct, [_txn(9001, 587, 4, 130.0)])
-        sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-        assert sell.get("mode") != "instant"
-        assert not any(e.get("transaction_id") for e in sell.get("realized", []))
+        _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=4, price=150.0)])
+        res = lp_web.do_ind_summary({})
+        # 6 unsold × 100 cost basis
+        assert res["totals"]["capital_in_flight"] == 600.0
 
-    def test_listed_fill_txn_not_rescooped_by_second_batch(self, monkeypatch, tmp_path):
-        # The reported bug: batch A sold via a LISTED order (fills accrued by
-        # event id, wallet transactions left unclaimed). A fresh batch B of the
-        # SAME item is then built; feeding the wallet must NOT re-scoop batch A's
-        # transactions as a phantom instant sale on B.
+    def test_sold_build_no_capital(self, monkeypatch, tmp_path):
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        # Batch A: built, then listed and fully sold (10 units @ 160).
-        a = self._built(runs=10)
-        orders0 = [_sell_order(700, 587, 10, 10, 160.0)]
-        lp_web._track_order_changes(acct, 1, orders0, {})
-        # Wallet carries A's sale as transactions (same product+price as the fill).
-        txns = [_txn(9001, 587, 10, 160.0)]
-        lp_web._reconcile_sell_builds(acct, orders0, txns)   # auto-starts listed sale
-        orders1 = [_sell_order(700, 587, 0, 10, 160.0)]      # 10 sold
-        lp_web._track_order_changes(acct, 1, orders1, {})
-        lp_web._reconcile_sell_builds(acct, orders1, txns)
-        # The listed fill stamped A's transaction id as consumed.
-        a_sell = lp_web.do_ind_builds_list({})["builds"][0]["sell"]
-        assert a_sell.get("mode") != "instant"
-        assert "9001" in {str(t) for e in a_sell["realized"]
-                          for t in (e.get("transaction_ids") or [])}
-        # Batch B: a second build of the same item, freshly built (added
-        # alongside A — _built() replaces the whole list, so build B by hand).
-        b = _save_build(runs=10)
-        stored = lp_web.do_ind_builds_list({})["builds"]
-        b_rec = next(x for x in stored if x["id"] == b["id"])
-        b_rec["job_id"] = "456"
-        b_rec["done_at"] = time.time()
-        lp_web._save_tracked_builds(acct, stored)
-        # Same wallet feed (ESI re-returns recent transactions) — B must NOT
-        # adopt A's already-consumed transaction as an instant sale.
-        lp_web._reconcile_instant_sell_builds(acct, txns)
-        builds = lp_web.do_ind_builds_list({})["builds"]
-        b_stored = next(x for x in builds if x["id"] == b["id"])
-        assert (b_stored.get("sell") or {}).get("started_at") is None
+        _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=10, price=150.0)])
+        res = lp_web.do_ind_summary({})
+        assert res["totals"]["capital_in_flight"] == 0.0
+        assert res["totals"]["realized_profit"] == 500.0
 
-    def test_one_transaction_not_split_across_builds(self, monkeypatch, tmp_path):
-        # Two concurrent built batches of the same item; each transaction id is
-        # claimed by at most one build (oldest-finished first). Build the two
-        # explicitly with distinct ids + done_at so the ordering is deterministic.
+    def test_pipeline_flow_reported(self, monkeypatch, tmp_path):
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        snap = _snapshot()
-        now = time.time()
-        older = {"id": "older", "created_at": now - 200, "runs": 10,
-                 "blueprint_id": 999, "product_type_id": 587,
-                 "product_name": "Rifter", "snapshot": snap,
-                 "job_id": "1", "done_at": now - 100}
-        newer = {"id": "newer", "created_at": now - 50, "runs": 10,
-                 "blueprint_id": 999, "product_type_id": 587,
-                 "product_name": "Rifter", "snapshot": snap,
-                 "job_id": "2", "done_at": now - 10}
-        lp_web._save_tracked_builds(acct, [newer, older])
-        lp_web._reconcile_instant_sell_builds(acct, [_txn(9001, 587, 10, 130.0)])
-        stored = {bb["id"]: bb for bb in lp_web.do_ind_builds_list({})["builds"]}
-        # The single 10-unit sale fills the older build fully; none double-counted.
-        assert lp_web._build_realized(stored["older"])["units"] == 10
-        assert lp_web._build_realized(stored["newer"])["units"] == 0
+        _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=4, price=150.0)])
+        lp_web._record_listed_units(acct, 1, [
+            {"is_buy_order": False, "type_id": 587, "volume_remain": 6}])
+        res = lp_web.do_ind_summary({})
+        prod = next(p for p in res["by_product"] if p["type_id"] == 587)
+        flow = prod["flow"]
+        assert flow["produced"] == 10
+        assert flow["sold"] == 4
+        assert flow["in_stock"] == 6
+        assert flow["listed"] == 6
+
+
+# ── Abandon: write off the unsold remainder ──────────────────────────────────
+class TestAbandon:
+    def test_abandon_writes_off_remainder(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=4, price=60.0)])   # sold cheap
+        res = lp_web.do_ind_builds_sell_abandon({"id": [b["id"]]})
+        assert res["ok"] is True
+        assert res["build"]["writeoff_units"] == 6
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        # profit = 4×60 net − 4×100 cost − 6×100 writeoff
+        assert sb["realized"]["profit"] == 4 * 60 - 4 * 100 - 6 * 100
+        assert sb["stage"] == "sold"
+
+    def test_abandon_clears_capital_in_flight(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=4, price=150.0)])
+        lp_web.do_ind_builds_sell_abandon({"id": [b["id"]]})
+        res = lp_web.do_ind_summary({})
+        assert res["totals"]["capital_in_flight"] == 0.0
+
+    def test_abandoned_lot_stops_absorbing_fills(self, monkeypatch, tmp_path):
+        # After abandoning batch A's remainder, later sales flow to batch B.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        a = _built(runs=10, done_at=1000.0)
+        b = _built(runs=10, done_at=2000.0)
+        _reconcile(acct, [_txn(1, qty=4, price=150.0, date="2026-07-01T00:00:00Z")])
+        lp_web.do_ind_builds_sell_abandon({"id": [a["id"]]})   # a: 4 sold, 6 written off
+        _reconcile(acct, [_txn(2, qty=5, price=150.0, date="2026-07-05T00:00:00Z")])
+        res = lp_web.do_ind_summary({})
+        # a stays at 4 (cap now 4); the 5 new units go to b.
+        assert _summary_build(res, a["id"])["realized"]["units"] == 4
+        assert _summary_build(res, b["id"])["realized"]["units"] == 5
+
+    def test_unabandon_restores(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        lp_web.do_ind_builds_sell_abandon({"id": [b["id"]]})
+        lp_web.do_ind_builds_sell_abandon({"id": [b["id"]], "abandoned": ["0"]})
+        res = lp_web.do_ind_summary({})
+        assert _summary_build(res, b["id"])["abandoned"] is False
+        assert res["totals"]["capital_in_flight"] == 1000.0
+
+    def test_abandon_requires_built(self, monkeypatch, tmp_path):
+        _bind(monkeypatch, tmp_path, _acct())
+        b = _save_build(runs=10)   # planned, not built
+        res = lp_web.do_ind_builds_sell_abandon({"id": [b["id"]]})
+        assert "error" in res
+
+
+# ── Archive still counts in stats (declutter, not delete) ────────────────────
+class TestArchive:
+    def test_archived_build_still_counts(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=10, price=150.0)])
+        lp_web.do_ind_builds_archive({"id": [b["id"]]})
+        res = lp_web.do_ind_summary({})
+        assert res["totals"]["realized_profit"] == 500.0
+
+
+# ── Migration from the legacy per-build sell blobs ───────────────────────────
+class TestMigration:
+    def test_migrates_realized_fills_into_ledger(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        # Hand-craft a legacy build with a sell blob (as the old model stored it).
+        builds = lp_web._load_tracked_builds(acct)
+        rec = next(x for x in builds if x["id"] == b["id"])
+        rec["sell"] = {
+            "started_at": 1.0, "cost_per_unit": 100.0, "qty_target": 10,
+            "realized": [
+                {"event_id": "e1", "ts": 5.0, "units": 3, "price": 150.0,
+                 "net": 450.0, "transaction_ids": [111]},
+                {"event_id": "e2", "ts": 6.0, "units": 2, "price": 150.0,
+                 "net": 300.0},   # order-diff fill with no txn id
+            ],
+        }
+        lp_web._save_tracked_builds(acct, builds)
+        res = lp_web.do_ind_summary({})   # triggers migration
+        sb = _summary_build(res, b["id"])
+        assert sb["realized"]["units"] == 5
+        assert sb["realized"]["net"] == 750.0
+        # Legacy sell scaffolding is gone; ledger now holds the fills.
+        migrated = next(x for x in lp_web._load_tracked_builds(acct)
+                        if x["id"] == b["id"])
+        assert "sell" not in migrated
+        assert len(lp_web._load_sell_ledger(acct)["587"]) == 2
+
+    def test_migration_is_idempotent(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        builds = lp_web._load_tracked_builds(acct)
+        rec = next(x for x in builds if x["id"] == b["id"])
+        rec["sell"] = {"started_at": 1.0, "cost_per_unit": 100.0, "qty_target": 10,
+                       "realized": [{"event_id": "e1", "ts": 5.0, "units": 3,
+                                     "price": 150.0, "net": 450.0}]}
+        lp_web._save_tracked_builds(acct, builds)
+        lp_web.do_ind_summary({})
+        lp_web.do_ind_summary({})   # second call must not re-seed
+        assert len(lp_web._load_sell_ledger(acct)["587"]) == 1
+
+    def test_migrates_closed_early_to_abandoned(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        builds = lp_web._load_tracked_builds(acct)
+        rec = next(x for x in builds if x["id"] == b["id"])
+        rec["sell"] = {
+            "started_at": 1.0, "closed_at": 9.0, "closed_early": True,
+            "cost_per_unit": 100.0, "qty_target": 10, "writeoff_units": 6,
+            "realized": [{"event_id": "e1", "ts": 5.0, "units": 4, "price": 60.0,
+                          "net": 240.0}],
+        }
+        lp_web._save_tracked_builds(acct, builds)
+        res = lp_web.do_ind_summary({})
+        sb = _summary_build(res, b["id"])
+        assert sb["abandoned"] is True
+        assert sb["stage"] == "sold"
+        assert sb["realized"]["profit"] == 4 * 60 - 4 * 100 - 6 * 100

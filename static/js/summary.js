@@ -5,10 +5,7 @@
 // left to earn, and the estimated total. The board below carries the per-build
 // detail, so this stays a glanceable ribbon rather than a second dashboard.
 
-let SUMMARY = { data:null, range:"all", loading:false };
-
-const _SUM_STAGE_LABEL = {planned:"Planned", building:"Building", built:"Built",
-                          listed:"Listed", sold:"Sold"};
+let SUMMARY = { data:null, loading:false };
 
 function loadSummary(){
   if(!AUTH.loggedIn){ return; }
@@ -17,37 +14,26 @@ function loadSummary(){
   fetch("/api/ind/summary").then(r=>r.json()).then(res=>{
     SUMMARY.data = res || {builds:[], totals:{}, by_product:[]};
     SUMMARY.loading = false;
+    // Fold the server-derived per-build state (stage / realized / abandoned)
+    // into the board's builds, then re-render both the strip and the board.
+    if(typeof mergeSummaryBuilds==="function" && mergeSummaryBuilds(SUMMARY.data)
+       && typeof renderIndBuilds==="function") renderIndBuilds();
     renderSummary();
   }).catch(()=>{ SUMMARY.loading=false; renderSummary(); });
 }
 
-// Realized profit within the selected time window, recomputed from raw fills
-// (ts/net) and each build's frozen cost basis. "all" uses the server totals.
+// Realized profit within the selected time window. The pooled model keeps money
+// in a per-product wallet ledger, not a per-build fill list, so the server's
+// window-aware breakdown isn't reconstructable per build on the client — the
+// range toggle currently reports the all-time totals for every window. (A future
+// server-side windowed rollup can fill 7d/30d honestly; until then "all" is the
+// only exact figure and the others mirror it rather than under-count.)
 function _sumRealizedInRange(){
   const d=SUMMARY.data;
   if(!d) return {profit:0, net:0, units:0};
-  if(SUMMARY.range==="all"){
-    return {profit:(d.totals&&d.totals.realized_profit)||0,
-            net:(d.totals&&d.totals.realized_net)||0,
-            units:d.builds.reduce((s,b)=>s+((b.realized&&b.realized.units)||0),0)};
-  }
-  const now=Date.now()/1000;
-  const cutoff = now - (SUMMARY.range==="week"?7*86400:30*86400);
-  let profit=0, net=0, units=0;
-  d.builds.forEach(b=>{
-    const sell=b.sell; if(!sell||!sell.fills) return;
-    const cpu=sell.cost_per_unit;
-    sell.fills.forEach(f=>{
-      if((f.ts||0)<cutoff) return;
-      net+=f.net||0; units+=f.units||0;
-      if(cpu!=null) profit+=(f.net||0)-(f.units||0)*cpu;
-    });
-    // A close-out write-off is a realized loss booked at the close date — count
-    // it in the window so the ranged total matches the all-time one.
-    if(sell.closed_early && sell.writeoff_cost && (sell.closed_at||0)>=cutoff)
-      profit-=sell.writeoff_cost;
-  });
-  return {profit, net, units};
+  return {profit:(d.totals&&d.totals.realized_profit)||0,
+          net:(d.totals&&d.totals.realized_net)||0,
+          units:d.builds.reduce((s,b)=>s+((b.realized&&b.realized.units)||0),0)};
 }
 
 // Portfolio figures distilled from the summary payload: realized (booked),
@@ -63,8 +49,8 @@ function _sumFigures(){
     const cpu=b.cost_per_unit, ask=b.ask;
     if(cpu==null||ask==null) return;
     const sold=(b.realized&&b.realized.units)||0;
-    const target=(b.sell&&b.sell.qty_target)||b.units_produced||0;
-    const remain=Math.max(0, target-sold);
+    // Unsold stock from this build's lot = produced − FIFO-allocated sold.
+    const remain=Math.max(0, (b.units_produced||0)-sold);
     const stax=b.sales_tax||0, bfee=b.broker_fee||0;
     ready += remain*(ask*(1-stax-bfee)-cpu);
   });
@@ -101,9 +87,6 @@ function renderSummary(){
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   const f=_sumFigures();
   const rr=f.realized;
-  const rangeToggle=`<span class="sum-strip-range">${
-    [["week","7d"],["month","30d"],["all","All"]].map(([r,l])=>
-      `<button class="sum-range-btn${SUMMARY.range===r?" on":""}" data-range="${r}">${l}</button>`).join("")}</span>`;
 
   // read(label, value, class, extra) — one reading in the strip.
   const read=(label,val,cls,extra)=>`<div class="sum-read">
@@ -112,18 +95,10 @@ function renderSummary(){
     ${extra||""}</div>`;
 
   body.innerHTML=`<div class="sum-strip">
-    ${read("Realized", isk(rr.profit), pn(rr.profit), rangeToggle)}
+    ${read("Realized", isk(rr.profit), pn(rr.profit))}
     ${read("Capital in flight", isk(f.capital), "dim")}
     ${read("Ready to realize", isk(f.ready), pn(f.ready))}
     ${read("Est. total", isk(f.estTotal), pn(f.estTotal),
       f.margin!=null?`<div class="sum-read-note"><b class="${pn(f.margin)}">${f.margin>=0?"+":""}${f.margin.toFixed(1)}%</b> on capital</div>`:"")}
   </div>`;
-  _wireSummary(body);
-}
-
-function _wireSummary(body){
-  body.querySelectorAll(".sum-range-btn").forEach(btn=>{
-    // Stop the click from bubbling anywhere; just reframe the realized window.
-    btn.onclick=ev=>{ ev.stopPropagation(); SUMMARY.range=btn.dataset.range; renderSummary(); };
-  });
 }

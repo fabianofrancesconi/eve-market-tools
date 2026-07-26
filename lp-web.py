@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.149.1"
+__version__ = "1.150.0"
 
 import argparse
 import base64
@@ -51,6 +51,7 @@ from urllib3.util.retry import Retry
 
 import arb_core
 import ind_core
+import ind_track
 import sso_core
 import pg_store
 from lp_core import (
@@ -85,6 +86,9 @@ CACHE_DIR = default_cache_dir()
 JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-run counter
 ORDER_EVENTS_PATH = CACHE_DIR / "order_events.json"  # market order sale/fill events
 IND_BUILDS_PATH = CACHE_DIR / "ind_tracked_builds.json"  # frozen build-batch snapshots
+IND_SELL_LEDGER_PATH = CACHE_DIR / "ind_sell_ledger.json"  # per-product wallet sell fills
+IND_LISTED_UNITS_PATH = CACHE_DIR / "ind_listed_units.json"  # per-char open sell-order volume
+IND_TRACK_MIGRATED_PATH = CACHE_DIR / "ind_track_migrated.json"  # one-time migration sentinel
 WALLET_HISTORY_PATH = CACHE_DIR / "wallet_history.json"  # ISK balance time-series
 LOCATION_TRAIL_PATH = CACHE_DIR / "location_trail.json"  # exploration system trail
 LOCATION_TRACK_PATH = CACHE_DIR / "location_tracking.json"  # live-session state
@@ -1366,8 +1370,12 @@ def do_ind_builds_save(q):
     except (TypeError, ValueError):
         runs = 1
     now = time.time()
+    # secrets.token_hex keeps the fallback id unique even for two builds of the
+    # same blueprint tracked within the same millisecond (the ms+blueprint form
+    # alone collided, silently overwriting the first via the dedup below).
     build = {
-        "id": q.get("id", [""])[0] or f"{int(now * 1000)}-{snapshot.get('blueprint_id', 0)}",
+        "id": (q.get("id", [""])[0]
+               or f"{int(now * 1000)}-{snapshot.get('blueprint_id', 0)}-{secrets.token_hex(3)}"),
         "created_at": now,
         "runs": runs,
         "blueprint_id": snapshot.get("blueprint_id"),
@@ -1466,20 +1474,144 @@ def do_ind_builds_link(q):
 
 
 # ── Tracked-build sell tracking (realized profit) ────────────────────────────
-# Once a build's manufacturing job is done, the user lists the product for sale
-# in-game (ESI is read-only — we can't place the order ourselves). They hit
-# "Sell" here, which freezes the per-unit cost basis and starts watching their
-# open sell orders. A new sell order for the product's type_id is auto-linked
-# (or the user picks one when several match); as it fills, each sale is accrued
-# from the same order-diff engine that powers sale notifications, giving a live
-# realized profit = net sale revenue − frozen craft cost of the units sold.
+# Money is read straight from the wallet, never from a market order. A build is
+# a *produced lot* (units + frozen per-unit cost, dated at delivery); every sale
+# is a wallet transaction (a stable transaction_id + the real fill price). Sold
+# units of a product are FIFO-allocated across that product's lots, oldest built
+# first — so two parallel batches of the same item each get an honest profit
+# without ever tying a sale to a specific order (ESI can't tell you which batch a
+# fungible unit came from anyway). The pure accounting lives in ind_track; this
+# layer only loads/persists and feeds it parsed lots + wallet fills.
+#
+# Consequences that killed the old fragility: re-pricing an unsold order is
+# invisible (profit is the real wallet price, not the listing), and a cancelled
+# order can't fabricate a phantom sale (a cancel produces no transaction). The
+# per-product sell ledger — {str(product_type_id): [{transaction_id, ts, units,
+# price}, …]}, deduped by transaction_id — is the only accumulated sell state;
+# allocation and every per-build/stage figure are recomputed on read, so late
+# ESI data self-heals on the next sweep.
 _TRACKED_BUILDS_LOCK = threading.Lock()
+_SELL_LEDGER_LOCK = threading.Lock()
 
-# An order issued up to this long *before* the user clicked "Sell" is still
-# accepted as the auto-match — covers listing the order first and clicking Sell
-# a moment later. A wider window only risks grabbing a pre-existing order, and
-# only when it's the single sell order for that item (else it's needs_pick).
-_SELL_MATCH_MARGIN = 3600
+
+def _load_sell_ledger(acct):
+    store = _acct_kv_load(acct, "ind_sell_ledger", IND_SELL_LEDGER_PATH, None)
+    return store if isinstance(store, dict) else {}
+
+
+def _save_sell_ledger(acct, ledger):
+    _acct_kv_save(acct, "ind_sell_ledger", IND_SELL_LEDGER_PATH, ledger)
+
+
+def _build_lot(b):
+    """A build as an allocatable produced lot for ind_track.allocate_fifo. The
+    allocatable ``units`` is the batch output minus any abandoned (written-off)
+    remainder, so a lot the user gave up on stops absorbing future fills — they
+    flow to the next batch instead — while its already-sold units keep their
+    attribution."""
+    produced = _build_units_produced(b) or 0
+    cap = produced
+    if b.get("abandoned"):
+        cap = max(0, produced - int(b.get("writeoff_units") or 0))
+    return {
+        "id": b.get("id"),
+        "units": cap,
+        "cost_per_unit": _build_cost_per_unit(b),
+        "sales_tax": (b.get("snapshot") or {}).get("sales_tax") or 0.0,
+        "done_at": b.get("done_at"),
+    }
+
+
+def _allocate_builds(builds, ledger):
+    """FIFO-allocate each product's wallet fills across its *delivered* lots.
+    Returns ``(per_build, prod_summary)`` — per_build maps build id → the
+    allocation record from ind_track.allocate_fifo; prod_summary maps
+    str(product_type_id) → the product's roll-up (sold/net/cost/profit/
+    unallocated)."""
+    by_pid = {}
+    for b in builds:
+        by_pid.setdefault(str(b.get("product_type_id")), []).append(b)
+    per_build = {}
+    prod_summary = {}
+    for pid, group in by_pid.items():
+        lots = [_build_lot(b) for b in group if b.get("done_at") is not None]
+        pl, summ = ind_track.allocate_fifo(lots, ledger.get(pid, []))
+        per_build.update(pl)
+        prod_summary[pid] = summ
+    return per_build, prod_summary
+
+
+# Sentinel schema version stamped once the one-time migration from the old
+# per-build sell blobs to the shared ledger has run for an account.
+_IND_TRACK_MIGRATED = "ind_track_migrated"
+
+
+def _migrate_sell_state(acct):
+    """One-time, idempotent migration from the legacy per-build ``sell`` blobs to
+    the pooled wallet ledger. Seeds each historical realized fill into the ledger
+    (preserving past profit) and folds a legacy 'closed early' write-off into the
+    build's ``abandoned``/``writeoff_units`` fields, then strips the dead sell
+    scaffolding (sell, no_auto_sell, unlinked_ids). Fills that carried a real
+    transaction_id keep it (so a still-recent wallet row won't re-accrue);
+    order-diff fills that never had one get a stable synthetic id."""
+    if _acct_kv_load(acct, _IND_TRACK_MIGRATED, IND_TRACK_MIGRATED_PATH, False):
+        return
+    with _TRACKED_BUILDS_LOCK, _SELL_LEDGER_LOCK:
+        if _acct_kv_load(acct, _IND_TRACK_MIGRATED, IND_TRACK_MIGRATED_PATH, False):
+            return
+        builds = _load_tracked_builds(acct)
+        ledger = _load_sell_ledger(acct)
+        for b in builds:
+            sell = b.get("sell")
+            if isinstance(sell, dict):
+                pid = str(b.get("product_type_id"))
+                fills = ledger.setdefault(pid, [])
+                seen = {str(f["transaction_id"]) for f in fills
+                        if f.get("transaction_id") is not None}
+                for i, e in enumerate(sell.get("realized") or []):
+                    tids = (e.get("transaction_ids")
+                            or ([e["transaction_id"]]
+                                if e.get("transaction_id") is not None else []))
+                    primary = str(tids[0]) if tids else f"legacy-{b.get('id')}-{i}"
+                    for t in tids:
+                        seen.add(str(t))
+                    if primary in seen and not tids:
+                        continue
+                    if primary in seen and tids and any(
+                            str(f.get("transaction_id")) == primary for f in fills):
+                        continue
+                    fills.append({
+                        "transaction_id": primary,
+                        "ts": e.get("ts"),
+                        "units": e.get("units") or 0,
+                        "price": e.get("price") or 0.0,
+                    })
+                    seen.add(primary)
+                if sell.get("closed_early"):
+                    b["abandoned"] = True
+                    b["writeoff_units"] = int(sell.get("writeoff_units") or 0)
+            b.pop("sell", None)
+            b.pop("no_auto_sell", None)
+            b.pop("unlinked_ids", None)
+        _save_sell_ledger(acct, ledger)
+        _save_tracked_builds(acct, builds)
+        _acct_kv_save(acct, _IND_TRACK_MIGRATED, IND_TRACK_MIGRATED_PATH, True)
+
+
+def _reconcile_sell_ledger(acct, transactions):
+    """The only per-sweep write for sell tracking: fold this character's new
+    wallet sell transactions into the account's product ledger (dedup by
+    transaction_id). Everything else — stages, realized profit, capital in
+    flight — is derived on read from the ledger + the current build lots, so
+    there is no per-build state to drift. Idempotent and lock-guarded."""
+    if not acct or not transactions:
+        return
+    with _SELL_LEDGER_LOCK:
+        ledger = _load_sell_ledger(acct)
+        ledger, changed = ind_track.merge_sell_fills(
+            ledger, transactions, _parse_iso_ts)
+        if changed:
+            _save_sell_ledger(acct, ledger)
 
 
 def _parse_iso_ts(s):
@@ -1539,666 +1671,163 @@ def _build_cost_per_unit(b):
     return cost / units
 
 
-def _build_realized(b):
-    """Realized sale totals from the accrued fill events: units sold, net
-    revenue after sales tax, the frozen cost of those units, and profit. A build
-    the user closed out early (gave up selling the rest) carries a write-off: the
-    frozen cost of the unsold remainder, booked as a realized loss so the profit
-    figure and the portfolio totals stay honest."""
-    sell = b.get("sell") or {}
-    entries = sell.get("realized") or []
-    units = sum(e.get("units", 0) for e in entries)
-    net = sum(e.get("net", 0) for e in entries)
-    cpu = sell.get("cost_per_unit")
-    writeoff = sell.get("writeoff_cost") or 0
-    cost_of_sold = units * cpu if cpu is not None else None
-    profit = (net - cost_of_sold - writeoff) if cost_of_sold is not None else None
+def _build_realized(b, alloc):
+    """Realized sale totals for one build from its FIFO allocation record
+    (``alloc`` = the per-build entry from ind_track.allocate_fifo, or None). Adds
+    the abandoned-remainder write-off: a build the user gave up on books the
+    frozen cost of its never-sold units as a realized loss, so profit and the
+    portfolio totals stay honest."""
+    a = alloc or {"sold": 0, "net": 0.0, "cost": 0.0, "profit": 0.0}
+    units = a.get("sold", 0)
+    net = a.get("net", 0.0)
+    cost_of_sold = a.get("cost")
+    profit = a.get("profit")
+    writeoff = 0.0
+    if b.get("abandoned"):
+        cpu = _build_cost_per_unit(b)
+        writeoff = (int(b.get("writeoff_units") or 0) * cpu) if cpu is not None else 0.0
+        if profit is not None:
+            profit -= writeoff
     return {"units": units, "net": net, "cost_of_sold": cost_of_sold,
             "writeoff": writeoff, "profit": profit}
 
 
-def _build_stage(b):
-    """Lifecycle stage derived purely from stored fields (no live-job lookup, so
-    it works server-side): planned → building → built → listed → sold. The
-    client refines building/built against live ESI jobs for the card stepper."""
-    sell = b.get("sell") or {}
-    if sell.get("closed_at"):
+def _build_stage(b, alloc=None, listed_units=0):
+    """Lifecycle stage: planned → building → built → listed → sold.
+
+    Derived from the build's own state plus its FIFO allocation. Crucially the
+    manufacturing job is checked *first*, so a build whose job is still running
+    can never be shown as listed/sold — the bug the pooled rewrite set out to
+    kill. Once delivered (done_at): sold when every produced unit has sold (or the
+    remainder was abandoned), listed when this product has any units on the market
+    *and* this lot still holds unsold stock, else built. ``alloc`` is the
+    per-build allocation record; ``listed_units`` is the product's current
+    open-order volume (both optional so the bare stage still works server-side)."""
+    if b.get("done_at") is None:
+        return "building" if b.get("job_id") is not None else "planned"
+    produced = _build_units_produced(b) or 0
+    sold = (alloc or {}).get("sold", 0)
+    unsold = max(0, produced - sold)
+    if b.get("abandoned") or (produced and sold >= produced):
         return "sold"
-    if sell.get("started_at"):
+    if unsold > 0 and (listed_units or 0) > 0:
         return "listed"
-    if b.get("done_at"):
-        return "built"
-    if b.get("job_id") is not None:
-        return "building"
-    return "planned"
+    return "built"
 
 
-def do_ind_builds_sell_start(q):
-    """Begin sell-tracking a built batch: freeze the per-unit cost basis and the
-    target quantity, then start watching for the in-game sell order. Preserves
-    any realized fills if called again (e.g. to adjust the target)."""
+def do_ind_builds_sell_abandon(q):
+    """Give up on the unsold remainder of a delivered build: its already-sold
+    units keep their real profit, the never-sold units are written off as a
+    realized loss (so capital-in-flight clears), and the lot stops absorbing
+    future fills — later sales of the same item flow to the next batch instead.
+    Pass abandoned=0 to undo. Purely a build-level flag; the wallet ledger is
+    untouched, so re-computing is always consistent."""
     acct = current_account()
     if not acct:
         return {"error": "not available"}
     build_id = q.get("id", [""])[0]
     if not build_id:
         return {"error": "missing id"}
-    with _TRACKED_BUILDS_LOCK:
+    raw = q.get("abandoned", ["1"])[0]
+    abandon = str(raw).lower() not in ("0", "false", "")
+    with _TRACKED_BUILDS_LOCK, _SELL_LEDGER_LOCK:
         builds = _load_tracked_builds(acct)
         b = next((x for x in builds if x.get("id") == build_id), None)
         if not b:
             return {"error": "unknown build"}
-        units = _build_units_produced(b)
-        try:
-            qt = int(q.get("qty_target", [""])[0])
-        except (TypeError, ValueError):
-            qt = None
-        if not qt or qt <= 0:
-            qt = units
-        sell = b.get("sell") or {}
-        sell.update({
-            "started_at": sell.get("started_at") or time.time(),
-            "qty_target": qt,
-            "cost_per_unit": _build_cost_per_unit(b),
-            "order_ids": sell.get("order_ids") or [],
-            "needs_pick": sell.get("needs_pick", False),
-            "realized": sell.get("realized") or [],
-            "closed_at": None,
-        })
-        sell.pop("auto", None)      # an explicit Start is no longer an auto-link
-        b["sell"] = sell
-        b.pop("no_auto_sell", None)  # user opted in — clear any prior cancel tombstone
-        _save_tracked_builds(acct, builds)
-    return {"ok": True, "build": b}
-
-
-def do_ind_builds_sell_link(q):
-    """Manually link an in-game sell order to a build (the needs_pick path)."""
-    acct = current_account()
-    if not acct:
-        return {"error": "not available"}
-    build_id = q.get("id", [""])[0]
-    order_id = q.get("order_id", [""])[0]
-    if not build_id or not order_id:
-        return {"error": "missing id"}
-    with _TRACKED_BUILDS_LOCK:
-        builds = _load_tracked_builds(acct)
-        b = next((x for x in builds if x.get("id") == build_id), None)
-        if not b or not b.get("sell"):
-            return {"error": "not selling"}
-        sell = b["sell"]
-        ids = [str(o) for o in (sell.get("order_ids") or [])]
-        if str(order_id) not in ids:
-            ids.append(str(order_id))
-        sell["order_ids"] = ids
-        sell["needs_pick"] = False
-        _save_tracked_builds(acct, builds)
-    return {"ok": True, "build": b}
-
-
-def do_ind_builds_sell_unlink(q):
-    """Detach a linked order from a build (mis-link recovery). The order is
-    tombstoned in build['unlinked_ids'] so the every-sweep auto-linker doesn't
-    immediately re-grab the same order the user just rejected."""
-    acct = current_account()
-    if not acct:
-        return {"error": "not available"}
-    build_id = q.get("id", [""])[0]
-    order_id = q.get("order_id", [""])[0]
-    if not build_id or not order_id:
-        return {"error": "missing id"}
-    with _TRACKED_BUILDS_LOCK:
-        builds = _load_tracked_builds(acct)
-        b = next((x for x in builds if x.get("id") == build_id), None)
-        if not b or not b.get("sell"):
-            return {"error": "not selling"}
-        sell = b["sell"]
-        sell["order_ids"] = [o for o in (sell.get("order_ids") or [])
-                             if str(o) != str(order_id)]
-        tomb = [str(x) for x in (b.get("unlinked_ids") or [])]
-        if str(order_id) not in tomb:
-            tomb.append(str(order_id))
-        b["unlinked_ids"] = tomb
-        _save_tracked_builds(acct, builds)
-    return {"ok": True, "build": b}
-
-
-def do_ind_builds_sell_cancel(q):
-    """Abandon sell-tracking a build — drops the sell state (and its accrued
-    realized history) so the card returns to its plain built view. Sets
-    no_auto_sell so the auto-linker doesn't silently re-start the sale on the
-    next sweep; a manual Start clears that flag and opts back in."""
-    acct = current_account()
-    if not acct:
-        return {"error": "not available"}
-    build_id = q.get("id", [""])[0]
-    if not build_id:
-        return {"error": "missing id"}
-    with _TRACKED_BUILDS_LOCK:
-        builds = _load_tracked_builds(acct)
-        b = next((x for x in builds if x.get("id") == build_id), None)
-        if b is not None:
-            b.pop("sell", None)
-            b["no_auto_sell"] = True
-            _save_tracked_builds(acct, builds)
-    return {"ok": True}
-
-
-def do_ind_builds_sell_close(q):
-    """Close out a build early: mark the sale done even though the full target
-    hasn't sold (e.g. an order expired and the user won't re-list the rest). The
-    units actually sold keep their real realized profit; the frozen cost of the
-    unsold remainder is written off as a realized loss so capital-in-flight
-    clears and the portfolio totals stay honest ('closed early'). Requires an
-    active (started, not-yet-closed) sale."""
-    acct = current_account()
-    if not acct:
-        return {"error": "not available"}
-    build_id = q.get("id", [""])[0]
-    if not build_id:
-        return {"error": "missing id"}
-    with _TRACKED_BUILDS_LOCK:
-        builds = _load_tracked_builds(acct)
-        b = next((x for x in builds if x.get("id") == build_id), None)
-        if not b or not (b.get("sell") or {}).get("started_at"):
-            return {"error": "not selling"}
-        sell = b["sell"]
-        if sell.get("closed_at"):
-            return {"ok": True, "build": b}   # already closed — no-op
-        rz = _build_realized(b)
-        cpu = sell.get("cost_per_unit")
-        target = sell.get("qty_target") or _build_units_produced(b) or 0
-        remain = max(0, target - rz["units"])
-        sell["writeoff_units"] = remain
-        sell["writeoff_cost"] = remain * cpu if cpu is not None else 0
-        sell["closed_at"] = time.time()
-        sell["closed_early"] = True
-        _save_tracked_builds(acct, builds)
-    return {"ok": True, "build": b}
-
-
-def _trim_realized(entries, limit):
-    """Return a prefix of the fill ledger totalling `limit` units, splitting the
-    boundary entry proportionally (units + gross + net) so the kept fills keep
-    their real per-unit economics. limit <= 0 empties the ledger; a limit at or
-    above the current total keeps every entry (we never fabricate sales)."""
-    if limit <= 0:
-        return []
-    kept = []
-    acc = 0
-    for e in entries:
-        u = e.get("units", 0) or 0
-        if acc + u <= limit:
-            kept.append(e)
-            acc += u
-            if acc == limit:
-                break
+        if b.get("done_at") is None:
+            return {"error": "not built"}
+        if abandon:
+            ledger = _load_sell_ledger(acct)
+            per_build, _ = _allocate_builds(builds, ledger)
+            sold = per_build.get(b.get("id"), {}).get("sold", 0)
+            produced = _build_units_produced(b) or 0
+            b["abandoned"] = True
+            b["writeoff_units"] = max(0, produced - sold)
         else:
-            need = limit - acc
-            if need > 0 and u > 0:
-                frac = need / u
-                ne = dict(e)
-                ne["units"] = need
-                if e.get("gross") is not None:
-                    ne["gross"] = e["gross"] * frac
-                if e.get("net") is not None:
-                    ne["net"] = e["net"] * frac
-                kept.append(ne)
-            break
-    return kept
-
-
-def do_ind_builds_sell_edit(q):
-    """Manually correct a tracked sale: set the units-sold count and/or the target
-    quantity. Reducing units below the target reopens a closed sale so a re-listed
-    order can keep accruing; the previously-linked (now stale) orders are unlinked
-    and tombstoned so their old fill events don't re-accrue. Used to recover from a
-    false 'sold' (e.g. an order was cancelled, not bought out) or to resize a batch.
-    Requires an existing sale."""
-    acct = current_account()
-    if not acct:
-        return {"error": "not available"}
-    build_id = q.get("id", [""])[0]
-    if not build_id:
-        return {"error": "missing id"}
-    with _TRACKED_BUILDS_LOCK:
-        builds = _load_tracked_builds(acct)
-        b = next((x for x in builds if x.get("id") == build_id), None)
-        if not b or not b.get("sell"):
-            return {"error": "not selling"}
-        sell = b["sell"]
-        was_closed = bool(sell.get("closed_at"))
-        if "qty_target" in q:
-            try:
-                qt = int(q.get("qty_target", [""])[0])
-                if qt > 0:
-                    sell["qty_target"] = qt
-            except (TypeError, ValueError):
-                pass
-        if "units" in q:
-            try:
-                target_units = int(q.get("units", [""])[0])
-            except (TypeError, ValueError):
-                target_units = None
-            if target_units is not None and target_units >= 0:
-                sell["realized"] = _trim_realized(
-                    sell.get("realized") or [], target_units)
-        # Recompute the closed state against the (possibly new) target.
-        total = sum(e.get("units", 0) for e in (sell.get("realized") or []))
-        qt = sell.get("qty_target") or _build_units_produced(b) or 0
-        if qt and total >= qt:
-            if not sell.get("closed_at"):
-                sell["closed_at"] = time.time()
-        else:
-            sell["closed_at"] = None
-            sell.pop("closed_early", None)
-            sell.pop("writeoff_units", None)
-            sell.pop("writeoff_cost", None)
-        # A sale the edit reopened: its old linked orders are stale (they
-        # vanished/filled — that's why it had closed), and their historical fill
-        # events would re-accrue on the next sweep. Unlink + tombstone them so a
-        # fresh re-listed order auto-links instead.
-        if was_closed and not sell.get("closed_at"):
-            stale = [str(o) for o in (sell.get("order_ids") or [])]
-            if stale:
-                tomb = [str(x) for x in (b.get("unlinked_ids") or [])]
-                for o in stale:
-                    if o not in tomb:
-                        tomb.append(o)
-                b["unlinked_ids"] = tomb
-                sell["order_ids"] = []
-                sell["needs_pick"] = False
+            b.pop("abandoned", None)
+            b.pop("writeoff_units", None)
         _save_tracked_builds(acct, builds)
     return {"ok": True, "build": b}
 
 
-def _consumed_txn_ids(builds):
-    """Every wallet transaction_id already accrued by any build, across BOTH sell
-    paths: the instant path records a single ``transaction_id`` per fill, the
-    listed path records ``transaction_ids`` (a fill can span several wallet
-    transactions). This shared set is what keeps the two reconcilers mutually
-    exclusive — a transaction consumed by a listed order is invisible to the
-    instant path's own dedup (it keys on transaction_id, which listed fills only
-    gained via stamping), so without this a listed sale's transactions would be
-    re-scooped as a phantom instant sale on a same-item build."""
-    ids = set()
-    for b in builds:
-        for e in ((b.get("sell") or {}).get("realized") or []):
-            if e.get("transaction_id") is not None:
-                ids.add(str(e["transaction_id"]))
-            for t in (e.get("transaction_ids") or []):
-                ids.add(str(t))
-    return ids
-
-
-def _claim_fill_txns(sell_txns, pid, price, units, consumed):
-    """Pick the wallet sell-transaction ids that correspond to a detected
-    listed-order fill so they can be stamped onto it and marked consumed.
-
-    A sell order fills at its listed price, so we match on product + unit price
-    and take (oldest first) up to the fill's unit count, skipping ids already
-    consumed by another build/fill. Best-effort: an order event carries no
-    transaction_id, so a fill that finds no matching wallet row simply records
-    none — the instant path then can't tell it apart, but the price+qty match
-    covers the normal case. Mutates ``consumed`` with the ids taken."""
-    out = []
-    taken = 0
-    for t in sell_txns:
-        if units and taken >= units:
-            break
-        if t.get("type_id") != pid:
+def _load_listed_units(acct):
+    """Per-account open sell-order volume, aggregated across characters:
+    ``{str(product_type_id): total_volume_remain}``. Written each sweep by
+    :func:`_record_listed_units`; read here to derive the listed/unlisted split
+    without attributing any order to a build."""
+    store = _acct_kv_load(acct, "ind_listed_units", IND_LISTED_UNITS_PATH, None)
+    if not isinstance(store, dict):
+        return {}
+    totals = {}
+    for per_char in store.values():
+        if not isinstance(per_char, dict):
             continue
-        tid = str(t.get("transaction_id"))
-        if tid in consumed:
+        for pid, units in per_char.items():
+            totals[pid] = totals.get(pid, 0) + (units or 0)
+    return totals
+
+
+def _record_listed_units(acct, cid, orders):
+    """Persist one character's current open sell-order volume by product, so the
+    account-wide listed total (summed across characters) survives between the
+    per-char sweeps that each only see their own orders."""
+    per = {}
+    for o in orders or []:
+        if o.get("is_buy_order"):
             continue
-        # Fill price == listed price for a sell order; guard against grabbing an
-        # unrelated sale of the same item at a different price.
-        up = t.get("unit_price") or 0
-        if price and abs(up - price) > max(0.01, price * 1e-4):
-            continue
-        out.append(t.get("transaction_id"))
-        consumed.add(tid)
-        taken += t.get("quantity") or 0
-    return out
-
-
-def _reconcile_sell_builds(acct, current_orders, transactions=None):
-    """Wire the character's live sell orders + detected fills into any builds in
-    the 'selling' state. Sell-tracking starts *automatically*: a finished (built)
-    build whose product shows up as a single fresh sell order is linked with no
-    button press (flagged sell.auto). Once selling, a single new matching order is
-    auto-linked (needs_pick when several match), then each fill's net revenue is
-    accrued against the frozen cost basis — deduped by event id so a re-run never
-    double-counts, and at the order's *real* fill price (the market decides it,
-    not our proposed price). Closes a build once its target quantity has sold.
-
-    Two tombstones keep user intent sticky against the every-sweep re-link: an
-    order the user unlinked is recorded in build['unlinked_ids'] and never
-    re-grabbed, and a build whose sale the user cancelled carries no_auto_sell so
-    it isn't silently re-auto-started (a manual Start clears that flag).
-    Idempotent — safe to run every sweep and across the per-character thread pool
-    (guarded by the lock)."""
-    if not acct:
-        return
-    with _TRACKED_BUILDS_LOCK:
-        builds = _load_tracked_builds(acct)
-        selling = [b for b in builds
-                   if (b.get("sell") or {}).get("started_at")
-                   and not (b.get("sell") or {}).get("closed_at")
-                   # Instant-sell builds are accrued from wallet transactions by
-                   # _reconcile_instant_sell_builds — the order-diff engine here
-                   # must leave them alone so a sale is never counted twice.
-                   and (b.get("sell") or {}).get("mode") != "instant"]
-        # Built-but-not-yet-selling builds eligible for button-free auto-start.
-        auto_candidates = [b for b in builds
-                           if b.get("done_at")
-                           and not (b.get("sell") or {}).get("started_at")
-                           and not b.get("no_auto_sell")]
-        if not selling and not auto_candidates:
-            return
-        # Orders already claimed by any build must not be auto-linked twice.
-        linked_ids = {str(o) for b in builds
-                      for o in (b.get("sell") or {}).get("order_ids") or []}
-        # All active (non-dismissed) sale/fill events for the account, keyed by
-        # order — a 7-day window so an order linked *after* its fill still accrues.
-        events_by_order = {}
-        for ev in _get_order_events(acct):
-            if ev.get("is_buy_order"):
-                continue
-            events_by_order.setdefault(str(ev.get("order_id")), []).append(ev)
-
-        # Shared consumed-transaction set: as listed fills are accrued we stamp
-        # them with the wallet transaction ids they correspond to and add those
-        # here, so _reconcile_instant_sell_builds (which reads the same set back
-        # off sell.realized) never re-scoops a transaction a listed sale used.
-        sell_txns = sorted((t for t in (transactions or []) if not t.get("is_buy")),
-                           key=lambda t: t.get("date") or "")
-        consumed = _consumed_txn_ids(builds)
-
-        changed = False
-        # Auto-start pass: a built build + exactly one fresh matching sell order
-        # (issued around/after the job finished, not claimed or previously
-        # unlinked) begins sell-tracking on its own. Several matches are left for
-        # the user to start manually — we won't guess which order is the batch.
-        for b in auto_candidates:
-            pid = b.get("product_type_id")
-            anchor = b.get("done_at") or 0
-            tomb = {str(x) for x in (b.get("unlinked_ids") or [])}
-            cands = [o for o in current_orders
-                     if not o.get("is_buy_order")
-                     and o.get("type_id") == pid
-                     and str(o.get("order_id")) not in linked_ids
-                     and str(o.get("order_id")) not in tomb
-                     and (_parse_iso_ts(o.get("issued")) or 0)
-                     >= anchor - _SELL_MATCH_MARGIN]
-            if len(cands) == 1:
-                oid = str(cands[0]["order_id"])
-                b["sell"] = {
-                    "started_at": time.time(),
-                    "auto": True,
-                    "qty_target": _build_units_produced(b),
-                    "cost_per_unit": _build_cost_per_unit(b),
-                    "order_ids": [oid],
-                    "needs_pick": False,
-                    "realized": [],
-                    "closed_at": None,
-                }
-                linked_ids.add(oid)
-                selling.append(b)
-                changed = True
-
-        for b in selling:
-            sell = b["sell"]
-            pid = b.get("product_type_id")
-            started = sell.get("started_at") or 0
-            # Auto-match: a new sell order for this product, issued around/after
-            # the user hit Sell, not already linked elsewhere.
-            if not sell.get("order_ids"):
-                tomb = {str(x) for x in (b.get("unlinked_ids") or [])}
-                cands = [o for o in current_orders
-                         if not o.get("is_buy_order")
-                         and o.get("type_id") == pid
-                         and str(o.get("order_id")) not in linked_ids
-                         and str(o.get("order_id")) not in tomb
-                         and (_parse_iso_ts(o.get("issued")) or 0)
-                         >= started - _SELL_MATCH_MARGIN]
-                if len(cands) == 1:
-                    oid = str(cands[0]["order_id"])
-                    sell["order_ids"] = [oid]
-                    sell["needs_pick"] = False
-                    linked_ids.add(oid)
-                    changed = True
-                elif len(cands) > 1 and not sell.get("needs_pick"):
-                    sell["needs_pick"] = True
-                    changed = True
-            # Accrue fills for the linked order(s).
-            realized = sell.setdefault("realized", [])
-            seen = {e.get("event_id") for e in realized}
-            stax = (b.get("snapshot") or {}).get("sales_tax") or 0
-            expired_oids = set()
-            for oid in sell.get("order_ids") or []:
-                for ev in events_by_order.get(str(oid), []):
-                    if ev.get("expired"):
-                        # The listing lapsed with units unsold — not a sale. Note
-                        # the order so we can unlink it below and let a re-listed
-                        # order (at any new price) auto-link and keep accruing.
-                        expired_oids.add(str(oid))
-                        continue
-                    evid = ev.get("id")
-                    sold = ev.get("sold") or 0
-                    if evid in seen or sold <= 0:
-                        continue
-                    price = ev.get("price") or 0
-                    entry = {
-                        "event_id": evid, "ts": ev.get("ts"),
-                        "order_id": ev.get("order_id"), "units": sold,
-                        "price": price, "gross": sold * price,
-                        "net": sold * price * (1 - stax),
-                    }
-                    # Stamp the wallet transaction ids this fill corresponds to
-                    # (best-effort, by product+price) and mark them consumed so
-                    # the instant path can't re-count them.
-                    txns = _claim_fill_txns(sell_txns, pid, price, sold, consumed)
-                    if txns:
-                        entry["transaction_ids"] = txns
-                    realized.append(entry)
-                    seen.add(evid)
-                    changed = True
-            # A linked order that expired with units left is dropped so the next
-            # sweep can auto-link the user's replacement listing. The sale stays
-            # open (not closed) — the remaining units are still theirs to re-sell.
-            if expired_oids:
-                remaining = [o for o in (sell.get("order_ids") or [])
-                             if str(o) not in expired_oids]
-                if remaining != (sell.get("order_ids") or []):
-                    sell["order_ids"] = remaining
-                    changed = True
-            # Close out once the target quantity has sold.
-            if not sell.get("closed_at"):
-                total = sum(e.get("units", 0) for e in realized)
-                qt = sell.get("qty_target")
-                if qt and total >= qt:
-                    sell["closed_at"] = time.time()
-                    changed = True
-        if changed:
-            _save_tracked_builds(acct, builds)
-
-
-# How long before a build finished a transaction may be dated and still count as
-# a sale of that build's output. Covers clock skew, pre-selling stock crafted just
-# before the job delivered, and — the main reason it's this wide — ESI lag: the
-# build isn't marked "built" (done_at) until its job leaves ESI's active list,
-# which can trail the actual in-game delivery/instant-sell by a long while. A week
-# ensures a legitimate instant sell is still back-filled once the delivery finally
-# registers. The qty_target cap keeps this from over-attributing an unrelated
-# earlier sale of the same item.
-_INSTANT_SELL_BACKDATE = 7 * 86400
-
-
-def _reconcile_instant_sell_builds(acct, transactions):
-    """Accrue *instant* sales (selling into a buy order) against tracked builds
-    from the character's wallet transactions. This is the separate path that the
-    order-diff engine can't cover: an instant sell never creates a market order,
-    so there's nothing for _reconcile_sell_builds to watch.
-
-    Auto-detect (no button): a *built* build whose product shows up in a sell
-    transaction dated at/after it finished is adopted into an 'instant' sale on
-    its own and the transaction accrued at its real received price. It closes
-    once the target quantity has sold.
-
-    A wallet transaction carries NO order_id, so we can't tie it to a specific
-    order — we match by product type_id + date only. To stay mutually exclusive
-    with the order-diff engine and never double-count: (a) this only ever touches
-    builds NOT already in a listed sale — the listed reconcile runs first each
-    sweep and claims any build with a real sell order, flipping it to a listed
-    sale that this function then skips; (b) each transaction id is claimed by at
-    most one build (oldest-built first). Because there's no order_id, a sale of
-    the same item from an untracked source (e.g. flipping) after a build finished
-    can be mis-attributed to it — the back-date margin and qty_target cap contain
-    that, and it's the accepted trade-off of button-free auto-detection.
-
-    Idempotent: fills dedup by transaction_id inside sell.realized, so re-running
-    every sweep (and across the per-character pool, under the lock) never
-    double-books."""
-    if not acct or not transactions:
-        return
-    # Sell transactions only, oldest first so the earliest sale fills the
-    # earliest-finished build.
-    sells = sorted((t for t in transactions if not t.get("is_buy")),
-                   key=lambda t: t.get("date") or "")
-    if not sells:
-        return
-    with _TRACKED_BUILDS_LOCK:
-        builds = _load_tracked_builds(acct)
-        # Candidates: built, not sold, not cancelled, and NOT in a listed sale
-        # (a listed sale has started_at with mode != 'instant' — those belong to
-        # the order-diff engine). A build already adopted as instant stays here.
-        def _is_listed_sale(b):
-            s = b.get("sell") or {}
-            return bool(s.get("started_at")) and s.get("mode") != "instant"
-        candidates = [b for b in builds
-                      if b.get("done_at")
-                      and not (b.get("sell") or {}).get("closed_at")
-                      and not b.get("no_auto_sell")
-                      and not _is_listed_sale(b)]
-        if not candidates:
-            return
-        # Oldest-finished first, so concurrent batches of the same item claim
-        # transactions in a stable order.
-        candidates.sort(key=lambda b: b.get("done_at") or 0)
-        # A transaction already accrued by ANY build must not be re-claimed —
-        # including ids a *listed* sale stamped onto its fills (transaction_ids),
-        # so a listed order's transactions are never re-scooped here as a phantom
-        # instant sale on a same-item build.
-        claimed = _consumed_txn_ids(builds)
-        changed = False
-        for b in candidates:
-            pid = b.get("product_type_id")
-            anchor = (b.get("done_at") or 0) - _INSTANT_SELL_BACKDATE
-            qt = ((b.get("sell") or {}).get("qty_target")
-                  or _build_units_produced(b) or 0)
-            # Collect this build's matching, unclaimed sells first — only adopt an
-            # instant sale if there's actually something to accrue, so an unsold
-            # built build stays plain "built" (and can still be listed instead).
-            fresh = []
-            taken = 0
-            existing = sum(e.get("units", 0)
-                           for e in ((b.get("sell") or {}).get("realized") or []))
-            for t in sells:
-                if qt > 0 and existing + taken >= qt:
-                    break
-                if t.get("type_id") != pid:
-                    continue
-                tid = str(t.get("transaction_id"))
-                if tid in claimed:
-                    continue
-                ts = _parse_iso_ts(t.get("date"))
-                if ts is None or ts < anchor:
-                    continue
-                qty = t.get("quantity") or 0
-                if qty <= 0:
-                    continue
-                # Cap the units taken from this transaction at the batch's
-                # remaining target: a single sale can exceed the batch (the item
-                # was also flipped from other stock), and only the batch's own
-                # output is this build's. Pricing is per-unit so the cap prorates
-                # cleanly; the id is still claimed so we don't revisit it.
-                if qt > 0:
-                    qty = min(qty, qt - existing - taken)
-                if qty <= 0:
-                    continue
-                fresh.append((t, tid, ts, qty))
-                taken += qty
-            if not fresh:
-                continue
-            # Adopt into (or extend) an instant sale.
-            sell = b.get("sell") or {}
-            if not sell.get("started_at"):
-                sell = {
-                    "started_at": time.time(),
-                    "mode": "instant",
-                    "auto": True,
-                    "qty_target": qt or None,
-                    "cost_per_unit": _build_cost_per_unit(b),
-                    "order_ids": [],
-                    "needs_pick": False,
-                    "realized": [],
-                    "closed_at": None,
-                }
-                b["sell"] = sell
-            realized = sell.setdefault("realized", [])
-            stax = (b.get("snapshot") or {}).get("sales_tax") or 0
-            for t, tid, ts, qty in fresh:
-                price = t.get("unit_price") or 0
-                realized.append({
-                    "transaction_id": t.get("transaction_id"),
-                    "ts": ts,
-                    "units": qty,
-                    "price": price,
-                    "gross": qty * price,
-                    "net": qty * price * (1 - stax),
-                    "instant": True,
-                })
-                claimed.add(tid)
-            changed = True
-            # Close out once the target quantity has sold.
-            sold_total = sum(e.get("units", 0) for e in realized)
-            if qt and sold_total >= qt:
-                sell["closed_at"] = time.time()
-        if changed:
-            _save_tracked_builds(acct, builds)
+        pid = str(o.get("type_id"))
+        per[pid] = per.get(pid, 0) + (o.get("volume_remain") or 0)
+    with _SELL_LEDGER_LOCK:
+        store = _acct_kv_load(acct, "ind_listed_units", IND_LISTED_UNITS_PATH, None)
+        if not isinstance(store, dict):
+            store = {}
+        store[str(cid)] = per
+        _acct_kv_save(acct, "ind_listed_units", IND_LISTED_UNITS_PATH, store)
 
 
 def do_ind_summary(q):
-    """Portfolio roll-up across every tracked build: realized profit (net sale
-    revenue − frozen cost of units sold), capital still in flight (frozen cost of
-    builds not yet sold), and a per-product breakdown. The client adds the
-    live-price "ready to realize" projection and renders the needs-action queue
-    off the per-build fields returned here."""
+    """Portfolio roll-up across every tracked build. Realized profit and units
+    sold come from the FIFO allocation of the wallet sell ledger onto the build
+    lots; capital in flight is the frozen cost of unsold (and un-abandoned) units;
+    per-product breakdown includes the live unit-flow pipeline. The client adds
+    the live-price 'ready to realize' projection and renders the needs-action
+    queue off the per-build fields returned here."""
     acct = current_account()
     if not acct:
         return {"builds": []}
+    _migrate_sell_state(acct)
     builds = _load_tracked_builds(acct)
+    ledger = _load_sell_ledger(acct)
+    listed = _load_listed_units(acct)
+    per_build, _prod = _allocate_builds(builds, ledger)
     realized_profit = realized_net = 0.0
     capital_in_flight = 0.0
     by_product = {}
     out = []
     for b in builds:
-        stage = _build_stage(b)
+        pid = b.get("product_type_id")
+        alloc = per_build.get(b.get("id"))
+        lu = listed.get(str(pid), 0)
+        stage = _build_stage(b, alloc, lu)
         batch_cost = _build_batch_cost(b)
-        rz = _build_realized(b)
-        # Capital in flight = frozen cost of units not yet sold (everything for
-        # builds still in the pipeline; the unsold remainder once selling).
-        if stage != "sold" and batch_cost is not None:
+        rz = _build_realized(b, alloc)
+        # Capital in flight = frozen cost of produced-but-unsold units, plus the
+        # full cost of builds still in the pipeline. An abandoned remainder is a
+        # realized write-off, not capital in flight, so it's excluded.
+        if batch_cost is not None:
             cpu = _build_cost_per_unit(b)
-            unsold_cost = batch_cost
-            if cpu is not None and rz["units"]:
-                unsold_cost = max(0.0, batch_cost - rz["units"] * cpu)
-            capital_in_flight += unsold_cost
+            if b.get("done_at") is None:
+                capital_in_flight += batch_cost          # nothing produced yet
+            elif cpu is not None:
+                produced = _build_units_produced(b) or 0
+                unsold = max(0, produced - rz["units"])
+                if b.get("abandoned"):
+                    unsold = 0                            # written off, not held
+                capital_in_flight += unsold * cpu
         if rz["profit"] is not None:
             realized_profit += rz["profit"]
         realized_net += rz["net"]
-        pid = b.get("product_type_id")
         if pid is not None:
             agg = by_product.setdefault(pid, {
                 "type_id": pid, "name": b.get("product_name", "?"),
@@ -2207,7 +1836,6 @@ def do_ind_summary(q):
             agg["units_sold"] += rz["units"]
             if rz["profit"] is not None:
                 agg["realized_profit"] += rz["profit"]
-        sell = b.get("sell") or {}
         out.append({
             "id": b.get("id"),
             "product_type_id": pid,
@@ -2216,7 +1844,9 @@ def do_ind_summary(q):
             "runs": b.get("runs"),
             "created_at": b.get("created_at"),
             "done_at": b.get("done_at"),
+            "job_id": b.get("job_id"),
             "stage": stage,
+            "abandoned": bool(b.get("abandoned")),
             "batch_cost": batch_cost,
             "units_produced": _build_units_produced(b),
             "cost_per_unit": _build_cost_per_unit(b),
@@ -2224,25 +1854,25 @@ def do_ind_summary(q):
             "bid": (b.get("snapshot") or {}).get("bid"),
             "sales_tax": (b.get("snapshot") or {}).get("sales_tax"),
             "broker_fee": (b.get("snapshot") or {}).get("broker_fee"),
-            "sell": {
-                "started_at": sell.get("started_at"),
-                "closed_at": sell.get("closed_at"),
-                "closed_early": sell.get("closed_early", False),
-                "writeoff_units": sell.get("writeoff_units", 0),
-                "writeoff_cost": sell.get("writeoff_cost", 0),
-                "qty_target": sell.get("qty_target"),
-                "cost_per_unit": sell.get("cost_per_unit"),
-                "needs_pick": sell.get("needs_pick", False),
-                "auto": sell.get("auto", False),
-                "order_ids": sell.get("order_ids") or [],
-                # Raw fills (ts/units/net) so the client can time-filter the
-                # realized-profit total (this week / month / all).
-                "fills": [{"ts": e.get("ts"), "units": e.get("units"),
-                           "net": e.get("net")}
-                          for e in (sell.get("realized") or [])],
-            } if sell else None,
             "realized": rz,
         })
+    # Per-product unit-flow pipeline (produced / listed / sold / in-stock), from
+    # the delivered lots + current open-order volume.
+    builds_by_pid = {}
+    for b in builds:
+        builds_by_pid.setdefault(str(b.get("product_type_id")), []).append(b)
+    for pid_str, group in builds_by_pid.items():
+        lots = [{"id": b.get("id"), "units": _build_units_produced(b) or 0,
+                 "done_at": b.get("done_at")}
+                for b in group if not b.get("abandoned")]
+        flow = ind_track.product_pipeline(
+            lots, per_build, listed.get(pid_str, 0))
+        try:
+            pid_key = int(pid_str)
+        except (TypeError, ValueError):
+            pid_key = pid_str
+        if pid_key in by_product:
+            by_product[pid_key]["flow"] = flow
     breakdown = sorted(by_product.values(),
                        key=lambda p: p["realized_profit"], reverse=True)
     return {
@@ -2510,19 +2140,20 @@ def _fetch_one_char_data_uncached(acct, cid):
     last_sales = {}
     if not orders_error:
         _, last_sales = _track_order_changes(acct, cid, orders_out, names)
-        # Fold this character's live sell orders + detected fills into any
-        # tracked builds in the selling state (auto-link + accrue realized P&L).
+        # Record this character's open sell-order volume by product so the
+        # tracker can derive the listed/unlisted split (no order↔build linking).
         try:
-            _reconcile_sell_builds(acct, orders_out, transactions)
+            _record_listed_units(acct, cid, orders_out)
         except Exception:
             pass
-    # Instant sells (selling into a buy order) leave no market order, so accrue
-    # them from wallet transactions. Runs AFTER the listed reconcile so a build
-    # with a real sell order is claimed as a listed sale first and skipped here —
-    # keeping the two paths mutually exclusive (no double-count).
+    # All sale money — listed and instant alike — comes from the wallet, deduped
+    # by transaction_id into the per-product sell ledger. Realized profit and
+    # stages are recomputed from that ledger + the build lots on read, so there's
+    # no per-build sell state to drift and re-pricing/cancelling an order can't
+    # fabricate or lose a sale.
     if transactions:
         try:
-            _reconcile_instant_sell_builds(acct, transactions)
+            _reconcile_sell_ledger(acct, transactions)
         except Exception:
             pass
     for o in orders_out:
@@ -4079,12 +3710,7 @@ _POST_ROUTES = {
     "/api/ind/builds/delete": do_ind_builds_delete,
     "/api/ind/builds/archive": do_ind_builds_archive,
     "/api/ind/builds/link": do_ind_builds_link,
-    "/api/ind/builds/sell/start": do_ind_builds_sell_start,
-    "/api/ind/builds/sell/link": do_ind_builds_sell_link,
-    "/api/ind/builds/sell/unlink": do_ind_builds_sell_unlink,
-    "/api/ind/builds/sell/cancel": do_ind_builds_sell_cancel,
-    "/api/ind/builds/sell/close": do_ind_builds_sell_close,
-    "/api/ind/builds/sell/edit": do_ind_builds_sell_edit,
+    "/api/ind/builds/sell/abandon": do_ind_builds_sell_abandon,
 }
 
 # Session cookie + the endpoints reachable without one (multi-user mode). The app

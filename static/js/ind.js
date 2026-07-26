@@ -1909,12 +1909,8 @@ function _batchEconomics(d, n){
 }
 
 function _buildCardHtml(b, linked){
-  const s=b.snapshot||{}, n=Math.max(1, b.runs||1);
-  const isk=v=>v===null||v===undefined?"—":fmtISK(v);
+  const n=Math.max(1, b.runs||1);
   const st=_buildStatus(b);
-  const be=_batchEconomics(s, n);
-  const batchCost=be.cost, batchProfitL=be.profitL, batchProfitI=be.profitI, batchTime=be.time;
-  const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   const when=b.created_at?new Date(b.created_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"";
   // Status line: warning if no job yet, live countdown + ETA while building.
   // Once built/listed/sold there's no line — the stepper hover carries the state.
@@ -1963,17 +1959,18 @@ function _buildCardHtml(b, linked){
   const badge=_buildBadge(b, stage);
   const stepper=_buildStepperHtml(b, stage);
   const sellBlock=_buildSellHtml(b, stage);
+  // Header is pure identity now — name, run count, when it was frozen. The
+  // economics (cost, both exit strategies, build time) used to crowd this row as
+  // eight dim chips AND repeat in the expanded detail below; they now live in one
+  // place, the detail's readout, so the panel reads top-to-bottom without saying
+  // the same numbers twice.
   return `<div class="ind-build-card ${badge.key} stage-${stage}" data-id="${b.id}">
     <div class="ind-build-row">
       <span class="ind-build-status ${badge.key}">${badge.label}</span>
       <span class="ind-build-name">${b.product_name||"?"}</span>
       <span class="ind-build-runs">${n.toLocaleString()} run(s)</span>
-      <span class="ind-build-stat">Cost <b>${isk(batchCost)}</b></span>
-      <span class="ind-build-stat ind-build-grp" title="Patient list order: frozen lowest-ask sell price per unit and the batch profit it yields">List <b>${isk(s.ask)}</b> → <b class="${pn(batchProfitL)}">${isk(batchProfitL)}</b></span>
-      <span class="ind-build-stat ind-build-grp" title="Instant sale into buy orders: frozen highest-bid sell price per unit and the batch profit it yields">Instant <b>${isk(s.bid)}</b> → <b class="${pn(batchProfitI)}">${isk(batchProfitI)}</b></span>
-      <span class="ind-build-stat">Build ${fmtDur(batchTime)}</span>
       <span class="ind-build-when">frozen ${when}</span>
-      <button class="ind-build-toggle" title="Show the full frozen snapshot">${expanded?"▲ Hide":"▼ Details"}</button>
+      <button class="ind-build-toggle" title="Show or hide the full frozen breakdown — cost basis, both sell strategies and the material list">${expanded?"▲ Hide detail":"▼ Full detail"}</button>
       ${(stage==="listed"||stage==="sold")?"":`<button class="ind-build-del" title="Stop tracking this build">✕</button>`}
     </div>
     ${stepper}
@@ -2226,34 +2223,40 @@ function _buildDetailHtml(b){
   const bfee=(d.broker_fee!=null)?d.broker_fee:0;
   const beI=(batchCost!=null&&qtyTot>0&&(1-stax)>0)?batchCost/(qtyTot*(1-stax)):null;
   const beL=(batchCost!=null&&qtyTot>0&&(1-stax-bfee)>0)?batchCost/(qtyTot*(1-stax-bfee)):null;
-  const frozen=b.created_at?`frozen ${new Date(b.created_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}`:"frozen";
-  // One card per sell strategy (list vs instant), each pairing that strategy's
-  // sell revenue with the profit it yields — so a losing strategy reads red as a
-  // whole block and the two are compared side by side rather than interleaved.
-  const stratCard=(label, sub, sell, ask, be, profit, kSell, kProfit)=>`
-      <div class="ind-d-card ind-d-strat">
-        <div class="ind-d-card-label">${label} <span class="ind-d-strat-note">${sub}</span></div>
-        <div class="ind-d-strat-sell">
-          <div class="ind-d-strat-line"><span class="ind-d-strat-k">Sell</span><span class="ind-d-card-val">${isk(sell)}</span></div>
-          <div class="ind-d-card-sub">${qtyTot!=null?qtyTot.toLocaleString()+"× @ "+ask:""}</div>
-          <div class="ind-d-card-now" data-k="${kSell}"></div>
+  // ── Cost basis strip ──────────────────────────────────────────────────────
+  // What you sank into the batch, read left→right to a total: materials (+ job,
+  // + invention) = total cost. One quiet line, so the loud thing below is profit.
+  const costPart=(k,v)=>v==null?"":`<span class="ind-bd-cost-part">${k}<b>${isk(v)}</b></span>`;
+  const costStrip=`<div class="ind-bd-cost">
+      <span class="ind-bd-cost-lbl">Cost basis</span>
+      <span class="ind-bd-cost-parts">
+        ${costPart("Materials",matCostBatch)}
+        ${costPart("Job install",jobCostBatch)}
+        ${inventCostBatch!=null?costPart("Invention",inventCostBatch):""}
+      </span>
+      <span class="ind-bd-cost-total">Total<b>${isk(batchCost)}</b></span>
+    </div>`;
+  // ── The two ways out ──────────────────────────────────────────────────────
+  // One column per exit (patient List vs Instant buy-orders). Profit is the hero
+  // of each — one big signed number — with revenue and break-even as quiet subs
+  // beneath it. A "now" slot (filled by Compare-to-prices-now) sits at the foot.
+  const exit=(label, sub, sell, askLbl, be, profit, kProfit)=>`
+      <div class="ind-bd-exit ${pn(profit)}">
+        <div class="ind-bd-exit-head"><span class="ind-bd-exit-name">${label}</span>
+          <span class="ind-bd-exit-note">${sub}</span></div>
+        <div class="ind-bd-exit-profit ${pn(profit)}"><b>${isk(profit)}</b>
+          <span class="ind-bd-exit-plbl">profit</span></div>
+        <div class="ind-bd-exit-meta">
+          <span>Revenue <b>${isk(sell)}</b>${qtyTot!=null?` <i>${qtyTot.toLocaleString()}× @ ${askLbl}</i>`:""}</span>
+          ${be!=null?`<span class="ind-bd-exit-be">Break-even <b>${isk(be)}</b>/unit</span>`:""}
         </div>
-        <div class="ind-d-strat-profit">
-          <div class="ind-d-strat-line"><span class="ind-d-strat-k">Profit</span><span class="ind-d-card-val ${pn(profit)}">${isk(profit)}</span></div>
-          <div class="ind-d-card-sub ind-d-card-warn">${be!=null?`break-even ${isk(be)}/unit`:""}</div>
-          <div class="ind-d-card-now" data-k="${kProfit}"></div>
-        </div>
+        <div class="ind-d-card-now" data-k="${kProfit}"></div>
       </div>`;
   return `<div class="ind-build-detail">
-    <div class="ind-build-headcards ind-build-strat">
-      ${stratCard("List", "patient sell orders", sellL, "ask "+isk(d.ask), beL, batchProfitL, "sellL", "profitL")}
-      ${stratCard("Instant", "sell into buy orders", sellI, "bid "+isk(d.bid), beI, batchProfitI, "sellI", "profitI")}
-    </div>
-    <div class="ind-build-costline">
-      <span>Material cost <b>${isk(matCostBatch)}</b></span>
-      <span>Job install <b>${isk(jobCostBatch)}</b></span>
-      ${inventCostBatch!=null?`<span>Invention <b>${isk(inventCostBatch)}</b></span>`:""}
-      <span>Total cost <b>${isk(batchCost)}</b></span>
+    ${costStrip}
+    <div class="ind-bd-exits">
+      ${exit("List", "patient sell orders", sellL, isk(d.ask), beL, batchProfitL, "profitL")}
+      ${exit("Instant", "sell into buy orders", sellI, isk(d.bid), beI, batchProfitI, "profitI")}
     </div>
     <div class="ind-build-nowrow">
       <button class="ind-build-now" data-id="${b.id}" title="Fetch the current market prices and compare them against the frozen snapshot">↻ Compare to prices now</button>

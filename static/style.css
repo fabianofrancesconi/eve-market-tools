@@ -389,6 +389,17 @@
     background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--fg); }
   .global-costs input[readonly] { color:var(--dim); background:var(--bg); cursor:default; }
   #ind-jobrate[readonly] { color:var(--dim); background:var(--bg); cursor:default; border-style:dashed; }
+  /* Wallet sits at the far right of the fee bar: the two fields to its left are
+     money each sale spends; this is the money you have to spend. Pushed apart by
+     an auto margin + a hairline divider so it reads as an asset, not a fee, and
+     the balance itself gets the green "money you keep" hue in tabular figures. */
+  .global-costs .wallet-field { margin-left:auto; padding-left:16px;
+    border-left:1px solid var(--line2); }
+  .global-costs .wallet-field label { color:var(--dim); }
+  .g-wallet-val { font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums;
+    font-size:13px; font-weight:600; color:var(--green2,#66bb6a); letter-spacing:-.2px; }
+  .g-wallet-val::after { content:" ISK"; font-size:10px; font-weight:400;
+    color:var(--dim); letter-spacing:.3px; }
 
   /* ── Status bar ──────────────────────────────────────────────────── */
   #statusbar {
@@ -1587,10 +1598,6 @@
   .ind-build-status.sold, .ind-build-status.done { color:var(--stg-sold); }
   .ind-build-name { font-weight:700; color:var(--fg); min-width:150px; }
   .ind-build-runs { color:var(--dim); }
-  .ind-build-stat { color:var(--dim); }
-  .ind-build-stat b { color:var(--fg); font-weight:600; }
-  .ind-build-stat b.pos { color:var(--green2,#4caf76); }
-  .ind-build-stat b.neg { color:var(--red); }
   .ind-build-when { color:var(--dim2); font-size:11.5px; margin-left:auto; white-space:nowrap; }
   .ind-build-toggle, .ind-build-del { padding:1px 8px; font-size:11.5px; cursor:pointer;
     background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--dim); }
@@ -1603,33 +1610,55 @@
   .ind-build-linkclose:hover { background:#12351f; border-color:var(--green,#6bd898); color:var(--green,#6bd898); }
   .ind-build-live { font-weight:700; color:var(--cyan); font-variant-numeric:tabular-nums; }
   .ind-build-eta { color:var(--dim); font-size:11.5px; margin-left:6px; }
-  .ind-build-detail { margin-top:10px; padding-top:8px; border-top:1px solid var(--line2); }
-  .ind-build-headcards { display:grid; grid-template-columns:repeat(4,1fr); gap:10px;
-    align-items:stretch; }
-  @media (max-width:720px){ .ind-build-headcards { grid-template-columns:repeat(2,1fr); } }
-  /* Strategy layout: one card per sell strategy (list / instant), each pairing
-     its sell revenue with the profit it yields so the two read as whole blocks. */
-  .ind-build-headcards.ind-build-strat { grid-template-columns:repeat(2,1fr); }
-  @media (max-width:720px){ .ind-build-headcards.ind-build-strat { grid-template-columns:1fr; } }
-  .ind-d-strat .ind-d-card-label { display:flex; align-items:baseline; gap:8px; }
-  .ind-d-strat-note { text-transform:none; letter-spacing:0; font-weight:500;
-    color:var(--dim); font-size:10.5px; }
-  .ind-d-strat-profit { margin-top:10px; padding-top:8px; border-top:1px dashed var(--line2); }
-  .ind-d-strat-line { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
-  .ind-d-strat-k { color:var(--dim); font-size:11.5px; }
-  /* Cards stretch to equal height so each card's "now" slot lines up in a row. */
-  .ind-build-headcards .ind-d-card { display:flex; flex-direction:column; }
-  .ind-d-card-now { margin-top:auto; padding-top:6px; font-size:11px; color:var(--fg);
+  .ind-build-detail { margin-top:10px; padding-top:10px; border-top:1px solid var(--line2);
+    display:flex; flex-direction:column; gap:12px; }
+  /* Cost basis: one quiet strip — the parts flow left to a right-aligned total,
+     so the money you sank in reads as a sentence and never competes with the
+     profit numbers below. */
+  .ind-bd-cost { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+    font-size:11.5px; }
+  .ind-bd-cost-lbl { text-transform:uppercase; letter-spacing:.06em; font-weight:700;
+    font-size:10px; color:var(--dim); }
+  .ind-bd-cost-parts { display:flex; gap:16px; flex-wrap:wrap; color:var(--dim); }
+  .ind-bd-cost-part b { color:var(--fg); font-weight:600; margin-left:5px;
+    font-variant-numeric:tabular-nums; }
+  .ind-bd-cost-total { margin-left:auto; color:var(--dim); font-size:12px; }
+  .ind-bd-cost-total b { color:var(--fg); font-weight:700; margin-left:6px;
+    font-variant-numeric:tabular-nums; }
+  /* The two exits, side by side. Profit is the hero of each column; revenue and
+     break-even are quiet supporting subs. A left accent rail carries the verdict
+     colour so a loss reads red as a whole block. */
+  .ind-bd-exits { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:720px){ .ind-bd-exits { grid-template-columns:1fr; } }
+  .ind-bd-exit { display:flex; flex-direction:column; gap:6px;
+    padding:10px 12px 10px 13px; background:var(--panel2); border:1px solid var(--line2);
+    border-left:3px solid var(--line2); border-radius:6px; }
+  .ind-bd-exit.pos { border-left-color:var(--green2,#66bb6a); }
+  .ind-bd-exit.neg { border-left-color:var(--red); }
+  .ind-bd-exit-head { display:flex; align-items:baseline; gap:8px; }
+  .ind-bd-exit-name { font-weight:700; color:var(--fg); font-size:13px; }
+  .ind-bd-exit-note { color:var(--dim); font-size:10.5px; }
+  .ind-bd-exit-profit { display:flex; align-items:baseline; gap:7px; }
+  .ind-bd-exit-profit b { font-family:"IBM Plex Mono",monospace; font-size:21px;
+    font-weight:700; letter-spacing:-.4px; font-variant-numeric:tabular-nums; color:var(--fg); }
+  .ind-bd-exit-profit.pos b { color:var(--green2,#66bb6a); }
+  .ind-bd-exit-profit.neg b { color:var(--red); }
+  .ind-bd-exit-plbl { text-transform:uppercase; letter-spacing:.06em; font-size:9.5px;
+    font-weight:700; color:var(--dim); }
+  .ind-bd-exit-meta { display:flex; flex-direction:column; gap:2px; font-size:11.5px;
+    color:var(--dim); }
+  .ind-bd-exit-meta b { color:var(--fg); font-weight:600; font-variant-numeric:tabular-nums; }
+  .ind-bd-exit-meta i { font-style:normal; color:var(--dim2); }
+  .ind-bd-exit-be { color:var(--gold,#c8a040); }
+  .ind-bd-exit-be b { color:var(--gold,#c8a040); }
+  .ind-d-card-now { margin-top:2px; padding-top:6px; font-size:11px; color:var(--fg);
     border-top:1px dashed var(--line2); }
   .ind-d-card-now:empty { display:none; }
-  .ind-d-card-now b { font-weight:700; }
+  .ind-d-card-now b { font-weight:700; font-variant-numeric:tabular-nums; }
   .ind-d-card-now .pos { color:var(--green2,#4caf76); }
   .ind-d-card-now .neg { color:var(--red); }
   .ind-d-card-nowunit { color:var(--dim); }
-  .ind-build-costline { display:flex; flex-wrap:wrap; gap:6px 20px; margin-top:8px;
-    font-size:11.5px; color:var(--dim); }
-  .ind-build-costline b { color:var(--fg); font-weight:600; margin-left:4px; }
-  .ind-build-nowrow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px; }
+  .ind-build-nowrow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .ind-build-now { padding:2px 10px; font-size:11px; cursor:pointer;
     background:var(--panel); border:1px solid var(--line2); border-radius:4px; color:var(--dim); }
   .ind-build-now:hover:not(:disabled) { border-color:var(--cyan); color:var(--cyan); }
@@ -1639,7 +1668,6 @@
     letter-spacing:.6px; font-weight:700; }
   .ind-build-nowout b.pos { color:var(--green2,#4caf76); }
   .ind-build-nowout b.neg { color:var(--red); }
-  .ind-build-mats { margin-top:10px; }
   .ind-build-mats > summary { cursor:pointer; font-size:10.5px; font-weight:700;
     text-transform:uppercase; letter-spacing:.8px; color:var(--cyan); opacity:.7;
     padding-bottom:2px; border-bottom:1px solid var(--line2); list-style:revert; }

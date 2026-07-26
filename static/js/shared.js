@@ -306,6 +306,9 @@ function switchTab(tab, opts){
   // The per-page character badge lives in each tab's control bar — (re)draw it
   // for the tab we just switched to (control bars share slots via .page-char-slot).
   if(typeof renderPageCharBadges==="function") renderPageCharBadges();
+  // The shared cost bar carries the spending character's wallet — refresh it for
+  // the tab we just switched to (the tool pages can each run a different char).
+  if(typeof updateGlobalWallet==="function") updateGlobalWallet();
 }
 // The Industry planner has no manual ME/TE/skill inputs — it needs a real
 // character's owned blueprints and trained skills, so it's gated behind login

@@ -152,6 +152,7 @@ function applyPageChar(page){
   else if(page==="lp"){ updateMyLpBadge(); }
   else if(page==="exp"){ if(typeof refreshJournal==="function") refreshJournal(); }
   renderPageCharBadges();
+  updateGlobalWallet();
 }
 
 // Render the small "👤 <name> ▾" chips that live in each page's control bar so
@@ -170,6 +171,34 @@ function renderPageCharBadges(){
     const badge=slot.querySelector(".page-char-badge");
     if(badge) badge.onclick=e=>{ e.stopPropagation(); openSettingsPanel(); };
   });
+}
+
+// Wallet balance for a character id, read from the live per-character bundle the
+// Character data fetch caches (auth-status characters carry no balance). Falls
+// back to the account-wide wallet when the bundle isn't split per character.
+function charWallet(cid){
+  const d=AUTH.data; if(!d) return null;
+  const bundle=(d.characters||[]).find(c=>c.character_id===cid);
+  return bundle&&bundle.wallet!=null ? bundle.wallet : (d.wallet!=null?d.wallet:null);
+}
+
+// Show the wallet of the character the current tool is spending from — right in
+// the shared cost bar, next to the fees, so the money you have sits beside the
+// money each sale costs. The tool pages (Industry / LP / Arbitrage) can run on a
+// per-page character, so mirror assignedCharId; other tabs show the active one.
+function updateGlobalWallet(){
+  const field=$("#g-wallet-field"), val=$("#g-wallet");
+  if(!field||!val) return;
+  if(!AUTH.loggedIn){ field.classList.add("hidden"); return; }
+  const page=(ACTIVE_TAB==="ind"||ACTIVE_TAB==="lp"||ACTIVE_TAB==="arb")?ACTIVE_TAB:null;
+  const cid=page&&typeof assignedCharId==="function"?assignedCharId(page):AUTH.activeCharId;
+  const bal=charWallet(cid);
+  if(bal==null){ field.classList.add("hidden"); return; }
+  field.classList.remove("hidden");
+  val.textContent=fmtISK(bal);
+  const who=(typeof charName==="function"&&charName(cid))||"the active character";
+  field.setAttribute("data-tip",
+    `${who}'s wallet — ${Math.round(bal).toLocaleString()} ISK to spend on materials, job installs and listing fees.`);
 }
 
 async function checkAuth(){
@@ -794,6 +823,7 @@ function renderCharData(){
   const events=d.order_events||[];
 
   $("#chip-wallet").textContent=d.wallet!=null?fmtISK(d.wallet)+" ISK":"";
+  updateGlobalWallet();
 
   let html='';
 

@@ -144,6 +144,10 @@ async function loadSettings(){
         const sec=typeof ind.sections==="string"?JSON.parse(ind.sections):ind.sections;
         if(sec&&typeof sec==="object") Object.assign(IND.sections, sec);
       }catch(e){} }
+      // "My Blueprints" always starts collapsed on a fresh load, whatever its
+      // last persisted state — it's a reference section, not the main view, so
+      // it opens tucked away. Still freely expandable within the session.
+      IND.sections.owned=false;
       // Tracker status-group collapse state (stage key -> collapsed).
       if(ind.build_groups){ try{
         const bg=typeof ind.build_groups==="string"?JSON.parse(ind.build_groups):ind.build_groups;

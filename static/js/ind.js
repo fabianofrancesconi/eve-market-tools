@@ -12,7 +12,7 @@ let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es
            focusedBuild:null,   // pipeline board: id of the tile expanded into the focus panel
            buildGroups:{},   // stage key -> true when that status group is collapsed (legacy prefs; archived still uses it)
            mode:"planner",
-           sections:{fav:true, owned:true, hidden:false, all:true, builds:true}};
+           sections:{owned:false, hidden:false, builds:true}};
 // IND.mode is seeded from server prefs by loadSettings (getPref 'ind_mode').
 // Bumped whenever a scan starts or a new fill begins, so an in-flight background
 // tradeability fill from a previous scan knows to abandon itself.
@@ -340,19 +340,19 @@ function renderIndTable(){
   favs=indSortRows(favs); myBps=indSortRows(myBps);
   hiddenBps=indSortRows(hiddenBps); rest=indSortRows(rest);
 
-  // Render filter chips
+  // Render filter chips — only the collapsible pinned sections (My Blueprints,
+  // Hidden). Favorites and the rest of the catalogue are now one unified,
+  // non-collapsible list, so they get no chip.
   const chips=$("#ind-chips");
-  const hasSections=favs.length||myBps.length||hiddenBps.length;
-  if(hasSections && IND.rows.length){
+  const hasPinned=myBps.length||hiddenBps.length||IND.rows.some(isOwned)||IND.hidden.size;
+  if(hasPinned && IND.rows.length){
     const chip=(key,label,n)=>{
       const on=IND.sections[key];
       return `<span class="ind-chip${on?" active":""}" data-sect="${key}">${label} <span class="chip-count">(${n})</span></span>`;
     };
     let ch="";
-    if(favs.length||IND.favorites.size) ch+=chip("fav","★ Favorites",favs.length);
     if(myBps.length||IND.rows.some(isOwned)) ch+=chip("owned","My Blueprints",myBps.length);
     if(hiddenBps.length||IND.hidden.size) ch+=chip("hidden","Hidden",hiddenBps.length);
-    if(rest.length) ch+=chip("all","All Items",rest.length);
     chips.innerHTML=ch;
     chips.querySelectorAll(".ind-chip").forEach(el=>{
       el.onclick=()=>{ const k=el.dataset.sect; IND.sections[k]=!IND.sections[k]; renderIndTable(); setPref('ind.sections', IND.sections); };
@@ -367,10 +367,8 @@ function renderIndTable(){
 
   const ordered=[];
   let html="";
-  if(favs.length){
-    html+=sect("fav","★ Favorites", favs.length);
-    if(IND.sections.fav) favs.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
-  }
+  // Pinned, collapsible sections up top: My Blueprints (collapsed by default)
+  // then Hidden. Everything else is the unified list below.
   if(myBps.length){
     html+=sect("owned","My Blueprints", myBps.length);
     if(IND.sections.owned) myBps.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
@@ -379,17 +377,19 @@ function renderIndTable(){
     html+=sect("hidden","Hidden", hiddenBps.length);
     if(IND.sections.hidden) hiddenBps.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   }
+  // Unified view: favorites are simply pinned to the top of the single list
+  // (regardless of the sort column), followed by the rest of the catalogue.
+  // No section header, not collapsible — one continuous view. Favorites render
+  // fully; the long "rest" tail lazy-loads on scroll.
+  favs.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   const IND_LAZY_BATCH=60;
   let lazyRest=null, lazyIdx=0;
   if(rest.length){
-    if(hasSections) html+=sect("all","All Items", rest.length);
-    if(!hasSections || IND.sections.all){
-      const show=Math.max(IND_LAZY_BATCH, IND._lazyRendered||0);
-      const initial=rest.slice(0, Math.min(show, rest.length));
-      initial.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
-      IND._lazyRendered=initial.length;
-      if(rest.length>initial.length){ lazyRest=rest; lazyIdx=initial.length; }
-    }
+    const show=Math.max(IND_LAZY_BATCH, IND._lazyRendered||0);
+    const initial=rest.slice(0, Math.min(show, rest.length));
+    initial.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
+    IND._lazyRendered=initial.length;
+    if(rest.length>initial.length){ lazyRest=rest; lazyIdx=initial.length; }
   }
   tbody.innerHTML=html;
 
@@ -605,7 +605,7 @@ function scanInd(refreshSde){
       computeIndTradeability();
       persistScan("ind", {...IND.lastData, rows:IND.rows});
       hideIndProgress(); renderIndStatus(); renderIndTable();
-      fillIndTradeability();   // score the long tail in the background
+      fillIndTradeability(true);   // score the long tail; refetch live ESI prices
     } else if(data.type==="error"){
       es.close(); IND.es=null; setIndScanning(false);
       hideIndProgress(); setStatus(data.error, true);
@@ -622,7 +622,11 @@ function scanInd(refreshSde){
 // product so EVERY item ends up with a real tradeability — gracefully: pending
 // rows spin, a status pill counts progress, and the table fills in as it lands.
 // A newer scan/fill cancels this one via IND_FILL_TOKEN.
-async function fillIndTradeability(){
+// `freshPrices` (set by a user-initiated Scan) forces the liquidity fill to
+// re-pull live ESI prices instead of reusing the 5-minute server cache, so
+// hitting Scan always reflects the latest order book. The tab-open preview
+// leaves it off (reuse the cache — it's just a fast first paint).
+async function fillIndTradeability(freshPrices){
   const token=++IND_FILL_TOKEN;
   const station=(IND.lastData && IND.lastData.station_id) || $("#ind-station").value;
   // Group still-pending rows by product type so one history lookup updates every
@@ -642,7 +646,9 @@ async function fillIndTradeability(){
     const chunk=ids.slice(i,i+CHUNK);
     let liq=null;
     try{
-      const p=new URLSearchParams({station:station, type_ids:chunk.join(",")});
+      const qp={station:station, type_ids:chunk.join(",")};
+      if(freshPrices) qp.refresh="1";
+      const p=new URLSearchParams(qp);
       const d=await (await fetch("/api/ind/liquidity?"+p)).json();
       liq=d.liquidity||null;
     }catch(e){ liq=null; }

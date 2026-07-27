@@ -1302,6 +1302,35 @@ class TestIndustryTradeabilityFill:
         assert e["sell_volume"] == 500.0
         assert e["bid"] == 11.0 and e["ask"] == 12.0
 
+    def test_liquidity_refresh_forces_fresh_esi_pull(self, tmp_server):
+        # A user-initiated Scan drives the fill with refresh=1 so the live ESI
+        # prices are re-pulled rather than served from the 5-minute disk cache.
+        base, _ = tmp_server
+        seen = {}
+
+        def fake_esi(ids, sess, **k):
+            seen["refresh"] = k.get("refresh")
+            return {}
+
+        with patch.object(lp_web, "fetch_history_volumes", return_value={34: 1.0}), \
+             patch.object(lp_web, "fetch_prices_esi", side_effect=fake_esi):
+            http_get(f"{base}/api/ind/liquidity?type_ids=34&refresh=1")
+        assert seen["refresh"] is True
+
+    def test_liquidity_defaults_to_cached_esi(self, tmp_server):
+        # The tab-open preview omits refresh, so the cache is reused (refresh=False).
+        base, _ = tmp_server
+        seen = {}
+
+        def fake_esi(ids, sess, **k):
+            seen["refresh"] = k.get("refresh")
+            return {}
+
+        with patch.object(lp_web, "fetch_history_volumes", return_value={34: 1.0}), \
+             patch.object(lp_web, "fetch_prices_esi", side_effect=fake_esi):
+            http_get(f"{base}/api/ind/liquidity?type_ids=34")
+        assert seen["refresh"] is False
+
     def test_liquidity_parses_only_integer_ids(self, tmp_server):
         base, _ = tmp_server
         seen = {}

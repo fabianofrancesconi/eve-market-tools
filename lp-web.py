@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.151.1"
+__version__ = "1.152.0"
 
 import argparse
 import base64
@@ -3424,12 +3424,18 @@ def do_ind_liquidity(q):
     region_id = TRADE_HUBS[station_id]["region_id"]
     raw = q.get("type_ids", [""])[0]
     type_ids = [int(x) for x in raw.split(",") if x.strip().isdigit()]
+    # A user-initiated Scan passes refresh=1 so the live ESI prices are re-pulled
+    # fresh (bypassing the 5-minute disk cache) rather than reused from a prior
+    # fill; the background tab-open preview leaves it off and reuses the cache.
+    refresh = q.get("refresh", ["0"])[0] in ("1", "true", "on")
     daily = fetch_history_volumes(set(type_ids), region_id, SESSION, CACHE_DIR)
     # Live order-book depth (real bids/asks on the book right now), so the client
     # can suppress a phantom instant-sell price and score sellability against the
-    # current market — not just 30-day region history. Cached 5 min per station.
+    # current market — not just 30-day region history. Cached 5 min per station,
+    # unless refresh forces a fresh pull.
     live = fetch_prices_esi(set(type_ids), SESSION, station_id=station_id,
-                            region_id=region_id, cache_dir=CACHE_DIR)
+                            region_id=region_id, cache_dir=CACHE_DIR,
+                            refresh=refresh)
     out = {}
     for tid in type_ids:
         dv = daily.get(tid)

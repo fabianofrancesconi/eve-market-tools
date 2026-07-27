@@ -248,6 +248,36 @@ class TestDeliveryGate:
         assert sb["stage"] == "sold"
 
 
+# ── Listed stage: one open order doesn't flag every build of the product ─────
+class TestListedAllocation:
+    def test_one_order_flags_only_oldest_held_build(self, monkeypatch, tmp_path):
+        # The reported bug: two delivered builds of "Capital Command Processor I",
+        # a single open sell order. Only the oldest still-held build may read as
+        # listed; the other stays built (its stock is in the hangar, not listed).
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        old = _built(runs=10, done_at=1000.0)
+        new = _built(runs=10, done_at=2000.0)
+        # 5 units on the market (fits within the oldest build's 10 unsold).
+        lp_web._record_listed_units(acct, 1, [
+            {"is_buy_order": False, "type_id": 587, "volume_remain": 5}])
+        res = lp_web.do_ind_summary({})
+        assert _summary_build(res, old["id"])["stage"] == "listed"
+        assert _summary_build(res, new["id"])["stage"] == "built"
+
+    def test_order_spills_to_second_build(self, monkeypatch, tmp_path):
+        # An order bigger than the oldest build's unsold stock lists both.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        old = _built(runs=10, done_at=1000.0)
+        new = _built(runs=10, done_at=2000.0)
+        lp_web._record_listed_units(acct, 1, [
+            {"is_buy_order": False, "type_id": 587, "volume_remain": 14}])
+        res = lp_web.do_ind_summary({})
+        assert _summary_build(res, old["id"])["stage"] == "listed"
+        assert _summary_build(res, new["id"])["stage"] == "listed"
+
+
 # ── Parallel batches of the same item: FIFO, no order linking ────────────────
 class TestParallelBatches:
     def test_two_batches_fifo_by_done_at(self, monkeypatch, tmp_path):

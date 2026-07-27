@@ -1716,10 +1716,13 @@ def _build_stage(b, alloc=None, listed_units=0):
     manufacturing job is checked *first*, so a build whose job is still running
     can never be shown as listed/sold — the bug the pooled rewrite set out to
     kill. Once delivered (done_at): sold when every produced unit has sold (or the
-    remainder was abandoned), listed when this product has any units on the market
-    *and* this lot still holds unsold stock, else built. ``alloc`` is the
-    per-build allocation record; ``listed_units`` is the product's current
-    open-order volume (both optional so the bare stage still works server-side)."""
+    remainder was abandoned), listed when *this lot's* own share of the product's
+    open-order volume is non-zero and it still holds unsold stock, else built.
+    ``alloc`` is the per-build allocation record; ``listed_units`` is *this
+    build's* allocated listed share (from :func:`ind_track.allocate_listed`), not
+    the product-wide total — otherwise one market order would flag every delivered
+    build of the product as listed. Both optional so the bare stage still works
+    server-side."""
     if b.get("done_at") is None:
         return "building" if b.get("job_id") is not None else "planned"
     produced = _build_units_produced(b) or 0
@@ -1818,6 +1821,20 @@ def do_ind_summary(q):
     ledger = _load_sell_ledger(acct)
     listed = _load_listed_units(acct)
     per_build, _prod = _allocate_builds(builds, ledger)
+    # Spread each product's live open-order volume across its delivered builds'
+    # unsold stock (oldest first), so a single market order flags only the
+    # oldest still-held batch as "listed", not every delivered build at once.
+    listed_by_build = {}
+    _by_pid = {}
+    for b in builds:
+        _by_pid.setdefault(str(b.get("product_type_id")), []).append(b)
+    for pid_str, group in _by_pid.items():
+        lots = [{"id": b.get("id"), "units": _build_units_produced(b) or 0,
+                 "done_at": b.get("done_at")}
+                for b in group
+                if b.get("done_at") is not None and not b.get("abandoned")]
+        listed_by_build.update(
+            ind_track.allocate_listed(lots, per_build, listed.get(pid_str, 0)))
     realized_profit = realized_net = 0.0
     capital_in_flight = 0.0
     by_product = {}
@@ -1825,7 +1842,7 @@ def do_ind_summary(q):
     for b in builds:
         pid = b.get("product_type_id")
         alloc = per_build.get(b.get("id"))
-        lu = listed.get(str(pid), 0)
+        lu = listed_by_build.get(b.get("id"), 0)
         stage = _build_stage(b, alloc, lu)
         batch_cost = _build_batch_cost(b)
         rz = _build_realized(b, alloc)

@@ -296,6 +296,44 @@ class TestAllocateFifo:
         assert summ["sold"] == 0
 
 
+class TestAllocateListed:
+    def test_single_order_lands_on_oldest_held_build_only(self):
+        # Two delivered builds of the same item both hold unsold stock, one open
+        # order of 5. It must attach to the oldest held build, NOT flag both.
+        lots = [{"id": "OLD", "units": 10, "done_at": 1000},
+                {"id": "NEW", "units": 10, "done_at": 2000}]
+        per_lot = {"OLD": {"sold": 0}, "NEW": {"sold": 0}}
+        out = ind_track.allocate_listed(lots, per_lot, 5)
+        assert out == {"OLD": 5, "NEW": 0}
+
+    def test_spills_to_next_build_when_oldest_exhausted(self):
+        lots = [{"id": "OLD", "units": 10, "done_at": 1000},
+                {"id": "NEW", "units": 10, "done_at": 2000}]
+        per_lot = {"OLD": {"sold": 0}, "NEW": {"sold": 0}}
+        out = ind_track.allocate_listed(lots, per_lot, 14)
+        assert out == {"OLD": 10, "NEW": 4}
+
+    def test_skips_sold_out_build(self):
+        # OLD fully sold → its 0 unsold can't be listed; the order sits on NEW.
+        lots = [{"id": "OLD", "units": 10, "done_at": 1000},
+                {"id": "NEW", "units": 10, "done_at": 2000}]
+        per_lot = {"OLD": {"sold": 10}, "NEW": {"sold": 0}}
+        out = ind_track.allocate_listed(lots, per_lot, 3)
+        assert out == {"OLD": 0, "NEW": 3}
+
+    def test_listed_capped_at_held_stock(self):
+        # More on the market than tracked builds hold (extra from flipped stock).
+        lots = [{"id": "A", "units": 10, "done_at": 1000}]
+        per_lot = {"A": {"sold": 8}}
+        out = ind_track.allocate_listed(lots, per_lot, 50)
+        assert out == {"A": 2}   # only the 2 unsold held units can be listed
+
+    def test_no_orders_lists_nothing(self):
+        lots = [{"id": "A", "units": 10, "done_at": 1000}]
+        out = ind_track.allocate_listed(lots, {"A": {"sold": 0}}, 0)
+        assert out == {"A": 0}
+
+
 class TestProductPipeline:
     def test_unit_flow(self):
         lots = [

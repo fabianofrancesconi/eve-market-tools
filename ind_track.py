@@ -230,6 +230,40 @@ def allocate_fifo(lots, fills):
     return per_lot, summary
 
 
+def allocate_listed(lots, per_lot, listed_units):
+    """Distribute a product's live open-order volume across its builds' unsold
+    stock, oldest-produced first — so a single market order doesn't flag *every*
+    delivered build of that product as "listed".
+
+    ``lots`` — the product's delivered builds, each ``{id, units, done_at}``
+    (``units`` = produced output; abandoned lots dropped by the caller).
+    ``per_lot`` — the allocation map from :func:`allocate_fifo` (for each lot's
+    ``sold`` count, so we list only its *unsold* remainder).
+    ``listed_units`` — total ``volume_remain`` on the product's current open sell
+    orders. Never tied to a specific order; we simply lay it against held stock
+    oldest-first, the same order sales fill, so the oldest still-held batch is the
+    one shown on the market.
+
+    Returns ``{lot_id: listed_units}`` for every lot (zero when nothing of it is
+    on the market). The total listed is capped at the units actually held, since
+    you can't have more of a tracked build on the market than you still hold.
+    """
+    ordered = sorted(
+        (l for l in lots if (l.get("units") or 0) > 0),
+        key=lambda l: (l.get("done_at") if l.get("done_at") is not None else float("inf"),
+                       str(l.get("id"))))
+    out = {l["id"]: 0 for l in lots}
+    remaining = max(0, listed_units or 0)
+    for l in ordered:
+        held = max(0, (l.get("units") or 0) - per_lot.get(l["id"], {}).get("sold", 0))
+        take = min(remaining, held)
+        out[l["id"]] = take
+        remaining -= take
+        if remaining <= 0:
+            break
+    return out
+
+
 def product_pipeline(lots, per_lot, listed_units):
     """Aggregate one product's unit flow for the pipeline board.
 

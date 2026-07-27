@@ -1463,6 +1463,11 @@
   #ind-tbl tr.ind-section td:hover { color:var(--fg); }
   #ind-tbl tr.ind-section .sect-arrow { display:inline-block; transition:transform .15s; margin-right:4px; }
   #ind-tbl tr.ind-section.collapsed .sect-arrow { transform:rotate(-90deg); }
+  /* Gap that separates the pinned sections (My Blueprints / Hidden) from the
+     unified favorites + all-items list below, so a collapsed pinned header
+     doesn't read as the heading of the rows beneath it. */
+  #ind-tbl tr.ind-unified-sep td { padding:0; height:10px;
+    border-top:2px solid var(--line2); background:transparent; }
   .ind-chips { display:flex; gap:18px; flex-wrap:wrap; margin:4px 0 6px; align-items:baseline;
     padding:0 2px; border-bottom:1px solid var(--line); }
   .ind-chip { font-size:12.5px; padding:6px 2px 5px; cursor:pointer;

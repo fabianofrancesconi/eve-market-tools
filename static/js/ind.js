@@ -380,7 +380,11 @@ function renderIndTable(){
   // Unified view: favorites are simply pinned to the top of the single list
   // (regardless of the sort column), followed by the rest of the catalogue.
   // No section header, not collapsible — one continuous view. Favorites render
-  // fully; the long "rest" tail lazy-loads on scroll.
+  // fully; the long "rest" tail lazy-loads on scroll. When pinned sections sit
+  // above, a plain divider row closes them off so the unified list doesn't read
+  // as an extension of the (possibly collapsed) My Blueprints / Hidden headers.
+  if((myBps.length||hiddenBps.length) && (favs.length||rest.length))
+    html+=`<tr class="ind-unified-sep"><td colspan="${ncol}"></td></tr>`;
   favs.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   const IND_LAZY_BATCH=60;
   let lazyRest=null, lazyIdx=0;

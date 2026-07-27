@@ -803,6 +803,18 @@
   .char-card-scroll table.mini thead th { position:sticky; top:0; background:var(--panel2); z-index:1; }
   .char-none { color:var(--dim); font-size:13.5px; padding:10px 4px; }
   .char-none.char-none-warn { color:var(--gold); }
+  /* Loyalty points as a horizontal chip strip — one reading per corporation,
+     wrapping across the full-width card, echoing the Tracker's sum-strip. */
+  .lp-strip { display:flex; flex-wrap:wrap; gap:8px; }
+  .lp-chip { flex:1 1 auto; min-width:130px; padding:8px 12px;
+    background:var(--panel); border:1px solid var(--line2); border-radius:6px; }
+  .lp-chip-corp { color:var(--dim); font-size:10.5px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.4px; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; }
+  .lp-chip-char { color:var(--cyan); font-size:10.5px; font-weight:600;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .lp-chip-val { color:var(--gold); font-size:17px; font-weight:800; margin-top:2px;
+    font-variant-numeric:tabular-nums; white-space:nowrap; }
   /* Market-order colours all draw from the canonical --ord-* vars (see :root). */
   .char-orders-tbl td.tx-buy, .char-orders-tbl .tx-buy { color:var(--ord-buy); font-weight:600; }
   .char-orders-tbl td.tx-sell, .char-orders-tbl .tx-sell { color:var(--ord-sell); font-weight:600; }

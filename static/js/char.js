@@ -392,6 +392,24 @@ function _fmtOrdersExpires(httpDate){
   return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
 }
 
+// Loyalty points as a horizontal chip strip — one reading per corporation
+// (corp name label over the LP figure), mirroring the Tracker's sum-strip so
+// the whole set reads at a glance rather than as a vertical table. When
+// `showChar` is set (the "All" panel) each chip also names the character.
+function _lpStripHtml(lpList, showChar){
+  if(!lpList.length) return `<div class="char-none">No loyalty points.</div>`;
+  let s=`<div class="lp-strip">`;
+  for(const l of lpList){
+    s+=`<div class="lp-chip">`
+      +`<div class="lp-chip-corp">${authEsc(l.corp_name)}</div>`
+      +(showChar?`<div class="lp-chip-char">${authEsc(l._char)}</div>`:"")
+      +`<div class="lp-chip-val">${(l.loyalty_points||0).toLocaleString()}</div>`
+      +`</div>`;
+  }
+  s+=`</div>`;
+  return s;
+}
+
 // ── Market-order table sorting ──────────────────────────────────────────
 // Shared across the per-character and combined "All" order tables. Default is
 // newest-posted first; clicking a column header re-sorts, and clicking the
@@ -465,56 +483,6 @@ function _renderCharPanel(c){
   h+=`<div class="wallet-chart-stats" id="walletChartStats"></div>`;
   h+=`</div>`;
 
-  // Industry jobs
-  h+=`<section class="char-card${cJobs.length>3?' char-card-wide':''}">`;
-  h+=`<div class="char-card-header"><h3>Industry jobs (${cJobs.length})</h3></div><div class="char-card-body">`;
-  if(cJobs.length){
-    h+=`<div class="char-card-scroll"><table class="mini char-jobs-tbl"><thead><tr>`;
-    h+=`<th>Product</th><th>Activity</th><th>Location</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>`;
-    h+=`</tr></thead><tbody>`;
-    for(const j of cJobs){
-      const end=Date.parse(j.end), rem=end-Date.now();
-      let tcell="—";
-      if(isFinite(end)) tcell=rem>0
-        ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
-        :`<span class="timer-cell done">✓ Ready</span>`;
-      const tb=_trackedBuildForJob(j);
-      const tracked=!!tb;
-      const link=tracked?` <span class="char-job-tracked" data-peek="${tb.id}" title="Quick look at this tracked build">🔗</span>`:"";
-      const cls=tracked?" char-job-row":"";
-      const tip=tracked?` title="Open its tracked build in Industry"`:"";
-      h+=`<tr class="${cls.trim()}" data-job-id="${j.job_id}"${tip}>`
-        +`<td>${_peekName(j.product_name, tb)}${link}</td><td>${authEsc(j.activity)}</td>`
-        +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
-    }
-    h+=`</tbody></table></div>`;
-  } else h+=`<div class="char-none">No active jobs.</div>`;
-  h+=`</div></section>`;
-
-  // Skill queue
-  h+=`<section class="char-card"><div class="char-card-header"><h3>Skill queue (${cQueue.length})</h3></div><div class="char-card-body">`;
-  if(cQueue.length){
-    h+=`<div class="char-card-scroll"><table class="mini"><thead><tr><th>Skill</th><th>Lvl</th><th style="text-align:right">Finishes</th></tr></thead><tbody>`;
-    for(const s of cQueue){
-      const fin=s.finish_date?new Date(s.finish_date).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
-      h+=`<tr><td>${authEsc(s.skill_name)}</td><td>${romanLvl(s.finished_level)}</td><td style="text-align:right">${fin}</td></tr>`;
-    }
-    h+=`</tbody></table></div>`;
-  } else h+=`<div class="char-none">Skill queue is empty.</div>`;
-  h+=`</div></section>`;
-
-  // Loyalty points
-  const lpAsOf=_fmtLpAsOf(c.loyalty_last_modified);
-  h+=`<section class="char-card"><div class="char-card-header"><h3>Loyalty points</h3>`
-    +(lpAsOf?`<span class="char-card-note" title="EVE publishes loyalty points to ESI roughly once an hour.">as of ${lpAsOf}</span>`:"")
-    +`</div><div class="char-card-body">`;
-  if(cLp.length){
-    h+=`<div class="char-card-scroll"><table class="mini"><thead><tr><th>Corporation</th><th style="text-align:right">LP</th></tr></thead><tbody>`;
-    for(const l of cLp) h+=`<tr><td>${authEsc(l.corp_name)}</td><td style="text-align:right">${(l.loyalty_points||0).toLocaleString()}</td></tr>`;
-    h+=`</tbody></table></div>`;
-  } else h+=`<div class="char-none">No loyalty points.</div>`;
-  h+=`</div></section>`;
-
   // Market orders
   const ordersExp=_fmtOrdersExpires(c.market_orders_expires);
   h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Market orders`;
@@ -554,6 +522,52 @@ function _renderCharPanel(c){
   } else h+=`<div class="char-none${cOrdersError?' char-none-warn':''}">${cOrdersError||'No open orders.'}</div>`;
   h+=`</div></section>`;
 
+  // Industry jobs
+  h+=`<section class="char-card${cJobs.length>3?' char-card-wide':''}">`;
+  h+=`<div class="char-card-header"><h3>Industry jobs (${cJobs.length})</h3></div><div class="char-card-body">`;
+  if(cJobs.length){
+    h+=`<div class="char-card-scroll"><table class="mini char-jobs-tbl"><thead><tr>`;
+    h+=`<th>Product</th><th>Activity</th><th>Location</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>`;
+    h+=`</tr></thead><tbody>`;
+    for(const j of cJobs){
+      const end=Date.parse(j.end), rem=end-Date.now();
+      let tcell="—";
+      if(isFinite(end)) tcell=rem>0
+        ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
+        :`<span class="timer-cell done">✓ Ready</span>`;
+      const tb=_trackedBuildForJob(j);
+      const tracked=!!tb;
+      const link=tracked?` <span class="char-job-tracked" data-peek="${tb.id}" title="Quick look at this tracked build">🔗</span>`:"";
+      const cls=tracked?" char-job-row":"";
+      const tip=tracked?` title="Open its tracked build in Industry"`:"";
+      h+=`<tr class="${cls.trim()}" data-job-id="${j.job_id}"${tip}>`
+        +`<td>${_peekName(j.product_name, tb)}${link}</td><td>${authEsc(j.activity)}</td>`
+        +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
+    }
+    h+=`</tbody></table></div>`;
+  } else h+=`<div class="char-none">No active jobs.</div>`;
+  h+=`</div></section>`;
+
+  // Skill queue
+  h+=`<section class="char-card"><div class="char-card-header"><h3>Skill queue (${cQueue.length})</h3></div><div class="char-card-body">`;
+  if(cQueue.length){
+    h+=`<div class="char-card-scroll"><table class="mini"><thead><tr><th>Skill</th><th>Lvl</th><th style="text-align:right">Finishes</th></tr></thead><tbody>`;
+    for(const s of cQueue){
+      const fin=s.finish_date?new Date(s.finish_date).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"—";
+      h+=`<tr><td>${authEsc(s.skill_name)}</td><td>${romanLvl(s.finished_level)}</td><td style="text-align:right">${fin}</td></tr>`;
+    }
+    h+=`</tbody></table></div>`;
+  } else h+=`<div class="char-none">Skill queue is empty.</div>`;
+  h+=`</div></section>`;
+
+  // Loyalty points — full-width chip strip at the bottom of the page
+  const lpAsOf=_fmtLpAsOf(c.loyalty_last_modified);
+  h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Loyalty points</h3>`
+    +(lpAsOf?`<span class="char-card-note" title="EVE publishes loyalty points to ESI roughly once an hour.">as of ${lpAsOf}</span>`:"")
+    +`</div><div class="char-card-body">`;
+  h+=_lpStripHtml(cLp, false);
+  h+=`</div></section>`;
+
   h+=`</div>`;
   return h;
 }
@@ -580,41 +594,6 @@ function _renderAllPanel(chars){
   h+=`<div id="walletChartContainer" style="min-height:200px"></div>`;
   h+=`<div class="wallet-chart-stats" id="walletChartStats"></div>`;
   h+=`</div>`;
-
-  // Industry jobs — unified with character name
-  h+=`<section class="char-card${allJobs.length>3?' char-card-wide':''}">`;
-  h+=`<div class="char-card-header"><h3>Industry jobs (${allJobs.length})</h3></div><div class="char-card-body">`;
-  if(allJobs.length){
-    h+=`<div class="char-card-scroll"><table class="mini char-jobs-tbl"><thead><tr>`;
-    h+=`<th>Character</th><th>Product</th><th>Activity</th><th>Location</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>`;
-    h+=`</tr></thead><tbody>`;
-    for(const j of allJobs){
-      const end=Date.parse(j.end), rem=end-Date.now();
-      let tcell="—";
-      if(isFinite(end)) tcell=rem>0
-        ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
-        :`<span class="timer-cell done">✓ Ready</span>`;
-      const tb=_trackedBuildForJob(j);
-      const tracked=!!tb;
-      const link=tracked?` <span class="char-job-tracked" data-peek="${tb.id}" title="Quick look at this tracked build">🔗</span>`:"";
-      const cls=tracked?" char-job-row":"";
-      const tip=tracked?` title="Open its tracked build in Industry"`:"";
-      h+=`<tr class="${cls.trim()}" data-job-id="${j.job_id}"${tip}>`
-        +`<td>${authEsc(j._char)}</td><td>${_peekName(j.product_name, tb)}${link}</td><td>${authEsc(j.activity)}</td>`
-        +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
-    }
-    h+=`</tbody></table></div>`;
-  } else h+=`<div class="char-none">No active jobs.</div>`;
-  h+=`</div></section>`;
-
-  // Loyalty points — with character name
-  h+=`<section class="char-card"><div class="char-card-header"><h3>Loyalty points</h3></div><div class="char-card-body">`;
-  if(allLp.length){
-    h+=`<div class="char-card-scroll"><table class="mini"><thead><tr><th>Character</th><th>Corporation</th><th style="text-align:right">LP</th></tr></thead><tbody>`;
-    for(const l of allLp) h+=`<tr><td>${authEsc(l._char)}</td><td>${authEsc(l.corp_name)}</td><td style="text-align:right">${(l.loyalty_points||0).toLocaleString()}</td></tr>`;
-    h+=`</tbody></table></div>`;
-  } else h+=`<div class="char-none">No loyalty points.</div>`;
-  h+=`</div></section>`;
 
   // Market orders — unified with totals
   const allOrdersExp=_fmtOrdersExpires(chars.reduce((latest,c)=>{
@@ -662,6 +641,37 @@ function _renderAllPanel(chars){
       +`<td colspan="4" style="text-align:right"><span class="tx-sell">${sellOrders.length} sell (${fmtISK(sellVal)})</span> · <span class="tx-buy">${buyOrders.length} buy (${fmtISK(buyVal)})</span></td></tr>`;
     h+=`</tbody></table></div>`;
   } else h+=`<div class="char-none">No open orders.</div>`;
+  h+=`</div></section>`;
+
+  // Industry jobs — unified with character name
+  h+=`<section class="char-card${allJobs.length>3?' char-card-wide':''}">`;
+  h+=`<div class="char-card-header"><h3>Industry jobs (${allJobs.length})</h3></div><div class="char-card-body">`;
+  if(allJobs.length){
+    h+=`<div class="char-card-scroll"><table class="mini char-jobs-tbl"><thead><tr>`;
+    h+=`<th>Character</th><th>Product</th><th>Activity</th><th>Location</th><th>Runs</th><th>Status</th><th style="text-align:right">Time left</th>`;
+    h+=`</tr></thead><tbody>`;
+    for(const j of allJobs){
+      const end=Date.parse(j.end), rem=end-Date.now();
+      let tcell="—";
+      if(isFinite(end)) tcell=rem>0
+        ?`<span class="ind-live-timer timer-cell" data-end="${end}">${fmtCountdownShort(rem)}</span>`
+        :`<span class="timer-cell done">✓ Ready</span>`;
+      const tb=_trackedBuildForJob(j);
+      const tracked=!!tb;
+      const link=tracked?` <span class="char-job-tracked" data-peek="${tb.id}" title="Quick look at this tracked build">🔗</span>`:"";
+      const cls=tracked?" char-job-row":"";
+      const tip=tracked?` title="Open its tracked build in Industry"`:"";
+      h+=`<tr class="${cls.trim()}" data-job-id="${j.job_id}"${tip}>`
+        +`<td>${authEsc(j._char)}</td><td>${_peekName(j.product_name, tb)}${link}</td><td>${authEsc(j.activity)}</td>`
+        +`<td>${authEsc(j.location||"?")}</td><td>${j.runs??""}</td><td>${authEsc(j.status||"")}</td><td class="tl">${tcell}</td></tr>`;
+    }
+    h+=`</tbody></table></div>`;
+  } else h+=`<div class="char-none">No active jobs.</div>`;
+  h+=`</div></section>`;
+
+  // Loyalty points — full-width chip strip at the bottom of the page
+  h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Loyalty points</h3></div><div class="char-card-body">`;
+  h+=_lpStripHtml(allLp, true);
   h+=`</div></section>`;
 
   h+=`</div>`;

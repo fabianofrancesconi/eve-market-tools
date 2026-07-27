@@ -360,31 +360,40 @@ function renderIndTable(){
   } else { chips.innerHTML=""; }
 
   const ncol=vc.length;
-  const sect=(key,label,n)=>{
+  // Two categorically different row types, so structure carries meaning:
+  //   • drawer()  — a collapsible stash (My Blueprints, Hidden). Reads as a
+  //     toggle: a chevron, interactive, a "closed drawer" look when collapsed.
+  //   • catHeader() — the static, non-clickable label that OWNS the unified
+  //     catalogue rows below it. No chevron; a cyan accent marks it as the main
+  //     surface, not a drawer. Its presence is what stops a collapsed "My
+  //     Blueprints" drawer from being read as the heading of the catalogue.
+  const drawer=(key,label,n)=>{
     const col=IND.sections[key]?"":" collapsed";
-    return `<tr class="ind-section${col}" data-sect="${key}"><td colspan="${ncol}"><span class="sect-arrow">▾</span>${label} — ${n}</td></tr>`;
+    return `<tr class="ind-section ind-drawer${col}" data-sect="${key}"><td colspan="${ncol}"><span class="sect-arrow">▾</span>${label}<span class="sect-count">${n}</span></td></tr>`;
   };
+  const catHeader=(label,n)=>
+    `<tr class="ind-cathead"><td colspan="${ncol}"><span class="cathead-tick"></span>${label}<span class="sect-count">${n}</span></td></tr>`;
 
   const ordered=[];
   let html="";
-  // Pinned, collapsible sections up top: My Blueprints (collapsed by default)
-  // then Hidden. Everything else is the unified list below.
+  // Pinned, collapsible drawers up top: My Blueprints (collapsed by default)
+  // then Hidden. Each is a stash you open on demand, distinct from the catalogue.
   if(myBps.length){
-    html+=sect("owned","My Blueprints", myBps.length);
+    html+=drawer("owned","My Blueprints", myBps.length);
     if(IND.sections.owned) myBps.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   }
   if(hiddenBps.length){
-    html+=sect("hidden","Hidden", hiddenBps.length);
+    html+=drawer("hidden","Hidden", hiddenBps.length);
     if(IND.sections.hidden) hiddenBps.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   }
-  // Unified view: favorites are simply pinned to the top of the single list
-  // (regardless of the sort column), followed by the rest of the catalogue.
-  // No section header, not collapsible — one continuous view. Favorites render
-  // fully; the long "rest" tail lazy-loads on scroll. When pinned sections sit
-  // above, a plain divider row closes them off so the unified list doesn't read
-  // as an extension of the (possibly collapsed) My Blueprints / Hidden headers.
-  if((myBps.length||hiddenBps.length) && (favs.length||rest.length))
-    html+=`<tr class="ind-unified-sep"><td colspan="${ncol}"></td></tr>`;
+  // The catalogue: one unified, non-collapsible view — favourites pinned to the
+  // top (regardless of sort column), then the rest. Favourites carry their gold
+  // star per-row, so no sub-heading is needed; it stays a single continuous list.
+  // The header is shown only when drawers sit above it (that's when the rows need
+  // an explicit owner); with no drawers the list stands alone and needs no label.
+  const catTotal=favs.length+rest.length;
+  if((myBps.length||hiddenBps.length) && catTotal)
+    html+=catHeader("All items", catTotal);
   favs.forEach(r=>{ html+=indRowHtml(r, ordered.length); ordered.push(r); });
   const IND_LAZY_BATCH=60;
   let lazyRest=null, lazyIdx=0;

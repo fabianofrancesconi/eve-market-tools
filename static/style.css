@@ -1455,19 +1455,46 @@
   #ind-tbl td.timer-cell { text-align:center; font-variant-numeric:tabular-nums;
     color:var(--cyan); font-weight:600; }
   #ind-tbl td.timer-cell.done { color:var(--green2,#4caf76); }
-  #ind-tbl tr.ind-section td {
-    background:var(--panel2); color:var(--dim);
-    font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
-    padding:6px 8px; border-top:1px solid var(--line2); cursor:pointer; user-select:none;
+  /* ── Two row-header grammars ────────────────────────────────────────────
+     A drawer is a collapsible stash you open on demand (My Blueprints, Hidden):
+     interactive, indented, with a chevron. The catalogue header is a static
+     label that OWNS the unified list below it: not clickable, no chevron, a
+     cyan tick + left rule marking it as the main surface. Making the two look
+     categorically different is what stops a collapsed "My Blueprints" drawer
+     from being mistaken for the heading of the catalogue rows. */
+  #ind-tbl tr.ind-section td, #ind-tbl tr.ind-cathead td {
+    font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.06em;
+    padding:6px 10px; user-select:none;
   }
-  #ind-tbl tr.ind-section td:hover { color:var(--fg); }
-  #ind-tbl tr.ind-section .sect-arrow { display:inline-block; transition:transform .15s; margin-right:4px; }
-  #ind-tbl tr.ind-section.collapsed .sect-arrow { transform:rotate(-90deg); }
-  /* Gap that separates the pinned sections (My Blueprints / Hidden) from the
-     unified favorites + all-items list below, so a collapsed pinned header
-     doesn't read as the heading of the rows beneath it. */
-  #ind-tbl tr.ind-unified-sep td { padding:0; height:10px;
-    border-top:2px solid var(--line2); background:transparent; }
+  #ind-tbl tr .sect-count {
+    display:inline-block; margin-left:8px; padding:1px 7px; border-radius:9px;
+    font-size:10.5px; font-weight:700; letter-spacing:0;
+    background:var(--panel3); color:var(--dim);
+  }
+  /* Drawer (collapsible stash) — recessed, interactive, chevron-led. */
+  #ind-tbl tr.ind-drawer td {
+    background:var(--panel); color:var(--dim);
+    border-top:1px solid var(--line); cursor:pointer;
+  }
+  #ind-tbl tr.ind-drawer td:hover { color:var(--fg); background:var(--panel2); }
+  #ind-tbl tr.ind-drawer.collapsed td { color:var(--dim2); }
+  #ind-tbl tr.ind-drawer .sect-arrow {
+    display:inline-block; width:12px; margin-right:6px; color:var(--dim2);
+    font-size:10px; transition:transform .15s;
+  }
+  #ind-tbl tr.ind-drawer.collapsed .sect-arrow { transform:rotate(-90deg); }
+  /* Catalogue header — the anchor for the unified list. Elevated, non-clickable,
+     cyan-accented so it reads as "the main list starts here", not a drawer. */
+  #ind-tbl tr.ind-cathead td {
+    background:linear-gradient(180deg, var(--panel3) 0%, var(--panel2) 100%);
+    color:var(--fg); border-top:2px solid var(--line2);
+    box-shadow:inset 3px 0 0 var(--cyan2);
+  }
+  #ind-tbl tr.ind-cathead .cathead-tick {
+    display:inline-block; width:5px; height:5px; border-radius:50%;
+    background:var(--cyan); margin-right:8px; vertical-align:middle;
+  }
+  #ind-tbl tr.ind-cathead .sect-count { background:var(--accent); color:#dbeeff; }
   .ind-chips { display:flex; gap:18px; flex-wrap:wrap; margin:4px 0 6px; align-items:baseline;
     padding:0 2px; border-bottom:1px solid var(--line); }
   .ind-chip { font-size:12.5px; padding:6px 2px 5px; cursor:pointer;

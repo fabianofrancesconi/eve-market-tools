@@ -1589,6 +1589,29 @@
   .ind-tile-bar-fill { display:block; height:100%; border-radius:2px; }
   .ind-tile-bar-fill.building { background:var(--stg-building); }
   .ind-tile-bar-fill.listed { background:var(--stg-listed); }
+  /* Ready to deliver — a finished build waiting on the player. The whole tile
+     lights up (glow + brighter fill + green accent) so it can't be missed in a
+     column of still-building tiles; the readout goes bold green. */
+  .ind-tile-ready { color:var(--stg-sold); font-weight:700; }
+  .ind-tile.ready { border-left-color:var(--stg-sold);
+    border-color:color-mix(in srgb, var(--stg-sold) 55%, var(--line2));
+    background:color-mix(in srgb, var(--stg-sold) 12%, var(--panel2));
+    box-shadow:0 0 0 1px color-mix(in srgb, var(--stg-sold) 30%, transparent),
+      0 0 14px color-mix(in srgb, var(--stg-sold) 22%, transparent);
+    animation:ind-tile-ready-pulse 2.2s ease-in-out infinite; }
+  .ind-tile.ready:hover { background:color-mix(in srgb, var(--stg-sold) 18%, var(--panel2)); }
+  @keyframes ind-tile-ready-pulse {
+    0%,100% { box-shadow:0 0 0 1px color-mix(in srgb, var(--stg-sold) 30%, transparent),
+      0 0 10px color-mix(in srgb, var(--stg-sold) 16%, transparent); }
+    50%     { box-shadow:0 0 0 1px color-mix(in srgb, var(--stg-sold) 45%, transparent),
+      0 0 18px color-mix(in srgb, var(--stg-sold) 30%, transparent); } }
+  @media (prefers-reduced-motion: reduce){ .ind-tile.ready { animation:none; } }
+  /* Per-tile action footer (e.g. Archive on a sold tile). */
+  .ind-tile-foot { margin-top:7px; display:flex; justify-content:flex-end; }
+  .ind-tile-archive { padding:2px 8px; font-size:11px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line2); border-radius:4px;
+    color:var(--dim); }
+  .ind-tile-archive:hover { border-color:var(--stg-sold); color:var(--fg); }
 
   /* ── Focus panel — the full card docked below the board ─────────────── */
   .ind-focus { margin-top:14px; background:var(--panel);

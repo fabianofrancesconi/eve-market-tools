@@ -134,3 +134,22 @@ def test_tracker_renders_a_pipeline_board():
     assert "ind-focus" in src
     # A clicked tile focuses that build; the focus panel reuses the full card.
     assert "IND.focusedBuild" in src
+
+
+def test_ready_to_deliver_builds_are_flagged_on_the_board():
+    src = lp_web.FRONTEND_SOURCE
+    # A finished-but-undelivered build (countdown elapsed) lights its tile up
+    # so it's easy to spot in a column of still-building tiles.
+    assert "ready to deliver" in src
+    assert "ind-tile-ready" in src
+    assert "ind-tile.ready" in src
+    # The 1s timer loop promotes a building tile to the ready style at zero.
+    assert 'classList.add("ind-tile-ready")' in src
+
+
+def test_sold_tiles_have_an_inline_archive_button():
+    src = lp_web.FRONTEND_SOURCE
+    # Sold builds can be archived straight from the board tile (not only from
+    # the opened full card), reusing the existing archiveBuild() action.
+    assert "ind-tile-archive" in src
+    assert "ind-tile-foot" in src

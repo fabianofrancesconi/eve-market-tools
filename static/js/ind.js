@@ -1280,7 +1280,15 @@ setInterval(()=>{
     const inBuildCard=!!el.closest(".ind-build-card");
     if(rem<=0){
       if(isCell){ el.textContent="✓ Ready"; el.classList.add("done"); el.removeAttribute("data-end"); }
-      else if(isTile){ el.textContent="✓ ready"; el.removeAttribute("data-end"); }
+      else if(isTile){
+        el.textContent="✓ ready to deliver"; el.removeAttribute("data-end");
+        // Promote the countdown span to the lit "ready" style and light the
+        // whole tile, matching a freshly-rendered ready tile — and drop the
+        // now-full progress bar so the tile reads as done, not mid-build.
+        el.classList.remove("ind-tile-live"); el.classList.add("ind-tile-ready");
+        const tl=el.closest(".ind-tile"); if(tl) tl.classList.add("ready");
+        const bar=tl&&tl.querySelector(".ind-tile-bar"); if(bar) bar.remove();
+      }
       else if(inBuildCard){ el.textContent="ready for delivery"; el.removeAttribute("data-end"); }
       else if(IND.openDetail) renderIndDetail(IND.openDetail);
     } else {
@@ -1838,6 +1846,14 @@ function renderIndBuilds(){
         tile.onkeydown=ev=>{
           if(ev.key==="Enter"||ev.key===" "){ ev.preventDefault(); tile.click(); }
         };
+        // Per-tile archive (sold tiles only) — file the build away without
+        // opening it. Reuses the same archiveBuild() the full card calls.
+        const arch=tile.querySelector(".ind-tile-archive");
+        if(arch) arch.onclick=ev=>{
+          ev.stopPropagation();
+          const b=IND.builds.find(x=>x.id===tile.dataset.id);
+          if(b) archiveBuild(b, true);
+        };
       });
       // Focus panel: close button + the full card's own wiring.
       const closeBtn=box.querySelector(".ind-focus-close");
@@ -1874,8 +1890,12 @@ function _buildTileHtml(b, linked){
   const be=_batchEconomics(s, n);
   const focused=IND.focusedBuild===b.id;
 
-  // The one stage-specific readout line + optional bar.
-  let line="", bar="";
+  // The one stage-specific readout line + optional bar + optional footer.
+  let line="", bar="", foot="";
+  // A building job whose countdown has already elapsed is finished in-game and
+  // waiting to be delivered — the moment the player most wants to spot. Flag it
+  // so the tile lights up (mirrored live by the 1s timer loop when it hits zero).
+  let ready=false;
   if(stage==="planned"){
     const st=_buildStatus(b);
     line = st.key==="awaiting"
@@ -1884,12 +1904,17 @@ function _buildTileHtml(b, linked){
   } else if(stage==="building"){
     const end=b.job_end?Date.parse(b.job_end):null;
     if(end && isFinite(end)){
-      // Progress bar from tracked-at → job end; fraction of the build elapsed.
-      const total=end-((b.created_at||0)*1000);
-      const done=Date.now()-((b.created_at||0)*1000);
-      const pct=(total>0)?Math.max(0,Math.min(100,done/total*100)):0;
-      line=`<span class="ind-tile-live ind-live-timer" data-end="${end}">${fmtCountdownShort(end-Date.now())}</span>`;
-      bar=`<div class="ind-tile-bar"><span class="ind-tile-bar-fill building" style="width:${pct.toFixed(1)}%"></span></div>`;
+      ready = end<=Date.now();
+      if(ready){
+        line=`<span class="ind-tile-ready">✓ ready to deliver</span>`;
+      } else {
+        // Progress bar from tracked-at → job end; fraction of the build elapsed.
+        const total=end-((b.created_at||0)*1000);
+        const done=Date.now()-((b.created_at||0)*1000);
+        const pct=(total>0)?Math.max(0,Math.min(100,done/total*100)):0;
+        line=`<span class="ind-tile-live ind-live-timer" data-end="${end}">${fmtCountdownShort(end-Date.now())}</span>`;
+        bar=`<div class="ind-tile-bar"><span class="ind-tile-bar-fill building" style="width:${pct.toFixed(1)}%"></span></div>`;
+      }
     } else {
       line=`<span class="ind-tile-live">running</span>`;
     }
@@ -1905,14 +1930,20 @@ function _buildTileHtml(b, linked){
     const rz=_buildRealized(b);
     const early=b.abandoned;
     line=`<span class="ind-tile-dim">${early?"closed":"sold"} ·</span> <b class="${pn(rz.profit)}">${isk(rz.profit)}</b>`;
+    // Finished builds can be archived straight from the board — the same
+    // declutter action the full card offers, brought up to the tile so a sold
+    // batch can be filed away without opening it.
+    if(!b.archived) foot=`<div class="ind-tile-foot">`
+      +`<button class="ind-tile-archive" title="Archive this sold build — hides it in the collapsed Archived section below. It still counts in your portfolio stats.">📦 Archive</button></div>`;
   }
 
-  return `<div class="ind-tile stage-${stage}${focused?" focused":""}" role="listitem"
+  return `<div class="ind-tile stage-${stage}${focused?" focused":""}${ready?" ready":""}" role="listitem"
       tabindex="0" data-id="${b.id}" title="${(b.product_name||"").replace(/"/g,'&quot;')} — click for full detail">
     <div class="ind-tile-name">${b.product_name||"?"}</div>
     <div class="ind-tile-runs">${n.toLocaleString()} run${n===1?"":"s"}</div>
     <div class="ind-tile-line">${line}</div>
     ${bar}
+    ${foot}
   </div>`;
 }
 

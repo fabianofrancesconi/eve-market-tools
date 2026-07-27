@@ -1400,14 +1400,22 @@ function mergeSummaryBuilds(summary){
     const r=byId[b.id];
     if(!r) return;
     const before=JSON.stringify([b.stage, b.abandoned, b.realized,
-                                 b.units_produced, b.cost_per_unit]);
+                                 b.units_produced, b.cost_per_unit,
+                                 b.is_listed_anchor, b.listed_units, b.held_units]);
     b.stage=r.stage;
     b.abandoned=r.abandoned;
     b.realized=r.realized;
     b.units_produced=r.units_produced;
     b.cost_per_unit=r.cost_per_unit;
+    // The server's single reconcile pass decides which lot a live sell order's 🔗
+    // links to (is_listed_anchor) — the client badge reads this, never a second
+    // "is it listed?" rule, so the order badge and the tracker card always agree.
+    b.is_listed_anchor=r.is_listed_anchor;
+    b.listed_units=r.listed_units;
+    b.held_units=r.held_units;
     if(JSON.stringify([b.stage, b.abandoned, b.realized,
-                       b.units_produced, b.cost_per_unit])!==before) changed=true;
+                       b.units_produced, b.cost_per_unit,
+                       b.is_listed_anchor, b.listed_units, b.held_units])!==before) changed=true;
   });
   return changed;
 }

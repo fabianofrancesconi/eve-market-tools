@@ -1,36 +1,61 @@
-"""Pure inventory + sales accounting for tracked industry builds.
+"""Pure inventory + sales + listing reconciliation for tracked industry builds.
 
-The model in one breath: a build is a *produced lot* (a number of units plus a
-frozen per-unit cost, dated when its manufacturing job delivered); every sale is
-a *wallet transaction* (a stable ``transaction_id`` and the real fill price);
-sold units are FIFO-allocated across a product's lots, oldest-produced first —
-and only onto lots that were already delivered when the sale happened (you can't
-sell a unit before you produce it).
+WHY THIS MODULE EXISTS (read this before touching anything below)
+=================================================================
+A tracked build is a *produced lot*: a number of units, a frozen per-unit craft
+cost, and the time it was delivered. Three questions get asked of a product's
+lots on every screen refresh:
 
-No sale is ever tied to a specific market order. EVE treats two identical items
-as fungible — ESI can tell you "a unit of type T sold at price P", never "this
-unit came from batch A". So we don't pretend otherwise: money comes from the
-wallet (keyed by ``transaction_id``, the one stable id a sale carries) and is
-laid against the produced lots by production order. Two consequences fall out
-for free:
+  1. How much of it has *sold*, and for what profit?   (money)
+  2. How much is *listed* on the market right now?      (inventory on sale)
+  3. What *stage* is each lot at — built / listed / sold? (the card + the badge)
 
-  * Re-pricing an unsold order changes nothing here — profit is read from the
-    wallet at the real fill price, not from the listing.
-  * A cancelled order can't fabricate a phantom sale — a cancel produces no
-    wallet transaction, so there is nothing to accrue.
+The bug this module was rewritten to kill (2026-07): those three answers used to
+be computed by *separate* code with *separate* lot lists, so they drifted. The
+market-order "🔗 LINKED" badge said one thing while the tracker card said
+another, again and again, because "is it listed?" was answered twice — once by
+the server's stage derivation and once by an independent client rule — over
+subtly different lot sets.
 
-Allocation is recomputed from scratch every sweep from (a) the dedup'd wallet
-ledger and (b) the current build lots. The only accumulated state is the ledger
-itself (dedup by ``transaction_id``); everything else is derived, so late ESI
-data (a job that only now shows as delivered, a transaction that only now
-appears) self-heals on the next recompute instead of needing incremental
-patch-up.
+THE ONE RULE
+------------
+:func:`reconcile` is now the **single source of truth**. Given a product's lots,
+its wallet sell fills, and its current open-order volume, it returns — from ONE
+ordered pass — every lot's sold / held / listed counts, its lifecycle stage, and
+the single ``listed_anchor`` (the oldest still-held lot that carries the open
+order). Both the tracker card's stage and the market order's LINKED badge read
+these same numbers, so this is a *theorem*, not a hope:
 
-Every function here is pure: it takes plain dicts and returns plain data.
-``lp-web`` owns all fetching and persistence and feeds this module already-parsed
-lots / fills / order volumes.
+    a product's order shows LINKED
+      ⟺ reconcile.listed_anchor is not None
+      ⟺ some delivered lot has stage == "listed"
+      ⟺ reconcile.flow["listed"] > 0
+
+There is no second way to decide "listed" anywhere in the app.
+
+MODEL DETAILS
+-------------
+* Money is never tied to a market order. EVE items are fungible — ESI reports "a
+  unit of type T sold at price P", never "this unit came from batch A" — so sold
+  units are FIFO-allocated across a product's lots, oldest-produced first, and
+  only onto lots already delivered when the sale happened (you can't sell a unit
+  before you make it). Re-pricing an unsold order is invisible (profit is the
+  real wallet fill, not the listing); a cancel fabricates no sale (no wallet
+  transaction, nothing to accrue).
+* Listing is laid against *held* (produced-but-unsold, non-abandoned) stock, also
+  oldest-first — the same order sales fill — so one market order flags the oldest
+  still-held batch, not every delivered batch of the product.
+* Everything is recomputed from scratch each sweep from (a) the dedup'd wallet
+  ledger and (b) the current lots + open-order volume. The only accumulated state
+  is the ledger (dedup by ``transaction_id``); every per-lot figure is derived,
+  so late ESI data self-heals on the next recompute.
+
+Every function here is pure — plain dicts in, plain data out. ``lp-web`` owns all
+fetching/persistence and feeds this module already-parsed lots / fills / volumes.
 """
 
+
+# ── Wallet ledger maintenance ────────────────────────────────────────────────
 
 def merge_sell_fills(ledger, transactions, parse_ts):
     """Fold new wallet *sell* transactions into a product-keyed ledger, deduping
@@ -39,16 +64,16 @@ def merge_sell_fills(ledger, transactions, parse_ts):
     ``ledger`` is ``{str(product_type_id): [fill, ...]}`` where each fill is
     ``{transaction_id, ts, units, price}``. Product keys are strings so the
     ledger survives a JSON round-trip unchanged (JSON object keys are always
-    strings) — callers must look up with ``str(pid)``. ``transactions`` is the raw ESI
-    wallet-transactions list (each ``{transaction_id, date, type_id, quantity,
-    unit_price, is_buy, ...}``); ``parse_ts`` turns an ESI date string into a
-    unix timestamp (or None). Buy transactions and rows missing an id/qty are
-    ignored. Returns ``(ledger, changed)`` with ``ledger`` mutated in place;
+    strings) — callers must look up with ``str(pid)``. ``transactions`` is the
+    raw ESI wallet-transactions list (each ``{transaction_id, date, type_id,
+    quantity, unit_price, is_buy, ...}``); ``parse_ts`` turns an ESI date string
+    into a unix timestamp (or None). Buy transactions and rows missing an id/qty
+    are ignored. Returns ``(ledger, changed)`` with ``ledger`` mutated in place;
     ``changed`` is True iff at least one new fill was added.
 
-    This is the *entire* accumulated state of sale tracking. A transaction id is
-    globally unique and immutable, so re-running every sweep never double-books
-    and order re-pricing / cancellation is invisible to it by construction.
+    A transaction id is globally unique and immutable, so re-running every sweep
+    never double-books and order re-pricing / cancellation is invisible to it by
+    construction. This is the *entire* accumulated state of sale tracking.
     """
     seen = {str(f["transaction_id"])
             for fills in ledger.values() for f in fills
@@ -78,28 +103,23 @@ def merge_sell_fills(ledger, transactions, parse_ts):
 
 def prune_legacy_duplicates(ledger, window=3 * 86400):
     """Drop migration-synthesized ``legacy-*`` fills that a real wallet fill now
-    duplicates — the double-booking that let FIFO over-allocate every lot to
-    "sold".
+    duplicates — the double-booking that let FIFO over-allocate a lot to "sold".
 
-    The one-time v1.150 migration (:func:`lp-web._migrate_sell_state`) seeded a
-    synthetic ``legacy-<build>-<n>`` fill for every historical *order-diff* sale
-    (a sale inferred from an open order's ``volume_remain`` dropping, which
-    carries no wallet ``transaction_id``). Any such sale still inside ESI's
-    ~30-day wallet window later re-arrives as a *real* wallet transaction and is
-    merged as its own fill — so the same units are booked twice. With a product's
-    ledger reporting more units sold than were ever produced, FIFO fills every
-    delivered lot to capacity and each reads as fully sold.
+    The one-time v1.150 migration seeded a synthetic ``legacy-<build>-<n>`` fill
+    for every historical *order-diff* sale (inferred from an open order's
+    ``volume_remain`` dropping, carrying no wallet ``transaction_id``). Any such
+    sale still inside ESI's ~30-day wallet window later re-arrives as a *real*
+    wallet transaction and is merged as its own fill — so the same units book
+    twice, and FIFO fills the lot to capacity, reading it as fully sold.
 
     A legacy fill is a duplicate of a real (numeric-id) fill in the same product
     when they agree on ``units`` and their ``ts`` is within ``window`` seconds;
-    among the candidates the price-closest real is chosen (order-diff recorded the
+    among candidates the price-closest real is chosen (order-diff recorded the
     listed price, the wallet the actual fill, so they can drift by a few ISK).
-    Matching is greedy and 1:1 — two legacy fills never collapse onto one real
-    fill, and a legacy fill with no real twin (a sale older than the wallet
-    window, whose synthetic fill is the *only* record of that historical profit)
-    is kept untouched. Idempotent: once a legacy fill is removed there is nothing
-    left to match on a later sweep. ``ledger`` is mutated in place; returns
-    ``(ledger, removed)`` where ``removed`` is the count dropped.
+    Matching is greedy and 1:1 — two legacy fills never collapse onto one real,
+    and a legacy fill with no real twin (a sale older than the wallet window,
+    whose synthetic fill is the *only* record of that profit) is kept untouched.
+    Idempotent. ``ledger`` is mutated in place; returns ``(ledger, removed)``.
     """
     def _is_legacy(f):
         return str(f.get("transaction_id", "")).startswith("legacy-")
@@ -132,49 +152,56 @@ def prune_legacy_duplicates(ledger, window=3 * 86400):
     return ledger, removed
 
 
+# ── Primitive allocators (building blocks of reconcile; individually tested) ──
+
+def _ordered_delivered(lots):
+    """A product's delivered lots, oldest-produced first. The ONE ordering used
+    everywhere sold/listed FIFO is laid down — by ``done_at`` (the production
+    time), then ``id`` as a stable tiebreak. A lot is *delivered* iff it has a
+    non-None ``done_at``; a lot with ``units`` <= 0 still sorts here but simply
+    contributes no capacity. Sharing this key is what makes the sold-oldest-first
+    and listed-oldest-first passes land on the *same* lots."""
+    return sorted(
+        (l for l in lots if l.get("done_at") is not None),
+        key=lambda l: (l.get("done_at"), str(l.get("id"))))
+
+
 def allocate_fifo(lots, fills):
     """FIFO-allocate a product's sold units across its produced lots.
 
-    ``lots`` — the built output for one product, each
-    ``{id, units, cost_per_unit, sales_tax, done_at}``. Allocated oldest-produced
-    first (by ``done_at``, then ``id`` as a stable tiebreak). A lot with
-    ``units`` <= 0 contributes nothing.
+    ``lots`` — delivered lots for one product, each
+    ``{id, units, cost_per_unit, sales_tax, done_at}`` where ``units`` is the
+    *allocatable capacity* (produced output, minus any abandoned write-off).
+    Allocated oldest-produced first (see :func:`_ordered_delivered`).
     ``fills`` — sale fills for the same product, each
     ``{units, price, ts, transaction_id}``. Consumed oldest-sold first (by
-    ``ts``); a fill's units spill across as many lots as needed.
+    ``ts``); a fill spills across as many lots as needed.
 
-    A fill is only ever allocated to a lot that was **already delivered when the
-    sale happened** (``lot.done_at <= fill.ts``) — you can't sell a unit before
-    you produce it. Without this gate the cumulative wallet ledger's surplus
-    fills (flipped stock, deleted/untracked builds, sales from before tracking)
-    would spill into a freshly-delivered lot and flip it straight to sold/listed
-    while the goods are still in your hangar. Such pre-delivery sales stay
-    ``unallocated`` instead. A fill with no ``ts`` (legacy/migration) is treated
-    as newest, so it can still land on any lot.
+    A fill only ever lands on a lot **already delivered when the sale happened**
+    (``lot.done_at <= fill.ts``) — you can't sell a unit before you produce it.
+    Without this gate the cumulative ledger's surplus fills (flipped stock,
+    deleted/untracked builds, pre-tracking sales) would spill into a
+    freshly-delivered lot and flip it straight to sold while the goods sit in the
+    hangar. Such pre-delivery sales stay ``unallocated``. A fill with no ``ts``
+    (legacy/migration) is treated as newest, so it can still land anywhere.
 
     Returns ``(per_lot, summary)``:
       * ``per_lot`` — ``{lot_id: {sold, net, cost, profit}}`` for every lot
-        (zero-filled when nothing sold). ``net`` uses that lot's own frozen
-        ``sales_tax`` (revenue after tax); ``cost`` uses its frozen
-        ``cost_per_unit``; ``profit = net - cost``.
+        (zero-filled). ``net`` uses that lot's frozen ``sales_tax`` (revenue
+        after tax); ``cost`` its frozen ``cost_per_unit``; ``profit = net-cost``.
       * ``summary`` — ``{sold, net, cost, profit, unallocated}`` across the
         product. ``unallocated`` is units sold beyond total production (flipped
-        stock from an untracked source) — deliberately excluded from every lot's
-        profit, since it isn't this batch's output.
+        stock) — excluded from every lot's profit; it isn't this batch's output.
 
-    Cost/tax may be missing on a lot (an old snapshot); such a lot still counts
-    its ``sold`` units but contributes None-safe zeros to net/cost so it never
-    poisons the totals — its ``profit`` is reported as None.
+    A lot missing cost/tax (old snapshot) still counts its ``sold`` units but
+    contributes None-safe zeros to net/cost so it never poisons totals — its own
+    ``profit`` is reported as None.
     """
-    ordered = sorted(
-        (l for l in lots if (l.get("units") or 0) > 0),
-        key=lambda l: (l.get("done_at") if l.get("done_at") is not None else float("inf"),
-                       str(l.get("id"))))
+    ordered = [l for l in _ordered_delivered(lots) if (l.get("units") or 0) > 0]
     per_lot = {l["id"]: {"sold": 0, "net": 0.0, "cost": 0.0, "profit": 0.0,
                          "_costable": True}
                for l in lots}
-    # Remaining capacity per lot, in allocation order.
-    caps = [[l, l.get("units") or 0] for l in ordered]
+    caps = [[l, l.get("units") or 0] for l in ordered]   # remaining capacity, in order
     fills_sorted = sorted(fills or [],
                           key=lambda f: (f.get("ts") if f.get("ts") is not None
                                          else float("inf")))
@@ -185,10 +212,9 @@ def allocate_fifo(lots, fills):
         price = f.get("price") or 0.0
         fts = f.get("ts")
         total_sold += remaining
-        # A sale can only draw from lots already delivered at sale time. We can't
-        # use a single monotonic pointer: the oldest lot with free capacity may be
-        # one this fill must skip (not yet delivered when it sold), so scan every
-        # lot in FIFO order each time and take from the first eligible one.
+        # Scan every lot in FIFO order each fill: the oldest lot with free
+        # capacity may be one this fill must skip (not yet delivered when it
+        # sold), so a single monotonic pointer would wrongly stall.
         for cap_entry in caps:
             if remaining <= 0:
                 break
@@ -211,8 +237,6 @@ def allocate_fifo(lots, fills):
                 rec["net"] += take * price * (1 - tax)
                 rec["cost"] += take * cpu
         if remaining > 0:
-            # Sold before any eligible lot was produced (flipped stock, untracked
-            # or deleted builds, pre-tracking sales) — not this batch's output.
             unallocated += remaining
     net = cost = profit = 0.0
     sold = 0
@@ -231,30 +255,25 @@ def allocate_fifo(lots, fills):
 
 
 def allocate_listed(lots, per_lot, listed_units):
-    """Distribute a product's live open-order volume across its builds' unsold
-    stock, oldest-produced first — so a single market order doesn't flag *every*
-    delivered build of that product as "listed".
+    """Distribute a product's live open-order volume across its lots' *held*
+    (unsold) stock, oldest-produced first — so a single market order doesn't flag
+    every delivered build of that product as "listed".
 
-    ``lots`` — the product's delivered builds, each ``{id, units, done_at}``
-    (``units`` = produced output; abandoned lots dropped by the caller).
-    ``per_lot`` — the allocation map from :func:`allocate_fifo` (for each lot's
-    ``sold`` count, so we list only its *unsold* remainder).
+    ``lots`` — the product's delivered, non-abandoned lots, each
+    ``{id, units, done_at}`` (``units`` = produced output).
+    ``per_lot`` — the map from :func:`allocate_fifo` (each lot's ``sold`` count,
+    so we list only its *unsold* remainder).
     ``listed_units`` — total ``volume_remain`` on the product's current open sell
-    orders. Never tied to a specific order; we simply lay it against held stock
-    oldest-first, the same order sales fill, so the oldest still-held batch is the
-    one shown on the market.
+    orders. Never tied to a specific order; laid against held stock oldest-first
+    (the same order sales fill), so the oldest still-held batch shows on market.
 
-    Returns ``{lot_id: listed_units}`` for every lot (zero when nothing of it is
-    on the market). The total listed is capped at the units actually held, since
-    you can't have more of a tracked build on the market than you still hold.
+    Returns ``{lot_id: listed_units}`` for every input lot (0 when nothing of it
+    is on the market). Total listed is capped at units actually held — you can't
+    have more of a tracked build on the market than you still hold.
     """
-    ordered = sorted(
-        (l for l in lots if (l.get("units") or 0) > 0),
-        key=lambda l: (l.get("done_at") if l.get("done_at") is not None else float("inf"),
-                       str(l.get("id"))))
     out = {l["id"]: 0 for l in lots}
     remaining = max(0, listed_units or 0)
-    for l in ordered:
+    for l in _ordered_delivered(lots):
         held = max(0, (l.get("units") or 0) - per_lot.get(l["id"], {}).get("sold", 0))
         take = min(remaining, held)
         out[l["id"]] = take
@@ -267,22 +286,18 @@ def allocate_listed(lots, per_lot, listed_units):
 def product_pipeline(lots, per_lot, listed_units):
     """Aggregate one product's unit flow for the pipeline board.
 
-    ``lots`` — every build for the product (built or not), each carrying at
-    least ``units`` and a ``done_at`` (None until delivered).
-    ``per_lot`` — the allocation map from :func:`allocate_fifo`.
-    ``listed_units`` — units of this product on the character's *current* open
-    sell orders (summed ``volume_remain`` right now); live, never attributed to
-    a lot.
+    ``lots`` — every *non-abandoned* lot for the product (delivered or not), each
+    carrying ``units`` and a ``done_at`` (None until delivered).
+    ``per_lot`` — the map from :func:`allocate_fifo`.
+    ``listed_units`` — units of this product on current open sell orders.
 
-    Returns unit counts describing the flow:
+    Returns unit counts:
       * ``in_production`` — units of lots not yet delivered (planned/building).
-      * ``produced``      — units of delivered lots (excludes abandoned lots,
-                            which the caller drops before calling).
+      * ``produced``      — units of delivered lots.
       * ``sold``          — FIFO-allocated sold units (capped at ``produced``).
       * ``in_stock``      — ``produced - sold`` (held, whether listed or not).
-      * ``listed``        — ``min(listed_units, in_stock)`` (can't have more on
-                            the market than you hold from tracked builds).
-      * ``unlisted``      — ``in_stock - listed`` (built, not yet on the market).
+      * ``listed``        — ``min(listed_units, in_stock)``.
+      * ``unlisted``      — ``in_stock - listed``.
     """
     in_production = sum((l.get("units") or 0) for l in lots
                         if l.get("done_at") is None)
@@ -300,3 +315,110 @@ def product_pipeline(lots, per_lot, listed_units):
         "listed": listed,
         "unlisted": max(0, in_stock - listed),
     }
+
+
+# ── The single authority ─────────────────────────────────────────────────────
+
+def reconcile(lots, fills, listed_units):
+    """Reconcile ONE product's lots against its wallet fills and open-order
+    volume, in a single ordered pass — the sole place "sold", "listed" and the
+    lifecycle stage are decided, so they can never disagree.
+
+    ``lots`` — every tracked build for the product, delivered or not, each a rich
+    lot dict (see :func:`~lp-web._build_lot`):
+      * ``id``
+      * ``done_at``       — production timestamp (FIFO key + delivery gate), or
+                            ``None`` while the lot is still in production.
+      * ``planned_units`` — the batch's full output (used for in-production flow).
+      * ``produced``      — produced units once delivered (0 while in production).
+      * ``cap``           — allocatable capacity = produced − abandoned write-off.
+      * ``cost_per_unit`` / ``sales_tax`` — frozen cost basis / tax for profit.
+      * ``abandoned``     — the unsold remainder was written off; the lot is
+                            closed, holds nothing, and can never be listed.
+    ``fills`` — the product's wallet sell fills (``{units, price, ts,
+    transaction_id}``).
+    ``listed_units`` — total ``volume_remain`` on the product's open sell orders.
+
+    Returns ``{lots, summary, flow, listed_anchor}``:
+      * ``lots`` — ``{lot_id: {sold, held, listed, net, cost, profit, stage,
+        is_listed_anchor}}``. ``stage`` is ``built`` / ``listed`` / ``sold`` for
+        delivered lots, ``None`` for in-production lots (the caller resolves
+        planned vs building from the live job). ``is_listed_anchor`` is True on
+        exactly one lot — the oldest still-held lot carrying the open order —
+        and only when the product actually has listed stock.
+      * ``summary`` — product money roll-up from :func:`allocate_fifo`.
+      * ``flow`` — unit-flow pipeline from :func:`product_pipeline`.
+      * ``listed_anchor`` — the ``lot_id`` a market order's 🔗 badge links to, or
+        ``None`` when nothing of the product is on the market. The badge shows
+        **iff** this is not None — the same condition that makes some lot's stage
+        ``listed`` — so the order badge and the tracker card always agree.
+
+    INVARIANTS (checked by the chaos tests, relied on by the UI):
+      * ``sum(lot.sold) == summary.sold ≤ total produced`` (overflow → unalloc).
+      * ``sum(lot.listed) == flow.listed == min(listed_units, in_stock)``.
+      * ``lot.stage == "listed"  ⟺  lot.listed > 0``.
+      * ``lot.stage == "sold"    ⟺  abandoned, or produced>0 and sold≥produced``.
+      * ``listed_anchor is not None  ⟺  any(lot.stage == "listed")  ⟺
+        flow.listed > 0``  — the LINKED-badge theorem.
+      * ``lot.listed ≤ lot.held``; a lot is only listed from held stock.
+      * Idempotent: reconciling the same inputs again yields the same result.
+    """
+    # 1. Money: FIFO sold across delivered lots (capacity = cap).
+    alloc_lots = [{"id": l["id"], "units": l.get("cap") or 0,
+                   "cost_per_unit": l.get("cost_per_unit"),
+                   "sales_tax": l.get("sales_tax") or 0.0,
+                   "done_at": l.get("done_at")}
+                  for l in lots if l.get("done_at") is not None]
+    per_lot, summary = allocate_fifo(alloc_lots, fills)
+
+    # 2. Listing: live order volume over held stock of non-abandoned delivered
+    #    lots, oldest-first (units = produced; held = produced − sold).
+    listable = [{"id": l["id"], "units": l.get("produced") or 0,
+                 "done_at": l.get("done_at")}
+                for l in lots
+                if l.get("done_at") is not None and not l.get("abandoned")]
+    listed_map = allocate_listed(listable, per_lot, listed_units)
+
+    # 3. Pipeline flow over non-abandoned lots (in-production + delivered).
+    flow_lots = [{"id": l["id"],
+                  "units": ((l.get("planned_units") or 0) if l.get("done_at") is None
+                            else (l.get("produced") or 0)),
+                  "done_at": l.get("done_at")}
+                 for l in lots if not l.get("abandoned")]
+    flow = product_pipeline(flow_lots, per_lot, listed_units)
+
+    # 4. Per-lot record: fold in held + listed + the delivered stage.
+    out_lots = {}
+    for l in lots:
+        lid = l["id"]
+        rec = dict(per_lot.get(lid, {"sold": 0, "net": 0.0, "cost": 0.0,
+                                     "profit": 0.0}))
+        listed_ct = listed_map.get(lid, 0)
+        rec["listed"] = listed_ct
+        rec["is_listed_anchor"] = False
+        if l.get("done_at") is None:
+            rec["held"] = 0
+            rec["stage"] = None                     # caller: planned vs building
+        elif l.get("abandoned"):
+            rec["held"] = 0
+            rec["stage"] = "sold"                    # remainder written off
+        elif (l.get("produced") or 0) > 0 and rec["sold"] >= (l.get("produced") or 0):
+            rec["held"] = 0
+            rec["stage"] = "sold"
+        else:
+            rec["held"] = max(0, (l.get("cap") or 0) - rec["sold"])
+            rec["stage"] = "listed" if listed_ct > 0 else "built"
+        out_lots[lid] = rec
+
+    # 5. The single anchor: oldest delivered lot carrying listed stock. Its
+    #    existence is exactly the LINKED-badge condition — the ONE derivation
+    #    both the market-order badge and the tracker card read.
+    listed_anchor = None
+    for l in _ordered_delivered(lots):
+        if out_lots[l["id"]]["listed"] > 0:
+            listed_anchor = l["id"]
+            out_lots[l["id"]]["is_listed_anchor"] = True
+            break
+
+    return {"lots": out_lots, "summary": summary, "flow": flow,
+            "listed_anchor": listed_anchor}

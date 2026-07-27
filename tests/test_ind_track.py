@@ -364,3 +364,147 @@ class TestProductPipeline:
         flow = ind_track.product_pipeline(lots, per_lot, listed_units=0)
         assert flow["sold"] == 10
         assert flow["in_stock"] == 0
+
+
+# ── reconcile: the single authority the whole app reads ──────────────────────
+def _lot(lid, done_at, produced, *, cap=None, cpu=100.0, tax=0.0,
+         planned=None, abandoned=False):
+    """A rich reconcile lot (see lp-web._build_lot for the real builder)."""
+    prod = 0 if done_at is None else produced
+    return {"id": lid, "done_at": done_at, "planned_units": planned if planned
+            is not None else produced, "produced": prod,
+            "cap": (prod if cap is None else cap), "cost_per_unit": cpu,
+            "sales_tax": tax, "abandoned": abandoned}
+
+
+class TestReconcile:
+    def test_single_built_lot_no_orders(self):
+        r = ind_track.reconcile([_lot("A", 1000, 10)], [], 0)
+        assert r["lots"]["A"]["stage"] == "built"
+        assert r["lots"]["A"]["held"] == 10
+        assert r["lots"]["A"]["listed"] == 0
+        assert r["listed_anchor"] is None
+
+    def test_in_production_lot_has_none_stage(self):
+        # An undelivered lot is planned/building — reconcile leaves stage None for
+        # the caller to split; it holds nothing and can't be listed.
+        r = ind_track.reconcile([_lot("A", None, 10, planned=10)], [], 5)
+        assert r["lots"]["A"]["stage"] is None
+        assert r["lots"]["A"]["held"] == 0
+        assert r["lots"]["A"]["listed"] == 0
+        assert r["listed_anchor"] is None
+        assert r["flow"]["in_production"] == 10
+
+    def test_listed_anchor_is_oldest_held_lot(self):
+        # Two held lots, one order → only the oldest is the anchor / listed.
+        lots = [_lot("OLD", 1000, 10), _lot("NEW", 2000, 10)]
+        r = ind_track.reconcile(lots, [], 5)
+        assert r["listed_anchor"] == "OLD"
+        assert r["lots"]["OLD"]["stage"] == "listed"
+        assert r["lots"]["OLD"]["listed"] == 5
+        assert r["lots"]["NEW"]["stage"] == "built"
+        assert r["lots"]["NEW"]["listed"] == 0
+
+    def test_listed_spills_but_anchor_stays_oldest(self):
+        lots = [_lot("OLD", 1000, 10), _lot("NEW", 2000, 10)]
+        r = ind_track.reconcile(lots, [], 14)
+        assert r["listed_anchor"] == "OLD"      # anchor is always the oldest
+        assert r["lots"]["OLD"]["listed"] == 10
+        assert r["lots"]["NEW"]["listed"] == 4
+        assert r["lots"]["NEW"]["stage"] == "listed"
+
+    def test_sold_out_oldest_lot_not_the_anchor(self):
+        # OLD fully sold → held 0, can't be the anchor; the order sits on NEW.
+        lots = [_lot("OLD", 1000, 10), _lot("NEW", 2000, 10)]
+        fills = [{"transaction_id": 1, "units": 10, "price": 150.0, "ts": 1500}]
+        r = ind_track.reconcile(lots, fills, 5)
+        assert r["lots"]["OLD"]["stage"] == "sold"
+        assert r["listed_anchor"] == "NEW"
+        assert r["lots"]["NEW"]["stage"] == "listed"
+
+    def test_abandoned_lot_is_sold_and_never_listed(self):
+        lots = [_lot("A", 1000, 10, cap=4, abandoned=True)]
+        r = ind_track.reconcile(lots, [], 99)
+        assert r["lots"]["A"]["stage"] == "sold"
+        assert r["lots"]["A"]["listed"] == 0
+        assert r["listed_anchor"] is None
+
+    def test_profit_flows_from_fills(self):
+        lots = [_lot("A", 1000, 10, cpu=100.0, tax=0.05)]
+        fills = [{"transaction_id": 1, "units": 4, "price": 200.0, "ts": 1500}]
+        r = ind_track.reconcile(lots, fills, 0)
+        assert r["lots"]["A"]["sold"] == 4
+        assert r["lots"]["A"]["net"] == 4 * 200 * 0.95
+        assert r["lots"]["A"]["cost"] == 400.0
+        assert r["summary"]["sold"] == 4
+
+    def test_pre_delivery_fill_not_allocated(self):
+        # A sale before the lot was produced stays unallocated (can't sell early).
+        lots = [_lot("A", 2000, 10)]
+        fills = [{"transaction_id": 1, "units": 10, "price": 150.0, "ts": 1000}]
+        r = ind_track.reconcile(lots, fills, 5)
+        assert r["lots"]["A"]["sold"] == 0
+        assert r["summary"]["unallocated"] == 10
+        assert r["lots"]["A"]["stage"] == "listed"   # still held, order on it
+
+
+class TestReconcileInvariants:
+    """The guarantees the UI relies on, on a spread of hand-built shapes. The
+    LINKED-badge theorem — order shows 🔗  ⟺  a lot is Listed  ⟺  flow.listed>0 —
+    is checked on every one."""
+
+    SCENARIOS = [
+        ([_lot("A", 1000, 10)], [], 0),
+        ([_lot("A", 1000, 10)], [], 5),
+        ([_lot("A", 1000, 10)], [], 50),
+        ([_lot("A", 1000, 10), _lot("B", 2000, 10)], [], 5),
+        ([_lot("A", 1000, 10), _lot("B", 2000, 10)], [], 15),
+        ([_lot("A", 1000, 10), _lot("B", 2000, 10)],
+         [{"transaction_id": 1, "units": 10, "price": 150.0, "ts": 1500}], 5),
+        ([_lot("A", 1000, 10), _lot("B", 2000, 10)],
+         [{"transaction_id": 1, "units": 20, "price": 150.0, "ts": 2500}], 5),
+        ([_lot("A", None, 10, planned=10)], [], 5),
+        ([_lot("A", 1000, 10, cap=4, abandoned=True)], [], 5),
+        ([_lot("A", 1000, 10, cap=4, abandoned=True), _lot("B", 2000, 10)], [], 5),
+    ]
+
+    def _check(self, lots, fills, listed_units):
+        r = ind_track.reconcile(lots, fills, listed_units)
+        L = r["lots"]
+        produced = sum(l["produced"] for l in lots)
+        # sold sums and is capped at production
+        assert sum(v["sold"] for v in L.values()) == r["summary"]["sold"]
+        assert r["summary"]["sold"] <= produced
+        # listed sums to the flow, is capped at in-stock, and never exceeds held
+        assert sum(v["listed"] for v in L.values()) == r["flow"]["listed"]
+        assert r["flow"]["listed"] == min(listed_units, r["flow"]["in_stock"])
+        for v in L.values():
+            assert v["listed"] <= v["held"] or v["held"] == 0 and v["listed"] == 0
+            assert v["listed"] >= 0 and v["sold"] >= 0 and v["held"] >= 0
+        # stage ⟺ listed/sold definitions
+        for l in lots:
+            v = L[l["id"]]
+            if l["done_at"] is None:
+                assert v["stage"] is None
+            elif l["abandoned"] or (l["produced"] > 0 and v["sold"] >= l["produced"]):
+                assert v["stage"] == "sold"
+            elif v["listed"] > 0:
+                assert v["stage"] == "listed"
+            else:
+                assert v["stage"] == "built"
+        # THE THEOREM: badge ⟺ some listed lot ⟺ flow.listed>0 ⟺ one anchor.
+        any_listed = any(v["stage"] == "listed" for v in L.values())
+        anchors = [k for k, v in L.items() if v["is_listed_anchor"]]
+        assert (r["listed_anchor"] is not None) == any_listed
+        assert (r["listed_anchor"] is not None) == (r["flow"]["listed"] > 0)
+        assert len(anchors) == (1 if r["listed_anchor"] is not None else 0)
+        if anchors:
+            assert anchors[0] == r["listed_anchor"]
+            assert L[r["listed_anchor"]]["stage"] == "listed"
+        # idempotent
+        r2 = ind_track.reconcile(lots, fills, listed_units)
+        assert r2 == r
+
+    def test_all_scenarios(self):
+        for lots, fills, listed_units in self.SCENARIOS:
+            self._check(lots, fills, listed_units)

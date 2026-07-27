@@ -1039,20 +1039,23 @@ function _trackedBuildForJob(j){
 }
 function _jobIsTracked(j){ return !!_trackedBuildForJob(j); }
 
-// Find a tracked build this open sell order corresponds to. Sales aren't linked
-// to specific orders in the pooled model (EVE items are fungible — an order sells
-// "a unit of type T", not "a unit from batch A"), so we match by PRODUCT TYPE
-// onto a delivered build that's still on the market (listed). Among several lots
-// of the same product we surface the oldest un-sold-out one (FIFO — the batch a
-// sale would draw from first), so the 🔗 jumps to the build actually earning.
+// Find the tracked build an open sell order's 🔗 links to. Sales aren't tied to
+// specific orders in the pooled model (EVE items are fungible — an order sells "a
+// unit of type T", not "a unit from batch A"), so the server's ONE reconcile pass
+// picks, per product, the single lot a live order sits on: the oldest still-held
+// delivered build carrying the open-order volume, flagged `is_listed_anchor`.
+//
+// The badge reads THAT flag — it never re-decides "is this listed?" on the
+// client. This is the whole point of the redesign: the market-order badge and
+// the tracker card both read the same reconciled anchor, so "order shows 🔗" and
+// "the card says Listed" are the same fact and can never drift apart again. Until
+// the summary has merged (is_listed_anchor still undefined) no order links, which
+// is correct — nothing is known to be on the market yet.
 function _trackedBuildForOrder(o){
   if(o==null || o.is_buy_order || typeof IND==="undefined") return null;
   const pid=o.type_id;
   if(pid==null) return null;
-  const builds=(IND.builds||[]).filter(b=>b.product_type_id===pid && b.done_at
-    && (typeof _buildStage!=="function" || _buildStage(b)==="listed"));
-  builds.sort((a,b)=>(a.done_at||0)-(b.done_at||0));
-  return builds[0] || null;
+  return (IND.builds||[]).find(b=>b.product_type_id===pid && b.is_listed_anchor) || null;
 }
 function _orderIsTracked(o){ return !!_trackedBuildForOrder(o); }
 

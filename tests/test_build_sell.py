@@ -118,6 +118,10 @@ class TestCostHelpers:
 
 
 # ── Stage: the manufacturing job is checked FIRST ────────────────────────────
+# _build_stage is now a thin resolver: the delivered built/listed/sold decision
+# is made once in ind_track.reconcile and arrives as rec["stage"]; _build_stage
+# only adds the client-invisible planned/building split. These tests pin both the
+# resolver directly (with a hand-built rec) and the pre-delivery job-first rule.
 class TestStage:
     def test_planned(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
@@ -133,34 +137,71 @@ class TestStage:
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build()
         b["done_at"] = time.time()
-        assert lp_web._build_stage(b, alloc={"sold": 0}, listed_units=0) == "built"
+        assert lp_web._build_stage(b, {"stage": "built"}) == "built"
 
     def test_building_job_never_shows_listed(self, monkeypatch, tmp_path):
-        # The reported bug: a still-running job must never read as listed/sold,
-        # regardless of market activity on the same item.
+        # The reported bug: a still-running job (no done_at) must never read as
+        # listed/sold, regardless of any reconciled stage — the pre-delivery split
+        # is resolved here and overrides whatever a stale rec might carry.
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build()
         b["job_id"] = "123"   # active job, done_at still None
-        assert lp_web._build_stage(b, alloc={"sold": 5}, listed_units=99) == "building"
+        assert lp_web._build_stage(b, {"stage": "listed"}) == "building"
 
-    def test_listed_when_stock_on_market(self, monkeypatch, tmp_path):
+    def test_listed_from_reconciled_stage(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build(runs=10)
         b["done_at"] = time.time()
-        assert lp_web._build_stage(b, alloc={"sold": 2}, listed_units=8) == "listed"
+        assert lp_web._build_stage(b, {"stage": "listed"}) == "listed"
 
-    def test_sold_when_all_units_sold(self, monkeypatch, tmp_path):
+    def test_sold_from_reconciled_stage(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build(runs=10)
         b["done_at"] = time.time()
-        assert lp_web._build_stage(b, alloc={"sold": 10}, listed_units=0) == "sold"
+        assert lp_web._build_stage(b, {"stage": "sold"}) == "sold"
 
-    def test_abandoned_is_sold(self, monkeypatch, tmp_path):
+    def test_delivered_without_rec_falls_back_to_built(self, monkeypatch, tmp_path):
         _bind(monkeypatch, tmp_path, _acct())
         b = _save_build(runs=10)
         b["done_at"] = time.time()
-        b["abandoned"] = True
-        assert lp_web._build_stage(b, alloc={"sold": 3}, listed_units=5) == "sold"
+        assert lp_web._build_stage(b) == "built"
+
+    # The real end-to-end stage decisions, driven through reconcile via the
+    # summary — the path the UI actually reads.
+    def test_built_when_delivered_and_unsold_e2e(self, monkeypatch, tmp_path):
+        _bind(monkeypatch, tmp_path, _acct())
+        b = _built(runs=10)
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert sb["stage"] == "built"
+
+    def test_listed_when_stock_on_market_e2e(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=2, price=150.0)])
+        lp_web._record_listed_units(acct, 1, [
+            {"is_buy_order": False, "type_id": 587, "volume_remain": 8}])
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert sb["stage"] == "listed"
+
+    def test_sold_when_all_units_sold_e2e(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=10, price=150.0)])
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert sb["stage"] == "sold"
+
+    def test_abandoned_is_sold_e2e(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=3, price=150.0)])
+        lp_web._record_listed_units(acct, 1, [
+            {"is_buy_order": False, "type_id": 587, "volume_remain": 5}])
+        lp_web.do_ind_builds_sell_abandon({"id": [b["id"]]})
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert sb["stage"] == "sold"
 
 
 # ── Ledger reconcile: wallet transactions in, deduped by transaction_id ──────

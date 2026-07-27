@@ -1504,53 +1504,76 @@ def _save_sell_ledger(acct, ledger):
 
 
 def _build_lot(b):
-    """A build as an allocatable produced lot for ind_track.allocate_fifo. The
-    allocatable ``units`` is the batch output minus any abandoned (written-off)
-    remainder, so a lot the user gave up on stops absorbing future fills — they
-    flow to the next batch instead — while its already-sold units keep their
-    attribution.
+    """A tracked build as the rich lot dict :func:`ind_track.reconcile` consumes.
 
-    The lot's ``done_at`` (its production time, used both to order FIFO and to
-    gate which sales may draw from it) is the *earliest* time the units could
-    have existed: the manufacturing job's real end (``job_end``) when known,
-    else the observation time ``done_at``. ``job_end`` matters because ``done_at``
-    is only stamped when the client next *notices* the job left the active list,
-    which can lag real completion by a sweep — a sale in that gap is legitimate
-    and must not be gated out."""
-    produced = _build_units_produced(b) or 0
+    Field meanings (see ind_track for how each is used):
+      * ``done_at``       — the lot's production time: ``None`` while the build is
+        still in production (undelivered), else the *earliest* time its units
+        could exist — the manufacturing job's real end (``job_end``) when known,
+        else the observed delivery time ``done_at``. ``job_end`` matters because
+        the build's ``done_at`` is only stamped when the client next *notices*
+        the job left the active list, which can lag real completion by a sweep;
+        a sale in that gap is legitimate and must not be gated out. (A build with
+        ``job_end`` but no ``done_at`` is still *undelivered* — job_end only moves
+        an already-delivered lot's gate earlier, never fabricates delivery.)
+      * ``planned_units`` — the batch's full output (for in-production flow).
+      * ``produced``      — units actually produced: the full output once
+        delivered, 0 while still in production.
+      * ``cap``           — allocatable capacity = produced minus any abandoned
+        (written-off) remainder, so a lot the user gave up on stops absorbing
+        future fills (they flow to the next batch) while its already-sold units
+        keep their attribution.
+      * ``cost_per_unit`` / ``sales_tax`` — frozen cost basis / tax for profit.
+      * ``abandoned``     — the unsold remainder was written off (lot closed)."""
+    delivered = b.get("done_at") is not None
+    total = _build_units_produced(b) or 0
+    produced = total if delivered else 0
     cap = produced
     if b.get("abandoned"):
         cap = max(0, produced - int(b.get("writeoff_units") or 0))
-    done_at = b.get("done_at")
-    job_end_ts = _parse_iso_ts(b.get("job_end"))
-    if job_end_ts is not None:
-        done_at = job_end_ts if done_at is None else min(done_at, job_end_ts)
+    gate = None
+    if delivered:
+        gate = b.get("done_at")
+        job_end_ts = _parse_iso_ts(b.get("job_end"))
+        if job_end_ts is not None:
+            gate = min(gate, job_end_ts)
     return {
         "id": b.get("id"),
-        "units": cap,
+        "done_at": gate,
+        "planned_units": total,
+        "produced": produced,
+        "cap": cap,
         "cost_per_unit": _build_cost_per_unit(b),
         "sales_tax": (b.get("snapshot") or {}).get("sales_tax") or 0.0,
-        "done_at": done_at,
+        "abandoned": bool(b.get("abandoned")),
     }
 
 
-def _allocate_builds(builds, ledger):
-    """FIFO-allocate each product's wallet fills across its *delivered* lots.
-    Returns ``(per_build, prod_summary)`` — per_build maps build id → the
-    allocation record from ind_track.allocate_fifo; prod_summary maps
-    str(product_type_id) → the product's roll-up (sold/net/cost/profit/
-    unallocated)."""
-    by_pid = {}
+def _reconcile_products(builds, ledger, listed):
+    """Reconcile every product's builds against the wallet ledger + open-order
+    volume through the single :func:`ind_track.reconcile` authority — so sold,
+    listed and stage can never disagree (that was the recurring LINKED-vs-built
+    bug). ``ledger`` is the per-product wallet-fill ledger; ``listed`` is the
+    per-product open sell-order volume ``{str(pid): units}``.
+
+    Returns ``(by_build, by_product)``:
+      * ``by_build``   — build id → its per-lot record ``{sold, held, listed,
+        net, cost, profit, stage, is_listed_anchor}``.
+      * ``by_product`` — str(product_type_id) → ``{summary, flow,
+        listed_anchor}`` (the money roll-up, the unit-flow pipeline, and the id
+        of the one lot a market order's 🔗 links to, or None)."""
+    groups = {}
     for b in builds:
-        by_pid.setdefault(str(b.get("product_type_id")), []).append(b)
-    per_build = {}
-    prod_summary = {}
-    for pid, group in by_pid.items():
-        lots = [_build_lot(b) for b in group if b.get("done_at") is not None]
-        pl, summ = ind_track.allocate_fifo(lots, ledger.get(pid, []))
-        per_build.update(pl)
-        prod_summary[pid] = summ
-    return per_build, prod_summary
+        groups.setdefault(str(b.get("product_type_id")), []).append(b)
+    by_build = {}
+    by_product = {}
+    for pid, group in groups.items():
+        lots = [_build_lot(b) for b in group]
+        r = ind_track.reconcile(lots, ledger.get(pid, []), listed.get(pid, 0))
+        by_build.update(r["lots"])
+        by_product[pid] = {"summary": r["summary"], "flow": r["flow"],
+                           "listed_anchor": r["listed_anchor"]}
+    return by_build, by_product
 
 
 # Sentinel schema version stamped once the one-time migration from the old
@@ -1688,13 +1711,13 @@ def _build_cost_per_unit(b):
     return cost / units
 
 
-def _build_realized(b, alloc):
-    """Realized sale totals for one build from its FIFO allocation record
-    (``alloc`` = the per-build entry from ind_track.allocate_fifo, or None). Adds
+def _build_realized(b, rec):
+    """Realized sale totals for one build from its reconciled per-lot record
+    (``rec`` = the build's entry from :func:`ind_track.reconcile`, or None). Adds
     the abandoned-remainder write-off: a build the user gave up on books the
     frozen cost of its never-sold units as a realized loss, so profit and the
     portfolio totals stay honest."""
-    a = alloc or {"sold": 0, "net": 0.0, "cost": 0.0, "profit": 0.0}
+    a = rec or {"sold": 0, "net": 0.0, "cost": 0.0, "profit": 0.0}
     units = a.get("sold", 0)
     net = a.get("net", 0.0)
     cost_of_sold = a.get("cost")
@@ -1709,30 +1732,27 @@ def _build_realized(b, alloc):
             "writeoff": writeoff, "profit": profit}
 
 
-def _build_stage(b, alloc=None, listed_units=0):
+def _build_stage(b, rec=None):
     """Lifecycle stage: planned → building → built → listed → sold.
 
-    Derived from the build's own state plus its FIFO allocation. Crucially the
-    manufacturing job is checked *first*, so a build whose job is still running
-    can never be shown as listed/sold — the bug the pooled rewrite set out to
-    kill. Once delivered (done_at): sold when every produced unit has sold (or the
-    remainder was abandoned), listed when *this lot's* own share of the product's
-    open-order volume is non-zero and it still holds unsold stock, else built.
-    ``alloc`` is the per-build allocation record; ``listed_units`` is *this
-    build's* allocated listed share (from :func:`ind_track.allocate_listed`), not
-    the product-wide total — otherwise one market order would flag every delivered
-    build of the product as listed. Both optional so the bare stage still works
-    server-side."""
+    A thin resolver, NOT a second derivation. The built/listed/sold decision for
+    a *delivered* build is made once, in :func:`ind_track.reconcile`, and arrives
+    here as ``rec["stage"]`` (``rec`` = the build's reconciled per-lot record).
+    This function only adds the part reconcile can't see — the pre-delivery split
+    between *planned* (no in-game job yet) and *building* (a job is running) —
+    which is why the manufacturing job is effectively checked first: a build with
+    no ``done_at`` is always planned/building, never listed/sold, regardless of
+    market activity on the same fungible item.
+
+    Keeping the delivered stage as reconcile's single output is exactly what
+    stops the tracker card and the market-order 🔗 badge from disagreeing: both
+    read the same reconciled record. ``rec`` is optional so a bare
+    ``_build_stage(b)`` still gives the pre-delivery stage server-side; a
+    delivered build with no ``rec`` falls back to ``built``."""
     if b.get("done_at") is None:
         return "building" if b.get("job_id") is not None else "planned"
-    produced = _build_units_produced(b) or 0
-    sold = (alloc or {}).get("sold", 0)
-    unsold = max(0, produced - sold)
-    if b.get("abandoned") or (produced and sold >= produced):
-        return "sold"
-    if unsold > 0 and (listed_units or 0) > 0:
-        return "listed"
-    return "built"
+    stage = (rec or {}).get("stage")
+    return stage or "built"
 
 
 def do_ind_builds_sell_abandon(q):
@@ -1759,8 +1779,10 @@ def do_ind_builds_sell_abandon(q):
             return {"error": "not built"}
         if abandon:
             ledger = _load_sell_ledger(acct)
-            per_build, _ = _allocate_builds(builds, ledger)
-            sold = per_build.get(b.get("id"), {}).get("sold", 0)
+            # Only the sold count matters here; open-order volume is irrelevant to
+            # the write-off, so reconcile with an empty listed map.
+            by_build, _ = _reconcile_products(builds, ledger, {})
+            sold = by_build.get(b.get("id"), {}).get("sold", 0)
             produced = _build_units_produced(b) or 0
             b["abandoned"] = True
             b["writeoff_units"] = max(0, produced - sold)
@@ -1807,12 +1829,15 @@ def _record_listed_units(acct, cid, orders):
 
 
 def do_ind_summary(q):
-    """Portfolio roll-up across every tracked build. Realized profit and units
-    sold come from the FIFO allocation of the wallet sell ledger onto the build
-    lots; capital in flight is the frozen cost of unsold (and un-abandoned) units;
-    per-product breakdown includes the live unit-flow pipeline. The client adds
-    the live-price 'ready to realize' projection and renders the needs-action
-    queue off the per-build fields returned here."""
+    """Portfolio roll-up across every tracked build. Sold units, realized profit,
+    the listed/held split and each build's lifecycle stage all come from the ONE
+    :func:`ind_track.reconcile` pass (via :func:`_reconcile_products`) — never a
+    second derivation — so the tracker card, the pipeline board and the market-
+    order 🔗 badge can never disagree. Capital in flight is the frozen cost of
+    unsold (un-abandoned) units. Each build row carries ``is_listed_anchor``: the
+    one delivered lot of a product that a live sell order links to. The client
+    adds the live-price 'ready to realize' projection and the needs-action queue
+    off the per-build fields returned here."""
     acct = current_account()
     if not acct:
         return {"builds": []}
@@ -1820,32 +1845,17 @@ def do_ind_summary(q):
     builds = _load_tracked_builds(acct)
     ledger = _load_sell_ledger(acct)
     listed = _load_listed_units(acct)
-    per_build, _prod = _allocate_builds(builds, ledger)
-    # Spread each product's live open-order volume across its delivered builds'
-    # unsold stock (oldest first), so a single market order flags only the
-    # oldest still-held batch as "listed", not every delivered build at once.
-    listed_by_build = {}
-    _by_pid = {}
-    for b in builds:
-        _by_pid.setdefault(str(b.get("product_type_id")), []).append(b)
-    for pid_str, group in _by_pid.items():
-        lots = [{"id": b.get("id"), "units": _build_units_produced(b) or 0,
-                 "done_at": b.get("done_at")}
-                for b in group
-                if b.get("done_at") is not None and not b.get("abandoned")]
-        listed_by_build.update(
-            ind_track.allocate_listed(lots, per_build, listed.get(pid_str, 0)))
+    by_build, by_prod = _reconcile_products(builds, ledger, listed)
     realized_profit = realized_net = 0.0
     capital_in_flight = 0.0
     by_product = {}
     out = []
     for b in builds:
         pid = b.get("product_type_id")
-        alloc = per_build.get(b.get("id"))
-        lu = listed_by_build.get(b.get("id"), 0)
-        stage = _build_stage(b, alloc, lu)
+        rec = by_build.get(b.get("id"))
+        stage = _build_stage(b, rec)
         batch_cost = _build_batch_cost(b)
-        rz = _build_realized(b, alloc)
+        rz = _build_realized(b, rec)
         # Capital in flight = frozen cost of produced-but-unsold units, plus the
         # full cost of builds still in the pipeline. An abandoned remainder is a
         # realized write-off, not capital in flight, so it's excluded.
@@ -1880,6 +1890,12 @@ def do_ind_summary(q):
             "done_at": b.get("done_at"),
             "job_id": b.get("job_id"),
             "stage": stage,
+            # The one lot a live sell order's 🔗 links to. The client's market-
+            # order badge shows iff some build of the product carries this flag —
+            # the same condition that makes this lot's stage "listed".
+            "is_listed_anchor": bool((rec or {}).get("is_listed_anchor")),
+            "listed_units": (rec or {}).get("listed", 0),
+            "held_units": (rec or {}).get("held", 0),
             "abandoned": bool(b.get("abandoned")),
             "batch_cost": batch_cost,
             "units_produced": _build_units_produced(b),
@@ -1890,23 +1906,16 @@ def do_ind_summary(q):
             "broker_fee": (b.get("snapshot") or {}).get("broker_fee"),
             "realized": rz,
         })
-    # Per-product unit-flow pipeline (produced / listed / sold / in-stock), from
-    # the delivered lots + current open-order volume.
-    builds_by_pid = {}
-    for b in builds:
-        builds_by_pid.setdefault(str(b.get("product_type_id")), []).append(b)
-    for pid_str, group in builds_by_pid.items():
-        lots = [{"id": b.get("id"), "units": _build_units_produced(b) or 0,
-                 "done_at": b.get("done_at")}
-                for b in group if not b.get("abandoned")]
-        flow = ind_track.product_pipeline(
-            lots, per_build, listed.get(pid_str, 0))
+    # Per-product unit-flow pipeline + listed anchor, straight from the reconcile
+    # pass (no recompute — same lot set as every per-build figure above).
+    for pid_str, pr in by_prod.items():
         try:
             pid_key = int(pid_str)
         except (TypeError, ValueError):
             pid_key = pid_str
         if pid_key in by_product:
-            by_product[pid_key]["flow"] = flow
+            by_product[pid_key]["flow"] = pr["flow"]
+            by_product[pid_key]["listed_anchor"] = pr["listed_anchor"]
     breakdown = sorted(by_product.values(),
                        key=lambda p: p["realized_profit"], reverse=True)
     return {

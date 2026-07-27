@@ -70,7 +70,9 @@ def _built(runs=10, done_at=None, bid=None, **snap_over):
     acct = lp_web.current_account()
     builds = lp_web._load_tracked_builds(acct)
     rec = next(x for x in builds if x["id"] == b["id"])
-    rec["done_at"] = done_at if done_at is not None else time.time()
+    # Default delivery well before the default sale date (_txn: 2026-07-20) so
+    # fills are causally valid — a unit can't sell before its lot is produced.
+    rec["done_at"] = done_at if done_at is not None else 1000.0
     lp_web._save_tracked_builds(acct, builds)
     return rec
 
@@ -211,6 +213,39 @@ class TestLedgerReconcile:
         sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
         assert sb["realized"]["units"] == 10
         assert sb["realized"]["net"] == 5 * 150 + 5 * 130
+
+
+# ── Causality: a fresh build isn't flipped by older surplus sales ────────────
+class TestDeliveryGate:
+    def test_fresh_build_stays_built_when_only_old_fills_exist(self, monkeypatch, tmp_path):
+        # The reported bug: 38 old sales sit in the cumulative ledger (flipped /
+        # untracked stock). A brand-new 38-run batch delivers and must NOT read as
+        # sold — those units are still in the hangar.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        # Sale happened at 2026-07-20, delivery observed a week later.
+        _reconcile(acct, [_txn(1, qty=38, price=150.0, date="2026-07-20T00:00:00Z")])
+        b = _built(runs=38, done_at=lp_web._parse_iso_ts("2026-07-27T00:00:00Z"))
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert sb["realized"]["units"] == 0
+        assert sb["stage"] == "built"
+
+    def test_job_end_tolerates_observation_lag(self, monkeypatch, tmp_path):
+        # done_at lags real completion (client only stamps it on the next sweep).
+        # A sale between real job end and observation is legitimate: job_end gates,
+        # not done_at.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10, done_at=lp_web._parse_iso_ts("2026-07-27T12:00:00Z"))
+        builds = lp_web._load_tracked_builds(acct)
+        rec = next(x for x in builds if x["id"] == b["id"])
+        rec["job_end"] = "2026-07-27T00:00:00Z"   # really finished at midnight
+        lp_web._save_tracked_builds(acct, builds)
+        # Sold at 06:00 — after job_end, before done_at. Must allocate.
+        _reconcile(acct, [_txn(1, qty=10, price=150.0, date="2026-07-27T06:00:00Z")])
+        sb = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert sb["realized"]["units"] == 10
+        assert sb["stage"] == "sold"
 
 
 # ── Parallel batches of the same item: FIFO, no order linking ────────────────
@@ -382,9 +417,9 @@ class TestMigration:
         rec["sell"] = {
             "started_at": 1.0, "cost_per_unit": 100.0, "qty_target": 10,
             "realized": [
-                {"event_id": "e1", "ts": 5.0, "units": 3, "price": 150.0,
+                {"event_id": "e1", "ts": 5000.0, "units": 3, "price": 150.0,
                  "net": 450.0, "transaction_ids": [111]},
-                {"event_id": "e2", "ts": 6.0, "units": 2, "price": 150.0,
+                {"event_id": "e2", "ts": 6000.0, "units": 2, "price": 150.0,
                  "net": 300.0},   # order-diff fill with no txn id
             ],
         }
@@ -422,7 +457,7 @@ class TestMigration:
         rec["sell"] = {
             "started_at": 1.0, "closed_at": 9.0, "closed_early": True,
             "cost_per_unit": 100.0, "qty_target": 10, "writeoff_units": 6,
-            "realized": [{"event_id": "e1", "ts": 5.0, "units": 4, "price": 60.0,
+            "realized": [{"event_id": "e1", "ts": 5000.0, "units": 4, "price": 60.0,
                           "net": 240.0}],
         }
         lp_web._save_tracked_builds(acct, builds)

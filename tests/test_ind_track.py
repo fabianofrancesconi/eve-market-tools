@@ -182,10 +182,11 @@ class TestAllocateFifo:
         assert per_lot["A"]["cost"] == 1000.0
 
     def test_fifo_spills_oldest_lot_first(self):
-        # Two lots of the same item; older one (done_at 0) fills first.
+        # Two lots of the same item; older one (done_at 0) fills first. The sale
+        # (ts 100) is after both deliveries, so both lots are eligible.
         lots = [self._lot("OLD", 40, cpu=100.0, done_at=0),
                 self._lot("NEW", 40, cpu=110.0, done_at=50)]
-        fills = [{"units": 50, "price": 200.0, "ts": 10}]
+        fills = [{"units": 50, "price": 200.0, "ts": 100}]
         per_lot, summ = ind_track.allocate_fifo(lots, fills)
         assert per_lot["OLD"]["sold"] == 40   # exhausted first
         assert per_lot["NEW"]["sold"] == 10   # remainder
@@ -220,6 +221,43 @@ class TestAllocateFifo:
         assert summ["unallocated"] == 0
         # Money is the sum of the real fills, independent of which order sold it.
         assert round(summ["net"], 2) == round(25 * 150 + 30 * 140 + 20 * 160, 2)
+
+    def test_sale_before_delivery_is_not_allocated(self):
+        # The reported bug: the cumulative wallet ledger holds surplus fills (old
+        # flipped/untracked stock). When a brand-new lot is delivered, those
+        # earlier sales must NOT spill into it — you can't sell a unit before you
+        # produce it — so the fresh lot stays unsold and the surplus is flipped.
+        lots = [self._lot("FRESH", 38, cpu=100.0, done_at=2000)]
+        fills = [{"units": 38, "price": 150.0, "ts": 1000}]   # all sold earlier
+        per_lot, summ = ind_track.allocate_fifo(lots, fills)
+        assert per_lot["FRESH"]["sold"] == 0
+        assert summ["sold"] == 0
+        assert summ["unallocated"] == 38
+
+    def test_fill_skips_undelivered_lot_to_reach_older_one(self):
+        # A single monotonic pointer would wrongly stall: the oldest free lot
+        # (NEW) isn't yet delivered at sale time, so the fill must skip it and
+        # draw from the older, already-delivered OLD lot.
+        lots = [self._lot("OLD", 10, cpu=100.0, done_at=1000),
+                self._lot("NEW", 10, cpu=100.0, done_at=3000)]
+        # OLD delivered, sale at 2000 (before NEW), then a later sale at 4000.
+        fills = [{"units": 5, "price": 150.0, "ts": 2000},
+                 {"units": 12, "price": 150.0, "ts": 4000}]
+        per_lot, summ = ind_track.allocate_fifo(lots, fills)
+        # First fill: only OLD eligible → 5 to OLD. Second: OLD has 5 left, NEW
+        # now delivered → 5 to OLD then 7 to NEW.
+        assert per_lot["OLD"]["sold"] == 10
+        assert per_lot["NEW"]["sold"] == 7
+        assert summ["unallocated"] == 0
+
+    def test_fill_missing_ts_lands_on_any_lot(self):
+        # A legacy/migration fill with no ts is treated as newest and may still
+        # allocate — the gate only rejects sales provably before delivery.
+        lots = [self._lot("A", 10, cpu=100.0, done_at=2000)]
+        fills = [{"units": 4, "price": 150.0, "ts": None}]
+        per_lot, summ = ind_track.allocate_fifo(lots, fills)
+        assert per_lot["A"]["sold"] == 4
+        assert summ["unallocated"] == 0
 
     def test_overflow_is_unallocated_not_over_attributed(self):
         # One 10-unit lot, but 15 units sold (5 flipped from untracked stock).

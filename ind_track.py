@@ -3,7 +3,9 @@
 The model in one breath: a build is a *produced lot* (a number of units plus a
 frozen per-unit cost, dated when its manufacturing job delivered); every sale is
 a *wallet transaction* (a stable ``transaction_id`` and the real fill price);
-sold units are FIFO-allocated across a product's lots, oldest-produced first.
+sold units are FIFO-allocated across a product's lots, oldest-produced first —
+and only onto lots that were already delivered when the sale happened (you can't
+sell a unit before you produce it).
 
 No sale is ever tied to a specific market order. EVE treats two identical items
 as fungible — ESI can tell you "a unit of type T sold at price P", never "this
@@ -141,6 +143,15 @@ def allocate_fifo(lots, fills):
     ``{units, price, ts, transaction_id}``. Consumed oldest-sold first (by
     ``ts``); a fill's units spill across as many lots as needed.
 
+    A fill is only ever allocated to a lot that was **already delivered when the
+    sale happened** (``lot.done_at <= fill.ts``) — you can't sell a unit before
+    you produce it. Without this gate the cumulative wallet ledger's surplus
+    fills (flipped stock, deleted/untracked builds, sales from before tracking)
+    would spill into a freshly-delivered lot and flip it straight to sold/listed
+    while the goods are still in your hangar. Such pre-delivery sales stay
+    ``unallocated`` instead. A fill with no ``ts`` (legacy/migration) is treated
+    as newest, so it can still land on any lot.
+
     Returns ``(per_lot, summary)``:
       * ``per_lot`` — ``{lot_id: {sold, net, cost, profit}}`` for every lot
         (zero-filled when nothing sold). ``net`` uses that lot's own frozen
@@ -169,18 +180,26 @@ def allocate_fifo(lots, fills):
                                          else float("inf")))
     total_sold = 0
     unallocated = 0
-    li = 0
     for f in fills_sorted:
         remaining = f.get("units") or 0
         price = f.get("price") or 0.0
+        fts = f.get("ts")
         total_sold += remaining
-        while remaining > 0 and li < len(caps):
-            lot, cap = caps[li]
+        # A sale can only draw from lots already delivered at sale time. We can't
+        # use a single monotonic pointer: the oldest lot with free capacity may be
+        # one this fill must skip (not yet delivered when it sold), so scan every
+        # lot in FIFO order each time and take from the first eligible one.
+        for cap_entry in caps:
+            if remaining <= 0:
+                break
+            lot, cap = cap_entry
             if cap <= 0:
-                li += 1
                 continue
+            done_at = lot.get("done_at")
+            if fts is not None and done_at is not None and done_at > fts:
+                continue    # lot not yet produced when this sale happened
             take = min(remaining, cap)
-            caps[li][1] -= take
+            cap_entry[1] -= take
             remaining -= take
             rec = per_lot[lot["id"]]
             rec["sold"] += take
@@ -192,7 +211,8 @@ def allocate_fifo(lots, fills):
                 rec["net"] += take * price * (1 - tax)
                 rec["cost"] += take * cpu
         if remaining > 0:
-            # Sold more than we ever produced — flipped stock, not this batch's.
+            # Sold before any eligible lot was produced (flipped stock, untracked
+            # or deleted builds, pre-tracking sales) — not this batch's output.
             unallocated += remaining
     net = cost = profit = 0.0
     sold = 0

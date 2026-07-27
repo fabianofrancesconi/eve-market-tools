@@ -1508,17 +1508,29 @@ def _build_lot(b):
     allocatable ``units`` is the batch output minus any abandoned (written-off)
     remainder, so a lot the user gave up on stops absorbing future fills — they
     flow to the next batch instead — while its already-sold units keep their
-    attribution."""
+    attribution.
+
+    The lot's ``done_at`` (its production time, used both to order FIFO and to
+    gate which sales may draw from it) is the *earliest* time the units could
+    have existed: the manufacturing job's real end (``job_end``) when known,
+    else the observation time ``done_at``. ``job_end`` matters because ``done_at``
+    is only stamped when the client next *notices* the job left the active list,
+    which can lag real completion by a sweep — a sale in that gap is legitimate
+    and must not be gated out."""
     produced = _build_units_produced(b) or 0
     cap = produced
     if b.get("abandoned"):
         cap = max(0, produced - int(b.get("writeoff_units") or 0))
+    done_at = b.get("done_at")
+    job_end_ts = _parse_iso_ts(b.get("job_end"))
+    if job_end_ts is not None:
+        done_at = job_end_ts if done_at is None else min(done_at, job_end_ts)
     return {
         "id": b.get("id"),
         "units": cap,
         "cost_per_unit": _build_cost_per_unit(b),
         "sales_tax": (b.get("snapshot") or {}).get("sales_tax") or 0.0,
-        "done_at": b.get("done_at"),
+        "done_at": done_at,
     }
 
 

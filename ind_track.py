@@ -74,6 +74,62 @@ def merge_sell_fills(ledger, transactions, parse_ts):
     return ledger, changed
 
 
+def prune_legacy_duplicates(ledger, window=3 * 86400):
+    """Drop migration-synthesized ``legacy-*`` fills that a real wallet fill now
+    duplicates — the double-booking that let FIFO over-allocate every lot to
+    "sold".
+
+    The one-time v1.150 migration (:func:`lp-web._migrate_sell_state`) seeded a
+    synthetic ``legacy-<build>-<n>`` fill for every historical *order-diff* sale
+    (a sale inferred from an open order's ``volume_remain`` dropping, which
+    carries no wallet ``transaction_id``). Any such sale still inside ESI's
+    ~30-day wallet window later re-arrives as a *real* wallet transaction and is
+    merged as its own fill — so the same units are booked twice. With a product's
+    ledger reporting more units sold than were ever produced, FIFO fills every
+    delivered lot to capacity and each reads as fully sold.
+
+    A legacy fill is a duplicate of a real (numeric-id) fill in the same product
+    when they agree on ``units`` and their ``ts`` is within ``window`` seconds;
+    among the candidates the price-closest real is chosen (order-diff recorded the
+    listed price, the wallet the actual fill, so they can drift by a few ISK).
+    Matching is greedy and 1:1 — two legacy fills never collapse onto one real
+    fill, and a legacy fill with no real twin (a sale older than the wallet
+    window, whose synthetic fill is the *only* record of that historical profit)
+    is kept untouched. Idempotent: once a legacy fill is removed there is nothing
+    left to match on a later sweep. ``ledger`` is mutated in place; returns
+    ``(ledger, removed)`` where ``removed`` is the count dropped.
+    """
+    def _is_legacy(f):
+        return str(f.get("transaction_id", "")).startswith("legacy-")
+
+    removed = 0
+    for pid, fills in ledger.items():
+        reals = [f for f in fills if not _is_legacy(f)]
+        claimed = [False] * len(reals)
+        kept = []
+        for f in fills:
+            if not _is_legacy(f):
+                kept.append(f)
+                continue
+            best = None
+            best_dp = None
+            for i, rf in enumerate(reals):
+                if claimed[i] or f.get("units") != rf.get("units"):
+                    continue
+                if abs((f.get("ts") or 0) - (rf.get("ts") or 0)) > window:
+                    continue
+                dp = abs((f.get("price") or 0.0) - (rf.get("price") or 0.0))
+                if best is None or dp < best_dp:
+                    best, best_dp = i, dp
+            if best is None:
+                kept.append(f)
+            else:
+                claimed[best] = True
+                removed += 1
+        ledger[pid] = kept
+    return ledger, removed
+
+
 def allocate_fifo(lots, fills):
     """FIFO-allocate a product's sold units across its produced lots.
 

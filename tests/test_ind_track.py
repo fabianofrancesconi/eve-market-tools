@@ -64,6 +64,100 @@ class TestMergeSellFills:
         assert ledger == {}
 
 
+class TestPruneLegacyDuplicates:
+    def test_drops_legacy_fill_duplicated_by_real_wallet_txn(self):
+        # The exact prod corruption: a migration-seeded order-diff fill and the
+        # real wallet transaction for the same sale both counted, so 4200 units
+        # were booked against a 4200-unit lot's worth of real sales — twice.
+        ledger = {"587": [
+            {"transaction_id": "6842019761", "units": 2200, "price": 14690.0,
+             "ts": 1784929559.0},
+            {"transaction_id": "legacy-b1-0", "units": 2200, "price": 14690.0,
+             "ts": 1784930030.0},   # ~8 min later, same units+price → dup
+        ]}
+        ledger, removed = ind_track.prune_legacy_duplicates(ledger)
+        assert removed == 1
+        assert len(ledger["587"]) == 1
+        assert ledger["587"][0]["transaction_id"] == "6842019761"
+
+    def test_keeps_unmatched_legacy_fill(self):
+        # A legacy sale older than the wallet window has no real twin — it's the
+        # only record of that profit and must survive.
+        ledger = {"587": [
+            {"transaction_id": "legacy-b1-2", "units": 5000, "price": 15630.0,
+             "ts": 1000.0},
+        ]}
+        ledger, removed = ind_track.prune_legacy_duplicates(ledger)
+        assert removed == 0
+        assert len(ledger["587"]) == 1
+
+    def test_greedy_one_to_one_not_collapsed(self):
+        # Two legacy fills, one real: only one legacy is a duplicate.
+        ledger = {"587": [
+            {"transaction_id": "9001", "units": 100, "price": 10.0, "ts": 100.0},
+            {"transaction_id": "legacy-a-0", "units": 100, "price": 10.0,
+             "ts": 150.0},
+            {"transaction_id": "legacy-a-1", "units": 100, "price": 10.0,
+             "ts": 200.0},
+        ]}
+        ledger, removed = ind_track.prune_legacy_duplicates(ledger)
+        assert removed == 1
+        ids = {f["transaction_id"] for f in ledger["587"]}
+        assert "9001" in ids
+        assert len([f for f in ledger["587"] if str(f["transaction_id"]).startswith("legacy-")]) == 1
+
+    def test_price_closest_real_is_matched(self):
+        # Order-diff recorded the listed price; the wallet the actual fill. When
+        # several reals share the units, the price-closest one is the true twin.
+        ledger = {"587": [
+            {"transaction_id": "1", "units": 50, "price": 100.0, "ts": 10.0},
+            {"transaction_id": "2", "units": 50, "price": 105.0, "ts": 12.0},
+            {"transaction_id": "legacy-x-0", "units": 50, "price": 104.5,
+             "ts": 11.0},
+        ]}
+        ledger, removed = ind_track.prune_legacy_duplicates(ledger)
+        assert removed == 1
+        # Real "2" (price 105, closest to 104.5) is the claimed twin, so both
+        # reals survive and only the legacy is gone.
+        ids = {f["transaction_id"] for f in ledger["587"]}
+        assert ids == {"1", "2"}
+
+    def test_outside_window_not_matched(self):
+        ledger = {"587": [
+            {"transaction_id": "1", "units": 50, "price": 100.0, "ts": 10.0},
+            {"transaction_id": "legacy-x-0", "units": 50, "price": 100.0,
+             "ts": 10.0 + 4 * 86400},   # 4 days apart > default 3-day window
+        ]}
+        ledger, removed = ind_track.prune_legacy_duplicates(ledger)
+        assert removed == 0
+
+    def test_idempotent(self):
+        ledger = {"587": [
+            {"transaction_id": "1", "units": 50, "price": 100.0, "ts": 10.0},
+            {"transaction_id": "legacy-x-0", "units": 50, "price": 100.0,
+             "ts": 20.0},
+        ]}
+        ledger, r1 = ind_track.prune_legacy_duplicates(ledger)
+        ledger, r2 = ind_track.prune_legacy_duplicates(ledger)
+        assert r1 == 1 and r2 == 0
+
+    def test_restores_sold_below_produced(self):
+        # End to end: the corrupt ledger over-allocates a lot to fully-sold;
+        # after pruning the phantom, the lot is only partially sold again.
+        lot = {"id": "L", "units": 4200, "cost_per_unit": 1.0, "sales_tax": 0.0,
+               "done_at": 0}
+        ledger = {"587": [
+            {"transaction_id": "r1", "units": 2200, "price": 100.0, "ts": 100.0},
+            {"transaction_id": "legacy-L-0", "units": 2200, "price": 100.0,
+             "ts": 300.0},
+        ]}
+        _, before = ind_track.allocate_fifo([lot], ledger["587"])
+        assert before["sold"] == 4200        # corrupt: whole lot "sold"
+        ind_track.prune_legacy_duplicates(ledger)
+        _, after = ind_track.allocate_fifo([lot], ledger["587"])
+        assert after["sold"] == 2200         # healed: only the real sale counts
+
+
 class TestAllocateFifo:
     def _lot(self, lid, units, cpu=100.0, tax=0.0, done_at=0):
         return {"id": lid, "units": units, "cost_per_unit": cpu,

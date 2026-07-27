@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.151.0"
+__version__ = "1.151.1"
 
 import argparse
 import base64
@@ -1610,7 +1610,12 @@ def _reconcile_sell_ledger(acct, transactions):
         ledger = _load_sell_ledger(acct)
         ledger, changed = ind_track.merge_sell_fills(
             ledger, transactions, _parse_iso_ts)
-        if changed:
+        # Self-heal the migration's double-booking: a legacy order-diff fill and
+        # the real wallet transaction for the same sale would otherwise both
+        # count, over-allocating every lot to "sold". Runs every sweep because a
+        # legacy fill's real twin may only now have arrived in the wallet window.
+        ledger, pruned = ind_track.prune_legacy_duplicates(ledger)
+        if changed or pruned:
             _save_sell_ledger(acct, ledger)
 
 

@@ -114,6 +114,18 @@ def _assert_invariants(summary, open_orders, seed, step):
                 assert b["stage"] in ("planned", "building"), \
                     f"{ctx} undelivered build {b['id']} stage={b['stage']}"
 
+        # 4b. THE FIELD BUG: an archived build (hidden from the board) must never
+        #     be listed or carry the 🔗 anchor — else the badge points at a lot
+        #     the user can't see while the visible build reads Built.
+        for b in group:
+            if b.get("archived"):
+                assert b["stage"] != "listed", \
+                    f"{ctx} archived build {b['id']} is listed"
+                assert not b.get("is_listed_anchor"), \
+                    f"{ctx} archived build {b['id']} is the anchor (hidden badge)"
+                assert b["listed_units"] == 0, \
+                    f"{ctx} archived build {b['id']} has listed_units"
+
         # 5. Per-build sanity: sold never exceeds produced; listed ≤ held.
         for b in group:
             rz = b["realized"]
@@ -191,6 +203,17 @@ class _World:
         if res.get("ok"):
             self.builds[bid]["abandoned"] = True
 
+    def toggle_archive(self):
+        """Archive or un-archive a random build. Archiving hides it from the
+        tracker board's lanes; the field bug was that a hidden archived build
+        still grabbed a live order's 🔗 while the visible build read Built."""
+        if not self.builds:
+            return
+        bid = self.rng.choice(list(self.builds))
+        cur = self.builds[bid].get("archived", False)
+        lp_web.do_ind_builds_archive({"id": [bid], "archived": ["0" if cur else "1"]})
+        self.builds[bid]["archived"] = not cur
+
     def sell_units(self):
         """A wallet sale of a random product at a drifting price, dated 'now'.
         Units may exceed held stock (flipped/overflow) — reconcile must cap it."""
@@ -247,7 +270,7 @@ def _run_chaos(monkeypatch, tmp_path, seed, steps=120):
     ops = [world.add_build, world.add_build, world.deliver_build,
            world.deliver_build, world.sell_units, world.sell_units,
            world.set_orders, world.set_orders, world.delete_build,
-           world.abandon_build]
+           world.abandon_build, world.toggle_archive, world.toggle_archive]
     for step in range(steps):
         rng.choice(ops)()
         summary = lp_web.do_ind_summary({})
@@ -333,6 +356,68 @@ class TestReconcileChaos:
         # Only the older is the badge target — no double-flagging.
         assert _client_linked_badge(summary, product["type_id"]) == r1["id"]
         _assert_invariants(summary, w.open_orders(), "parallel", 0)
+
+    def test_archived_listed_build_does_not_flag_visible_build(self, monkeypatch, tmp_path):
+        # THE EXACT REPORTED SHAPE: an older build carrying the live order gets
+        # ARCHIVED (hidden from the board). Before the fix the badge kept pointing
+        # at that hidden build (LINKED) while the visible newer build read Built —
+        # the contradiction. Now the order must move to the visible held build.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        import json
+        product = _PRODUCTS[1]           # Standup Light Missile
+        older = lp_web.do_ind_builds_save({"runs": ["10"],
+             "snapshot": [json.dumps(_snapshot(product))]})["build"]
+        newer = lp_web.do_ind_builds_save({"runs": ["10"],
+             "snapshot": [json.dumps(_snapshot(product))]})["build"]
+        srv = lp_web._load_tracked_builds(acct)
+        for rec, t in ((older, 1000.0), (newer, 2000.0)):
+            next(x for x in srv if x["id"] == rec["id"])["done_at"] = t
+        lp_web._save_tracked_builds(acct, srv)
+        pid = product["type_id"]
+        lp_web._record_listed_units(acct, 1, [
+            {"is_buy_order": False, "type_id": pid, "volume_remain": 5}])
+        # Sanity: before archiving, the older build is the listed anchor.
+        s0 = lp_web.do_ind_summary({})
+        assert _client_linked_badge(s0, pid) == older["id"]
+
+        # Archive the older (listed) build — it vanishes from the board's lanes.
+        lp_web.do_ind_builds_archive({"id": [older["id"]], "archived": ["1"]})
+        s1 = lp_web.do_ind_summary({})
+        o = next(x for x in s1["builds"] if x["id"] == older["id"])
+        n = next(x for x in s1["builds"] if x["id"] == newer["id"])
+        # The hidden archived build is NOT listed and NOT the anchor...
+        assert o["stage"] != "listed"
+        assert o["is_listed_anchor"] is False
+        # ...the order now surfaces on the VISIBLE build, which reads listed, and
+        # the badge follows it — no more "LINKED but Built".
+        assert n["stage"] == "listed"
+        assert n["is_listed_anchor"] is True
+        assert _client_linked_badge(s1, pid) == newer["id"]
+        _assert_invariants(s1, [
+            {"is_buy_order": False, "type_id": pid, "volume_remain": 5}],
+            "archived_reported", 0)
+
+    def test_archive_last_holder_drops_badge(self, monkeypatch, tmp_path):
+        # If the ONLY held build gets archived, there's nothing visible to list —
+        # the badge must disappear, not cling to the hidden build.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        w = _World(acct, random.Random(0))
+        b = w.add_build()
+        w.deliver_build()
+        pid = w.builds[b]["pid"]
+        lp_web._record_listed_units(acct, 1, [
+            {"is_buy_order": False, "type_id": pid, "volume_remain": 5}])
+        assert _client_linked_badge(lp_web.do_ind_summary({}), pid) == b
+        lp_web.do_ind_builds_archive({"id": [b], "archived": ["1"]})
+        s = lp_web.do_ind_summary({})
+        sb = next(x for x in s["builds"] if x["id"] == b)
+        assert sb["stage"] != "listed" and sb["is_listed_anchor"] is False
+        assert _client_linked_badge(s, pid) is None
+        _assert_invariants(s, [
+            {"is_buy_order": False, "type_id": pid, "volume_remain": 5}],
+            "archive_last", 0)
 
     def test_multiple_sales_across_batches(self, monkeypatch, tmp_path):
         acct = _acct()

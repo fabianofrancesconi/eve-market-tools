@@ -1524,7 +1524,12 @@ def _build_lot(b):
         future fills (they flow to the next batch) while its already-sold units
         keep their attribution.
       * ``cost_per_unit`` / ``sales_tax`` — frozen cost basis / tax for profit.
-      * ``abandoned``     — the unsold remainder was written off (lot closed)."""
+      * ``abandoned``     — the unsold remainder was written off (lot closed).
+      * ``archived``      — a closed position the user filed away. The tracker
+        board hides archived builds in a drawer (not a lane), so reconcile must
+        keep them out of listing / the 🔗 anchor — otherwise a live order would
+        flag a hidden archived lot as "listed" while the visible build reads
+        "built", the exact LINKED-vs-built contradiction this module kills."""
     delivered = b.get("done_at") is not None
     total = _build_units_produced(b) or 0
     produced = total if delivered else 0
@@ -1546,6 +1551,7 @@ def _build_lot(b):
         "cost_per_unit": _build_cost_per_unit(b),
         "sales_tax": (b.get("snapshot") or {}).get("sales_tax") or 0.0,
         "abandoned": bool(b.get("abandoned")),
+        "archived": bool(b.get("archived")),
     }
 
 
@@ -1897,6 +1903,9 @@ def do_ind_summary(q):
             "listed_units": (rec or {}).get("listed", 0),
             "held_units": (rec or {}).get("held", 0),
             "abandoned": bool(b.get("abandoned")),
+            # A closed position the user filed away — hidden from the board's
+            # lanes and (like abandoned) never listed or the 🔗 anchor.
+            "archived": bool(b.get("archived")),
             "batch_cost": batch_cost,
             "units_produced": _build_units_produced(b),
             "cost_per_unit": _build_cost_per_unit(b),

@@ -154,6 +154,17 @@ def prune_legacy_duplicates(ledger, window=3 * 86400):
 
 # ── Primitive allocators (building blocks of reconcile; individually tested) ──
 
+def _open(lot):
+    """Is this an *open, on-the-market-able* delivered lot? A lot is open iff it
+    is delivered (``done_at`` set) and neither ``abandoned`` (unsold remainder
+    written off) nor ``archived`` (a closed position the user filed away — the
+    tracker board never shows it in a lane). Only open lots can carry a live sell
+    order / the 🔗 badge; closed lots keep their already-realized sales but hold
+    nothing the app treats as on the market, so an order never lands on them."""
+    return (lot.get("done_at") is not None
+            and not lot.get("abandoned") and not lot.get("archived"))
+
+
 def _ordered_delivered(lots):
     """A product's delivered lots, oldest-produced first. The ONE ordering used
     everywhere sold/listed FIFO is laid down — by ``done_at`` (the production
@@ -335,6 +346,13 @@ def reconcile(lots, fills, listed_units):
       * ``cost_per_unit`` / ``sales_tax`` — frozen cost basis / tax for profit.
       * ``abandoned``     — the unsold remainder was written off; the lot is
                             closed, holds nothing, and can never be listed.
+      * ``archived``      — a closed position the user filed away (declutter, not
+                            a write-off). Its already-sold units keep their
+                            profit, but the tracker board never shows it in a
+                            lane, so — like ``abandoned`` — it is excluded from
+                            listing and the anchor election: a live order lands
+                            on the visible held stock instead, never on a hidden
+                            lot (that mismatch was the LINKED-vs-Built bug).
     ``fills`` — the product's wallet sell fills (``{units, price, ts,
     transaction_id}``).
     ``listed_units`` — total ``volume_remain`` on the product's open sell orders.
@@ -371,20 +389,24 @@ def reconcile(lots, fills, listed_units):
                   for l in lots if l.get("done_at") is not None]
     per_lot, summary = allocate_fifo(alloc_lots, fills)
 
-    # 2. Listing: live order volume over held stock of non-abandoned delivered
-    #    lots, oldest-first (units = produced; held = produced − sold).
+    # 2. Listing: live order volume over held stock of *open* delivered lots,
+    #    oldest-first (units = produced; held = produced − sold). Abandoned and
+    #    archived lots are closed positions — the board never shows them in a
+    #    lane, so the order (and the 🔗 badge it drives) must NOT land on them or
+    #    the badge would point at a hidden lot while the visible one reads Built.
     listable = [{"id": l["id"], "units": l.get("produced") or 0,
                  "done_at": l.get("done_at")}
-                for l in lots
-                if l.get("done_at") is not None and not l.get("abandoned")]
+                for l in lots if _open(l)]
     listed_map = allocate_listed(listable, per_lot, listed_units)
 
-    # 3. Pipeline flow over non-abandoned lots (in-production + delivered).
+    # 3. Pipeline flow over *open* lots (in-production + delivered, not
+    #    abandoned/archived) — the same visible set the listing pass draws on, so
+    #    ``flow.listed`` equals the per-lot listed sum and the theorem holds.
     flow_lots = [{"id": l["id"],
                   "units": ((l.get("planned_units") or 0) if l.get("done_at") is None
                             else (l.get("produced") or 0)),
                   "done_at": l.get("done_at")}
-                 for l in lots if not l.get("abandoned")]
+                 for l in lots if not l.get("abandoned") and not l.get("archived")]
     flow = product_pipeline(flow_lots, per_lot, listed_units)
 
     # 4. Per-lot record: fold in held + listed + the delivered stage.

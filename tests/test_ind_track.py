@@ -368,13 +368,13 @@ class TestProductPipeline:
 
 # ── reconcile: the single authority the whole app reads ──────────────────────
 def _lot(lid, done_at, produced, *, cap=None, cpu=100.0, tax=0.0,
-         planned=None, abandoned=False):
+         planned=None, abandoned=False, archived=False):
     """A rich reconcile lot (see lp-web._build_lot for the real builder)."""
     prod = 0 if done_at is None else produced
     return {"id": lid, "done_at": done_at, "planned_units": planned if planned
             is not None else produced, "produced": prod,
             "cap": (prod if cap is None else cap), "cost_per_unit": cpu,
-            "sales_tax": tax, "abandoned": abandoned}
+            "sales_tax": tax, "abandoned": abandoned, "archived": archived}
 
 
 class TestReconcile:
@@ -429,6 +429,41 @@ class TestReconcile:
         assert r["lots"]["A"]["listed"] == 0
         assert r["listed_anchor"] is None
 
+    def test_archived_lot_never_the_anchor(self):
+        # THE FIELD BUG: an older ARCHIVED lot still holding stock must not grab
+        # the order / anchor — the board hides it, so the badge would point at a
+        # lot the user can't see while the visible newer lot reads Built. The
+        # order must land on the visible held lot instead.
+        lots = [_lot("ARCH", 1000, 10, archived=True), _lot("VIS", 2000, 10)]
+        r = ind_track.reconcile(lots, [], 5)
+        assert r["listed_anchor"] == "VIS"
+        assert r["lots"]["VIS"]["stage"] == "listed"
+        assert r["lots"]["VIS"]["listed"] == 5
+        assert r["lots"]["ARCH"]["stage"] == "built"   # closed, but not listed
+        assert r["lots"]["ARCH"]["listed"] == 0
+        assert r["lots"]["ARCH"]["is_listed_anchor"] is False
+
+    def test_archived_only_lot_is_never_listed(self):
+        # A lone archived held lot with a live order: nothing visible to list, so
+        # no anchor and no badge — flow.listed collapses to 0.
+        lots = [_lot("ARCH", 1000, 10, archived=True)]
+        r = ind_track.reconcile(lots, [], 5)
+        assert r["listed_anchor"] is None
+        assert r["lots"]["ARCH"]["listed"] == 0
+        assert r["lots"]["ARCH"]["stage"] == "built"
+        assert r["flow"]["listed"] == 0
+
+    def test_archived_sales_still_counted(self):
+        # Archive is a declutter, not a write-off: an archived lot's already-sold
+        # units keep their realized profit even though it can't be listed.
+        lots = [_lot("ARCH", 1000, 10, cpu=100.0, tax=0.0, archived=True)]
+        fills = [{"transaction_id": 1, "units": 6, "price": 150.0, "ts": 1500}]
+        r = ind_track.reconcile(lots, fills, 5)
+        assert r["lots"]["ARCH"]["sold"] == 6
+        assert r["lots"]["ARCH"]["profit"] == 6 * (150.0 - 100.0)
+        assert r["summary"]["sold"] == 6
+        assert r["listed_anchor"] is None            # still never listed
+
     def test_profit_flows_from_fills(self):
         lots = [_lot("A", 1000, 10, cpu=100.0, tax=0.05)]
         fills = [{"transaction_id": 1, "units": 4, "price": 200.0, "ts": 1500}]
@@ -466,6 +501,12 @@ class TestReconcileInvariants:
         ([_lot("A", None, 10, planned=10)], [], 5),
         ([_lot("A", 1000, 10, cap=4, abandoned=True)], [], 5),
         ([_lot("A", 1000, 10, cap=4, abandoned=True), _lot("B", 2000, 10)], [], 5),
+        # Archived lots: hidden closed positions — never listed, never the anchor.
+        ([_lot("A", 1000, 10, archived=True)], [], 5),
+        ([_lot("A", 1000, 10, archived=True), _lot("B", 2000, 10)], [], 5),
+        ([_lot("A", 1000, 10, archived=True), _lot("B", 2000, 10)], [], 15),
+        ([_lot("A", 1000, 10, archived=True)],
+         [{"transaction_id": 1, "units": 6, "price": 150.0, "ts": 1500}], 5),
     ]
 
     def _check(self, lots, fills, listed_units):
@@ -481,13 +522,17 @@ class TestReconcileInvariants:
         for v in L.values():
             assert v["listed"] <= v["held"] or v["held"] == 0 and v["listed"] == 0
             assert v["listed"] >= 0 and v["sold"] >= 0 and v["held"] >= 0
-        # stage ⟺ listed/sold definitions
+        # stage ⟺ listed/sold definitions. Archived (closed, hidden) delivered
+        # lots keep their sold count but are never listed — so a not-fully-sold
+        # archived lot reads "built", never "listed".
         for l in lots:
             v = L[l["id"]]
             if l["done_at"] is None:
                 assert v["stage"] is None
             elif l["abandoned"] or (l["produced"] > 0 and v["sold"] >= l["produced"]):
                 assert v["stage"] == "sold"
+            elif l.get("archived"):
+                assert v["stage"] == "built" and v["listed"] == 0
             elif v["listed"] > 0:
                 assert v["stage"] == "listed"
             else:

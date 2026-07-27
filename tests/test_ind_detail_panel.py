@@ -17,8 +17,10 @@ lp_web = importlib.import_module("lp-web")
 def test_old_waterfall_ledger_is_gone():
     src = lp_web.FRONTEND_SOURCE
     # The single-column fee waterfall was replaced by the sell-decision hero.
+    # (The distinct `ind-led-*` classes are the guard; the word "ledger" itself
+    # is reused by the unrelated Build ledger modal, so it isn't a marker here.)
     for gone in ('class="ind-led"', "ind-led-head", "ind-led-body",
-                 "ind-led-foot", "Build ledger"):
+                 "ind-led-foot"):
         assert gone not in src, gone
 
 

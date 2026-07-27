@@ -147,6 +147,28 @@ def test_ready_to_deliver_builds_are_flagged_on_the_board():
     assert 'classList.add("ind-tile-ready")' in src
 
 
+def test_build_ledger_modal_is_present_and_wired():
+    src = lp_web.FRONTEND_SOURCE
+    # The ledger modal shell + its opener on the readout strip.
+    assert 'id="buildLedgerModal"' in src
+    assert "onclick=\"openBuildLedger()\"" in src
+    assert "function openBuildLedger" in src
+    assert "function renderBuildLedger" in src
+    # It reuses the summary payload the strip already loaded (no second fetch).
+    assert "SUMMARY.data" in src
+    # The register's columns: runs / units sold / cost / revenue / profit / stage.
+    for col in ('"Runs"', '"Cost"', '"Revenue"', '"Profit"', '"Stage"'):
+        assert col in src, col
+    # A "bottom line" totals footer is the ledger's signature.
+    assert "ledger-total" in src
+    assert "Bottom line" in src
+    # Sortable headers + open/closed filter chips.
+    assert 'th[data-sort]' in src
+    assert 'class="ledger-filter' in src
+    # A row opens that build's existing quick-look peek.
+    assert "openBuildPeek(tr.dataset.id)" in src
+
+
 def test_sold_tiles_have_an_inline_archive_button():
     src = lp_web.FRONTEND_SOURCE
     # Sold builds can be archived straight from the board tile (not only from

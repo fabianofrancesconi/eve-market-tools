@@ -584,6 +584,30 @@
   </div>
 </div>
 
+<!-- Build ledger modal — the full history of every tracked build/craft and its
+     money outcome (runs, cost, revenue, profit), as a sortable financial register
+     with a totals bottom line. Fed by summary.js off /api/ind/summary. -->
+<div id="buildLedgerModal" class="ind-modal hidden">
+  <div class="ind-modal-box ledger-box">
+    <div class="ledger-head">
+      <div>
+        <h3 class="ledger-title">Build ledger</h3>
+        <p class="ledger-sub" id="ledger-sub">Every batch you've tracked, and what it earned.</p>
+      </div>
+      <div class="ledger-filters" id="ledger-filters">
+        <button class="ledger-filter active" data-filter="all">All</button>
+        <button class="ledger-filter" data-filter="sold">Closed</button>
+        <button class="ledger-filter" data-filter="active">Open</button>
+      </div>
+    </div>
+    <div class="ledger-scroll" id="ledger-scroll"></div>
+    <div class="sw-actions">
+      <span style="flex:1"></span>
+      <button id="ledger-close" class="secondary">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Per-system note modal (exploration journal) -->
 <div id="trackNoteModal" class="ind-modal hidden">
   <div class="ind-modal-box">

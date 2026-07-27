@@ -1859,6 +1859,97 @@
     .sum-read { flex-basis:100%; border-left:none; }
     .sum-read + .sum-read { border-top:1px solid var(--line2); }
   }
+  /* The ledger opener — a quiet control riding the right edge of the strip, set
+     apart by a divider so it reads as an action, not a fifth reading. */
+  .sum-ledger-btn { display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:2px; padding:0 18px; border:none; cursor:pointer;
+    background:transparent; color:var(--dim); border-left:1px solid var(--line2);
+    font:inherit; transition:color .12s, background .12s; }
+  .sum-ledger-btn:hover { color:var(--cyan); background:rgba(80,200,255,.06); }
+  .sum-ledger-btn .slb-ico { font-size:17px; line-height:1; }
+  .sum-ledger-btn .slb-lbl { font-size:10.5px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.5px; }
+  @media (max-width:820px){
+    .sum-ledger-btn { flex-basis:100%; flex-direction:row; gap:7px; padding:9px 16px;
+      border-left:none; border-top:1px solid var(--line2); }
+  }
+
+  /* ── Build ledger modal — the production register ─────────────────────────
+     A wide, self-contained financial ledger: sortable columns, stage-tinted
+     rows, and a "bottom line" totals footer. Reuses the tracker's stage colours
+     (--stg-*) and the app's tabular numerals so it reads as the same instrument
+     as the pipeline board, just in its account-book form. */
+  .ledger-box { width:min(980px,94vw); padding:20px 22px 16px; }
+  .ledger-head { display:flex; align-items:flex-start; justify-content:space-between;
+    gap:16px; flex-wrap:wrap; margin-bottom:14px; }
+  .ledger-title { margin:0; font-size:18px; color:var(--cyan); letter-spacing:.3px; }
+  .ledger-sub { margin:3px 0 0; font-size:12px; color:var(--dim); }
+  .ledger-filters { display:flex; gap:0; border:1px solid var(--line2); border-radius:6px;
+    overflow:hidden; flex-shrink:0; }
+  .ledger-filter { background:transparent; border:none; cursor:pointer; color:var(--dim);
+    font:inherit; font-size:12px; font-weight:700; padding:6px 14px; transition:.12s;
+    border-left:1px solid var(--line2); }
+  .ledger-filter:first-child { border-left:none; }
+  .ledger-filter:hover { color:var(--fg); background:var(--panel2); }
+  .ledger-filter.active { background:var(--accent); color:#fff; }
+  .ledger-scroll { max-height:min(62vh,560px); overflow:auto; border:1px solid var(--line);
+    border-radius:8px; background:var(--panel2); }
+  .ledger-empty { padding:34px 22px; color:var(--dim); text-align:center; line-height:1.6;
+    font-size:13px; }
+  .ledger-empty b { color:var(--fg); }
+  .ledger-table { width:100%; border-collapse:collapse; font-size:13px;
+    font-variant-numeric:tabular-nums; }
+  .ledger-table th { position:sticky; top:0; z-index:1; background:var(--panel3);
+    color:var(--dim); font-weight:700; font-size:11px; text-transform:uppercase;
+    letter-spacing:.4px; text-align:left; padding:9px 12px; white-space:nowrap;
+    cursor:pointer; user-select:none; border-bottom:1px solid var(--line2); }
+  .ledger-table th.num { text-align:right; }
+  .ledger-table th:hover { color:var(--fg); }
+  .ledger-table th.sorted { color:var(--cyan); }
+  .ledger-table td { padding:8px 12px; border-bottom:1px solid var(--line);
+    white-space:nowrap; }
+  .ledger-table td.num { text-align:right; }
+  .ledger-table tbody tr { cursor:pointer; transition:background .08s; }
+  .ledger-table tbody tr:hover { background:rgba(80,200,255,.07); }
+  .ledger-table tbody tr:last-child td { border-bottom:none; }
+  /* Item cell: a stage-coloured dot ties each row to its lifecycle colour. */
+  .lg-item { color:var(--fg); font-weight:600; max-width:230px; overflow:hidden;
+    text-overflow:ellipsis; }
+  .lg-dot { display:inline-block; width:7px; height:7px; border-radius:50%;
+    margin-right:8px; vertical-align:middle; background:var(--dim); }
+  .lg-dot.awaiting { background:var(--stg-planned); }
+  .lg-dot.building { background:var(--stg-building); }
+  .lg-dot.built { background:var(--stg-built); }
+  .lg-dot.listed { background:var(--stg-listed); }
+  .lg-dot.sold { background:var(--stg-sold); }
+  .lg-of { color:var(--dim2); font-size:11.5px; }
+  .lg-dim { color:var(--dim2); }
+  .lg-dimval { color:var(--dim); }
+  .lg-prof { font-weight:700; }
+  .lg-prof.pos { color:var(--green2); }
+  .lg-prof.neg { color:var(--red); }
+  .lg-when { color:var(--dim); font-size:12px; }
+  /* Stage chip — a compact echo of the board's badge. */
+  .lg-stage { display:inline-block; font-size:10.5px; font-weight:700; padding:2px 8px;
+    border-radius:99px; letter-spacing:.3px; border:1px solid currentColor; }
+  .lg-stage.awaiting { color:var(--stg-planned); }
+  .lg-stage.building { color:var(--stg-building); }
+  .lg-stage.built { color:var(--stg-built); }
+  .lg-stage.listed { color:var(--stg-listed); }
+  .lg-stage.sold { color:var(--stg-sold); }
+  /* Bottom line — the register's tally, lifted off the rows by a heavier rule. */
+  .ledger-table tfoot .ledger-total td { position:sticky; bottom:0;
+    background:var(--panel3); border-top:2px solid var(--line2); border-bottom:none;
+    font-weight:800; padding-top:10px; padding-bottom:10px; }
+  .ledger-table tfoot .lg-item { color:var(--dim); text-transform:uppercase;
+    font-size:11px; letter-spacing:.5px; }
+  .lg-margin { font-size:12px; font-weight:800; }
+  .lg-margin.pos { color:var(--green2); }
+  .lg-margin.neg { color:var(--red); }
+  @media (max-width:640px){
+    .ledger-table .lg-when, .ledger-table th.lg-when { display:none; }
+    .lg-item { max-width:140px; }
+  }
 
   /* ── Notes tab ───────────────────────────────────────────────────── */
   #notes-tablewrap { display:flex; height:100%; overflow:hidden; }

@@ -189,14 +189,42 @@ class TestLink:
         lp_web.do_ind_builds_link({"id": [b["id"]], "runs": ["null"]})
         assert lp_web.do_ind_builds_list({})["builds"][0]["runs"] == 1
 
-    def test_link_clears_done_at(self, monkeypatch, tmp_path):
-        """The self-heal path (a build wrongly marked done whose job is still
-        running) patches done_at back to null — verify the server clears it."""
+    def test_done_at_is_never_cleared(self, monkeypatch, tmp_path):
+        """A finished build can NEVER be un-finished: done_at is monotonic, so a
+        clear (null) request on an already-finished build is refused. Clearing it
+        used to re-stamp done_at to *now* on the next sweep, pushing it past the
+        real sale times and collapsing a sold lot back to Built (the regression)."""
         import json
         _bind(monkeypatch, tmp_path, _acct())
         b = lp_web.do_ind_builds_save(
             {"runs": ["1"], "snapshot": [json.dumps(_snapshot())]})["build"]
         lp_web.do_ind_builds_link({"id": [b["id"]], "done_at": ["1700000000.0"]})
         assert lp_web.do_ind_builds_list({})["builds"][0]["done_at"] == 1700000000.0
+        # A clear request is ignored — the build stays finished at its real time.
+        lp_web.do_ind_builds_link({"id": [b["id"]], "done_at": ["null"]})
+        assert lp_web.do_ind_builds_list({})["builds"][0]["done_at"] == 1700000000.0
+
+    def test_done_at_never_moves_later(self, monkeypatch, tmp_path):
+        """done_at only ever moves EARLIER (a correction), never later — a later
+        value would push the delivery gate past existing fills and reject them."""
+        import json
+        _bind(monkeypatch, tmp_path, _acct())
+        b = lp_web.do_ind_builds_save(
+            {"runs": ["1"], "snapshot": [json.dumps(_snapshot())]})["build"]
+        lp_web.do_ind_builds_link({"id": [b["id"]], "done_at": ["1700000000.0"]})
+        # A later timestamp is clamped to the existing (earlier) one.
+        lp_web.do_ind_builds_link({"id": [b["id"]], "done_at": ["1800000000.0"]})
+        assert lp_web.do_ind_builds_list({})["builds"][0]["done_at"] == 1700000000.0
+        # An earlier correction is accepted.
+        lp_web.do_ind_builds_link({"id": [b["id"]], "done_at": ["1650000000.0"]})
+        assert lp_web.do_ind_builds_list({})["builds"][0]["done_at"] == 1650000000.0
+
+    def test_done_at_clear_is_noop_while_unfinished(self, monkeypatch, tmp_path):
+        """Clearing done_at on a build that was never finished is a harmless no-op
+        (it stays None) — the guard only protects an already-set done_at."""
+        import json
+        _bind(monkeypatch, tmp_path, _acct())
+        b = lp_web.do_ind_builds_save(
+            {"runs": ["1"], "snapshot": [json.dumps(_snapshot())]})["build"]
         lp_web.do_ind_builds_link({"id": [b["id"]], "done_at": ["null"]})
         assert lp_web.do_ind_builds_list({})["builds"][0]["done_at"] is None

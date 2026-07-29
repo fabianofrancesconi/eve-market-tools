@@ -1513,27 +1513,22 @@ function reconcileBuilds(){
   // Order by created_at so the oldest batch claims the oldest matching job.
   const ordered=[...IND.builds].sort((a,b)=>(a.created_at||0)-(b.created_at||0));
   ordered.forEach(b=>{
-    // A built/listed/sold build's own manufacturing job was delivered long ago.
-    // If it still holds an ACTIVE job_id, that link points at a *different* live
-    // batch (same blueprint/runs) that got wrongly adopted — release it so the
-    // link never shows on a finished card and the real batch can claim the job.
-    // `done_at` is irrelevant here: a sale can close from wallet fills while the
-    // job is still active, leaving done_at unset — so this must run before the
-    // done_at branch below, which would otherwise keep the link.
-    const stg=_buildStage(b);
-    if((stg==="sold"||stg==="listed") && b.job_id!=null && activeJobIds.has(String(b.job_id))){
-      b.job_id=null; b.job_end=null; changed=true;
-      _patchBuildLink(b, {job_id:null, job_end:null});
-      return;
-    }
+    // A FINISHED build (done_at set — built/listed/sold) is finished forever:
+    // done_at is monotonic and is NEVER cleared here. Its own manufacturing job
+    // was delivered long ago, so if it still holds an ACTIVE job_id that link
+    // points at a *different* live batch (same blueprint/runs) that got wrongly
+    // adopted — release the link so it never shows on a finished card and the real
+    // batch can claim the job, but leave done_at untouched.
+    //
+    // (Wiping done_at here was the "Listed→Built regression" bug: a delivered lot
+    // briefly un-marked would re-stamp done_at to *now* on the next sweep, and the
+    // server's FIFO delivery gate — a sale only counts if done_at ≤ sale time —
+    // then rejected every earlier fill, collapsing the sold count to 0 and dropping
+    // the stage back to Built. A finished build cannot be unfinished.)
     if(b.done_at){
-      // Self-heal: a build wrongly marked done (e.g. a stale string/number
-      // job_id mismatch from an older build) whose linked job is in fact still
-      // running gets un-marked and reclaimed. (Sold/listed builds are handled
-      // above; this only reaches the "built" stage.)
       if(b.job_id!=null && activeJobIds.has(String(b.job_id))){
-        b.done_at=null; changed=true; claimed.add(String(b.job_id));
-        _patchBuildLink(b, {done_at:null});
+        b.job_id=null; b.job_end=null; changed=true;
+        _patchBuildLink(b, {job_id:null, job_end:null});
       }
       return;
     }

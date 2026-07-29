@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.2"
+__version__ = "1.156.3"
 
 import argparse
 import base64
@@ -1558,11 +1558,26 @@ def do_ind_builds_link(q):
             except (TypeError, ValueError):
                 pass
         if "done_at" in q:
+            # done_at is MONOTONIC: a finished build can never be un-finished.
+            # Once set it is never cleared, and never moved later — the server's
+            # FIFO delivery gate credits a sale to a lot only when done_at ≤ the
+            # sale's time, so pushing done_at later would silently reject earlier
+            # fills and collapse a sold lot back to "Built" (the regression this
+            # guards against). We accept a new done_at only to set it the first
+            # time, or to correct it *earlier* (min); a null/clear is ignored on an
+            # already-finished build.
             v = q.get("done_at", [None])[0]
-            try:
-                b["done_at"] = float(v) if v not in (None, "", "null") else None
-            except (TypeError, ValueError):
-                b["done_at"] = None
+            if v in (None, "", "null"):
+                if b.get("done_at") is None:
+                    b["done_at"] = None      # still unfinished — no-op
+                # else: refuse to clear a finished build's done_at.
+            else:
+                try:
+                    nd = float(v)
+                    cur = b.get("done_at")
+                    b["done_at"] = nd if cur is None else min(cur, nd)
+                except (TypeError, ValueError):
+                    pass                     # bad value: leave done_at untouched
         break
     if found:
         _save_tracked_builds(acct, builds)

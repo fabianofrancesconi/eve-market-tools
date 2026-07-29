@@ -20,7 +20,10 @@ async function restoreLastScans(){
       computeIndTradeability();
       if(ACTIVE_TAB==="ind"){ renderIndStatus(); renderIndTable(); }
       restored.ind=true;
-      if(IND.rows.some(r=>!r.liq_loaded)) fillIndTradeability();
+      // Deliberately NO fillIndTradeability() on restore: the market fill is an
+      // expensive ESI pull and only ever runs on an explicit Scan. Cached rows
+      // keep whatever score the scan that produced them stored (stale is fine);
+      // any never-scored rows just read "—".
     }
   }catch(e){}
   return restored;
@@ -189,21 +192,21 @@ async function loadSettings(){
   if(urlTab && urlTab!==ACTIVE_TAB && (urlTab!=="char" || AUTH.loggedIn))
     switchTab(urlTab, {url:false});
   // When logged in, the LP budget comes from character data (refreshCharData),
-  // not the settings blob.  If char data is already loaded, apply it now;
-  // otherwise _doRefreshCharData() will call updateMyLpBadge() + scan when it
-  // arrives, so we skip the auto-scan here to avoid using a stale budget.
+  // not the settings blob. Apply it now if char data is already loaded (a later
+  // budget change refreshes any on-screen scan via _doRefreshCharData).
   if(typeof updateMyLpBadge==="function" && AUTH.data) updateMyLpBadge();
-  const _skipLpScan = AUTH.loggedIn && !AUTH.data;
   // Open the write gate only once we've applied a real server response. While
   // the gate is shut, setPref() updates its in-memory mirror but sends nothing —
   // so applying the fetched values back into the DOM never echoes to the server,
   // and a failed fetch can't push our built-in defaults over the durable copy.
   // A later reload re-attempts the load.
   if(gotSettings) markSettingsApplied();
-  // Restore last scan results from server cache, then auto-scan if the LP tab
-  // is active and a corp is set.
+  // Restore last scan results from server cache. We deliberately do NOT auto-scan
+  // the LP tab on open anymore: a scan fetches live market data (an ESI call per
+  // reward type) and must be requested explicitly via Scan/Refresh, not triggered
+  // just by loading the page. Restored rows show their cached figures; with no
+  // cache the table stays empty until the user scans.
   restoreLastScans().then(restored=>{
-    if(ACTIVE_TAB==="lp" && $("#corp").value.trim() && !restored.lp && !_skipLpScan) scan(false);
     if(!restored.ind) loadOwnedPreview();
   });
 }

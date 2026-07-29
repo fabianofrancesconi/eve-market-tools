@@ -49,6 +49,26 @@ HISTORY_DAYS = 30          # how many recent days of history feed the median
 HISTORY_TTL_SECONDS = 12 * 3600   # reuse the price-chart cache window
 
 
+def row_is_profitable(r):
+    """True if a scanned row turns a profit in at least one sell mode (list OR
+    instant). Mirrors the front end's `_isProfitable`: tradeability and the other
+    market-saturation figures are only worth fetching once a row is worth
+    redeeming, so both the LP liquidity fill and the Industry scan use this to
+    skip the per-type ESI market call for money-losing rows.
+
+    The two scans name their per-unit profit differently — Industry rows carry
+    ``profit_patient``/``profit_instant`` (per run); LP ``sellable`` rows carry
+    those *and* ``isk_per_lp_patient``/``isk_per_lp_instant`` (per LP). Any one
+    being > 0 qualifies; ``None`` (unknown) does not.
+    """
+    for k in ("profit_patient", "profit_instant",
+              "isk_per_lp_patient", "isk_per_lp_instant"):
+        v = r.get(k)
+        if v is not None and v > 0:
+            return True
+    return False
+
+
 def default_cache_dir():
     return Path(__file__).resolve().parent / ".eve_scanner_cache"
 

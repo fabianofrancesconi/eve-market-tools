@@ -348,12 +348,13 @@ async function _doRefreshCharData(force){
   // has already set the LP budget, and renderCharData() restored the corp value.
   $("#corp").readOnly=false; $("#corp").classList.remove("locked");
   $("#corp").classList.remove("loading"); $("#lp").classList.remove("loading");
-  // Re-run the LP scan when the budget changed OR when this is the first char
-  // data load and no scan has run yet (we skip auto-scan at boot until char
-  // data arrives so the budget is fresh).
+  // Re-run the LP scan ONLY when the budget actually changed AND we already have
+  // scan results on screen to refresh — that's reacting to a real data change,
+  // not opening the tab. We no longer auto-scan on the first char-data load:
+  // a scan fetches live market data and must be requested explicitly (Scan/
+  // Refresh), so boot leaves the table on its cached rows (or empty).
   const lpChanged=$("#lp").value!==prevLp;
-  const needsInitialScan=!STATE.rows.length && !STATE.lastScanData;
-  if((lpChanged||needsInitialScan) && ACTIVE_TAB==="lp" && ($("#corp").value||"").trim()){
+  if(lpChanged && STATE.lastScanData && ACTIVE_TAB==="lp" && ($("#corp").value||"").trim()){
     clearTimeout(lpScanTimer); scan(false);
   }
 }

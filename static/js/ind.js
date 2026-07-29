@@ -35,6 +35,13 @@ const fmtTrainTime = h => { if(h<1) return Math.round(h*60)+"m"; if(h<24) return
 
 function computeIndTradeability(){ _computeTradeability(IND.rows, IND.tradeWeight); }
 
+// Whether a row's market columns (Vol/day, Days to sell, Tradeability) should
+// show a spinner. Only while a Scan's liquidity fill is actually in flight
+// (IND.fillTotal>0) AND this row hasn't been filled yet. Outside a fill an
+// unfilled row is never spinning — it just reads its cached value or "—",
+// because we no longer auto-fetch the market on tab-open / cache-restore.
+function _indLiqSpin(r){ return IND.fillTotal>0 && !r.liq_loaded; }
+
 // When the live ESI order-book depth lands for a row, re-gate its instant-sell
 // figures against the CURRENT book. The scan already gated on the (laggy)
 // Fuzzwork aggregate; ESI is the accurate word. If the live buy book can't
@@ -80,9 +87,9 @@ const IND_COLS = [
   {k:"ask",                t:"Sell price",     w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
   {k:"in_vol_run",         t:"Cargo in",       w: 85, tip:"m³ of materials to haul in per run.", f:v=>v?fmtVol(v):"—"},
   {k:"out_vol_run",        t:"Cargo out",      w: 85, tip:"m³ of finished items to haul out per run.", f:v=>v?fmtVol(v):"—"},
-  {k:"daily_vol",          t:"Vol/day",        w: 84, tip:"Units of this item traded per day on the market (~30-day median), at the source hub. The market's appetite — how much it can absorb. Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"no data":fmtNum(v))},
-  {k:"days_to_sell",       t:"Days to sell",   w: 88, tip:"How many days to sell one run's output (output qty ÷ daily volume). Spins while the market history loads in the background.", f:(v,r)=> !r.liq_loaded ? _SPIN : fmtDaysSell(v)},
-  {k:"tradeability",       t:"Tradeability",   w: 98, tip:"0–100: how realistically you can sell what you make. Scores daily traded volume against the Volume preset (Quiet 1 / Balanced 50 / Liquidity 1000 units/day = fully tradeable), then gates on the live order book — an empty/thin market scores ~0 no matter its history. Higher is better.", f:(v,r)=> !r.liq_loaded ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
+  {k:"daily_vol",          t:"Vol/day",        w: 84, tip:"Units of this item traded per day on the market (~30-day median), at the source hub. The market's appetite — how much it can absorb. Populated by a Scan; spins only while that fill is running.", f:(v,r)=> _indLiqSpin(r) ? _SPIN : (v==null?"no data":fmtNum(v))},
+  {k:"days_to_sell",       t:"Days to sell",   w: 88, tip:"How many days to sell one run's output (output qty ÷ daily volume). Populated by a Scan; spins only while that fill is running.", f:(v,r)=> _indLiqSpin(r) ? _SPIN : fmtDaysSell(v)},
+  {k:"tradeability",       t:"Tradeability",   w: 98, tip:"0–100: how realistically you can sell what you make. Scores daily traded volume against the Volume preset (Quiet 1 / Balanced 50 / Liquidity 1000 units/day = fully tradeable), then gates on the live order book — an empty/thin market scores ~0 no matter its history. Higher is better. Populated by a Scan (profitable rows only).", f:(v,r)=> _indLiqSpin(r) ? _SPIN : (v==null?"—":`<span style="color:${v>=70?'#4caf76':v>=40?'#c8a040':'#e0655a'};font-weight:600">${v}</span>`)},
   {k:"buildable",          t:"Buildable?",     w: 72, tip:"Can every required skill (at the Skills level) make it? Shows training time if not.", f:(v,r)=>v?"✓":("✗"+(r.train_hours?`<div class="train-time">${fmtTrainTime(r.train_hours)}</div>`:""))},
 ];
 
@@ -648,12 +655,20 @@ async function fillIndTradeability(freshPrices){
   const byProduct=new Map();
   for(const r of IND.rows){
     if(r.liq_loaded) continue;
+    // Tradeability only matters once a build is worth making — don't spend an ESI
+    // history/order-book call on rows that lose ISK in every sell mode. Retire
+    // their spinner (liq_loaded) with a null score so they read "—", not "…".
+    if(!_isProfitable(r)){ r.liq_loaded=true; r.tradeability=null; continue; }
     if(!byProduct.has(r.product_id)) byProduct.set(r.product_id, []);
     byProduct.get(r.product_id).push(r);
   }
   const ids=[...byProduct.keys()];
-  if(!ids.length){ IND.fillTotal=0; renderIndStatus(); return; }
-  IND.fillTotal=ids.length; IND.fillDone=0; renderIndStatus();
+  // Even with nothing left to fetch we may have just retired unprofitable rows'
+  // spinners above, so recompute + repaint before bailing.
+  if(!ids.length){ IND.fillTotal=0; computeIndTradeability(); renderIndStatus(); renderIndTable(); return; }
+  // Repaint once now that the fill is live so the rows being fetched flip to a
+  // spinner immediately, instead of flashing "no data" until the first chunk lands.
+  IND.fillTotal=ids.length; IND.fillDone=0; renderIndStatus(); renderIndTable();
   const CHUNK=60;
   for(let i=0;i<ids.length;i+=CHUNK){
     if(token!==IND_FILL_TOKEN) return;   // superseded by a newer scan
@@ -707,7 +722,9 @@ function loadOwnedPreview(){
       IND.rows=data.rows; IND.lastData=data;
       computeIndTradeability();
       if(ACTIVE_TAB==="ind"){ renderIndStatus(); renderIndTable(); }
-      fillIndTradeability();
+      // No tradeability fill here: scoring the market is expensive (an ESI
+      // history + order-book call per product) and must only run on an explicit
+      // Scan, never just from opening the tab. Rows show cached scores or "—".
     } else if(data.type==="error"){
       es.close(); IND.es=null;
     }

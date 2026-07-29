@@ -454,7 +454,8 @@ class TestDoLiquidity:
         fake_offers = [{"type_id": 101, "quantity": 5, "lp_cost": 1000}]
         fake_sellable = [{
             "offer_id": 1, "name_id": 101, "qty": 5, "max_units": 10,
-            "profit_per": 450.0, "sell_volume": 1000, "ask": 100.0,
+            "profit_per": 450.0, "isk_per_lp_patient": 45.0,
+            "sell_volume": 1000, "ask": 100.0,
         }]
         q = {"corp_id": ["1000"], "lp": ["10000"], "tax": ["0.08"],
              "broker": ["0.03"], "instant": ["0"], "station": ["60003760"]}
@@ -481,7 +482,8 @@ class TestDoLiquidity:
         lp_web.CACHE_DIR = tmp_path
         fake_offers = [{"type_id": 101, "quantity": 1, "lp_cost": 1000}]
         fake_sellable = [{"offer_id": 1, "name_id": 101, "qty": 1,
-                          "max_units": 1, "profit_per": 1.0, "sell_volume": 0,
+                          "max_units": 1, "profit_per": 1.0,
+                          "isk_per_lp_patient": 1.0, "sell_volume": 0,
                           "ask": 100.0}]
         q = {"corp_id": ["1000"], "lp": ["1000"], "station": ["60008494"]}
         with patch.object(lp_web, "get_offers", return_value=fake_offers), \
@@ -500,9 +502,9 @@ class TestDoLiquidity:
         fake_offers = [{"type_id": 101, "quantity": 1, "lp_cost": 1000}]
         fake_sellable = [
             {"offer_id": 1, "name_id": 101, "qty": 1, "max_units": 1,
-             "sell_volume": 0, "ask": 100.0},
+             "isk_per_lp_patient": 1.0, "sell_volume": 0, "ask": 100.0},
             {"offer_id": 2, "name_id": 101, "qty": 1, "max_units": 1,
-             "sell_volume": 0, "ask": 100.0},
+             "isk_per_lp_patient": 1.0, "sell_volume": 0, "ask": 100.0},
         ]
         q = {"corp_id": ["1000"], "lp": ["1000"], "station": ["60003760"]}
         with patch.object(lp_web, "get_offers", return_value=fake_offers), \
@@ -526,11 +528,11 @@ class TestDoLiquidity:
                        for t in (101, 102, 103)]
         fake_sellable = [
             {"offer_id": 1, "name_id": 101, "qty": 1, "max_units": 1,
-             "sell_volume": 0, "ask": 100.0},
+             "isk_per_lp_patient": 1.0, "sell_volume": 0, "ask": 100.0},
             {"offer_id": 2, "name_id": 102, "qty": 1, "max_units": 1,
-             "sell_volume": 0, "ask": 100.0},
+             "isk_per_lp_patient": 1.0, "sell_volume": 0, "ask": 100.0},
             {"offer_id": 3, "name_id": 103, "qty": 1, "max_units": 1,
-             "sell_volume": 0, "ask": 100.0},
+             "isk_per_lp_patient": 1.0, "sell_volume": 0, "ask": 100.0},
         ]
         q = {"corp_id": ["1000"], "lp": ["1000"], "station": ["60003760"]}
         events = []
@@ -557,6 +559,35 @@ class TestDoLiquidity:
         assert streamed == {"1", "2", "3"}
         # The full dict is still returned for non-streaming callers.
         assert set(result["liquidity"]) == {1, 2, 3}
+
+    def test_skips_unprofitable_offers(self, tmp_path):
+        """Only offers profitable in some sell mode get a market fetch — a row that
+        loses ISK every way (all profit fields <= 0 / None) costs no ESI call and
+        gets no liquidity entry (the front end blanks its tradeability anyway)."""
+        lp_web.CACHE_DIR = tmp_path
+        fake_offers = [{"type_id": t, "quantity": 1, "lp_cost": 1000}
+                       for t in (101, 102)]
+        fake_sellable = [
+            {"offer_id": 1, "name_id": 101, "qty": 1, "max_units": 1,
+             "isk_per_lp_patient": 5.0, "sell_volume": 0, "ask": 100.0},
+            # Unprofitable in every mode -> must be skipped.
+            {"offer_id": 2, "name_id": 102, "qty": 1, "max_units": 1,
+             "isk_per_lp_patient": -3.0, "isk_per_lp_instant": None,
+             "profit_patient": -3.0, "sell_volume": 0, "ask": 100.0},
+        ]
+        q = {"corp_id": ["1000"], "lp": ["1000"], "station": ["60003760"]}
+        with patch.object(lp_web, "get_offers", return_value=fake_offers), \
+             patch.object(lp_web, "fetch_prices", return_value={}), \
+             patch.object(lp_web, "evaluate", return_value=(fake_sellable, [])), \
+             patch.object(lp_web, "fetch_history_prices", return_value={}), \
+             patch.object(lp_web, "fetch_history_volumes",
+                          return_value={101: 5}) as mv, \
+             patch.object(lp_web, "fetch_sell_order_stats",
+                          return_value={"age_seconds": 3600.0}):
+            result = lp_web.do_liquidity(q)
+        # History only fetched for the profitable reward type.
+        assert mv.call_args[0][0] == {101}
+        assert set(result["liquidity"]) == {1}
 
 
 # ---------------------------------------------------------------------------
@@ -1362,16 +1393,32 @@ class TestIndustryTradeabilityFill:
         html = lp_web.FRONTEND_SOURCE
         assert "function fillIndTradeability(" in html
         assert "/api/ind/liquidity?" in html
-        assert "fillIndTradeability();" in html        # kicked off after a scan
+        # The fill only ever runs from an explicit Scan (with freshPrices=true so
+        # the live book is re-pulled), never bare on tab-open / restore.
+        assert "fillIndTradeability(true);" in html
         assert "IND_FILL_TOKEN" in html                # stale-fill cancellation
-        # Pending rows spin in both market-depth columns until their score lands.
-        assert "!r.liq_loaded ? _SPIN" in html
+        # Rows spin ONLY while a Scan's fill is actually in flight — outside a
+        # fill an unfilled row reads its cached value or "—", never a spinner.
+        assert "function _indLiqSpin(r){ return IND.fillTotal>0 && !r.liq_loaded; }" in html
+        assert "_indLiqSpin(r) ? _SPIN" in html
 
-    def test_restore_resumes_fill_for_unscored_rows(self):
-        """v1.66.8: restoring a cached scan with liq_loaded=false rows must
-        trigger fillIndTradeability() so spinners don't persist forever."""
+    def test_fill_skips_unprofitable_rows(self):
+        """Tradeability is only worth fetching for rows that turn a profit in some
+        sell mode; money-losing rows get their spinner retired with a null score
+        instead of costing an ESI market call."""
         html = lp_web.FRONTEND_SOURCE
-        assert "if(IND.rows.some(r=>!r.liq_loaded)) fillIndTradeability()" in html
+        assert "if(!_isProfitable(r)){ r.liq_loaded=true; r.tradeability=null; continue; }" in html
+
+    def test_restore_does_not_auto_fill(self):
+        """The expensive market fill must NOT be kicked off on cache-restore or
+        tab-open — only an explicit Scan fetches tradeability. (Reverses the old
+        v1.66.8 auto-resume, which scored the market just from opening the tab.)"""
+        html = lp_web.FRONTEND_SOURCE
+        assert "if(IND.rows.some(r=>!r.liq_loaded)) fillIndTradeability()" not in html
+        # loadOwnedPreview seeds rows for display but must not fill the market.
+        preview = html[html.index("function loadOwnedPreview("):]
+        preview = preview[:preview.index("function closeIndDetail(")]
+        assert "fillIndTradeability" not in preview
 
 
 # ---------------------------------------------------------------------------

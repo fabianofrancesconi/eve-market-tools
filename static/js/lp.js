@@ -54,11 +54,16 @@ function _liveBookFactor(r, volTarget){
 // tradeability only for rows that turn a profit in at least one sell mode
 // (list OR instant); an item that loses ISK however you offload it gets no
 // score (null → "—"), so the column never ranks unprofitable rows against each
-// other. profit_patient/_instant are the per-unit (LP) / per-run (Industry)
-// figures both tabs carry; either being > 0 qualifies. null (unknown) doesn't.
+// other. The two tabs name their per-unit profit differently: Industry rows
+// carry profit_patient/_instant (per run), LP rows carry isk_per_lp_patient/
+// _instant (per LP). Accept either — any one being > 0 qualifies; null
+// (unknown) doesn't. (Checking only profit_* silently blanked the whole LP
+// tradeability column, since LP rows never carry those fields.)
 function _isProfitable(r){
   return (r.profit_patient!=null && r.profit_patient>0)
-      || (r.profit_instant!=null && r.profit_instant>0);
+      || (r.profit_instant!=null && r.profit_instant>0)
+      || (r.isk_per_lp_patient!=null && r.isk_per_lp_patient>0)
+      || (r.isk_per_lp_instant!=null && r.isk_per_lp_instant>0);
 }
 function _computeTradeability(rows, volTarget){
   for(const r of rows){

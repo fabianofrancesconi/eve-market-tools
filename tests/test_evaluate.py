@@ -61,6 +61,34 @@ class TestBest:
 
 
 # ---------------------------------------------------------------------------
+# row_is_profitable -- gate deciding whether a row earns a market fetch
+# ---------------------------------------------------------------------------
+
+class TestRowIsProfitable:
+    def test_industry_profit_fields(self):
+        assert lp_core.row_is_profitable({"profit_patient": 10.0})
+        assert lp_core.row_is_profitable({"profit_instant": 10.0})
+
+    def test_lp_isk_per_lp_fields(self):
+        assert lp_core.row_is_profitable({"isk_per_lp_patient": 2.0})
+        assert lp_core.row_is_profitable({"isk_per_lp_instant": 2.0})
+
+    def test_any_positive_mode_qualifies(self):
+        # Loses on list, profits on instant -> still worth fetching.
+        assert lp_core.row_is_profitable(
+            {"isk_per_lp_patient": -1.0, "isk_per_lp_instant": 3.0})
+
+    def test_loss_in_every_mode_is_false(self):
+        assert not lp_core.row_is_profitable(
+            {"profit_patient": -5.0, "isk_per_lp_patient": -5.0})
+
+    def test_none_and_zero_are_not_profitable(self):
+        assert not lp_core.row_is_profitable({})
+        assert not lp_core.row_is_profitable(
+            {"profit_patient": None, "isk_per_lp_instant": 0.0})
+
+
+# ---------------------------------------------------------------------------
 # evaluate -- shared fixtures
 # ---------------------------------------------------------------------------
 

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.154.1"
+__version__ = "1.154.2"
 
 import argparse
 import base64
@@ -62,7 +62,7 @@ from lp_core import (
     fetch_sell_order_stats, get_offers,
     load_json, resolve_corp_id, resolve_corp_name, resolve_names,
     resolve_station_names, resolve_station_region,
-    resolve_volumes, save_json, suggested_list_price,
+    resolve_volumes, row_is_profitable, save_json, suggested_list_price,
 )
 
 SESSION = requests.Session()
@@ -2673,6 +2673,12 @@ def do_liquidity(q, emit=None):
     offers = get_offers(corp_id, SESSION, CACHE_DIR, refresh=False)
     prices = fetch_prices(_all_type_ids(offers), SESSION, station_id=station_id)
     sellable, _ = evaluate(offers, prices, lp, tax, broker)
+    # Tradeability / market-saturation figures only matter for offers worth
+    # redeeming — an offer that loses ISK in every sell mode gets no market fetch
+    # (one live order-book call per reward type is the expensive part). The front
+    # end already blanks the tradeability score for these rows; skipping them here
+    # keeps the ESI spend to the offers the user could actually profit from.
+    sellable = [r for r in sellable if row_is_profitable(r)]
     reward_ids = {r["name_id"] for r in sellable}
     daily_vols = fetch_history_volumes(reward_ids, region_id, SESSION, CACHE_DIR)
     # Fair-value anchor for the suggested list price -- reuses the same cached
@@ -3409,8 +3415,13 @@ def do_ind_scan(q, emit=None):
 
     # Market depth for the top-ranked rows plus every favourite and owned BP (one
     # cached call per product type), so pinned sections always carry a score.
-    scored = rows[:IND_HISTORY_TOP_N] + [r for r in rows[IND_HISTORY_TOP_N:]
-                                         if r["favorite"] or r["owned_bp_me_te"]]
+    # Only rows that turn a profit in some sell mode are worth a market fetch —
+    # tradeability is meaningless for a build that loses ISK however you sell it,
+    # and the front end blanks its score anyway — so skip the ESI call for them.
+    scored = [r for r in (rows[:IND_HISTORY_TOP_N]
+                          + [r for r in rows[IND_HISTORY_TOP_N:]
+                             if r["favorite"] or r["owned_bp_me_te"]])
+              if row_is_profitable(r)]
     if scored:
         _emit({"type": "progress", "pct": 88,
                "msg": f"Checking market depth for {len(scored)} items…", "sub": ""})

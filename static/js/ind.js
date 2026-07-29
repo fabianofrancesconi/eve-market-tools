@@ -2215,23 +2215,14 @@ function _buildSellHtml(b, stage){
 
   if(stage==="built"){
     // THE decision stage: what to list at. The inline decider carries it — a
-    // break-even-aware slider, live drift vs the frozen prediction, sell-through
-    // odds and a copy-to-the-cent price. We still expose the frozen instant price
-    // + its own copy button (a one-click "just dump it" path) beside the decider.
-    const be=_buildBreakEven(b);
-    const d=b.snapshot||{};
-    const instantPrice=d.bid;
-    const instantRow=(instantPrice!=null)?`
-      <div class="ind-sell-instant">
-        <span class="ind-sell-price ind-sell-price-instant">Or dump now at <b>${isk(instantPrice)}</b>/unit</span>
-        <span class="ind-sell-be" title="Selling instantly below this loses money">break-even ${isk(be.instant)}</span>
-        <button class="ind-sell-copy ind-sell-copy-instant" title="Copy the instant-sell price to paste into EVE">⧉ Copy</button>
-      </div>`:"";
+    // live drift vs the frozen prediction, a price slider with sell-through odds,
+    // and BOTH exit routes side by side: list at your chosen price (patient) vs
+    // dump into buy orders now (instant). Each shows its own profit so the trade
+    // — more ISK later vs. cash today — is a direct comparison, not a guess.
     return `<div class="ind-sell ind-sell-nudge" data-id="${b.id}">
       <span class="ind-sell-head">Set your sell price</span>
       ${_buildDeciderHtml(b, stage)}
-      ${instantRow}
-      <div class="ind-sell-hint">List it in EVE at your chosen price (or dump into buy orders) — sales track themselves from your wallet, oldest batch first. Nothing to link.</div>
+      <div class="ind-sell-hint">List it in EVE at your chosen price, or dump into buy orders — sales track themselves from your wallet, oldest batch first. Nothing to link.</div>
     </div>`;
   }
 
@@ -2379,6 +2370,12 @@ function _wireBuildDecider(card, b){
     if(chip){ e.preventDefault(); _updateBuildDecider(b, +chip.dataset.price); }
     const copy=e.target.closest && e.target.closest(".ind-dec-copy");
     if(copy){ e.preventDefault(); _deciderCopy(b, copy); }
+    // Instant-route copy grabs the live bid (or the frozen one), not the slider.
+    const copyInst=e.target.closest && e.target.closest(".ind-dec-copy-inst");
+    if(copyInst){ e.preventDefault();
+      const st2=_deciderState(b);
+      const bid=(st2.live&&st2.live.bid!=null)?st2.live.bid:(b.snapshot||{}).bid;
+      _deciderCopyValue(bid, copyInst); }
   });
   _renderDeciderDrift(b);
   _renderDeciderBody(b);
@@ -2425,7 +2422,7 @@ function _renderDeciderDrift(b){
   const root=document.querySelector(`.ind-decider[data-id="${CSS.escape(b.id)}"]`);
   if(!root) return;
   const slot=root.querySelector('[data-role="drift"]'); if(!slot) return;
-  const st=_deciderState(b), isk=v=>v==null?"—":fmtISK(v);
+  const st=_deciderState(b), isk=v=>v==null?"—":fmtISKFull(v);
   const frozen=(b.snapshot||{}).ask;
   const now=st.live?st.live.ask:null;
   let deltaHtml="";
@@ -2448,7 +2445,7 @@ function _renderDeciderBody(b){
   const root=document.querySelector(`.ind-decider[data-id="${CSS.escape(b.id)}"]`);
   if(!root) return;
   const slot=root.querySelector('[data-role="body"]'); if(!slot) return;
-  const st=_deciderState(b), ctx=_deciderCtx(b), isk=v=>v==null?"—":fmtISK(v);
+  const st=_deciderState(b), ctx=_deciderCtx(b), isk=v=>v==null?"—":fmtISKFull(v);
   if(st.liveState==="loading"){
     slot.innerHTML=`<div class="ind-dec-loading">Fetching the current market…</div>`; return;
   }
@@ -2483,32 +2480,45 @@ function _renderDeciderBody(b){
     <div class="ind-dec-out" data-role="out"></div>`;
   _updateBuildDecider(b, st.price);
 }
-// Recompute the read-out for a chosen price: net after a FRESH broker fee (re-
-// listing always pays broker again), profit on the units this prices, whether
-// it clears break-even, and — once the order book has landed — the odds the whole
-// remainder sells within a day / week at this price, plus an expected clear time.
+// Recompute the read-out for a chosen price. The lead answer is "will it sell,
+// and for what?" — the odds the whole remainder clears within a day / week at
+// this price (plus an ETA) and the profit it books. Break-even is NOT a headline
+// here: it only surfaces as a quiet ⚠ warning when the chosen price is actually
+// underwater, so the eye stays on price-vs-demand, not on a margin readout.
 function _updateBuildDecider(b, price){
   const root=document.querySelector(`.ind-decider[data-id="${CSS.escape(b.id)}"]`);
   if(!root) return;
-  const st=_deciderState(b), ctx=_deciderCtx(b), isk=v=>v==null?"—":fmtISK(v);
+  const st=_deciderState(b), ctx=_deciderCtx(b), isk=v=>v==null?"—":fmtISKFull(v);
   st.price=price;
   const priceEl=root.querySelector('[data-role="price"]'); if(priceEl) priceEl.textContent=isk(price);
   const slider=root.querySelector(".ind-dec-slider"); if(slider && +slider.value!==price) slider.value=price;
   const out=root.querySelector('[data-role="out"]'); if(!out) return;
 
   const {stax, bfee}=ctx.fees, cpu=ctx.cpu, qty=ctx.remaining;
-  const netUnit=price*(1-stax-bfee);
-  const profitUnit=(cpu!=null)?netUnit-cpu:null;
-  const aboveBE=(ctx.be.list!=null)?price-ctx.be.list:null;
-  const beLine=(aboveBE==null)?"" : aboveBE>=0
-    ? `<span class="ind-dec-be ok">✓ ${isk(aboveBE)}/unit above break-even</span>`
-    : `<span class="ind-dec-be bad">⚠ ${isk(-aboveBE)}/unit below break-even — you'd lose money</span>`;
+  const pn=v=>v==null?"":(v>=0?"pos":"neg");
 
-  // Sell-through odds for the chosen price (needs the order book + history).
-  let oddsLine="";
-  if(st.marketState==="loading") oddsLine=`<span class="ind-dec-odds-load">estimating sell-through…</span>`;
-  else if(st.market && st.market.series && st.market.series.length
-          && typeof _priceConditionedDailyRate==="function"){
+  // LIST route — sell at the chosen price; pays sales tax + a fresh broker fee.
+  const listNetUnit=price*(1-stax-bfee);
+  const listProfit=(cpu!=null)?(listNetUnit-cpu)*qty:null;
+  // INSTANT route — dump the lot into buy orders at the live bid; pays sales tax
+  // only (no broker on an immediate sell). Falls back to the frozen bid if the
+  // live quote hasn't landed.
+  const bid=(st.live&&st.live.bid!=null)?st.live.bid:ctx.s.bid;
+  const instNetUnit=(bid!=null)?bid*(1-stax):null;
+  const instProfit=(instNetUnit!=null&&cpu!=null)?(instNetUnit-cpu)*qty:null;
+  // How much patience buys you — the extra ISK the list route earns over dumping.
+  const gain=(listProfit!=null&&instProfit!=null)?listProfit-instProfit:null;
+
+  // Break-even is a quiet flag only: shown when the chosen list price is under it.
+  const underBE=(ctx.be.list!=null)?ctx.be.list-price:null;
+  const beLine=(underBE!=null && underBE>0)
+    ? `<span class="ind-dec-be bad">⚠ Below break-even (${isk(ctx.be.list)}) — you'd lose money</span>`
+    : "";
+
+  // Sell-through odds for the chosen list price (needs the order book + history).
+  let oddsLine=`<span class="ind-dec-odds-load">estimating…</span>`;
+  if(st.marketState==="done" && st.market && st.market.series && st.market.series.length
+     && typeof _priceConditionedDailyRate==="function"){
     const m=st.market;
     const ahead=_unitsAheadInQueue(m.sell_book, price);
     const rate=_priceConditionedDailyRate(m.series, price);
@@ -2519,24 +2529,43 @@ function _updateBuildDecider(b, price){
       const cls=v=>v>=0.66?"good":(v>=0.33?"warn":"bad");
       const eta=day.eta;
       const etaTxt=(eta==null||!isFinite(eta))?"—":(eta<1?`~${Math.round(eta*24)}h`:(eta<60?`~${eta.toFixed(eta<10?1:0)}d`:"months+"));
-      oddsLine=`<span class="ind-dec-odds">Whole batch sells: <b class="${cls(day.all)}">${pct(day.all)}</b> in a day · <b class="${cls(week)}">${pct(week)}</b> in a week · clears in <b>${etaTxt}</b></span>`;
-    }
-  } else if(st.marketState==="error") oddsLine=`<span class="ind-dec-odds-load">sell-through estimate unavailable</span>`;
+      oddsLine=`<b class="${cls(day.all)}">${pct(day.all)}</b> in a day · <b class="${cls(week)}">${pct(week)}</b> in a week · clears ${etaTxt}`;
+    } else oddsLine=`<span class="ind-dec-odds-load">not enough history for odds</span>`;
+  } else if(st.marketState==="error") oddsLine=`<span class="ind-dec-odds-load">odds unavailable</span>`;
 
+  // Two exit routes side by side, each with its own profit, so "more ISK later
+  // vs. cash now" is a direct comparison. List carries the odds; instant carries
+  // its live bid + a one-click copy (the slider only drives the list price).
   out.innerHTML=`
-    <div class="ind-dec-metrics">
-      <span class="ind-dec-m">Net <b class="${profitUnit!=null?(profitUnit>=0?"pos":"neg"):""}">${isk(netUnit)}</b>/unit <i>after tax + broker</i></span>
-      <span class="ind-dec-m">Profit on ${qty.toLocaleString()} <b class="${profitUnit!=null?(profitUnit*qty>=0?"pos":"neg"):""}">${_signIsk(profitUnit!=null?profitUnit*qty:null)}</b></span>
+    <div class="ind-dec-routes">
+      <div class="ind-dec-route list">
+        <div class="ind-dec-route-top"><span class="ind-dec-route-lbl">List &amp; wait</span>
+          <span class="ind-dec-route-p">${isk(price)}/u</span></div>
+        <div class="ind-dec-route-profit ${pn(listProfit)}">${_signIsk(listProfit)}</div>
+        <div class="ind-dec-route-note">${oddsLine}</div>
+      </div>
+      <div class="ind-dec-route instant">
+        <div class="ind-dec-route-top"><span class="ind-dec-route-lbl">Dump now</span>
+          <span class="ind-dec-route-p">${bid!=null?isk(bid)+"/u":"no bid"}</span>
+          ${bid!=null?`<button class="ind-dec-copy-inst" title="Copy the instant-sell price (the live buy-order bid) to paste into EVE">⧉</button>`:""}</div>
+        <div class="ind-dec-route-profit ${pn(instProfit)}">${_signIsk(instProfit)}</div>
+        <div class="ind-dec-route-note">${bid!=null?"into buy orders, immediate":"nobody's buying right now"}</div>
+      </div>
     </div>
-    <div class="ind-dec-belines">${beLine}</div>
-    <div class="ind-dec-odds-wrap">${oddsLine}</div>`;
+    ${gain!=null&&gain>0?`<div class="ind-dec-gain">Listing earns <b>${isk(gain)}</b> more than dumping — if it sells.</div>`:""}
+    ${beLine?`<div class="ind-dec-belines">${beLine}</div>`:""}`;
 }
-// Copy the currently-dialled price to the cent (Math.round to 2dp), matching the
-// modal's copy behaviour so a listed order can be pasted straight into EVE.
+// Copy the currently-dialled list price to the cent (Math.round to 2dp),
+// matching the modal's copy behaviour so a listed order pastes straight in.
 function _deciderCopy(b, btn){
-  const st=_deciderState(b); if(st.price==null) return;
-  const txt=String(Math.round(st.price*100)/100);
-  const done=()=>{ const o=btn.textContent; btn.textContent="✓ Copied"; setTimeout(()=>{btn.textContent=o;},1200); };
+  const st=_deciderState(b);
+  _deciderCopyValue(st.price, btn);
+}
+// Copy any price value to the cent, with a transient "✓ Copied" on the button.
+function _deciderCopyValue(price, btn){
+  if(price==null) return;
+  const txt=String(Math.round(price*100)/100);
+  const done=()=>{ const o=btn.textContent; btn.textContent="✓"; setTimeout(()=>{btn.textContent=o;},1200); };
   if(navigator.clipboard&&navigator.clipboard.writeText)
     navigator.clipboard.writeText(txt).then(done).catch(()=>fallbackCopy(txt,done));
   else fallbackCopy(txt, done);
@@ -2656,28 +2685,11 @@ function _wireBuildCard(box, b){
   _wireSellCard(card, b);
 }
 
-// Wire the sell-section buttons (copy price, start tracking, cancel, pick-order).
+// Wire the sell-section buttons. Pricing/copy for the Built/Listed stages lives
+// entirely inside the inline decider (_wireBuildDecider); this handles the shared
+// actions — market look-ahead, abandon, archive, delete.
 function _wireSellCard(card, b){
-  // Copy-price buttons. The list button (.ind-sell-copy, not the instant variant)
-  // copies the proposed list price; the instant button copies the frozen bid.
-  const _wireCopy=(btn, priceFn)=>{
-    if(!btn) return;
-    const orig=btn.textContent;
-    btn.onclick=()=>{
-      const price=priceFn();
-      if(price==null) return;
-      const txt=String(Math.round(price*100)/100);
-      const done=()=>{ btn.textContent="✓ Copied"; setTimeout(()=>{btn.textContent=orig;},1200); };
-      if(navigator.clipboard&&navigator.clipboard.writeText)
-        navigator.clipboard.writeText(txt).then(done).catch(()=>fallbackCopy(txt,done));
-      else fallbackCopy(txt, done);
-    };
-  };
-  _wireCopy(card.querySelector(".ind-sell-copy:not(.ind-sell-copy-instant)"),
-            ()=>_buildProposedPrice(b));
-  _wireCopy(card.querySelector(".ind-sell-copy-instant"),
-            ()=>(b.snapshot||{}).bid);
-  // "Decide price" — open the tracked-build modal straight on its Market tab
+  // "Look at the market" — open the tracked-build modal straight on its Market tab
   // (price trend + odds of selling within a day). Falls back to the Industry
   // detail view if the modal isn't available (e.g. not logged in).
   const analyze=card.querySelector(".ind-sell-analyze");

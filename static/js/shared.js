@@ -77,6 +77,14 @@ function fmtISK(n){
   return Math.round(n).toLocaleString();
 }
 function fmtNum(n){ return (n===null||n===undefined)? "-" : Math.round(n).toLocaleString(); }
+// Exact ISK to the cent with thousands separators — for prices a user pastes
+// straight into EVE, where "14.6K" vs "14,589.99" is the difference between the
+// order you meant and the one you placed. Use this (not fmtISK) for any figure
+// that's a per-unit price a player acts on; keep fmtISK for aggregate totals.
+function fmtISKFull(n){
+  if(n===null||n===undefined) return "-";
+  return n.toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2});
+}
 // Generic 1..5 "heat" bucket for a 1-based rank within a set of `total`. Maps
 // position → one of the .heat-N classes (heat-1 = front/best, heat-5 = back).
 // Fraction-based so it scales to any queue length; a solo entry (total<=1) is

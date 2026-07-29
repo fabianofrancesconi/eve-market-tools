@@ -62,14 +62,13 @@ class TestStagePanels:
         assert "_buildDeciderHtml" not in build
 
     def test_built_leads_with_inline_decider(self):
-        # The decision stage embeds the decider; the frozen instant-dump price
-        # is the secondary path below it (still copyable).
+        # The decision stage embeds the decider — which now carries BOTH exit
+        # routes (list + instant), so no separate instant row sits in the branch.
         fn = _sim_fn("_buildSellHtml")
         built = fn[fn.index('stage==="built"'):fn.index('stage==="listed"')]
         assert "_buildDeciderHtml(b, stage)" in built
         assert "Set your sell price" in built
-        assert "ind-sell-instant" in built
-        assert "const instantPrice=d.bid;" in built
+        assert "ind-sell-instant" not in built
 
     def test_listed_shows_progress_and_decider(self):
         # Fine-tune to move the remainder: a sold-so-far bar + the same decider.
@@ -136,7 +135,44 @@ class TestInlineDecider:
         assert "(1-stax-bfee)" in fn.replace(" ", "")
         assert "_priceConditionedDailyRate" in fn
         assert "_sellThroughProb" in fn
-        assert "break-even" in fn
+
+    def test_both_exit_routes_show_profit(self):
+        # The slider only prices the LIST route; the decider must ALSO show the
+        # instant (dump-now) route with its own profit, so both exits compare.
+        fn = _sim_fn("_updateBuildDecider")
+        # List route: chosen price, sales tax + fresh broker.
+        assert "listProfit" in fn
+        assert "(1-stax-bfee)" in fn.replace(" ", "")
+        # Instant route: live bid, sales tax only (no broker on an immediate sell).
+        assert "instProfit" in fn
+        assert "bid*(1-stax)" in fn.replace(" ", "")
+        # And the delta between them — what patience buys.
+        assert "gain" in fn
+        assert "ind-dec-route" in fn
+
+    def test_breakeven_is_only_a_warning_not_a_headline(self):
+        # Break-even is NOT a margin readout; it only surfaces as a ⚠ flag when
+        # the chosen list price is actually underwater.
+        fn = _sim_fn("_updateBuildDecider")
+        assert "/unit above break-even" not in fn
+        assert "Below break-even" in fn
+        assert "underBE" in fn
+
+    def test_prices_shown_at_full_value_not_abbreviated(self):
+        # EVE orders are to the cent — the decider's prices must use fmtISKFull
+        # (14,589.99), never fmtISK's abbreviation (14.6K). The drift line, the
+        # slider body/chips and the per-unit readout all format with fmtISKFull.
+        for name in ("_renderDeciderDrift", "_renderDeciderBody",
+                     "_updateBuildDecider"):
+            fn = _sim_fn(name)
+            assert "fmtISKFull" in fn, name
+            # The isk helper in each is the full formatter, not the abbreviator.
+            assert "fmtISK(v)" not in fn.replace("fmtISKFull(v)", ""), name
+
+    def test_full_formatter_exists(self):
+        shared = (_ROOT / "static" / "js" / "shared.js").read_text()
+        assert "function fmtISKFull(" in shared
+        assert "minimumFractionDigits:2" in shared.replace(" ", "")
 
     def test_full_market_link_opens_modal(self):
         # The deep-dive stays in the tested modal — one link opens it on Market.
@@ -152,9 +188,10 @@ class TestInlineDecider:
 
 class TestDeciderStyling:
     def test_new_panel_classes_are_styled(self):
-        for cls in (".ind-plan", ".ind-plan-out", ".ind-sell-instant",
+        for cls in (".ind-plan", ".ind-plan-out", ".ind-dec-routes",
+                    ".ind-dec-route", ".ind-dec-route-profit",
                     ".ind-listed-bar", ".ind-done-hero", ".ind-done-compare",
-                    ".ind-decider", ".ind-dec-slider", ".ind-dec-odds"):
+                    ".ind-decider", ".ind-dec-slider"):
             assert cls in _CSS, cls
 
     def test_stage_colours_tint_the_rails(self):

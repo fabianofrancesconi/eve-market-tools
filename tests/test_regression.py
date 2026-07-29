@@ -1511,17 +1511,23 @@ class TestCharDataOrdersIsolation:
         # Live update on input without re-rendering.
         assert "maxCargoBtn.textContent=`Max cargo${runs!=null?` (${fmtNum(runs)})`:\"\"}`" in html
 
-    def test_ready_to_sell_shows_instant_price(self):
-        """The "Ready to sell" nudge offers an instant-sell price (frozen bid,
-        break-even, and its own copy button) alongside the list price."""
+    def test_built_stage_shows_both_exit_routes_with_profit(self):
+        """The Built decider shows BOTH exit routes side by side, each with its
+        own profit: list at the chosen price (patient) vs. dump into buy orders
+        now (instant at the live bid). The instant route has its own copy button
+        and pays sales tax only (no broker on an immediate sell)."""
         html = lp_web.FRONTEND_SOURCE
-        assert "ind-sell-price-instant" in html
-        assert "ind-sell-copy-instant" in html
-        # Instant price is the frozen highest bid.
-        assert "const instantPrice=d.bid;" in html
-        # Its copy button copies the bid, not the list price.
-        assert '_wireCopy(card.querySelector(".ind-sell-copy-instant"),' in html
-        assert "()=>(b.snapshot||{}).bid);" in html
+        assert "ind-dec-routes" in html
+        assert "List &amp; wait" in html
+        assert "Dump now" in html
+        # Instant route nets at the live bid, sales tax only (no broker fee).
+        assert "st.live.bid" in html
+        assert "bid*(1-stax)" in html.replace(" ", "")
+        # Each route books profit over the priced remainder.
+        assert "listProfit" in html
+        assert "instProfit" in html
+        # The instant price has a dedicated copy button.
+        assert "ind-dec-copy-inst" in html
 
 
 # ---------------------------------------------------------------------------

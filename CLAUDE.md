@@ -44,8 +44,11 @@ Collate everything since the last released tag into a *single* release:
 ```
 git tag v1.2.3 <sha>
 git push origin master v1.2.3
-gh run list --workflow=docker.yml --limit 1   # confirm it completed
 ```
+
+Once the branch + tag are pushed you're done — no need to watch the docker.yml run
+finish. The build is reliable for a single-tag push; only go check `gh run list
+--workflow=docker.yml` if something later looks wrong (e.g. `latest` seems stale).
 
 There is normally only **one** new tag per push now, so the multi-tag ordering hazard
 below rarely applies — but the rule still holds if you ever have more than one.

@@ -196,6 +196,25 @@ class TestInlineDecider:
         assert "ind-wait-rec" in fn
         assert "_callVerdict({" in fn
 
+    def test_waiting_support_uses_actual_listed_price(self):
+        # The queue position / diagnosis / Call describe YOUR current listing, so
+        # they must reason about the price you're actually listed at (your live
+        # sell order), not the slider's exploratory undercut default — which had
+        # claimed "you're at the front" while your real order sat mid-queue.
+        helper = _sim_fn("_buildListedOrderPrice")
+        assert "_peekLinkedOrder(b)" in helper
+        fn = _sim_fn("_updateBuildDecider")
+        assert "_buildListedOrderPrice(b)" in fn
+        # Queue depth + demand are recomputed at the listed price, not `ahead`/`rate`
+        # (those stay the slider-price odds read).
+        assert "curPrice" in fn
+        assert "_unitsAheadInQueue(st.market.sell_book, curPrice)" in fn
+        # The Call reasons about the listed price too (profit at your real ask).
+        assert "curListProfit" in fn
+        # The board tile flag anchors on the same actual listed price.
+        flag = _sim_fn("_tileActionFlag")
+        assert "_buildListedOrderPrice(b)" in flag
+
     def test_call_verdict_is_a_shared_helper(self):
         # The Listed-stage Call (dump / re-price / hold) is factored out so the
         # board tile reaches the SAME verdict as the decider from the same signals.

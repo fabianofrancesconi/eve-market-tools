@@ -2822,21 +2822,35 @@ function _updateBuildDecider(b, price){
   let waitBlock="";
   let rec=null, recCls=null;
   if(stage==="listed" && haveOdds){
-    // Queue depth — units listed at or under the chosen price that must clear
-    // before yours. The prominent "you're behind N units" reason.
-    const behind=(ahead!=null)?Math.round(ahead):null;
+    // The waiting support answers "how's MY listing doing?" — so it reasons about
+    // the price you're ACTUALLY listed at (your live sell order), NOT the slider's
+    // exploratory price. The slider is a what-if for re-pricing; using it here made
+    // the panel claim "you're at the front" (true at the undercut default) while
+    // your real order sat at #6. Fall back to the slider price only when no live
+    // order is found (not yet listed / order cache cold).
+    const listedPrice=_buildListedOrderPrice(b);
+    const curPrice=(listedPrice!=null)?listedPrice:price;
+    const haveReal=listedPrice!=null;
+    // Queue depth + demand recomputed AT YOUR LISTED PRICE (ahead/rate above were
+    // at the slider price, for the odds read; these are your true standing).
+    const curAhead=_unitsAheadInQueue(st.market.sell_book, curPrice);
+    const curRate=_priceConditionedDailyRate(st.market.series, curPrice);
+    const curWeekAll=(curRate!=null)?_sellThroughProb(curAhead, curRate, qty, 7).all:weekAll;
+    // Queue depth — units listed at or under YOUR price that clear before yours.
+    const behind=(curAhead!=null)?Math.round(curAhead):null;
+    const atSub=haveReal?` (listed at ${isk(curPrice)})`:"";
     const queueLine=(behind!=null)
       ? (behind<=0
-          ? `<span class="ind-wait-queue-v good">You're at the front</span> — nothing's listed below your price.`
-          : `<span class="ind-wait-queue-v ${behind>=qty*4?"bad":"warn"}">Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}</span> at or under your price — those clear before yours.`)
+          ? `<span class="ind-wait-queue-v good">You're at the front</span> — nothing's listed below your price${atSub}.`
+          : `<span class="ind-wait-queue-v ${behind>=qty*4?"bad":"warn"}">Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}</span> at or under your price${atSub} — those clear before yours.`)
       : "";
     // Slow-vs-overpriced: if the market trades briskly overall (baseRate) but
-    // barely at your price (rate), you're priced above market; if it's slow at
+    // barely at YOUR price (curRate), you're priced above market; if it's slow at
     // ANY price, it's just a quiet market. This is the honest read that replaces
     // an invented weekday signal (history carries no dates).
     let diag="";
-    if(baseRate!=null && baseRate>0){
-      const share=rate/baseRate;                    // how much of the pace your price captures
+    if(baseRate!=null && baseRate>0 && curRate!=null){
+      const share=curRate/baseRate;                 // how much of the pace your price captures
       if(baseRate<qty/14){                          // <~half the lot a week even wide open
         diag=`<span class="ind-wait-diag slow">Quiet market — it trades slowly at any price. Waiting is about patience, not your price.</span>`;
       } else if(share<0.5){
@@ -2845,9 +2859,14 @@ function _updateBuildDecider(b, price){
         diag=`<span class="ind-wait-diag fair">Your price is in the market's flow — it's competing. Mostly a matter of waiting your turn in the queue.</span>`;
       }
     }
-    // The call — factored into _callVerdict so the board tile reaches the SAME
-    // verdict from the same signals (see below).
-    const v=_callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, weekAll, gain});
+    // The call — reasons about YOUR listed price too. list/instant profit at the
+    // real price so "dump beats waiting" compares against what you're actually
+    // asking, not the slider. Factored into _callVerdict so the board tile agrees.
+    const curListProfit=(cpu!=null)?(curPrice*(1-stax-bfee)-cpu)*qty:null;
+    const curGain=(curListProfit!=null&&instProfit!=null)?curListProfit-instProfit:null;
+    const curUnderBE=(ctx.be.list!=null)?ctx.be.list-curPrice:null;
+    const v=_callVerdict({underBE:curUnderBE, instProfit, listProfit:curListProfit,
+                          baseRate, rate:curRate, qty, weekAll:curWeekAll, gain:curGain});
     rec=v.rec; recCls=v.recCls;
     waitBlock=`
       <div class="ind-wait">
@@ -2861,6 +2880,19 @@ function _updateBuildDecider(b, price){
     +waitBlock
     +(gain!=null&&gain>0?`<div class="ind-dec-gain">Listing earns <b>${isk(gain)}</b> more than dumping — if it sells.</div>`:"")
     +(beLine?`<div class="ind-dec-belines">${beLine}</div>`:"");
+}
+// The price the Listed-stage queue position, diagnosis and Call must reason about:
+// the user's ACTUAL open sell order for this build's product, not a hypothetical.
+// Your standing in the queue ("you're #6" vs "at the front") is a fact about the
+// price you're really listed at — the slider is only a what-if for re-pricing, so
+// answering "keep waiting?" at the slider's default (undercut-best-ask) claimed you
+// were at the front when your real 554 order was #6. Falls back to null when no
+// live order is found (not yet listed / order cache cold) — callers then have no
+// authoritative current price and must not assert a queue position.
+function _buildListedOrderPrice(b){
+  if(typeof _peekLinkedOrder!=="function") return null;
+  const o=_peekLinkedOrder(b);
+  return (o && o.price!=null) ? o.price : null;
 }
 // The Listed-stage "Call" — the ONE recommendation the decider makes about a lot
 // still on the market: dump / re-price / hold. Factored out (from the numbers the
@@ -2893,11 +2925,15 @@ function _tileActionFlag(b){
      || typeof _sellThroughProb!=="function") return null;
   const ctx=_deciderCtx(b);
   const {stax, bfee}=ctx.fees, cpu=ctx.cpu, qty=ctx.remaining;
-  // Price the call at the same default the decider opens on: undercut the live best
-  // ask (the "climb the queue" price), falling back to frozen/best-ask.
+  // Reason about YOUR ACTUAL listed price — the flag is a statement about your
+  // current standing, so it must use the price you're really listed at (matching
+  // the decider's waiting support). Fall back to the undercut-best-ask default
+  // only when no live order is found (order cache cold / not yet listed).
   const bestAsk=(st.live&&st.live.ask!=null)?st.live.ask:null;
   const frozen=ctx.s.ask;
-  const price=(bestAsk!=null)?bestAsk*0.9999:(frozen!=null?frozen:ctx.be.list);
+  const listedPrice=_buildListedOrderPrice(b);
+  const price=(listedPrice!=null)?listedPrice
+             :(bestAsk!=null)?bestAsk*0.9999:(frozen!=null?frozen:ctx.be.list);
   if(price==null) return null;
   const listProfit=(cpu!=null)?(price*(1-stax-bfee)-cpu)*qty:null;
   const bid=(st.live&&st.live.bid!=null)?st.live.bid:ctx.s.bid;

@@ -43,6 +43,7 @@ def _bind(monkeypatch, tmp_path, acct):
     monkeypatch.setattr(lp_web, "IND_LISTED_UNITS_PATH", tmp_path / "listed.json")
     monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", tmp_path / "ev.json")
     monkeypatch.setattr(lp_web, "IND_TRACK_MIGRATED_PATH", tmp_path / "migrated.json")
+    monkeypatch.setattr(lp_web, "IND_ARCHIVED_FROZEN_PATH", tmp_path / "frozen.json")
     monkeypatch.setattr(lp_web, "current_account", lambda: acct)
 
 
@@ -204,15 +205,20 @@ class _World:
             self.builds[bid]["abandoned"] = True
 
     def toggle_archive(self):
-        """Archive or un-archive a random build. Archiving hides it from the
-        tracker board's lanes; the field bug was that a hidden archived build
-        still grabbed a live order's 🔗 while the visible build read Built."""
+        """Archive or un-archive a random build. Archiving is a DONE DEAL — the
+        server accepts it only for a fully-sold build (no unsold held stock) and
+        freezes its realized profit; a build with stock to sell is refused. So we
+        mirror the server's verdict: only flip our model's flag when the call
+        returned ok. Archived builds vanish from reconcile entirely (their old
+        lots can't grab a live order's 🔗 — the field bug this replaced)."""
         if not self.builds:
             return
         bid = self.rng.choice(list(self.builds))
         cur = self.builds[bid].get("archived", False)
-        lp_web.do_ind_builds_archive({"id": [bid], "archived": ["0" if cur else "1"]})
-        self.builds[bid]["archived"] = not cur
+        res = lp_web.do_ind_builds_archive(
+            {"id": [bid], "archived": ["0" if cur else "1"]})
+        if res.get("ok"):
+            self.builds[bid]["archived"] = not cur
 
     def sell_units(self):
         """A wallet sale of a random product at a drifting price, dated 'now'.
@@ -357,11 +363,12 @@ class TestReconcileChaos:
         assert _client_linked_badge(summary, product["type_id"]) == r1["id"]
         _assert_invariants(summary, w.open_orders(), "parallel", 0)
 
-    def test_archived_listed_build_does_not_flag_visible_build(self, monkeypatch, tmp_path):
-        # THE EXACT REPORTED SHAPE: an older build carrying the live order gets
-        # ARCHIVED (hidden from the board). Before the fix the badge kept pointing
-        # at that hidden build (LINKED) while the visible newer build read Built —
-        # the contradiction. Now the order must move to the visible held build.
+    def test_archive_refused_while_holding_stock(self, monkeypatch, tmp_path):
+        # THE REPORTED SHAPE, new model: archiving is a DONE DEAL, allowed only
+        # for a fully-sold build. A build still holding (and listing) stock can't
+        # be archived — that's a "stop tracking" case — so its live order keeps
+        # its 🔗. This is what makes it impossible for an archived (hidden) build
+        # to ever carry a badge or steal a fresh sale (the old field bug).
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
         import json
@@ -377,47 +384,59 @@ class TestReconcileChaos:
         pid = product["type_id"]
         lp_web._record_listed_units(acct, 1, [
             {"is_buy_order": False, "type_id": pid, "volume_remain": 5}])
-        # Sanity: before archiving, the older build is the listed anchor.
+        # Nothing sold yet → older build holds all 10, is the listed anchor.
         s0 = lp_web.do_ind_summary({})
         assert _client_linked_badge(s0, pid) == older["id"]
 
-        # Archive the older (listed) build — it vanishes from the board's lanes.
-        lp_web.do_ind_builds_archive({"id": [older["id"]], "archived": ["1"]})
+        # Archiving the still-holding older build is REFUSED.
+        res = lp_web.do_ind_builds_archive({"id": [older["id"]], "archived": ["1"]})
+        assert "error" in res and not res.get("ok")
         s1 = lp_web.do_ind_summary({})
         o = next(x for x in s1["builds"] if x["id"] == older["id"])
-        n = next(x for x in s1["builds"] if x["id"] == newer["id"])
-        # The hidden archived build is NOT listed and NOT the anchor...
-        assert o["stage"] != "listed"
-        assert o["is_listed_anchor"] is False
-        # ...the order now surfaces on the VISIBLE build, which reads listed, and
-        # the badge follows it — no more "LINKED but Built".
-        assert n["stage"] == "listed"
-        assert n["is_listed_anchor"] is True
-        assert _client_linked_badge(s1, pid) == newer["id"]
+        assert not o["archived"]                 # still on the board
+        assert o["stage"] == "listed"            # still carries the order
+        assert _client_linked_badge(s1, pid) == older["id"]
         _assert_invariants(s1, [
             {"is_buy_order": False, "type_id": pid, "volume_remain": 5}],
-            "archived_reported", 0)
+            "archive_refused", 0)
 
-    def test_archive_last_holder_drops_badge(self, monkeypatch, tmp_path):
-        # If the ONLY held build gets archived, there's nothing visible to list —
-        # the badge must disappear, not cling to the hidden build.
+    def test_archive_fully_sold_freezes_and_drops_badge(self, monkeypatch, tmp_path):
+        # A fully-sold build CAN be archived: it freezes its realized profit,
+        # leaves the board, and — being dead — carries no badge. With no other
+        # held stock, the product's 🔗 disappears (nothing visible to list).
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
-        w = _World(acct, random.Random(0))
-        b = w.add_build()
-        w.deliver_build()
-        pid = w.builds[b]["pid"]
+        import json
+        product = _PRODUCTS[1]
+        b = lp_web.do_ind_builds_save({"runs": ["10"],
+             "snapshot": [json.dumps(_snapshot(product))]})["build"]
+        pid = product["type_id"]
+        srv = lp_web._load_tracked_builds(acct)
+        next(x for x in srv if x["id"] == b["id"])["done_at"] = 1000.0
+        lp_web._save_tracked_builds(acct, srv)
+        # Sell all 10 units, then a stray order still sits open on the product.
+        lp_web._reconcile_sell_ledger(acct, [
+            {"transaction_id": 1, "type_id": pid, "quantity": 10, "unit_price": 150.0,
+             "date": "2026-08-01T00:00:00Z", "is_buy": False}])
         lp_web._record_listed_units(acct, 1, [
             {"is_buy_order": False, "type_id": pid, "volume_remain": 5}])
-        assert _client_linked_badge(lp_web.do_ind_summary({}), pid) == b
-        lp_web.do_ind_builds_archive({"id": [b], "archived": ["1"]})
-        s = lp_web.do_ind_summary({})
-        sb = next(x for x in s["builds"] if x["id"] == b)
-        assert sb["stage"] != "listed" and sb["is_listed_anchor"] is False
-        assert _client_linked_badge(s, pid) is None
-        _assert_invariants(s, [
+        s0 = lp_web.do_ind_summary({})
+        row0 = next(x for x in s0["builds"] if x["id"] == b["id"])
+        assert row0["stage"] == "sold"
+        frozen_profit = row0["realized"]["profit"]
+
+        res = lp_web.do_ind_builds_archive({"id": [b["id"]], "archived": ["1"]})
+        assert res.get("ok")
+        s1 = lp_web.do_ind_summary({})
+        row1 = next(x for x in s1["builds"] if x["id"] == b["id"])
+        assert row1["archived"] and row1["stage"] == "sold"
+        # Realized profit is frozen at the value it had when archived.
+        assert row1["realized"]["profit"] == frozen_profit
+        assert not row1["is_listed_anchor"]
+        assert _client_linked_badge(s1, pid) is None
+        _assert_invariants(s1, [
             {"is_buy_order": False, "type_id": pid, "volume_remain": 5}],
-            "archive_last", 0)
+            "archive_sold", 0)
 
     def test_multiple_sales_across_batches(self, monkeypatch, tmp_path):
         acct = _acct()

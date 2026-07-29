@@ -30,6 +30,7 @@ def _bind(monkeypatch, tmp_path, acct):
     monkeypatch.setattr(lp_web, "IND_LISTED_UNITS_PATH", tmp_path / "listed.json")
     monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", tmp_path / "ev.json")
     monkeypatch.setattr(lp_web, "IND_TRACK_MIGRATED_PATH", tmp_path / "migrated.json")
+    monkeypatch.setattr(lp_web, "IND_ARCHIVED_FROZEN_PATH", tmp_path / "frozen.json")
     monkeypatch.setattr(lp_web, "current_account", lambda: acct)
 
 
@@ -474,6 +475,99 @@ class TestArchive:
         lp_web.do_ind_builds_archive({"id": [b["id"]]})
         res = lp_web.do_ind_summary({})
         assert res["totals"]["realized_profit"] == 500.0
+
+    def test_archive_refused_while_holding(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=4, price=150.0)])   # 4 of 10 sold
+        res = lp_web.do_ind_builds_archive({"id": [b["id"]]})
+        assert "error" in res and not res.get("ok")
+        assert not lp_web._load_tracked_builds(acct)[0].get("archived")
+
+    def test_archived_excluded_frees_fills_for_live_build(self, monkeypatch, tmp_path):
+        # THE REPORTED BUG: an archived (fully-sold) older batch must not soak up
+        # a fresh sale — it goes to the live build the user is actually holding.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        # Realistic delivery times (the gate blocks a sale that predates a lot).
+        t_old = lp_web._parse_iso_ts("2026-07-20T00:00:00Z")
+        t_new = lp_web._parse_iso_ts("2026-07-24T00:00:00Z")
+        old = _built(runs=10, done_at=t_old)
+        _reconcile(acct, [_txn(1, qty=10, price=150.0,
+                               date="2026-07-21T00:00:00Z")])   # old fully sold
+        assert lp_web.do_ind_builds_archive({"id": [old["id"]]}).get("ok")
+        new = _built(runs=10, done_at=t_new)
+        _reconcile(acct, [_txn(2, qty=6, price=150.0,
+                               date="2026-07-25T00:00:00Z")])   # sale after new
+        res = lp_web.do_ind_summary({})
+        # The archived build stays frozen at 10; the new build gets the 6. The
+        # old build's fill (dated before new's delivery) can't spill onto new.
+        assert _summary_build(res, old["id"])["realized"]["units"] == 10
+        assert _summary_build(res, new["id"])["realized"]["units"] == 6
+
+    def test_frozen_survives_later_same_item_sale(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10, done_at=1000.0)
+        _reconcile(acct, [_txn(1, qty=10, price=150.0, date="2026-07-21T00:00:00Z")])
+        lp_web.do_ind_builds_archive({"id": [b["id"]]})
+        frozen = _summary_build(lp_web.do_ind_summary({}), b["id"])["realized"]["profit"]
+        # A later untracked sale of the same item must not disturb the frozen row.
+        _reconcile(acct, [_txn(2, qty=5, price=999.0, date="2026-07-28T00:00:00Z")])
+        after = _summary_build(lp_web.do_ind_summary({}), b["id"])["realized"]["profit"]
+        assert after == frozen
+
+
+class TestStopTracking:
+    def test_stop_freezes_sold_and_orphans_held(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=4, price=150.0)])   # 4 sold, 6 held
+        res = lp_web.do_ind_builds_stop({"id": [b["id"]]})
+        assert res.get("ok")
+        row = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert row["stopped"] and row["stage"] == "stopped"
+        assert row["realized"]["units"] == 4          # sold profit frozen
+        assert row["realized"]["profit"] == 200.0     # 4×(150−100)
+        assert row["stopped_held"] == 6               # orphaned, flagged
+        # Dead: no capital in flight, and a later sale doesn't accrue to it.
+        _reconcile(acct, [_txn(2, qty=3, price=150.0, date="2026-07-28T00:00:00Z")])
+        row2 = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert row2["realized"]["units"] == 4
+
+    def test_stop_then_resume_restores_live(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=4, price=150.0)])
+        lp_web.do_ind_builds_stop({"id": [b["id"]]})
+        lp_web.do_ind_builds_stop({"id": [b["id"]], "stopped": ["0"]})
+        row = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert not row["stopped"]
+        assert row["held_units"] == 6                 # reconciled live again
+        assert row["stage"] in ("built", "listed")
+
+
+class TestEditTracking:
+    def test_edit_runs_rescales_produced(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        res = lp_web.do_ind_builds_edit({"id": [b["id"]], "runs": ["25"]})
+        assert res.get("ok")
+        row = _summary_build(lp_web.do_ind_summary({}), b["id"])
+        assert row["units_produced"] == 25
+
+    def test_edit_refused_on_dead_build(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        b = _built(runs=10)
+        _reconcile(acct, [_txn(1, qty=10, price=150.0)])
+        lp_web.do_ind_builds_archive({"id": [b["id"]]})
+        res = lp_web.do_ind_builds_edit({"id": [b["id"]], "runs": ["5"]})
+        assert "error" in res and not res.get("ok")
 
 
 # ── Migration from the legacy per-build sell blobs ───────────────────────────

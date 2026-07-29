@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.154.2"
+__version__ = "1.155.0"
 
 import argparse
 import base64
@@ -89,6 +89,7 @@ IND_BUILDS_PATH = CACHE_DIR / "ind_tracked_builds.json"  # frozen build-batch sn
 IND_SELL_LEDGER_PATH = CACHE_DIR / "ind_sell_ledger.json"  # per-product wallet sell fills
 IND_LISTED_UNITS_PATH = CACHE_DIR / "ind_listed_units.json"  # per-char open sell-order volume
 IND_TRACK_MIGRATED_PATH = CACHE_DIR / "ind_track_migrated.json"  # one-time migration sentinel
+IND_ARCHIVED_FROZEN_PATH = CACHE_DIR / "ind_archived_frozen.json"  # archived-freeze sentinel
 WALLET_HISTORY_PATH = CACHE_DIR / "wallet_history.json"  # ISK balance time-series
 LOCATION_TRAIL_PATH = CACHE_DIR / "location_trail.json"  # exploration system trail
 LOCATION_TRACK_PATH = CACHE_DIR / "location_tracking.json"  # live-session state
@@ -1405,11 +1406,50 @@ def do_ind_builds_delete(q):
     return {"ok": True}
 
 
+def do_ind_builds_edit(q):
+    """Correct a tracked build's run count when reality didn't match the frozen
+    plan (a job you actually ran for a different number of runs, or a mistaken
+    entry). ``runs`` is the only editable field — it drives produced units, so
+    the batch cost and the produced/sold/held split all re-derive from it on the
+    next reconcile; sold units (wallet fills) are untouched. Refused on a *dead*
+    build (archived/stopped): those are frozen done deals — resume tracking first
+    if you really need to change one. Editing an abandoned build recomputes its
+    write-off remainder on the next abandon toggle, so we clear the stale flag."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    build_id = q.get("id", [""])[0]
+    if not build_id:
+        return {"error": "missing id"}
+    try:
+        runs = max(1, int(q.get("runs", [""])[0]))
+    except (TypeError, ValueError):
+        return {"error": "bad runs"}
+    with _TRACKED_BUILDS_LOCK:
+        builds = _load_tracked_builds(acct)
+        b = next((x for x in builds if x.get("id") == build_id), None)
+        if not b:
+            return {"error": "unknown build"}
+        if _is_dead(b):
+            return {"error": "Can't edit a closed build — resume tracking it first."}
+        b["runs"] = runs
+        # A stale write-off count would no longer match the new produced total;
+        # drop the abandon so the user re-confirms it against the corrected batch.
+        b.pop("abandoned", None)
+        b.pop("writeoff_units", None)
+        _save_tracked_builds(acct, builds)
+    return {"ok": True, "build": b}
+
+
 def do_ind_builds_archive(q):
-    """Toggle a build's archived flag. Archiving hides its card into the tracker's
-    collapsed Archived section but keeps it in the portfolio stats (its realized
-    profit still counts) — it's a declutter, not a delete. Pass archived=0 to
-    unarchive."""
+    """Toggle a build's archived flag. Archiving files a *fully-sold* build away:
+    it vanishes from the board's lanes, its realized profit is **frozen** at that
+    instant, and reconcile never looks at it again (so a later sale of the same
+    item can't disturb it, and its old lot can't soak up that sale). Because it's
+    a done deal, archiving is refused unless the build holds no unsold stock — a
+    build you're done with but haven't sold out is a "stop tracking" case, not an
+    archive. Pass archived=0 to unarchive (drops the frozen snapshot; reconcile
+    picks it back up live)."""
     acct = current_account()
     if not acct:
         return {"error": "not available"}
@@ -1418,15 +1458,71 @@ def do_ind_builds_archive(q):
         return {"error": "missing id"}
     raw = q.get("archived", ["1"])[0]
     archived = str(raw).lower() not in ("0", "false", "")
-    with _TRACKED_BUILDS_LOCK:
+    with _TRACKED_BUILDS_LOCK, _SELL_LEDGER_LOCK:
         builds = _load_tracked_builds(acct)
         b = next((x for x in builds if x.get("id") == build_id), None)
         if not b:
             return {"error": "unknown build"}
         if archived:
+            # Only a fully-sold build can be archived. Reconcile the LIVE set
+            # (this build still counts as live here) to read its current held
+            # count; anything unsold means it isn't a closed position yet.
+            ledger = _load_sell_ledger(acct)
+            by_build, _ = _reconcile_products(builds, ledger, _load_listed_units(acct))
+            rec = by_build.get(build_id)
+            held = (rec or {}).get("held", 0)
+            if b.get("done_at") is None:
+                return {"error": "Can't archive a build that isn't finished yet."}
+            if held > 0 and not b.get("abandoned"):
+                return {"error": f"{held} unsold — sell them, write them off, or "
+                                 "stop tracking this build instead of archiving."}
             b["archived"] = True
+            b["frozen"] = _freeze_from_record(b, rec)  # lock realized history
         else:
             b.pop("archived", None)
+            b.pop("frozen", None)
+        _save_tracked_builds(acct, builds)
+    # Return the build's realized view so the client can render frozen numbers.
+    return {"ok": True, "build": b}
+
+
+def do_ind_builds_stop(q):
+    """Stop tracking a build that still holds unsold stock. Unlike *archive*
+    (reserved for a fully-sold build) and *abandon* (a write-off that books the
+    remainder as a realized loss), stopping is for a build you're simply done
+    following: what already sold keeps its real profit (frozen, like archive),
+    and the still-held units are **orphaned** — recorded on the build as
+    ``stopped_held`` and flagged, NOT written off, because they may still sit on
+    the market untracked. A stopped build is dead: reconcile never touches it
+    again, so a later sale of the same item flows to your live builds instead of
+    landing on this one. Pass stopped=0 to resume tracking (reconcile picks its
+    lots back up live). A fully-sold build has nothing to orphan — archive it."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    build_id = q.get("id", [""])[0]
+    if not build_id:
+        return {"error": "missing id"}
+    raw = q.get("stopped", ["1"])[0]
+    stop = str(raw).lower() not in ("0", "false", "")
+    with _TRACKED_BUILDS_LOCK, _SELL_LEDGER_LOCK:
+        builds = _load_tracked_builds(acct)
+        b = next((x for x in builds if x.get("id") == build_id), None)
+        if not b:
+            return {"error": "unknown build"}
+        if stop:
+            # Reconcile the LIVE set (this build still counts as live here) to
+            # read its realized + current held count before freezing it out.
+            ledger = _load_sell_ledger(acct)
+            by_build, _ = _reconcile_products(builds, ledger, _load_listed_units(acct))
+            rec = by_build.get(build_id)
+            b["stopped"] = True
+            b["stopped_held"] = int((rec or {}).get("held", 0))
+            b["frozen"] = _freeze_from_record(b, rec)
+        else:
+            b.pop("stopped", None)
+            b.pop("stopped_held", None)
+            b.pop("frozen", None)
         _save_tracked_builds(acct, builds)
     return {"ok": True, "build": b}
 
@@ -1556,20 +1652,29 @@ def _build_lot(b):
 
 
 def _reconcile_products(builds, ledger, listed):
-    """Reconcile every product's builds against the wallet ledger + open-order
-    volume through the single :func:`ind_track.reconcile` authority — so sold,
-    listed and stage can never disagree (that was the recurring LINKED-vs-built
-    bug). ``ledger`` is the per-product wallet-fill ledger; ``listed`` is the
-    per-product open sell-order volume ``{str(pid): units}``.
+    """Reconcile every product's *live* builds against the wallet ledger + open-
+    order volume through the single :func:`ind_track.reconcile` authority — so
+    sold, listed and stage can never disagree (that was the recurring
+    LINKED-vs-built bug). ``ledger`` is the per-product wallet-fill ledger;
+    ``listed`` is the per-product open sell-order volume ``{str(pid): units}``.
 
-    Returns ``(by_build, by_product)``:
+    **Archived builds are dead** — a done deal the board no longer looks into.
+    They are dropped before reconcile ever sees them (see :func:`_live_builds`),
+    so their old lots can never absorb a fresh wallet fill or steal the listing
+    anchor from the build you're actually holding. Each archived build carries a
+    ``frozen`` realized snapshot (taken when it was archived — every archive is
+    gated to a fully-sold build); the caller reads that instead of a live record.
+    Because archived fills are excluded here, the remaining live fills flow to
+    live lots exactly as they would have when those archived builds were sold.
+
+    Returns ``(by_build, by_product)`` over the LIVE builds only:
       * ``by_build``   — build id → its per-lot record ``{sold, held, listed,
         net, cost, profit, stage, is_listed_anchor}``.
       * ``by_product`` — str(product_type_id) → ``{summary, flow,
         listed_anchor}`` (the money roll-up, the unit-flow pipeline, and the id
         of the one lot a market order's 🔗 links to, or None)."""
     groups = {}
-    for b in builds:
+    for b in _live_builds(builds):
         groups.setdefault(str(b.get("product_type_id")), []).append(b)
     by_build = {}
     by_product = {}
@@ -1580,6 +1685,28 @@ def _reconcile_products(builds, ledger, listed):
         by_product[pid] = {"summary": r["summary"], "flow": r["flow"],
                            "listed_anchor": r["listed_anchor"]}
     return by_build, by_product
+
+
+def _is_dead(b):
+    """A *dead* build is one the app has closed out — its realized profit is
+    frozen and it is dropped from reconcile forever after, so its old lots can't
+    soak up new sales of the same item nor win the listing anchor. Two ways a
+    build dies, both frozen and both excluded here:
+      * ``archived`` — filed away *fully sold* (a clean done deal), and
+      * ``stopped``  — the user stopped tracking it with stock still unsold; what
+        had sold is frozen, the held remainder is orphaned (flagged, not written
+        off — those units may still be on the market untracked).
+    Abandoned builds are NOT dead: their write-off is live state reconcile must
+    keep accounting for (capital clears, remainder can be un-abandoned)."""
+    return bool(b.get("archived") or b.get("stopped"))
+
+
+def _live_builds(builds):
+    """The tracked builds reconcile should look at: everything not :func:`_is_dead`
+    (archived or stopped). A dead build's realized profit is frozen at close-out
+    time — the app never re-derives it, so it must not enter the wallet-fill FIFO
+    nor the listing/anchor election."""
+    return [b for b in builds if not _is_dead(b)]
 
 
 # Sentinel schema version stamped once the one-time migration from the old
@@ -1637,6 +1764,67 @@ def _migrate_sell_state(acct):
         _save_sell_ledger(acct, ledger)
         _save_tracked_builds(acct, builds)
         _acct_kv_save(acct, _IND_TRACK_MIGRATED, IND_TRACK_MIGRATED_PATH, True)
+
+
+# Sentinel: the one-time freeze of pre-existing archived builds has run. Before
+# this, archived builds still flowed through reconcile (their old lots absorbed
+# fresh sales of the same item — the "0 sold" bug). This snapshots each
+# archived build's realized profit as it stands *today* (reconciling with the
+# archived builds still included, so the frozen number equals what the user has
+# been seeing) and then the app excludes them from reconcile forever after.
+_IND_ARCHIVED_FROZEN = "ind_archived_frozen"
+
+
+def _migrate_freeze_archived(acct):
+    """One-time, idempotent: give every already-archived build a ``frozen``
+    realized snapshot so it can be dropped from reconcile without losing history
+    or letting its old lots soak up new fills. Runs after :func:`_migrate_sell_state`
+    (needs the pooled ledger in place). Freezes at the archived-INCLUDED value —
+    the number the user has been seeing — so the portfolio total doesn't jump."""
+    if _acct_kv_load(acct, _IND_ARCHIVED_FROZEN, IND_ARCHIVED_FROZEN_PATH, False):
+        return
+    with _TRACKED_BUILDS_LOCK, _SELL_LEDGER_LOCK:
+        if _acct_kv_load(acct, _IND_ARCHIVED_FROZEN, IND_ARCHIVED_FROZEN_PATH, False):
+            return
+        builds = _load_tracked_builds(acct)
+        archived = [b for b in builds if b.get("archived") and "frozen" not in b]
+        if archived:
+            ledger = _load_sell_ledger(acct)
+            listed = _load_listed_units(acct)
+            # Reconcile with archived builds STILL INCLUDED to reproduce exactly
+            # what they were credited today, then lock that in.
+            groups = {}
+            for b in builds:
+                groups.setdefault(str(b.get("product_type_id")), []).append(b)
+            by_build = {}
+            for pid, group in groups.items():
+                lots = [_build_lot(x) for x in group]
+                r = ind_track.reconcile(lots, ledger.get(pid, []), listed.get(pid, 0))
+                by_build.update(r["lots"])
+            for b in archived:
+                rec = by_build.get(b.get("id"))
+                # Compute the realized snapshot from the live-style record. b is
+                # already flagged archived, so bypass _build_realized's archived
+                # short-circuit by reading the reconciled record directly.
+                b["frozen"] = _freeze_from_record(b, rec)
+            _save_tracked_builds(acct, builds)
+        _acct_kv_save(acct, _IND_ARCHIVED_FROZEN, IND_ARCHIVED_FROZEN_PATH, True)
+
+
+def _freeze_from_record(b, rec):
+    """Realized snapshot for a build from its (archived-included) reconcile
+    record — the same shape :func:`_build_realized` returns, but computed from
+    ``rec`` directly so it works even though ``b`` is already flagged archived."""
+    a = rec or {"sold": 0, "net": 0.0, "cost": 0.0, "profit": 0.0}
+    writeoff = 0.0
+    profit = a.get("profit")
+    if b.get("abandoned"):
+        cpu = _build_cost_per_unit(b)
+        writeoff = (int(b.get("writeoff_units") or 0) * cpu) if cpu is not None else 0.0
+        if profit is not None:
+            profit -= writeoff
+    return {"units": a.get("sold", 0), "net": a.get("net", 0.0),
+            "cost_of_sold": a.get("cost"), "writeoff": writeoff, "profit": profit}
 
 
 def _reconcile_sell_ledger(acct, transactions):
@@ -1722,7 +1910,17 @@ def _build_realized(b, rec):
     (``rec`` = the build's entry from :func:`ind_track.reconcile`, or None). Adds
     the abandoned-remainder write-off: a build the user gave up on books the
     frozen cost of its never-sold units as a realized loss, so profit and the
-    portfolio totals stay honest."""
+    portfolio totals stay honest.
+
+    A **dead** build (archived or stopped) is a done deal: reconcile never sees
+    it, so it has no live ``rec``. Its realized totals are the snapshot frozen at
+    close-out (``b["frozen"]``) — read verbatim, never re-derived, so a later sale
+    of the same fungible item can't disturb closed history."""
+    if _is_dead(b):
+        fz = b.get("frozen") or {}
+        return {"units": fz.get("units", 0), "net": fz.get("net", 0.0),
+                "cost_of_sold": fz.get("cost_of_sold"),
+                "writeoff": fz.get("writeoff", 0.0), "profit": fz.get("profit")}
     a = rec or {"sold": 0, "net": 0.0, "cost": 0.0, "profit": 0.0}
     units = a.get("sold", 0)
     net = a.get("net", 0.0)
@@ -1755,6 +1953,10 @@ def _build_stage(b, rec=None):
     read the same reconciled record. ``rec`` is optional so a bare
     ``_build_stage(b)`` still gives the pre-delivery stage server-side; a
     delivered build with no ``rec`` falls back to ``built``."""
+    if b.get("archived"):
+        return "sold"          # archived = a closed, fully-sold position
+    if b.get("stopped"):
+        return "stopped"       # untracked with a remainder — a dead, frozen lot
     if b.get("done_at") is None:
         return "building" if b.get("job_id") is not None else "planned"
     stage = (rec or {}).get("stage")
@@ -1848,6 +2050,7 @@ def do_ind_summary(q):
     if not acct:
         return {"builds": []}
     _migrate_sell_state(acct)
+    _migrate_freeze_archived(acct)
     builds = _load_tracked_builds(acct)
     ledger = _load_sell_ledger(acct)
     listed = _load_listed_units(acct)
@@ -1865,7 +2068,9 @@ def do_ind_summary(q):
         # Capital in flight = frozen cost of produced-but-unsold units, plus the
         # full cost of builds still in the pipeline. An abandoned remainder is a
         # realized write-off, not capital in flight, so it's excluded.
-        if batch_cost is not None:
+        if _is_dead(b):
+            pass                                         # closed: no capital held
+        elif batch_cost is not None:
             cpu = _build_cost_per_unit(b)
             if b.get("done_at") is None:
                 capital_in_flight += batch_cost          # nothing produced yet
@@ -1906,6 +2111,11 @@ def do_ind_summary(q):
             # A closed position the user filed away — hidden from the board's
             # lanes and (like abandoned) never listed or the 🔗 anchor.
             "archived": bool(b.get("archived")),
+            # Stopped tracking with stock unsold: dead + frozen like archived,
+            # but ``stopped_held`` units were left on the market untracked — the
+            # client raises a per-product "posted but no longer tracked" badge.
+            "stopped": bool(b.get("stopped")),
+            "stopped_held": int(b.get("stopped_held") or 0) if b.get("stopped") else 0,
             "batch_cost": batch_cost,
             "units_produced": _build_units_produced(b),
             "cost_per_unit": _build_cost_per_unit(b),
@@ -3778,6 +3988,8 @@ _POST_ROUTES = {
     "/api/ind/builds/save": do_ind_builds_save,
     "/api/ind/builds/delete": do_ind_builds_delete,
     "/api/ind/builds/archive": do_ind_builds_archive,
+    "/api/ind/builds/stop": do_ind_builds_stop,
+    "/api/ind/builds/edit": do_ind_builds_edit,
     "/api/ind/builds/link": do_ind_builds_link,
     "/api/ind/builds/sell/abandon": do_ind_builds_sell_abandon,
 }

@@ -1606,10 +1606,10 @@ function indApplyMode(){
 }
 
 // Keep the Tracker button's (N) badge in sync with the count of ACTIVE builds.
-// Archived builds are hidden in the collapsed section and shouldn't inflate the
-// badge — it reflects what's live in the tracker, not the full history.
+// Dead builds (archived/stopped) are hidden in the collapsed drawer and
+// shouldn't inflate the badge — it reflects what's live, not the full history.
 function _updateTrackCount(){
-  const n=IND.builds.filter(b=>!b.archived).length;
+  const n=IND.builds.filter(b=>!b.archived&&!b.stopped).length;
   const badge=$("#ind-track-count");
   if(badge){
     badge.textContent = n?`(${n})`:"";
@@ -1646,13 +1646,52 @@ function deleteBuild(id){
     body:JSON.stringify({id})}).then(_refreshSummary).catch(_refreshSummary);
 }
 
-// Archive (hide into the collapsed Archived section) or unarchive a build. The
-// build stays in the portfolio stats either way — this only declutters the list.
+// Archive (file away a FULLY-SOLD build) or unarchive. The server refuses to
+// archive a build that still holds unsold stock — that's a "stop tracking" case
+// — so this is server-authoritative: we apply the flag only if the call is ok,
+// and surface the reason otherwise. Archiving freezes the build's realized
+// profit; it stays in the portfolio total but leaves the board's lanes.
 function archiveBuild(b, archived){
-  b.archived=archived;
-  renderIndBuilds();
   fetch("/api/ind/builds/archive",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({id:b.id, archived:archived?"1":"0"})}).catch(()=>{});
+    body:JSON.stringify({id:b.id, archived:archived?"1":"0"})}).then(r=>r.json()).then(res=>{
+    if(res && res.ok){
+      b.archived=!!(res.build&&res.build.archived);
+      if(res.build) b.frozen=res.build.frozen;
+      renderIndBuilds();
+      if(typeof loadSummary==="function") loadSummary(); else _refreshSummary();
+    } else if(res && res.error){ alert(res.error); }
+  }).catch(()=>{});
+}
+
+// Stop tracking a build that still holds unsold stock: what already sold is
+// frozen (kept in the portfolio total), and the held remainder is orphaned —
+// left on the market untracked and flagged with a per-product badge. The build
+// goes dead: reconcile never touches it again, so later sales of the same item
+// flow to your live builds. Pass stopped=false to resume tracking.
+function stopBuild(b, stopped){
+  fetch("/api/ind/builds/stop",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:b.id, stopped:stopped?"1":"0"})}).then(r=>r.json()).then(res=>{
+    if(res && res.ok){
+      if(res.build){ b.stopped=!!res.build.stopped;
+        b.stopped_held=res.build.stopped_held||0; b.frozen=res.build.frozen; }
+      renderIndBuilds();
+      if(typeof loadSummary==="function") loadSummary(); else _refreshSummary();
+    } else if(res && res.error){ alert(res.error); }
+  }).catch(()=>{});
+}
+
+// Correct a tracked build's run count (the only editable field — it re-scales
+// produced units, so cost and the sold/held split re-derive on reconcile).
+// Refused on a dead (archived/stopped) build.
+function editBuildRuns(b, runs){
+  fetch("/api/ind/builds/edit",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:b.id, runs:String(runs)})}).then(r=>r.json()).then(res=>{
+    if(res && res.ok){
+      if(res.build){ b.runs=res.build.runs; b.abandoned=!!res.build.abandoned; }
+      renderIndBuilds();
+      if(typeof loadSummary==="function") loadSummary(); else _refreshSummary();
+    } else if(res && res.error){ alert(res.error); }
+  }).catch(()=>{});
 }
 
 // Job status of a build, derived from its stored link fields + live jobs. This
@@ -1792,11 +1831,12 @@ function renderIndBuilds(){
       // Jobs already linked to a build must not be offered as a close match to
       // an awaiting one. Collect the linked ids (as strings) up front.
       const linked=new Set(IND.builds.filter(b=>b.job_id!=null).map(b=>String(b.job_id)));
-      // Archived builds sit in their own collapsed drawer below the board, out
-      // of the lane buckets (they still count in the portfolio stats — archive
-      // is a declutter, not a delete).
-      const archived=IND.builds.filter(b=>b.archived);
-      const active=IND.builds.filter(b=>!b.archived);
+      // Dead builds — archived (filed away fully sold) and stopped (untracked
+      // with a remainder) — sit in their own collapsed drawer below the board,
+      // out of the lane buckets. They still carry their frozen realized profit in
+      // the portfolio stats; they're just closed out of the active pipeline.
+      const archived=IND.builds.filter(b=>b.archived||b.stopped);
+      const active=IND.builds.filter(b=>!b.archived&&!b.stopped);
       // A dropped/deleted build could still be the focused one — forget it so the
       // panel doesn't try to render a card that no longer exists.
       if(IND.focusedBuild && !IND.builds.some(b=>b.id===IND.focusedBuild))
@@ -1825,7 +1865,27 @@ function renderIndBuilds(){
           <div class="ind-lane-tiles">${tiles}</div>
         </section>`;
       }).join("");
-      let html=`<div class="ind-board" role="list">${laneHtml}</div>`;
+      // ── Untracked-stock warning ──────────────────────────────────────────
+      // A stopped build can leave held units on the market untracked. Surface
+      // that per product as a persistent banner so those orphaned units aren't
+      // silently forgotten — the sale of them won't accrue to any tracked build.
+      const orphanByProduct={};
+      IND.builds.filter(b=>b.stopped && (b.stopped_held||0)>0).forEach(b=>{
+        const k=b.product_type_id;
+        if(!orphanByProduct[k]) orphanByProduct[k]={name:b.product_name||"?", units:0};
+        orphanByProduct[k].units+=b.stopped_held||0;
+      });
+      const orphans=Object.values(orphanByProduct);
+      let warnHtml="";
+      if(orphans.length){
+        const items=orphans.sort((a,b)=>b.units-a.units)
+          .map(o=>`<li><b>${o.units.toLocaleString()}×</b> ${o.name}</li>`).join("");
+        warnHtml=`<div class="ind-orphan-warn" role="status">
+          <div class="ind-orphan-head">⚠ Untracked stock on the market</div>
+          <div class="ind-orphan-sub">You stopped tracking builds that still had unsold units. Their sales won't accrue to any build — check these:</div>
+          <ul class="ind-orphan-list">${items}</ul></div>`;
+      }
+      let html=warnHtml+`<div class="ind-board" role="list">${laneHtml}</div>`;
 
       // ── Focus panel ──────────────────────────────────────────────────────
       // The full card for whichever tile is focused, docked under the board.
@@ -1848,7 +1908,7 @@ function renderIndBuilds(){
         const tiles=archived.map(b=>_buildTileHtml(b, linked)).join("");
         html+=`<div class="ind-archive-drawer${collapsed?" collapsed":""}" data-grp="archived">
           <div class="ind-archive-head" data-grp="archived">
-            <span class="grp-arrow">▾</span>📦 Archived
+            <span class="grp-arrow">▾</span>📦 Archived &amp; stopped
             <span class="chip-count">(${archived.length})</span></div>
           <div class="ind-archive-tiles">${tiles}</div></div>`;
       }
@@ -1952,14 +2012,20 @@ function _buildTileHtml(b, linked){
     const pct=target>0?Math.min(100,rz.units/target*100):0;
     line=`<span class="ind-tile-dim">${rz.units.toLocaleString()} / ${target.toLocaleString()} sold</span>`;
     bar=`<div class="ind-tile-bar"><span class="ind-tile-bar-fill listed" style="width:${pct.toFixed(1)}%"></span></div>`;
+  } else if(stage==="stopped"){
+    const rz=_buildRealized(b);
+    const orphan=b.stopped_held||0;
+    line=`<span class="ind-tile-dim">stopped ·</span> <b class="${pn(rz.profit)}">${isk(rz.profit)}</b>`
+      +(orphan>0?` <span class="ind-tile-warn" title="${orphan.toLocaleString()} unsold unit(s) left on the market, no longer tracked">⚠ ${orphan.toLocaleString()} untracked</span>`:"");
   } else { // sold
     const rz=_buildRealized(b);
     const early=b.abandoned;
     line=`<span class="ind-tile-dim">${early?"closed":"sold"} ·</span> <b class="${pn(rz.profit)}">${isk(rz.profit)}</b>`;
     // Finished builds can be archived straight from the board — the same
     // declutter action the full card offers, brought up to the tile so a sold
-    // batch can be filed away without opening it.
-    if(!b.archived) foot=`<div class="ind-tile-foot">`
+    // batch can be filed away without opening it. Dead builds (archived/stopped)
+    // already live in the drawer and offer their own resume/unarchive actions.
+    if(!b.archived&&!b.stopped) foot=`<div class="ind-tile-foot">`
       +`<button class="ind-tile-archive" title="Archive this sold build — hides it in the collapsed Archived section below. It still counts in your portfolio stats.">📦 Archive</button></div>`;
   }
 
@@ -1984,7 +2050,7 @@ function openTrackedBuild(id){
   // the tile we're about to scroll to is visible.
   IND.focusedBuild=id;
   IND.buildsExpanded.add(id);
-  if(b.archived) IND.buildGroups.archived=false;
+  if(b.archived||b.stopped) IND.buildGroups.archived=false;
   if(IND.mode!=="summary") indSetMode("summary"); else renderIndBuilds();
   const box=$("#ind-builds");
   const panel=box&&box.querySelector(".ind-focus");
@@ -2240,6 +2306,31 @@ function _buildSellHtml(b, stage){
       <span class="ind-sell-head">Set your sell price</span>
       ${_buildDeciderHtml(b, stage)}
       <div class="ind-sell-hint">List it in EVE at your chosen price, or dump into buy orders — sales track themselves from your wallet, oldest batch first. Nothing to link.</div>
+      <div class="ind-sell-foot">
+        <button class="ind-sell-edit" title="Correct this build's run count if it didn't match reality. Re-scales produced units; sold units are untouched.">Edit runs</button>
+        <button class="ind-sell-stop" title="Stop tracking this build. Anything already sold stays in your stats (frozen); the unsold units are left untracked and flagged. Reversible.">Stop tracking ▸</button>
+        <button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>
+      </div>
+    </div>`;
+  }
+
+  if(stage==="stopped"){
+    // A dead, frozen build the user stopped following with stock still unsold.
+    // What sold keeps its real profit; the held remainder was orphaned onto the
+    // market untracked (surfaced by the per-product badge elsewhere). Only action
+    // is to resume tracking — which hands its lots back to reconcile live.
+    const rz=_buildRealized(b);
+    const orphan=b.stopped_held||0;
+    return `<div class="ind-sell ind-sell-stopped-panel" data-id="${b.id}">
+      <div class="ind-done-hero">
+        <div class="ind-done-lbl">Stopped tracking · realized</div>
+        <div class="ind-done-val ${pn(rz.profit)}">${_signIsk(rz.profit)}</div>
+        <div class="ind-done-sub">${rz.units.toLocaleString()} sold${orphan>0?` · ${orphan.toLocaleString()} left on the market, untracked`:""}</div>
+      </div>
+      <div class="ind-sell-foot">
+        <button class="ind-sell-resume" title="Resume tracking this build — reconcile picks its lots back up and later sales of this item can accrue to it again.">Resume tracking</button>
+        <button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>
+      </div>
     </div>`;
   }
 
@@ -2308,6 +2399,8 @@ function _buildSellHtml(b, stage){
       ${_buildDeciderHtml(b, stage)}
       <div class="ind-sell-foot">
         ${remain>0?`<button class="ind-sell-abandon" title="Give up on the ${remain.toLocaleString()} unsold unit(s): write off their frozen cost as a loss so capital-in-flight clears and later sales of this item flow to your next batch. Reversible.">Abandon remainder ▸</button>`:""}
+        <button class="ind-sell-edit" title="Correct this build's run count if it didn't match reality. Re-scales produced units; sold units are untouched.">Edit runs</button>
+        <button class="ind-sell-stop" title="Stop tracking this build. What's already sold stays in your stats (frozen); the ${remain.toLocaleString()} unsold unit(s) are left on the market untracked and flagged. Reversible.">Stop tracking ▸</button>
         <button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>
       </div>
     </div>`;
@@ -2727,6 +2820,28 @@ function _wireSellCard(card, b){
   if(card.querySelector(".ind-decider")) _wireBuildDecider(card, b);
   const archive=card.querySelector(".ind-sell-archive");
   if(archive) archive.onclick=()=>archiveBuild(b, !b.archived);
+  const edit=card.querySelector(".ind-sell-edit");
+  if(edit) edit.onclick=()=>{
+    const cur=Math.max(1, b.runs||1);
+    const val=prompt(`Correct the run count for this build of ${b.product_name||"?"}.\n`
+      +`This re-scales produced units (sold units are untouched).`, String(cur));
+    if(val==null) return;
+    const runs=parseInt(val,10);
+    if(!(runs>=1)){ alert("Enter a run count of 1 or more."); return; }
+    if(runs!==cur) editBuildRuns(b, runs);
+  };
+  const stop=card.querySelector(".ind-sell-stop");
+  if(stop) stop.onclick=()=>{
+    const rz=_buildRealized(b);
+    const remain=Math.max(0, (_buildUnits(b)||0)-rz.units);
+    if(confirm(`Stop tracking this build of ${b.product_name||"?"}?\n\n`
+      +`• ${rz.units.toLocaleString()} already-sold unit(s) keep their profit (frozen in your stats).\n`
+      +`• ${remain.toLocaleString()} unsold unit(s) are left on the market untracked and flagged.\n\n`
+      +`Later sales of this item will flow to your live builds instead. Reversible.`))
+      stopBuild(b, true);
+  };
+  const resume=card.querySelector(".ind-sell-resume");
+  if(resume) resume.onclick=()=>stopBuild(b, false);
   const sdel=card.querySelector(".ind-sell-delete");
   if(sdel) sdel.onclick=()=>{
     if(confirm(`Delete this build of ${b.product_name||"?"}? This removes the build and its share of the tracked realized profit from your stats. This can't be undone.`))

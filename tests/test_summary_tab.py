@@ -97,12 +97,17 @@ def test_automatic_sale_rendering_wired():
     # transactions with no order linking, so both instant and listed sales are
     # treated uniformly — the panel just says sales accrue from the wallet.
     assert "accrue from your wallet" in src
-    # The only sell action is Abandon (write off the unsold remainder); the old
-    # start/link/unlink/cancel/close/edit machinery is gone.
+    # Sell actions in the pooled model: Abandon (write off the unsold remainder),
+    # Stop tracking (freeze sold, orphan held), Edit runs (correct the count), and
+    # Archive (file a fully-sold build). The old order-linking machinery is gone.
     assert "ind-sell-abandon" in src
     assert "sell/abandon" in src
+    assert "ind-sell-stop" in src
+    assert "ind-sell-edit" in src
+    assert "builds/stop" in src
+    assert "builds/edit" in src
     for gone in ("ind-sell-start", "ind-sell-cancel", "ind-sell-close",
-                 "ind-sell-edit", "ind-sell-unlink", "ind-sell-pick",
+                 "ind-sell-unlink", "ind-sell-pick",
                  'sell.mode==="instant"', "needs_pick"):
         assert gone not in src, gone
 

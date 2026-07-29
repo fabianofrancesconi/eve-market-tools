@@ -183,7 +183,9 @@ def allocate_fifo(lots, fills):
     ``lots`` — delivered lots for one product, each
     ``{id, units, cost_per_unit, sales_tax, done_at}`` where ``units`` is the
     *allocatable capacity* (produced output, minus any abandoned write-off).
-    Allocated oldest-produced first (see :func:`_ordered_delivered`).
+    Allocated oldest-produced first (see :func:`_ordered_delivered`). Archived
+    lots are NOT passed here — reconcile drops them from every pass (their profit
+    is frozen at archive time), so only live and abandoned lots compete for fills.
     ``fills`` — sale fills for the same product, each
     ``{units, price, ts, transaction_id}``. Consumed oldest-sold first (by
     ``ts``); a fill spills across as many lots as needed.
@@ -346,13 +348,11 @@ def reconcile(lots, fills, listed_units):
       * ``cost_per_unit`` / ``sales_tax`` — frozen cost basis / tax for profit.
       * ``abandoned``     — the unsold remainder was written off; the lot is
                             closed, holds nothing, and can never be listed.
-      * ``archived``      — a closed position the user filed away (declutter, not
-                            a write-off). Its already-sold units keep their
-                            profit, but the tracker board never shows it in a
-                            lane, so — like ``abandoned`` — it is excluded from
-                            listing and the anchor election: a live order lands
-                            on the visible held stock instead, never on a hidden
-                            lot (that mismatch was the LINKED-vs-Built bug).
+
+    Archived builds are *dead* and are never passed to reconcile — the caller
+    (:func:`~lp-web._reconcile_products`) drops them first and reads their frozen
+    realized snapshot instead, so their old lots can't absorb a fresh fill or
+    win the listing anchor from a live build (the old LINKED-vs-Built bug).
     ``fills`` — the product's wallet sell fills (``{units, price, ts,
     transaction_id}``).
     ``listed_units`` — total ``volume_remain`` on the product's open sell orders.
@@ -390,10 +390,10 @@ def reconcile(lots, fills, listed_units):
     per_lot, summary = allocate_fifo(alloc_lots, fills)
 
     # 2. Listing: live order volume over held stock of *open* delivered lots,
-    #    oldest-first (units = produced; held = produced − sold). Abandoned and
-    #    archived lots are closed positions — the board never shows them in a
-    #    lane, so the order (and the 🔗 badge it drives) must NOT land on them or
-    #    the badge would point at a hidden lot while the visible one reads Built.
+    #    oldest-first (units = produced; held = produced − sold). Abandoned lots
+    #    are closed positions holding nothing, so the order (and the 🔗 badge it
+    #    drives) must NOT land on them or the badge would point at a written-off
+    #    lot while the visible one reads Built. (Archived lots never reach here.)
     listable = [{"id": l["id"], "units": l.get("produced") or 0,
                  "done_at": l.get("done_at")}
                 for l in lots if _open(l)]

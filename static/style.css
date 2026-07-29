@@ -1636,6 +1636,18 @@
   .ind-focus .ind-build-card.listed { border-left-color:var(--stg-listed); }
   .ind-focus .ind-build-card.sold, .ind-focus .ind-build-card.done { border-left-color:var(--stg-sold); }
 
+  /* ── Untracked-stock warning banner ──────────────────────────────── */
+  .ind-orphan-warn { border:1px solid var(--gold); border-radius:8px;
+    background:rgba(200,160,64,.08); padding:10px 13px; margin-bottom:12px; }
+  .ind-orphan-head { color:var(--gold); font-weight:700; font-size:13px; }
+  .ind-orphan-sub { color:var(--dim); font-size:12px; margin:3px 0 6px; }
+  .ind-orphan-list { margin:0; padding-left:18px; font-size:12.5px; }
+  .ind-orphan-list li { margin:2px 0; }
+  .ind-orphan-list b { color:var(--fg); font-variant-numeric:tabular-nums; }
+
+  /* ── Stopped-tracking panel ───────────────────────────────────────── */
+  .ind-sell-stopped-panel .ind-done-lbl { color:var(--gold); }
+
   /* ── Archived drawer ──────────────────────────────────────────────── */
   .ind-archive-drawer { margin-top:16px; }
   .ind-archive-head { font-size:11.5px; font-weight:700; text-transform:uppercase;
@@ -1788,11 +1800,15 @@
   .ind-sell-head { font-weight:700; color:var(--green2,#4caf76); font-size:12px;
     text-transform:uppercase; letter-spacing:.5px; }
   .ind-sell-price b { color:var(--fg); font-weight:700; }
-  .ind-sell-analyze, .ind-sell-abandon, .ind-sell-archive, .ind-sell-delete {
+  .ind-sell-analyze, .ind-sell-abandon, .ind-sell-archive, .ind-sell-delete,
+  .ind-sell-edit, .ind-sell-stop, .ind-sell-resume {
     padding:2px 10px; font-size:11px; cursor:pointer; border-radius:4px;
     background:var(--panel2); border:1px solid var(--line2); color:var(--dim); }
   .ind-sell-analyze:hover { border-color:var(--cyan); color:var(--cyan); }
   .ind-sell-archive:hover:not(:disabled) { border-color:var(--gold,#c8a040); color:var(--gold,#c8a040); }
+  .ind-sell-edit:hover:not(:disabled) { border-color:var(--cyan); color:var(--cyan); }
+  .ind-sell-stop:hover:not(:disabled) { border-color:var(--gold,#c8a040); color:var(--gold,#c8a040); }
+  .ind-sell-resume:hover:not(:disabled) { border-color:var(--green2,#4caf76); color:var(--green2,#4caf76); }
   .ind-sell-delete:hover:not(:disabled) { border-color:var(--red); color:var(--red); }
   /* Delete is destructive → push it to the right of the foot. */
   .ind-sell-delete { margin-left:auto; }

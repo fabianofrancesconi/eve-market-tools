@@ -1821,6 +1821,140 @@
   .ind-sell-watching { color:var(--cyan); font-size:11.5px; }
   .ind-sell-done { color:var(--green2,#4caf76); font-size:11.5px; font-weight:700; }
 
+  /* ── Stage-specific decision panels ──────────────────────────────────
+     Each lifecycle stage's sell block answers ONE question and shows only
+     what serves that answer. The stage's colour (planned/building/built/
+     listed/sold) tints its left rail so the panel reads as the same object
+     the tile carries. Everything non-actionable lives behind "Full detail". */
+
+  /* Planned — "what do I buy, and is it worth acquiring the mats?" The
+     shopping bill up top, the list-vs-dump outcome below it. */
+  .ind-plan { border-left:3px solid var(--stg-planned,#5a7a95);
+    display:flex; flex-direction:column; gap:9px; }
+  .ind-plan-buy { display:flex; flex-direction:column; gap:1px; }
+  .ind-plan-lbl { color:var(--dim); font-size:10px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.5px; }
+  .ind-plan-cost { font-family:"IBM Plex Mono",monospace; font-size:20px;
+    font-weight:700; color:var(--fg); line-height:1.1; }
+  .ind-plan-sub { color:var(--dim2); font-size:10.5px; }
+  .ind-plan-out { display:flex; gap:0; border-top:1px solid var(--line2);
+    padding-top:9px; }
+  .ind-plan-way { flex:1; display:flex; flex-direction:column; gap:1px; }
+  .ind-plan-way + .ind-plan-way { border-left:1px solid var(--line2);
+    padding-left:14px; }
+  .ind-plan-way.dim { opacity:.72; }
+  .ind-plan-way-lbl { color:var(--dim); font-size:10px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.4px; }
+  .ind-plan-way b { font-family:"IBM Plex Mono",monospace; font-size:15px;
+    font-weight:700; color:var(--fg); }
+  .ind-plan-way b.pos { color:var(--green2,#4caf76); }
+  .ind-plan-way b.neg { color:var(--red); }
+
+  /* Building — nothing to act on. A quiet waiting note + the look-ahead. */
+  .ind-sell-peek { border-left:3px solid var(--stg-building,#4fc3f7);
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+
+  /* Built — the decision stage. The instant-dump line sits below the decider,
+     divided off as the secondary "just get rid of it" path. */
+  .ind-sell-nudge { border-left-color:var(--stg-built,#c8a040); }
+  .ind-sell-nudge .ind-sell-head { color:var(--stg-built,#c8a040); }
+  .ind-sell-instant { display:flex; align-items:center; gap:12px;
+    flex-wrap:wrap; padding-top:8px; margin-top:2px;
+    border-top:1px dashed var(--line2); }
+  .ind-sell-instant .ind-sell-price { color:var(--dim2); }
+
+  /* Listed — fine-tune to move the remainder. A slim sold-so-far bar leads. */
+  .ind-sell-live { border-left:3px solid var(--stg-listed,#b085f5);
+    display:flex; flex-direction:column; gap:8px; }
+  .ind-sell-live .ind-sell-head { color:var(--stg-listed,#b085f5); }
+  .ind-listed-progress { display:flex; flex-direction:column; gap:5px; }
+  .ind-listed-bar { height:5px; border-radius:99px; background:var(--panel3);
+    overflow:hidden; }
+  .ind-listed-bar i { display:block; height:100%; border-radius:99px;
+    background:var(--stg-listed,#b085f5); transition:width .25s; }
+  .ind-listed-bar i.neg { background:var(--red); }
+  .ind-listed-line { display:flex; align-items:baseline; justify-content:space-between;
+    gap:12px; font-size:11px; color:var(--dim2); }
+  .ind-listed-line b { font-family:"IBM Plex Mono",monospace; font-size:13px;
+    font-weight:700; white-space:nowrap; }
+  .ind-listed-line b.pos { color:var(--green2,#4caf76); }
+  .ind-listed-line b.neg { color:var(--red); }
+  .ind-listed-line small { color:var(--dim); font-weight:400; font-size:10px; }
+
+  /* Sold — the reckoning. A big real-profit hero, then predicted / delta /
+     what-if rows so "how did I do vs the plan?" reads top-down. */
+  .ind-sell-done-panel { border-left:3px solid var(--stg-sold,#66bb6a);
+    display:flex; flex-direction:column; gap:10px; }
+  .ind-done-hero { display:flex; flex-direction:column; gap:1px; }
+  .ind-done-lbl { color:var(--dim); font-size:10px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.5px; }
+  .ind-done-val { font-family:"IBM Plex Mono",monospace; font-size:28px;
+    font-weight:800; line-height:1.05; color:var(--fg); }
+  .ind-done-val.pos { color:var(--green2,#66bb6a); }
+  .ind-done-val.neg { color:var(--red); }
+  .ind-done-sub { color:var(--dim2); font-size:10.5px; }
+  .ind-done-compare { display:flex; flex-direction:column; gap:0;
+    border-top:1px solid var(--line2); }
+  .ind-done-row { display:flex; align-items:baseline; justify-content:space-between;
+    gap:12px; padding:5px 0; border-bottom:1px solid var(--line2); }
+  .ind-done-row:last-child { border-bottom:0; }
+  .ind-done-row.whatif { opacity:.78; }
+  .ind-done-k { color:var(--dim); font-size:11px; }
+  .ind-done-v { font-family:"IBM Plex Mono",monospace; font-size:12.5px;
+    font-weight:700; color:var(--fg); white-space:nowrap; }
+  .ind-done-v.pos { color:var(--green2,#66bb6a); }
+  .ind-done-v.neg { color:var(--red); }
+
+  /* ── Inline price decider (Built + Listed) ───────────────────────────
+     The pricing tool lifted out of the peek modal and docked in the panel:
+     a predicted→now drift line, a break-even-aware slider with snap chips,
+     a live sell-through read, and a copy-to-the-cent price. Reuses the
+     modal's .bp-sim-slider / .bp-chip styling for the slider + chips. */
+  .ind-decider { display:flex; flex-direction:column; gap:8px;
+    background:var(--panel2); border:1px solid var(--line2); border-radius:8px;
+    padding:11px 13px; flex-basis:100%; }
+  .ind-dec-drift { display:flex; align-items:baseline; gap:7px; flex-wrap:wrap;
+    font-size:11px; color:var(--dim); }
+  .ind-dec-drift-k, .ind-dec-now { color:var(--dim); }
+  .ind-dec-drift b, .ind-dec-now b { font-family:"IBM Plex Mono",monospace;
+    color:var(--fg); font-weight:700; }
+  .ind-dec-arrow { color:var(--dim); }
+  .ind-dec-delta { font-family:"IBM Plex Mono",monospace; font-weight:700;
+    font-size:11px; }
+  .ind-dec-delta.pos { color:var(--green2,#4caf76); }
+  .ind-dec-delta.neg { color:var(--red); }
+  .ind-dec-drift-load, .ind-dec-loading, .ind-dec-odds-load { color:var(--dim);
+    font-size:11px; font-style:italic; }
+  .ind-dec-price { display:flex; align-items:baseline; gap:7px; }
+  .ind-dec-price-v { font-family:"IBM Plex Mono",monospace; font-size:22px;
+    font-weight:700; color:var(--fg); line-height:1.1; }
+  .ind-dec-price-u { color:var(--dim); font-size:11px; }
+  .ind-dec-copy { margin-left:auto; padding:2px 10px; font-size:11px;
+    cursor:pointer; border-radius:4px; background:var(--panel);
+    border:1px solid var(--line2); color:var(--dim); }
+  .ind-dec-copy:hover { border-color:var(--cyan); color:var(--cyan); }
+  .ind-dec-slider { margin:6px 0 2px; }
+  .ind-dec-out { display:flex; flex-direction:column; gap:5px; }
+  .ind-dec-metrics { display:flex; gap:18px; flex-wrap:wrap; font-size:11.5px;
+    color:var(--dim); }
+  .ind-dec-m b { font-family:"IBM Plex Mono",monospace; font-weight:700;
+    color:var(--fg); }
+  .ind-dec-m b.pos { color:var(--green2,#4caf76); }
+  .ind-dec-m b.neg { color:var(--red); }
+  .ind-dec-m i { color:var(--dim); font-style:normal; font-size:10px; }
+  .ind-dec-be { font-size:11px; font-weight:600; }
+  .ind-dec-be.ok { color:var(--green2,#4caf76); }
+  .ind-dec-be.bad { color:var(--gold,#c8a040); }
+  .ind-dec-odds { font-size:11px; color:var(--dim2); }
+  .ind-dec-odds b { font-family:"IBM Plex Mono",monospace; font-weight:700; }
+  .ind-dec-odds b.good { color:var(--green2,#4caf76); }
+  .ind-dec-odds b.warn { color:var(--gold,#c8a040); }
+  .ind-dec-odds b.bad { color:var(--red); }
+  .ind-dec-full { align-self:flex-start; margin-top:1px; padding:2px 0;
+    font-size:11px; cursor:pointer; background:none; border:none;
+    color:var(--cyan); }
+  .ind-dec-full:hover { text-decoration:underline; }
+
   /* Tracker mode: count badge on the mode button + Planner's link-across hint. */
   .mode-count { margin-left:5px; font-size:11px; font-weight:700; opacity:.8; }
   .mode-count.hidden { display:none; }

@@ -9,6 +9,7 @@ let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es
            sim:{},   // blueprint_id -> {me,te} what-if override; in-memory only, never persisted
            fillTotal:0, fillDone:0, tradeWeight:50,
            builds:[], buildsLoaded:false, buildsExpanded:new Set(),
+           decider:{},   // build id -> cached inline price-decider live/market state (survives re-renders)
            focusedBuild:null,   // pipeline board: id of the tile expanded into the focus panel
            buildGroups:{},   // stage key -> true when that status group is collapsed (legacy prefs; archived still uses it)
            mode:"planner",
@@ -1842,9 +1843,9 @@ function renderIndBuilds(){
           if(ev.target.closest("button,input,a")) return;
           const id=tile.dataset.id;
           IND.focusedBuild = (IND.focusedBuild===id) ? null : id;
-          // The focus panel is the detailed view — open the card's full frozen
-          // breakdown by default when a tile is focused.
-          if(IND.focusedBuild) IND.buildsExpanded.add(IND.focusedBuild);
+          // The focus panel leads with the stage-specific decision view; the full
+          // frozen breakdown (cost basis, materials) stays behind "Full detail" so
+          // the panel opens uncluttered — the user reveals the numbers on demand.
           renderIndBuilds();
           if(IND.focusedBuild){
             const panel=box.querySelector(".ind-focus");
@@ -2156,100 +2157,389 @@ function _buildProposedPrice(b){
   return (be!=null)?Math.max(ask, be):ask;
 }
 
-// The sell section of a card. Sales are FULLY AUTOMATIC in the pooled model:
-// money accrues from wallet transactions (per-product FIFO ledger) with no order
-// linking, so there are no start/link/close/edit buttons — only price scouting
-// and a single Abandon action to write off a remainder you've given up on.
-//  • building → a "Decide price" peek to scout the market before delivery.
-//  • built    → the proposed list/instant prices to copy into EVE; selling
-//               tracks itself once units start moving through your wallet.
-//  • listed/sold → the realized profit + unsold remainder, plus Abandon.
+// The sell section of a card — the stage's actionable heart. Each lifecycle
+// stage answers ONE question, and the panel shows only what serves that answer;
+// everything else lives behind the "Full detail" toggle. Sales are FULLY
+// AUTOMATIC in the pooled model (money accrues from wallet transactions, no order
+// linking), so there are no start/link/close/edit buttons.
+//  • planned  → "what do I buy, and is it worth it?" — the batch shopping bill
+//               plus a list-vs-instant profit hint.
+//  • building → "where is it and when's it done?" — nothing to act on but a look-
+//               ahead at the market (the price decider works pre-delivery too).
+//  • built    → "what do I list it at?" — the inline price decider: predicted-vs-
+//               now drift, a break-even-aware price slider, live sell-through odds
+//               and a copy-to-the-cent price.
+//  • listed   → "should I re-price to move it?" — sold-so-far + the same decider,
+//               scoped to the unsold remainder.
+//  • sold      → "how did I do vs the plan?" — real profit against the prediction,
+//               with a what-if for dumping into buy orders instead.
 function _buildSellHtml(b, stage){
   const isk=v=>v===null||v===undefined?"—":fmtISK(v);
-  if(stage==="building"){
-    // The job is still running (or just finished, "ready for delivery"). No sell
-    // action yet, but the market can already be inspected — the peek's Market tab
-    // (trend + sell-through odds) works at any stage, so let the user look ahead.
-    return `<div class="ind-sell ind-sell-peek" data-id="${b.id}">
-      <button class="ind-sell-analyze" title="Open the price decision tool: market trend + the odds this batch sells within a day at a given price — look ahead before it's delivered">📊 Decide price</button>
-      <span class="ind-sell-hint">Scout the market while it builds — pricing and selling unlock once the job is delivered.</span>
+  const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
+  const s=b.snapshot||{}, n=Math.max(1, b.runs||1);
+  const econ=_batchEconomics(s, n);
+
+  if(stage==="planned"){
+    // The buy answer: the batch shopping bill (materials) and what the finished
+    // lot is projected to clear — list vs instant — so "is it worth acquiring the
+    // mats?" is answered before a single order is placed. The itemised list is a
+    // click away in Full detail; here it's just the totals.
+    const matCost=(econ.matCost!=null)?econ.matCost
+      :(s.material_cost!=null?s.material_cost*n:null);
+    const nMats=(s.required_items||[]).length;
+    const units=_buildUnits(b);
+    return `<div class="ind-sell ind-plan" data-id="${b.id}">
+      <div class="ind-plan-buy">
+        <span class="ind-plan-lbl">Shopping bill</span>
+        <span class="ind-plan-cost">${isk(matCost)}</span>
+        <span class="ind-plan-sub">${nMats?`${nMats.toLocaleString()} material${nMats===1?"":"s"} · `:""}${units!=null?`${units.toLocaleString()} unit${units===1?"":"s"} out`:""} · full list below</span>
+      </div>
+      <div class="ind-plan-out">
+        <div class="ind-plan-way"><span class="ind-plan-way-lbl">Sell & wait</span>
+          <b class="${pn(econ.profitL)}">${_signIsk(econ.profitL)}</b></div>
+        <div class="ind-plan-way dim"><span class="ind-plan-way-lbl">or dump now</span>
+          <b class="${pn(econ.profitI)}">${_signIsk(econ.profitI)}</b></div>
+      </div>
     </div>`;
   }
+
+  if(stage==="building"){
+    // Nothing to sell yet — this stage is waiting. The ETA + location already sit
+    // in the status line above, so all this adds is a look-ahead: scout the market
+    // before delivery (the decider's Market read works at any stage).
+    return `<div class="ind-sell ind-sell-peek" data-id="${b.id}">
+      <span class="ind-sell-hint">Nothing to do but wait — it's in production. Scout where the market's headed before it lands:</span>
+      <button class="ind-sell-analyze" title="Open the price decision tool: market trend + the odds this batch sells within a day at a given price — look ahead before it's delivered">📊 Look at the market</button>
+    </div>`;
+  }
+
   if(stage==="built"){
-    const price=_buildProposedPrice(b);
-    const units=_buildUnits(b);
+    // THE decision stage: what to list at. The inline decider carries it — a
+    // break-even-aware slider, live drift vs the frozen prediction, sell-through
+    // odds and a copy-to-the-cent price. We still expose the frozen instant price
+    // + its own copy button (a one-click "just dump it" path) beside the decider.
     const be=_buildBreakEven(b);
     const d=b.snapshot||{};
-    // Instant-sell price = the frozen highest bid (sell straight into buy orders,
-    // sales tax only, no broker fee). Shown next to the list price so the user
-    // can copy either one; only render it when we have a bid to quote.
     const instantPrice=d.bid;
     const instantRow=(instantPrice!=null)?`
-      <span class="ind-sell-price ind-sell-price-instant">Instant <b>${isk(instantPrice)}</b>/unit</span>
-      <span class="ind-sell-be" title="Selling instantly below this loses money">break-even ${isk(be.instant)}/unit</span>
-      <button class="ind-sell-copy ind-sell-copy-instant" title="Copy the instant-sell price to paste into EVE">⧉ Copy price</button>`:"";
+      <div class="ind-sell-instant">
+        <span class="ind-sell-price ind-sell-price-instant">Or dump now at <b>${isk(instantPrice)}</b>/unit</span>
+        <span class="ind-sell-be" title="Selling instantly below this loses money">break-even ${isk(be.instant)}</span>
+        <button class="ind-sell-copy ind-sell-copy-instant" title="Copy the instant-sell price to paste into EVE">⧉ Copy</button>
+      </div>`:"";
     return `<div class="ind-sell ind-sell-nudge" data-id="${b.id}">
-      <span class="ind-sell-head">Ready to sell</span>
-      <span class="ind-sell-price">List <b>${isk(price)}</b>/unit${units!=null?` · ${units.toLocaleString()} unit(s)`:""}</span>
-      <span class="ind-sell-be" title="Selling below this loses money">break-even ${isk(be.list)}/unit</span>
-      <button class="ind-sell-copy" title="Copy the proposed list price to paste into EVE's sell order">⧉ Copy price</button>
+      <span class="ind-sell-head">Set your sell price</span>
+      ${_buildDeciderHtml(b, stage)}
       ${instantRow}
-      <button class="ind-sell-analyze" title="Open the price decision tool: market trend + the odds this batch sells within a day at a given price">📊 Decide price</button>
-      <div class="ind-sell-hint">List it in-game (or instant-sell into buy orders) and the app tracks the sale automatically — profit accrues from your wallet transactions at the real fill price, oldest batch first. Nothing to link.</div>
+      <div class="ind-sell-hint">List it in EVE at your chosen price (or dump into buy orders) — sales track themselves from your wallet, oldest batch first. Nothing to link.</div>
     </div>`;
   }
+
   if(stage==="listed"||stage==="sold"){
     const rz=_buildRealized(b);
     const target=_buildUnits(b)||0;
     const cpu=b.cost_per_unit;
     const remain=Math.max(0, target-rz.units);
-    const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
-    // Projected profit on the unsold remainder, valued at the frozen ask (patient
-    // list order, tax + broker fee).
-    const d=b.snapshot||{};
-    const stax=d.sales_tax||0, bfee=d.broker_fee||0;
-    const projRemain=(d.ask!=null&&cpu!=null)?remain*(d.ask*(1-stax-bfee)-cpu):null;
     const closed=stage==="sold";
     const closedEarly=closed&&b.abandoned;
-    // A cost line for the realized card: when abandoned, the written-off
-    // remainder is shown so the profit number's loss component is explicit.
-    const costSub=closedEarly&&rz.writeoff>0
-      ? `net ${isk(rz.net)} − sold cost ${isk(rz.cost)} − write-off ${isk(rz.writeoff)}`
-      : `net ${isk(rz.net)} − cost ${isk(rz.cost)}`;
-    let watchMsg;
-    if(closed) watchMsg="";
-    else if(rz.units>0) watchMsg=`↻ Selling — ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold; sales accrue from your wallet automatically${remain>0?` · ${remain.toLocaleString()} still to sell`:""}.`;
-    else watchMsg=`⏳ On the market — sales will accrue here from your wallet as units of ${b.product_name||"this item"} sell.`;
+
+    if(closed){
+      // Game over — compare the plan against reality. The hero is the real
+      // realized profit; beside it, what we predicted when the build was tracked
+      // (frozen list estimate) and the delta, plus a what-if: had you dumped the
+      // whole lot into buy orders at the frozen bid instead.
+      const predicted=econ.profitL;               // the plan: patient list
+      const actual=rz.profit;
+      const delta=(predicted!=null&&actual!=null)?actual-predicted:null;
+      const whatIfInstant=econ.profitI;            // if you'd dumped at the frozen bid
+      const costSub=closedEarly&&rz.writeoff>0
+        ? `net ${isk(rz.net)} − sold cost ${isk(rz.cost)} − write-off ${isk(rz.writeoff)}`
+        : `net ${isk(rz.net)} − cost ${isk(rz.cost)}`;
+      return `<div class="ind-sell ind-sell-done-panel" data-id="${b.id}">
+        <div class="ind-done-hero">
+          <div class="ind-done-lbl">Real profit${closedEarly?" (closed early)":""}</div>
+          <div class="ind-done-val ${pn(actual)}">${_signIsk(actual)}</div>
+          <div class="ind-done-sub">${rz.units.toLocaleString()} / ${target.toLocaleString()} sold · ${costSub}</div>
+        </div>
+        <div class="ind-done-compare">
+          <div class="ind-done-row">
+            <span class="ind-done-k">You predicted</span>
+            <span class="ind-done-v">${_signIsk(predicted)}</span>
+          </div>
+          <div class="ind-done-row">
+            <span class="ind-done-k">vs. reality</span>
+            <span class="ind-done-v ${pn(delta)}" title="How the real sale landed against the list profit you projected when tracking this build">${delta==null?"—":(delta>=0?"beat plan by ":"missed plan by ")+isk(Math.abs(delta))}</span>
+          </div>
+          <div class="ind-done-row whatif">
+            <span class="ind-done-k">What-if: dumped at frozen bid</span>
+            <span class="ind-done-v ${pn(whatIfInstant)}" title="Profit if you'd instant-sold the whole batch into buy orders at the bid frozen when tracked, instead of listing">${_signIsk(whatIfInstant)}</span>
+          </div>
+        </div>
+        <div class="ind-sell-foot">
+          <span class="ind-sell-done">${closedEarly?`✓ Closed early · ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`✓ Fully sold`}</span>
+          ${closedEarly?`<button class="ind-sell-abandon" data-undo="1" title="Undo the write-off: restore the unsold remainder as held stock.">Undo abandon</button>`:""}
+          <button class="ind-sell-archive" title="${b.archived?"Move this build back into the active tracker":"Hide this finished build in the collapsed Archived section. It still counts in your portfolio stats."}">${b.archived?"Unarchive":"Archive"}</button>
+          <button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>
+        </div>
+      </div>`;
+    }
+
+    // Listed: on the market, selling. The job here is fine-tuning the price to
+    // move the remainder — so the decider leads, with a compact sold-so-far line
+    // above it. Full remainder projection stays in Full detail.
+    const watchMsg=rz.units>0
+      ? `${rz.units.toLocaleString()} of ${target.toLocaleString()} sold — sales accrue from your wallet automatically${remain>0?` · ${remain.toLocaleString()} left`:""}.`
+      : `On the market — sales will accrue here from your wallet as units sell.`;
     return `<div class="ind-sell ind-sell-live" data-id="${b.id}">
-      <div class="ind-sell-cards">
-        <div class="ind-sell-card">
-          <div class="ind-sell-card-label">${closed?"Sold":"Sold so far"}</div>
-          <div class="ind-sell-card-val">${rz.units.toLocaleString()} / ${target.toLocaleString()}</div>
-          <div class="ind-sell-card-sub">${closedEarly?`${remain.toLocaleString()} written off`:(closed?"complete":`${remain.toLocaleString()} left`)}</div>
-        </div>
-        <div class="ind-sell-card">
-          <div class="ind-sell-card-label">Realized profit</div>
-          <div class="ind-sell-card-val ${pn(rz.profit)}">${isk(rz.profit)}</div>
-          <div class="ind-sell-card-sub">${costSub}</div>
-        </div>
-        ${closed?"":`<div class="ind-sell-card">
-          <div class="ind-sell-card-label">Remainder (proj.)</div>
-          <div class="ind-sell-card-val ${pn(projRemain)}">${remain>0?isk(projRemain):"—"}</div>
-          <div class="ind-sell-card-sub">${remain>0?`${remain.toLocaleString()} @ frozen ask`:"nothing left"}</div>
-        </div>`}
+      <div class="ind-listed-progress">
+        <div class="ind-listed-bar"><i class="${pn(rz.profit)==="neg"?"neg":""}" style="width:${target>0?Math.min(100,rz.units/target*100).toFixed(1):0}%"></i></div>
+        <div class="ind-listed-line"><span>${watchMsg}</span>
+          <b class="${pn(rz.profit)}">${_signIsk(rz.profit)} <small>realized</small></b></div>
       </div>
+      <span class="ind-sell-head">Fine-tune your price</span>
+      ${_buildDeciderHtml(b, stage)}
       <div class="ind-sell-foot">
-        ${closed?`<span class="ind-sell-done">${closedEarly?`✓ Closed early · ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`✓ Fully sold`}</span>`
-          :`<span class="ind-sell-watching">${watchMsg}</span>`}
-        <button class="ind-sell-analyze" title="Open the price decision tool: market trend + the odds the remaining units sell within a day at a given price">📊 Decide price</button>
-        ${!closed&&remain>0?`<button class="ind-sell-abandon" title="Give up on the ${remain.toLocaleString()} unsold unit(s): write off their frozen cost as a loss so capital-in-flight clears and later sales of this item flow to your next batch. Reversible.">Abandon remainder ▸</button>`:""}
-        ${closedEarly?`<button class="ind-sell-abandon" data-undo="1" title="Undo the write-off: restore the unsold remainder as held stock.">Undo abandon</button>`:""}
-        ${closed?`<button class="ind-sell-archive" title="${b.archived?"Move this build back into the active tracker":"Hide this finished build in the collapsed Archived section. It still counts in your portfolio stats."}">${b.archived?"Unarchive":"Archive"}</button>`:""}
+        ${remain>0?`<button class="ind-sell-abandon" title="Give up on the ${remain.toLocaleString()} unsold unit(s): write off their frozen cost as a loss so capital-in-flight clears and later sales of this item flow to your next batch. Reversible.">Abandon remainder ▸</button>`:""}
         <button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>
       </div>
     </div>`;
   }
   return "";
+}
+
+// A signed ISK string: "+1.2M" / "−0.4M" / "—", keeping the sign explicit so a
+// profit/loss reads at a glance (fmtISK alone drops the leading + on gains).
+function _signIsk(v){
+  if(v==null) return "—";
+  return (v>0?"+":v<0?"−":"")+fmtISK(Math.abs(v));
+}
+
+// ── Inline price decider ──────────────────────────────────────────────────────
+// The pricing decision, lifted OUT of the peek modal and docked straight in the
+// Built/Listed panel so "what do I sell this at?" is answered where you're
+// looking — no modal hop. It reuses the modal's pure market math (owner fees,
+// price-conditioned demand rate, sell-through survival, the break-even rail) but
+// draws its own compact skeleton: a predicted→now drift line, a break-even-aware
+// slider with snap chips, a one-line sell-through read for the chosen price, and
+// a copy-to-the-cent button. Two async fetches fill it: /api/ind/detail for the
+// live best ask/bid, /api/ind/sell-analysis for the order book + history. Their
+// results are cached on IND.decider[id] so a board re-render restores the panel
+// without refetching (and without losing a price the user has dialled in). The
+// full 90-day chart still lives in the modal — one "See the full market" link
+// opens it for anyone who wants to go deeper.
+function _deciderState(b){
+  let st=IND.decider[b.id];
+  if(!st){ st={live:null, liveState:"idle", market:null, marketState:"idle", price:null};
+    IND.decider[b.id]=st; }
+  return st;
+}
+// Everything the decider math needs, resolved once per render: owner fees (live
+// skills, falling back to the snapshot), per-unit cost basis, break-even, and how
+// many units the slider prices (the unsold remainder, or the whole lot pre-sale).
+function _deciderCtx(b){
+  const s=b.snapshot||{}, n=Math.max(1, b.runs||1);
+  const fees=(typeof _peekOwnerFees==="function")?_peekOwnerFees(b)
+    :{stax:s.sales_tax||0, bfee:s.broker_fee||0, live:false, who:null};
+  const be=_buildBreakEven(b);
+  const cpu=(b.cost_per_unit!=null)?b.cost_per_unit:_buildCostPerUnit(b);
+  const rz=_buildRealized(b);
+  const target=_buildUnits(b)||0;
+  const remaining=Math.max(1, (rz.units>0?target-rz.units:target)||1);
+  return {s, n, fees, be, cpu, rz, target, remaining,
+          proposed:_buildProposedPrice(b)};
+}
+function _buildDeciderHtml(b, stage){
+  return `<div class="ind-decider" data-id="${b.id}" data-stage="${stage}">
+    <div class="ind-dec-drift" data-role="drift"></div>
+    <div class="ind-dec-body" data-role="body">
+      <div class="ind-dec-loading">Fetching the current market…</div>
+    </div>
+    <button class="ind-dec-full ind-sell-analyze" title="Open the full market view: 90-day price trend chart + the odds table across every listing duration">See the full market ▸</button>
+  </div>`;
+}
+// Wire one decider: paint whatever's already cached, then kick the fetches that
+// aren't in flight yet. Guarded so a re-render mid-fetch doesn't double-request.
+function _wireBuildDecider(card, b){
+  const root=card.querySelector(`.ind-decider[data-id="${CSS.escape(b.id)}"]`);
+  if(!root) return;
+  const st=_deciderState(b);
+  // The "full market" link reuses the tested modal (opens on its Market tab).
+  const full=root.querySelector(".ind-dec-full");
+  if(full) full.onclick=()=>{
+    if(typeof openBuildPeek==="function") openBuildPeek(b.id, "market");
+    else if(typeof openTrackedBuild==="function") openTrackedBuild(b.id);
+  };
+  // Slider + chip interaction (delegated, attached once per render).
+  root.addEventListener("input", e=>{
+    if(e.target && e.target.classList.contains("ind-dec-slider"))
+      _updateBuildDecider(b, +e.target.value);
+  });
+  root.addEventListener("click", e=>{
+    const chip=e.target.closest && e.target.closest(".bp-chip");
+    if(chip){ e.preventDefault(); _updateBuildDecider(b, +chip.dataset.price); }
+    const copy=e.target.closest && e.target.closest(".ind-dec-copy");
+    if(copy){ e.preventDefault(); _deciderCopy(b, copy); }
+  });
+  _renderDeciderDrift(b);
+  _renderDeciderBody(b);
+  if(st.liveState==="idle"){ st.liveState="loading"; _fetchDeciderLive(b); }
+  if(st.marketState==="idle"){ st.marketState="loading"; _fetchDeciderMarket(b); }
+}
+// Live best ask/bid — same endpoint + params the modal uses, replaying the frozen
+// job rate/taxes so only market price moves. Cached; stale responses dropped when
+// the build has left the board.
+function _fetchDeciderLive(b){
+  const s=b.snapshot||{};
+  const p=new URLSearchParams({
+    blueprint_id:String(s.blueprint_id||""), station:String(s.station_id||""),
+    job_rate:String(((s.job_rate||0)*100)), sales_tax:String(((s.sales_tax||0)*100)),
+    broker:String(((s.broker_fee||0)*100)), runs:"1", refresh_prices:"1"});
+  fetch("/api/ind/detail?"+p).then(r=>r.json()).then(fresh=>{
+    const st=IND.decider[b.id]; if(!st) return;
+    st.live=(fresh&&!fresh.error)?{ask:fresh.ask, bid:fresh.bid}:null;
+    st.liveState="done";
+    _renderDeciderDrift(b); _renderDeciderBody(b);
+  }).catch(()=>{ const st=IND.decider[b.id]; if(!st) return;
+    st.live=null; st.liveState="error"; _renderDeciderDrift(b); _renderDeciderBody(b); });
+}
+// Order book + recent history for the sell-through odds. Cached; the slider then
+// recomputes the odds locally (price-conditioned) with no refetch.
+function _fetchDeciderMarket(b){
+  const s=b.snapshot||{}, ctx=_deciderCtx(b);
+  const price=ctx.proposed;
+  const p=new URLSearchParams({type_id:String(b.product_type_id||""),
+    station:String(s.station_id||""), qty:String(ctx.remaining||1)});
+  if(price!=null) p.set("price", String(price));
+  fetch("/api/ind/sell-analysis?"+p).then(r=>r.json()).then(m=>{
+    const st=IND.decider[b.id]; if(!st) return;
+    st.market=(m&&!m.error)?m:null;
+    st.marketState=(m&&!m.error)?"done":"error";
+    _renderDeciderBody(b);
+  }).catch(()=>{ const st=IND.decider[b.id]; if(!st) return;
+    st.market=null; st.marketState="error"; _renderDeciderBody(b); });
+}
+// The predicted→now line: the list price you froze when tracking vs. the live
+// best ask, with the drift %. This is the "market moved under me" signal the
+// Built/Listed user most wants before committing to a price.
+function _renderDeciderDrift(b){
+  const root=document.querySelector(`.ind-decider[data-id="${CSS.escape(b.id)}"]`);
+  if(!root) return;
+  const slot=root.querySelector('[data-role="drift"]'); if(!slot) return;
+  const st=_deciderState(b), isk=v=>v==null?"—":fmtISK(v);
+  const frozen=(b.snapshot||{}).ask;
+  const now=st.live?st.live.ask:null;
+  let deltaHtml="";
+  if(st.liveState==="loading") deltaHtml=`<span class="ind-dec-drift-load">checking market…</span>`;
+  else if(now!=null){
+    const diff=(frozen!=null)?now-frozen:null;
+    const cls=diff>0?"pos":(diff<0?"neg":"");
+    const arrow=diff>0?"▲":(diff<0?"▼":"");
+    const pct=(frozen)?` ${Math.abs(diff/frozen*100).toFixed(1)}%`:"";
+    deltaHtml=`<span class="ind-dec-now">now <b>${isk(now)}</b></span>`
+      +(diff!=null&&diff!==0?` <span class="ind-dec-delta ${cls}">${arrow}${pct}</span>`:"");
+  }
+  slot.innerHTML=`<span class="ind-dec-drift-k">Predicted <b>${isk(frozen)}</b></span>`
+    +`<span class="ind-dec-arrow">→</span>${deltaHtml}`;
+}
+// The slider body — built once the live quote lands so its window can bracket the
+// live best ask. Reuses the modal's rail tint (red below break-even, green above)
+// and snap chips. When live is unavailable it degrades to a static advice line.
+function _renderDeciderBody(b){
+  const root=document.querySelector(`.ind-decider[data-id="${CSS.escape(b.id)}"]`);
+  if(!root) return;
+  const slot=root.querySelector('[data-role="body"]'); if(!slot) return;
+  const st=_deciderState(b), ctx=_deciderCtx(b), isk=v=>v==null?"—":fmtISK(v);
+  if(st.liveState==="loading"){
+    slot.innerHTML=`<div class="ind-dec-loading">Fetching the current market…</div>`; return;
+  }
+  const be=ctx.be.list, frozen=ctx.s.ask;
+  const bestAsk=st.live?st.live.ask:null;
+  const undercut=bestAsk!=null?bestAsk*0.9999:null;
+  const refs=[be,frozen,bestAsk,undercut].filter(v=>v!=null);
+  if(!refs.length){
+    slot.innerHTML=`<div class="ind-dec-loading">Live market unavailable — can't suggest a price right now.</div>`;
+    return;
+  }
+  const lo=Math.min(...refs)*0.9, hi=Math.max(...refs)*1.1;
+  // Keep a price the user already dialled in across a re-render; else start at the
+  // undercut-best-ask (the "climb the queue" default), falling back to frozen/BE.
+  if(st.price==null || st.price<lo || st.price>hi)
+    st.price=(undercut!=null)?undercut:(bestAsk!=null?bestAsk:(frozen!=null?frozen:be));
+  const step=Math.max(0.01, (hi-lo)/1000);
+  const railStyle=(be!=null && typeof _peekRailStyle==="function")?` style="${_peekRailStyle(lo,hi,be)}"`:"";
+  const chip=(label,val)=> val==null?"" :
+    `<button class="bp-chip" data-price="${val}" title="Set price to ${isk(val)}">${label}<b>${isk(val)}</b></button>`;
+  slot.innerHTML=`
+    <div class="ind-dec-price"><span class="ind-dec-price-v" data-role="price">${isk(st.price)}</span>
+      <span class="ind-dec-price-u">/ unit</span>
+      <button class="ind-dec-copy" title="Copy this price to the cent, ready to paste into EVE's sell order">⧉ Copy</button></div>
+    <input class="ind-dec-slider bp-sim-slider" type="range" min="${lo}" max="${hi}" step="${step}" value="${st.price}"${railStyle}>
+    <div class="bp-sim-chips">
+      ${chip("Undercut ",undercut)}
+      ${chip("Best ask ",bestAsk)}
+      ${chip("Break-even ",be)}
+      ${chip("Predicted ",frozen)}
+    </div>
+    <div class="ind-dec-out" data-role="out"></div>`;
+  _updateBuildDecider(b, st.price);
+}
+// Recompute the read-out for a chosen price: net after a FRESH broker fee (re-
+// listing always pays broker again), profit on the units this prices, whether
+// it clears break-even, and — once the order book has landed — the odds the whole
+// remainder sells within a day / week at this price, plus an expected clear time.
+function _updateBuildDecider(b, price){
+  const root=document.querySelector(`.ind-decider[data-id="${CSS.escape(b.id)}"]`);
+  if(!root) return;
+  const st=_deciderState(b), ctx=_deciderCtx(b), isk=v=>v==null?"—":fmtISK(v);
+  st.price=price;
+  const priceEl=root.querySelector('[data-role="price"]'); if(priceEl) priceEl.textContent=isk(price);
+  const slider=root.querySelector(".ind-dec-slider"); if(slider && +slider.value!==price) slider.value=price;
+  const out=root.querySelector('[data-role="out"]'); if(!out) return;
+
+  const {stax, bfee}=ctx.fees, cpu=ctx.cpu, qty=ctx.remaining;
+  const netUnit=price*(1-stax-bfee);
+  const profitUnit=(cpu!=null)?netUnit-cpu:null;
+  const aboveBE=(ctx.be.list!=null)?price-ctx.be.list:null;
+  const beLine=(aboveBE==null)?"" : aboveBE>=0
+    ? `<span class="ind-dec-be ok">✓ ${isk(aboveBE)}/unit above break-even</span>`
+    : `<span class="ind-dec-be bad">⚠ ${isk(-aboveBE)}/unit below break-even — you'd lose money</span>`;
+
+  // Sell-through odds for the chosen price (needs the order book + history).
+  let oddsLine="";
+  if(st.marketState==="loading") oddsLine=`<span class="ind-dec-odds-load">estimating sell-through…</span>`;
+  else if(st.market && st.market.series && st.market.series.length
+          && typeof _priceConditionedDailyRate==="function"){
+    const m=st.market;
+    const ahead=_unitsAheadInQueue(m.sell_book, price);
+    const rate=_priceConditionedDailyRate(m.series, price);
+    if(rate!=null){
+      const day=_sellThroughProb(ahead, rate, qty, 1);
+      const week=_sellThroughProb(ahead, rate, qty, 7).all;
+      const pct=v=>v==null?"—":(v*100).toFixed(0)+"%";
+      const cls=v=>v>=0.66?"good":(v>=0.33?"warn":"bad");
+      const eta=day.eta;
+      const etaTxt=(eta==null||!isFinite(eta))?"—":(eta<1?`~${Math.round(eta*24)}h`:(eta<60?`~${eta.toFixed(eta<10?1:0)}d`:"months+"));
+      oddsLine=`<span class="ind-dec-odds">Whole batch sells: <b class="${cls(day.all)}">${pct(day.all)}</b> in a day · <b class="${cls(week)}">${pct(week)}</b> in a week · clears in <b>${etaTxt}</b></span>`;
+    }
+  } else if(st.marketState==="error") oddsLine=`<span class="ind-dec-odds-load">sell-through estimate unavailable</span>`;
+
+  out.innerHTML=`
+    <div class="ind-dec-metrics">
+      <span class="ind-dec-m">Net <b class="${profitUnit!=null?(profitUnit>=0?"pos":"neg"):""}">${isk(netUnit)}</b>/unit <i>after tax + broker</i></span>
+      <span class="ind-dec-m">Profit on ${qty.toLocaleString()} <b class="${profitUnit!=null?(profitUnit*qty>=0?"pos":"neg"):""}">${_signIsk(profitUnit!=null?profitUnit*qty:null)}</b></span>
+    </div>
+    <div class="ind-dec-belines">${beLine}</div>
+    <div class="ind-dec-odds-wrap">${oddsLine}</div>`;
+}
+// Copy the currently-dialled price to the cent (Math.round to 2dp), matching the
+// modal's copy behaviour so a listed order can be pasted straight into EVE.
+function _deciderCopy(b, btn){
+  const st=_deciderState(b); if(st.price==null) return;
+  const txt=String(Math.round(st.price*100)/100);
+  const done=()=>{ const o=btn.textContent; btn.textContent="✓ Copied"; setTimeout(()=>{btn.textContent=o;},1200); };
+  if(navigator.clipboard&&navigator.clipboard.writeText)
+    navigator.clipboard.writeText(txt).then(done).catch(()=>fallbackCopy(txt,done));
+  else fallbackCopy(txt, done);
 }
 
 // The full frozen breakdown, mirroring the detail panel's materials + batch math
@@ -2372,11 +2662,12 @@ function _wireSellCard(card, b){
   // copies the proposed list price; the instant button copies the frozen bid.
   const _wireCopy=(btn, priceFn)=>{
     if(!btn) return;
+    const orig=btn.textContent;
     btn.onclick=()=>{
       const price=priceFn();
       if(price==null) return;
       const txt=String(Math.round(price*100)/100);
-      const done=()=>{ btn.textContent="✓ Copied"; setTimeout(()=>{btn.textContent="⧉ Copy price";},1200); };
+      const done=()=>{ btn.textContent="✓ Copied"; setTimeout(()=>{btn.textContent=orig;},1200); };
       if(navigator.clipboard&&navigator.clipboard.writeText)
         navigator.clipboard.writeText(txt).then(done).catch(()=>fallbackCopy(txt,done));
       else fallbackCopy(txt, done);
@@ -2402,6 +2693,9 @@ function _wireSellCard(card, b){
     if(confirm(`Abandon the ${remain.toLocaleString()} unsold unit(s) of ${b.product_name||"this build"}? Their frozen cost is written off as a loss (so capital-in-flight clears), and later sales of this item flow to your next batch. You can undo this.`))
       setBuildAbandoned(b, true, abandon);
   };
+  // Inline price decider (Built/Listed): draw + fetch its live market in place, so
+  // pricing is decided right here rather than in the modal.
+  if(card.querySelector(".ind-decider")) _wireBuildDecider(card, b);
   const archive=card.querySelector(".ind-sell-archive");
   if(archive) archive.onclick=()=>archiveBuild(b, !b.archived);
   const sdel=card.querySelector(".ind-sell-delete");

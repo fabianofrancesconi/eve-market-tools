@@ -39,27 +39,45 @@ class TestStagePanels:
             assert stage in fn, stage
 
     def test_planned_shows_shopping_bill_and_outcome(self):
-        # "What do I buy, and is it worth it?" — the mat bill plus the two
-        # outcomes (patient list vs dump now), no itemised material rows inline.
+        # "Is this build still worth starting?" — the mat bill plus the two
+        # projected exits (patient list vs dump now), framed as a FORECAST that
+        # will drift by delivery. No itemised material rows inline.
         fn = _sim_fn("_buildSellHtml")
         plan = fn[fn.index('stage==="planned"'):fn.index('stage==="building"')]
         assert "ind-plan" in plan
         assert "Shopping bill" in plan
-        assert "Sell & wait" in plan
+        assert "Sell &amp; wait" in plan
         assert "or dump now" in plan
+        # The two exits are framed as a forecast that drifts (foreshadows the
+        # planned-vs-delivery time delta the whole tracker exists to track).
+        assert "ind-plan-forecast" in plan
+        assert "Forecast" in plan
         # The list-vs-instant profits come from the shared batch economics.
         assert "econ.profitL" in plan
         assert "econ.profitI" in plan
 
     def test_building_is_wait_plus_lookahead_only(self):
-        # Nothing to act on — just a waiting note and the market look-ahead
-        # button (the decider works pre-delivery, so the button lands usefully).
+        # Nothing to act on — a live drift WATCH (the reason to check) plus the
+        # market look-ahead button. No pricing decider before there's stock.
         fn = _sim_fn("_buildSellHtml")
         build = fn[fn.index('stage==="building"'):fn.index('stage==="built"')]
         assert "ind-sell-peek" in build
         assert "ind-sell-analyze" in build
+        # The delta accrues here — surface the frozen→live drift watch.
+        assert "ind-watch" in build
         # No inline decider is drawn before there's stock to price.
         assert "_buildDeciderHtml" not in build
+
+    def test_building_watch_shows_drift_and_profit_impact(self):
+        # The watch reads the frozen plan against the live ask AND translates the
+        # move into projected list-profit ISK — early warning, not an action.
+        fn = _sim_fn("_renderBuildWatch")
+        assert "Planned ask" in fn
+        assert "st.live" in fn
+        # It reuses the shared cached live quote (no separate fetch path).
+        wire = _sim_fn("_wireBuildWatch")
+        assert "_fetchDeciderLive(b)" in wire
+        assert "_deciderState(b)" in wire
 
     def test_built_leads_with_inline_decider(self):
         # The decision stage embeds the decider — which now carries BOTH exit
@@ -67,7 +85,8 @@ class TestStagePanels:
         fn = _sim_fn("_buildSellHtml")
         built = fn[fn.index('stage==="built"'):fn.index('stage==="listed"')]
         assert "_buildDeciderHtml(b, stage)" in built
-        assert "Set your sell price" in built
+        # The plan-meets-reality framing: list or dump, side by side.
+        assert "list or dump" in built
         assert "ind-sell-instant" not in built
 
     def test_listed_shows_progress_and_decider(self):
@@ -76,7 +95,8 @@ class TestStagePanels:
         tail = fn[fn.index('stage==="listed"||stage==="sold"'):]
         assert "ind-listed-progress" in tail
         assert "ind-listed-bar" in tail
-        assert "Fine-tune your price" in tail
+        # The waiting-room framing: keep waiting, or re-price to move it?
+        assert "re-price" in tail
         assert "_buildDeciderHtml(b, stage)" in tail
 
     def test_sold_compares_plan_vs_reality(self):
@@ -86,10 +106,15 @@ class TestStagePanels:
         done = tail[tail.index("if(closed){"):]
         assert "ind-done-hero" in done
         assert "Real profit" in done
+        # Plan vs reality, side by side, with a beat/missed verdict banner.
         assert "You predicted" in done
-        assert "vs. reality" in done
+        assert "ind-done-verdict" in done
+        assert "beat plan by" in done
+        assert "missed plan by" in done
+        # Did patience actually pay? — real sale vs the dump counterfactual.
+        assert "Patience paid off" in done
         # The what-if dumps the whole lot at the frozen bid, not the live one.
-        assert "What-if: dumped at frozen bid" in done
+        assert "dumped at the frozen bid" in done
         assert "econ.profitI" in done
 
 
@@ -113,10 +138,12 @@ class TestInlineDecider:
         assert "/api/ind/sell-analysis?" in book
 
     def test_drift_line_compares_predicted_vs_now(self):
-        # The "market moved under me" signal: frozen predicted ask → live ask.
+        # The "market moved under me" signal: frozen planned ask → live ask,
+        # with a plain-language good/bad-surprise verdict.
         fn = _sim_fn("_renderDeciderDrift")
-        assert "Predicted" in fn
+        assert "Planned ask" in fn
         assert "st.live" in fn
+        assert "ind-dec-drift-verdict" in fn
 
     def test_slider_reuses_modal_rail_and_chips(self):
         # The slider reuses the peek modal's rail tint + chip styling and offers
@@ -149,6 +176,25 @@ class TestInlineDecider:
         # And the delta between them — what patience buys.
         assert "gain" in fn
         assert "ind-dec-route" in fn
+
+    def test_listed_stage_adds_waiting_support(self):
+        # "Keep waiting or re-price?" — the Listed stage gets queue depth (the
+        # hidden reason nothing sells), a slow-vs-overpriced diagnosis from the
+        # conditioned-vs-unconditioned demand rates, and a hold/re-price/dump call.
+        fn = _sim_fn("_updateBuildDecider")
+        # Only fires on the listed stage (built has no remainder-in-market yet).
+        assert 'stage==="listed"' in fn
+        assert "ind-wait" in fn
+        # Queue position — units ahead at/below the chosen price.
+        assert "_unitsAheadInQueue" in fn
+        assert "Behind" in fn
+        # The honest slow-vs-overpriced read (unconditioned baseline vs price).
+        assert "baseRate" in fn
+        assert "priced above market" in fn
+        # A clear recommendation framing.
+        assert "ind-wait-rec" in fn
+        assert "Re-price to move it" in fn
+        assert "Dump the remainder" in fn
 
     def test_breakeven_is_only_a_warning_not_a_headline(self):
         # Break-even is NOT a margin readout; it only surfaces as a ⚠ flag when

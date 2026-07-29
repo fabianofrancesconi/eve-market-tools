@@ -1848,22 +1848,50 @@
   .ind-plan-cost { font-family:"IBM Plex Mono",monospace; font-size:20px;
     font-weight:700; color:var(--fg); line-height:1.1; }
   .ind-plan-sub { color:var(--dim2); font-size:10.5px; }
+  /* The two exit routes — the motif repeated across every stage. On Planned it's
+     a forecast (both dimmed a touch); the shape is the same two-cell split the
+     Built/Listed decider uses, so the eye reads it identically everywhere. */
   .ind-plan-out { display:flex; gap:0; border-top:1px solid var(--line2);
     padding-top:9px; }
-  .ind-plan-way { flex:1; display:flex; flex-direction:column; gap:1px; }
+  .ind-plan-way { flex:1; display:flex; flex-direction:column; gap:2px;
+    position:relative; }
   .ind-plan-way + .ind-plan-way { border-left:1px solid var(--line2);
     padding-left:14px; }
-  .ind-plan-way.dim { opacity:.72; }
+  .ind-plan-way.instant { opacity:.82; }
   .ind-plan-way-lbl { color:var(--dim); font-size:10px; font-weight:700;
     text-transform:uppercase; letter-spacing:.4px; }
-  .ind-plan-way b { font-family:"IBM Plex Mono",monospace; font-size:15px;
-    font-weight:700; color:var(--fg); }
+  .ind-plan-way b { font-family:"IBM Plex Mono",monospace; font-size:16px;
+    font-weight:700; color:var(--fg); line-height:1.15; }
   .ind-plan-way b.pos { color:var(--green2,#4caf76); }
   .ind-plan-way b.neg { color:var(--red); }
+  .ind-plan-way-sub { color:var(--dim2); font-size:10px; }
+  /* The forecast caveat — foreshadows the delta the whole tracker exists to
+     track. Quiet, dashed, planned-hue so it reads as a note not an alarm. */
+  .ind-plan-forecast { font-size:10.5px; color:var(--dim2); line-height:1.4;
+    border-top:1px dashed var(--line2); padding-top:8px; }
+  .ind-plan-forecast b { color:var(--dim); font-weight:700;
+    font-family:"IBM Plex Mono",monospace; }
 
-  /* Building — nothing to act on. A quiet waiting note + the look-ahead. */
+  /* Building — nothing to act on, but the delta accrues. The look-ahead becomes
+     a live drift WATCH: a reason to check without pretending you can list yet. */
   .ind-sell-peek { border-left:3px solid var(--stg-building,#4fc3f7);
-    display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    display:flex; flex-direction:column; align-items:stretch; gap:9px; }
+  .ind-watch { display:flex; flex-direction:column; gap:5px; }
+  .ind-watch-load { color:var(--dim2); font-size:11px; font-style:italic; }
+  .ind-watch-head { font-size:11.5px; font-weight:700; color:var(--stg-building,#4fc3f7);
+    letter-spacing:.2px; }
+  .ind-watch-head.pos { color:var(--green2,#4caf76); }
+  .ind-watch-head.neg { color:var(--red); }
+  .ind-watch-drift { display:flex; align-items:baseline; gap:7px; flex-wrap:wrap;
+    font-size:11px; color:var(--dim); }
+  .ind-watch-k, .ind-watch-now { color:var(--dim); }
+  .ind-watch-k b, .ind-watch-now b { font-family:"IBM Plex Mono",monospace;
+    color:var(--fg); font-weight:700; }
+  .ind-watch-note { font-size:10.5px; color:var(--dim2); line-height:1.4; }
+  .ind-watch-note b { font-family:"IBM Plex Mono",monospace; font-weight:700; }
+  .ind-watch-note b.pos { color:var(--green2,#4caf76); }
+  .ind-watch-note b.neg { color:var(--red); }
+  .ind-sell-peek .ind-sell-analyze { align-self:flex-start; }
 
   /* Built — the decision stage. The inline decider (below) carries both exit
      routes; this branch just tints the head + rail to the built stage colour. */
@@ -1875,6 +1903,10 @@
   .ind-sell-live { border-left:3px solid var(--stg-listed,#b085f5);
     display:flex; flex-direction:column; gap:8px; }
   .ind-sell-live .ind-sell-head { color:var(--stg-listed,#b085f5); }
+
+  /* Shared stage head row — a question + a quiet subhead framing the moment. */
+  .ind-sell-headrow { display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; }
+  .ind-sell-subhead { font-size:10.5px; color:var(--dim2); font-style:italic; }
   .ind-listed-progress { display:flex; flex-direction:column; gap:5px; }
   .ind-listed-bar { height:5px; border-radius:99px; background:var(--panel3);
     overflow:hidden; }
@@ -1889,10 +1921,23 @@
   .ind-listed-line b.neg { color:var(--red); }
   .ind-listed-line small { color:var(--dim); font-weight:400; font-size:10px; }
 
-  /* Sold — the reckoning. A big real-profit hero, then predicted / delta /
-     what-if rows so "how did I do vs the plan?" reads top-down. */
+  /* Sold — the reckoning. A verdict banner (beat/missed) closes the learning
+     loop Planned opened, then a plan-vs-reality two-scenario split (the same
+     two-cell motif as the routes), then the dump counterfactual + whether
+     patience actually paid. */
   .ind-sell-done-panel { border-left:3px solid var(--stg-sold,#66bb6a);
     display:flex; flex-direction:column; gap:10px; }
+  /* Verdict — the takeaway, felt at a glance. Tinted rule + faint wash. */
+  .ind-done-verdict { font-size:12px; font-weight:800; letter-spacing:.3px;
+    color:var(--dim); padding:6px 10px; border-radius:6px;
+    border-left:3px solid var(--dim2); background:var(--panel2); }
+  .ind-done-verdict b { font-family:"IBM Plex Mono",monospace; }
+  .ind-done-verdict.pos { color:var(--green2,#66bb6a);
+    border-left-color:var(--green2,#66bb6a);
+    background:color-mix(in srgb, var(--green2,#66bb6a) 9%, transparent); }
+  .ind-done-verdict.neg { color:var(--red);
+    border-left-color:var(--red);
+    background:color-mix(in srgb, var(--red) 9%, transparent); }
   .ind-done-hero { display:flex; flex-direction:column; gap:1px; }
   .ind-done-lbl { color:var(--dim); font-size:10px; font-weight:700;
     text-transform:uppercase; letter-spacing:.5px; }
@@ -1901,6 +1946,24 @@
   .ind-done-val.pos { color:var(--green2,#66bb6a); }
   .ind-done-val.neg { color:var(--red); }
   .ind-done-sub { color:var(--dim2); font-size:10.5px; }
+  /* Plan vs reality — two cells, side by side, so the divergence is spatial. */
+  .ind-done-scenarios { display:grid; grid-template-columns:1fr 1fr; gap:0;
+    border:1px solid var(--line2); border-radius:7px; overflow:hidden; }
+  @media (max-width:520px){ .ind-done-scenarios { grid-template-columns:1fr; } }
+  .ind-done-scn { padding:9px 12px; display:flex; flex-direction:column; gap:2px; }
+  .ind-done-scn.actual { border-left:1px solid var(--line2);
+    background:color-mix(in srgb, var(--stg-sold,#66bb6a) 5%, transparent); }
+  @media (max-width:520px){ .ind-done-scn.actual { border-left:0;
+    border-top:1px solid var(--line2); } }
+  .ind-done-scn-lbl { color:var(--dim); font-size:10px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.4px; }
+  .ind-done-scn-v { font-family:"IBM Plex Mono",monospace; font-size:18px;
+    font-weight:700; color:var(--fg); line-height:1.1; }
+  .ind-done-scn-v.pos { color:var(--green2,#66bb6a); }
+  .ind-done-scn-v.neg { color:var(--red); }
+  .ind-done-scn-sub { font-size:10px; color:var(--dim2); }
+  .ind-done-scn-sub.pos { color:var(--green2,#66bb6a); font-weight:600; }
+  .ind-done-scn-sub.neg { color:var(--red); font-weight:600; }
   .ind-done-compare { display:flex; flex-direction:column; gap:0;
     border-top:1px solid var(--line2); }
   .ind-done-row { display:flex; align-items:baseline; justify-content:space-between;
@@ -1912,6 +1975,7 @@
     font-weight:700; color:var(--fg); white-space:nowrap; }
   .ind-done-v.pos { color:var(--green2,#66bb6a); }
   .ind-done-v.neg { color:var(--red); }
+  .ind-done-row.patience .ind-done-k { color:var(--fg); font-weight:600; }
 
   /* ── Inline price decider (Built + Listed) ───────────────────────────
      The pricing tool lifted out of the peek modal and docked in the panel:
@@ -1931,8 +1995,15 @@
     font-size:11px; }
   .ind-dec-delta.pos { color:var(--green2,#4caf76); }
   .ind-dec-delta.neg { color:var(--red); }
+  .ind-dec-drift-line { display:flex; align-items:baseline; gap:7px; flex-wrap:wrap; }
   .ind-dec-drift-load, .ind-dec-loading, .ind-dec-odds-load { color:var(--dim);
     font-size:11px; font-style:italic; }
+  /* The plain-language surprise — good/bad drift spoken, not just a %. Weighted
+     and tinted so a pleasant or nasty move lands the instant the quote arrives. */
+  .ind-dec-drift-verdict { font-size:11px; line-height:1.4; margin-top:3px;
+    font-weight:600; }
+  .ind-dec-drift-verdict.pos { color:var(--green2,#4caf76); }
+  .ind-dec-drift-verdict.neg { color:var(--gold,#c8a040); }
   .ind-dec-price { display:flex; align-items:baseline; gap:7px; }
   .ind-dec-price-v { font-family:"IBM Plex Mono",monospace; font-size:22px;
     font-weight:700; color:var(--fg); line-height:1.1; }
@@ -1978,6 +2049,32 @@
   .ind-dec-be { font-size:11px; font-weight:600; }
   .ind-dec-be.bad { color:var(--gold,#c8a040); }
   .ind-dec-odds-load { font-size:10.5px; color:var(--dim); font-style:italic; }
+
+  /* ── Listed-stage waiting support ─────────────────────────────────────
+     "Keep waiting, or is my price wrong?" — a recommendation chip, the queue
+     depth (the hidden reason nothing sells), and a slow-vs-overpriced read.
+     Framed in the listed hue so it belongs to that stage. */
+  .ind-wait { display:flex; flex-direction:column; gap:6px;
+    border-top:1px solid var(--line2); padding-top:9px; }
+  .ind-wait-rec { display:flex; align-items:baseline; gap:8px; }
+  .ind-wait-rec-lbl { font-size:9.5px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.5px; color:var(--dim); }
+  .ind-wait-rec b { font-size:13px; font-weight:800; letter-spacing:.2px;
+    padding:2px 9px; border-radius:99px; border:1px solid currentColor; }
+  .ind-wait-rec.good b { color:var(--green2,#4caf76); }
+  .ind-wait-rec.warn b { color:var(--gold,#c8a040); }
+  .ind-wait-rec.bad b { color:var(--red); }
+  .ind-wait-queue { font-size:11px; color:var(--dim2); line-height:1.4; }
+  .ind-wait-queue-v { font-family:"IBM Plex Mono",monospace; font-weight:700; }
+  .ind-wait-queue-v.good { color:var(--green2,#4caf76); }
+  .ind-wait-queue-v.warn { color:var(--ord-queue,#b085f5); }
+  .ind-wait-queue-v.bad { color:var(--heat-5,#e86a45); }
+  .ind-wait-diag { font-size:10.5px; line-height:1.45; color:var(--dim2); }
+  .ind-wait-diag b { color:var(--fg); font-weight:700; }
+  .ind-wait-diag.over { color:var(--gold,#c8a040); }
+  .ind-wait-diag.over b { color:var(--gold,#c8a040); }
+  .ind-wait-diag.slow { color:var(--dim); }
+  .ind-wait-diag.fair { color:var(--dim2); }
   .ind-dec-full { align-self:flex-start; margin-top:1px; padding:2px 0;
     font-size:11px; cursor:pointer; background:none; border:none;
     color:var(--cyan); }

@@ -2865,8 +2865,16 @@ function _updateBuildDecider(b, price){
     const curListProfit=(cpu!=null)?(curPrice*(1-stax-bfee)-cpu)*qty:null;
     const curGain=(curListProfit!=null&&instProfit!=null)?curListProfit-instProfit:null;
     const curUnderBE=(ctx.be.list!=null)?ctx.be.list-curPrice:null;
+    // Fee-aware re-price gate: undercutting burns a fresh broker fee and books less
+    // per unit, so it must beat holding in EXPECTED value (odds × profit) over the
+    // same 1-week horizon — a transient dip won't clear the bar, a stop-loss will.
+    const bestAskNow=(st.live&&st.live.ask!=null)?st.live.ask:ctx.s.ask;
+    const reprice=_repricePaysOff({curPrice, curOdds:curWeekAll, cpu, stax, bfee,
+      bestAsk:bestAskNow, series:st.market.series, sell_book:st.market.sell_book,
+      qty, horizon:7});
     const v=_callVerdict({underBE:curUnderBE, instProfit, listProfit:curListProfit,
-                          baseRate, rate:curRate, qty, weekAll:curWeekAll, gain:curGain});
+                          baseRate, rate:curRate, qty, weekAll:curWeekAll, gain:curGain,
+                          repriceWorthIt:reprice.worth});
     rec=v.rec; recCls=v.recCls;
     waitBlock=`
       <div class="ind-wait">
@@ -2894,18 +2902,65 @@ function _buildListedOrderPrice(b){
   const o=_peekLinkedOrder(b);
   return (o && o.price!=null) ? o.price : null;
 }
+// Does re-pricing actually PAY, once its cost is counted? Re-pricing is NOT free:
+// relisting the remainder burns a fresh broker fee AND books less per unit (you
+// undercut to a lower price). So the tilt to "re-price" must clear an expected-
+// value bar, not just "you're priced above market":
+//
+//   E[re-price] = P(sells at the lower price) × profit-after-a-fresh-broker-fee
+//   E[hold]     = P(sells at your current price) × profit-with-NO-new-fee
+//
+// Re-price only when E[re-price] > E[hold] by a margin. This encodes the "grano
+// salis": a *transient* dip keeps hold-odds high, so eating the fee to chase a
+// lower price loses — hold. A *permanent* shift (the stop-loss case) collapses the
+// odds of ever selling at your current price, so E[hold] craters and re-pricing
+// wins despite the fee. `ctx` carries {curPrice, curOdds, cpu, stax, bfee,
+// bestAsk, series, sell_book, qty, horizon} — everything to price both sides; null
+// when the caller lacks a real current price (then re-price never fires).
+function _repricePaysOff(ctx){
+  if(!ctx) return {worth:false, gain:null, target:null};
+  const {curPrice, curOdds, cpu, stax, bfee, bestAsk, series, sell_book, qty, horizon}=ctx;
+  if(curPrice==null || cpu==null || curOdds==null || bestAsk==null) return {worth:false, gain:null, target:null};
+  // The re-price target: undercut the best competing ask to join the flow. Only a
+  // move DOWN is a re-price; if you're already at/under the best ask you're already
+  // competitive and nothing here should push you lower.
+  const target=bestAsk*0.9999;
+  if(!(target<curPrice)) return {worth:false, gain:null, target:null};
+  const repRate=_priceConditionedDailyRate(series, target);
+  if(repRate==null) return {worth:false, gain:null, target};
+  const repOdds=_sellThroughProb(_unitsAheadInQueue(sell_book, target), repRate, qty, horizon).all;
+  // Hold pays NO new broker fee (the fee's already sunk); re-pricing pays a fresh
+  // one on the relisted remainder and clears at the lower target price.
+  const holdNet=(curPrice*(1-stax)-cpu)*qty;
+  const repNet =(target*(1-stax-bfee)-cpu)*qty;
+  const holdEV=(curOdds!=null?curOdds:0)*holdNet;
+  const repEV =(repOdds!=null?repOdds:0)*repNet;
+  const gain=repEV-holdEV;
+  // A margin so a wash never nudges you into paying a fee for nothing; require the
+  // relisted lot to at least still book a profit (never "re-price into a loss").
+  return {worth:(repNet>0 && gain>0), gain, target};
+}
 // The Listed-stage "Call" — the ONE recommendation the decider makes about a lot
 // still on the market: dump / re-price / hold. Factored out (from the numbers the
 // decider already has) so the board tile can flag the same verdict WITHOUT drawing
 // the whole decider. Returns {rec, recCls, action}: `action` is the two act-now
 // verdicts only — "dump" or "reprice" — and null for either hold, so a caller can
 // cheaply ask "does this need me?" A slow-going hold is still a hold: no action.
-function _callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, weekAll, gain}){
+// `repriceWorthIt` gates the re-price branch on the fee-aware EV test above — the
+// demand-share signal only says you're overpriced; whether ACTING on it pays (once
+// the fresh broker fee + lower price are counted) is what actually decides it.
+function _callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, weekAll, gain, repriceWorthIt}){
   let rec, recCls, action=null;
+  const overpriced=(baseRate!=null && baseRate>=qty/14 && rate!=null && baseRate>0 && rate/baseRate<0.5);
   if(underBE!=null && underBE>0 && instProfit!=null && instProfit>=listProfit){
     rec="Dump the remainder"; recCls="bad"; action="dump";
-  } else if(baseRate!=null && baseRate>=qty/14 && rate!=null && baseRate>0 && rate/baseRate<0.5){
+  } else if(overpriced && repriceWorthIt){
     rec="Re-price to move it"; recCls="warn"; action="reprice";
+  } else if(overpriced){
+    // Priced above the market, but undercutting wouldn't recover its own cost — a
+    // fresh broker fee + the lower price eat the gain. Sit tight rather than pay to
+    // chase a dip that may lift.
+    rec="Hold — re-pricing won't pay"; recCls="warn";
   } else if(weekAll!=null && weekAll<0.33 && gain!=null && gain>0){
     rec="Hold — but slow going"; recCls="warn";
   } else {
@@ -2945,7 +3000,12 @@ function _tileActionFlag(b){
   const baseRate=_priceConditionedDailyRate(m.series, null);
   if(rate==null) return null;
   const weekAll=_sellThroughProb(_unitsAheadInQueue(m.sell_book, price), rate, qty, 7).all;
-  const v=_callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, weekAll, gain});
+  // Same fee-aware re-price gate the decider uses, so the board flag never says
+  // "re-price" when undercutting wouldn't recover its own broker fee + lower price.
+  const reprice=_repricePaysOff({curPrice:price, curOdds:weekAll, cpu, stax, bfee,
+    bestAsk, series:m.series, sell_book:m.sell_book, qty, horizon:7});
+  const v=_callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, weekAll,
+                        gain, repriceWorthIt:reprice.worth});
   return v.action ? {action:v.action, tip:v.rec} : null;
 }
 // Copy the currently-dialled list price to the cent (Math.round to 2dp),

@@ -229,6 +229,29 @@ class TestInlineDecider:
         assert 'action="reprice"' in v
         assert "action=null" in v.replace(" ", "")
 
+    def test_reprice_is_gated_on_fee_aware_expected_value(self):
+        # Re-pricing is NOT free: it burns a fresh broker fee and books less per
+        # unit. The Call must only tilt to "re-price" when undercutting beats
+        # holding in EXPECTED value (odds × profit), so a transient dip holds and
+        # only a persistent shift (stop-loss) triggers a re-list.
+        ev = _sim_fn("_repricePaysOff")
+        # Hold pays NO fresh broker fee; re-price pays one (1-stax vs 1-stax-bfee).
+        assert "curPrice*(1-stax)-cpu" in ev.replace(" ", "")
+        assert "target*(1-stax-bfee)-cpu" in ev.replace(" ", "")
+        # It's an expected-value comparison (odds × profit on each side).
+        assert "holdEV" in ev and "repEV" in ev
+        # Never re-price into a loss, and require a positive EV gain.
+        assert "repNet>0" in ev.replace(" ", "")
+        # The verdict gates the re-price branch on that test, not just "overpriced".
+        v = _sim_fn("_callVerdict")
+        assert "repriceWorthIt" in v
+        assert "overpriced && repriceWorthIt" in v
+        # Overpriced-but-not-worth-it becomes an explicit hold, not a re-price.
+        assert "Hold — re-pricing won't pay" in v
+        # Both call sites feed the fee-aware gate in.
+        assert "_repricePaysOff(" in _sim_fn("_updateBuildDecider")
+        assert "_repricePaysOff(" in _sim_fn("_tileActionFlag")
+
     def test_listed_tile_shows_action_flag(self):
         # The kanban tile — not just the opened card — flags a lot that needs a
         # re-price/dump, so it's spottable across the board. Built from the shared

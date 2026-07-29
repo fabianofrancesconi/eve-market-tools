@@ -1956,6 +1956,11 @@ function renderIndBuilds(){
         setPref('ind.build_groups', IND.buildGroups);
         renderIndBuilds();
       };
+      // Prefetch the market for LISTED builds so their tiles can flag a needed
+      // re-price/dump without the user opening each one. Uses the shared decider
+      // cache + fetch path (so opening the card later reuses it), and re-paints
+      // the tiles once the data lands.
+      _prefetchListedFlags(box, (buckets.listed||[]));
     }
   }
   // Keep the overview's job 🔗 markers in sync (only when it's showing).
@@ -2010,8 +2015,14 @@ function _buildTileHtml(b, linked){
     const rz=_buildRealized(b);
     const target=_buildUnits(b)||0;
     const pct=target>0?Math.min(100,rz.units/target*100):0;
+    // Surface the decider's Call as a tiny flag on the tile itself, so a lot that
+    // needs a decision (re-price / dump) is spottable across the board without
+    // opening each one. Computed from the prefetched market (see _prefetchListed);
+    // null until that lands or when the verdict is "hold" — the flag means action.
+    const flag=_tileActionFlag(b);
     line=`<span class="ind-tile-dim">${rz.units.toLocaleString()} / ${target.toLocaleString()} sold</span>`;
     bar=`<div class="ind-tile-bar"><span class="ind-tile-bar-fill listed" style="width:${pct.toFixed(1)}%"></span></div>`;
+    if(flag) foot=`<div class="ind-tile-action ${flag.action}" title="Suggested action: ${flag.tip.replace(/"/g,'&quot;')}">⚠ ${flag.action==="dump"?"Dump":"Re-price"}</div>`;
   } else if(stage==="stopped"){
     const rz=_buildRealized(b);
     const orphan=b.stopped_held||0;
@@ -2030,13 +2041,42 @@ function _buildTileHtml(b, linked){
   }
 
   return `<div class="ind-tile stage-${stage}${focused?" focused":""}${ready?" ready":""}" role="listitem"
-      tabindex="0" data-id="${b.id}" title="${(b.product_name||"").replace(/"/g,'&quot;')} — click for full detail">
+      tabindex="0" data-id="${b.id}" data-stage="${stage}" title="${(b.product_name||"").replace(/"/g,'&quot;')} — click for full detail">
     <div class="ind-tile-name">${b.product_name||"?"}</div>
     <div class="ind-tile-runs">${n.toLocaleString()} run${n===1?"":"s"}</div>
     <div class="ind-tile-line">${line}</div>
     ${bar}
     ${foot}
   </div>`;
+}
+
+// Prefetch the live quote + sell-analysis for every LISTED build on the board so
+// its tile can show the re-price/dump flag without the user opening the card. Kicks
+// the same cached fetch path the decider uses (so opening the card later is free);
+// the fetches call _renderTileFlag on completion, which re-paints the tile in place.
+function _prefetchListedFlags(box, listed){
+  if(!box || !listed || !listed.length) return;
+  listed.forEach(b=>{
+    const st=_deciderState(b);
+    if(st.marketState==="done") _renderTileFlag(b);       // already cached: paint now
+    else if(st.marketState==="idle"){ st.marketState="loading"; _fetchDeciderMarket(b); }
+    if(st.liveState==="idle"){ st.liveState="loading"; _fetchDeciderLive(b); }
+  });
+}
+// Paint (or clear) a listed tile's action flag from the current decider cache. A
+// no-op when the tile isn't on screen, so the decider fetches can call it blindly
+// (like they call _renderDeciderBody) without knowing whether the board's showing.
+function _renderTileFlag(b){
+  const tile=document.querySelector(`#ind-builds .ind-tile[data-id="${CSS.escape(b.id)}"]`);
+  if(!tile || tile.dataset.stage!=="listed") return;
+  const old=tile.querySelector(".ind-tile-action"); if(old) old.remove();
+  const flag=_tileActionFlag(b);
+  if(!flag) return;
+  const el=document.createElement("div");
+  el.className=`ind-tile-action ${flag.action}`;
+  el.title=`Suggested action: ${flag.tip}`;
+  el.textContent=`⚠ ${flag.action==="dump"?"Dump":"Re-price"}`;
+  tile.appendChild(el);
 }
 
 // Expand a tracked build's detailed view and scroll to it. Used when arriving
@@ -2149,7 +2189,6 @@ function _buildCardHtml(b, linked){
   return `<div class="ind-build-card ${badge.key} stage-${stage}" data-id="${b.id}">
     <div class="ind-build-row">
       <span class="ind-build-status ${badge.key}">${badge.label}</span>
-      <span class="ind-build-action" data-id="${b.id}" hidden></span>
       <span class="ind-build-name">${b.product_name||"?"}</span>
       <span class="ind-build-runs">${n.toLocaleString()} run(s)</span>
       <span class="ind-build-when">frozen ${when}</span>
@@ -2544,7 +2583,7 @@ function _fetchDeciderLive(b){
     const st=IND.decider[b.id]; if(!st) return;
     st.live=(fresh&&!fresh.error)?{ask:fresh.ask, bid:fresh.bid}:null;
     st.liveState="done";
-    _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b);
+    _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); _renderTileFlag(b);
   }).catch(()=>{ const st=IND.decider[b.id]; if(!st) return;
     st.live=null; st.liveState="error"; _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); });
 }
@@ -2560,7 +2599,7 @@ function _fetchDeciderMarket(b){
     const st=IND.decider[b.id]; if(!st) return;
     st.market=(m&&!m.error)?m:null;
     st.marketState=(m&&!m.error)?"done":"error";
-    _renderDeciderBody(b);
+    _renderDeciderBody(b); _renderTileFlag(b);
   }).catch(()=>{ const st=IND.decider[b.id]; if(!st) return;
     st.market=null; st.marketState="error"; _renderDeciderBody(b); });
 }
@@ -2811,17 +2850,10 @@ function _updateBuildDecider(b, price){
         diag=`<span class="ind-wait-diag fair">Your price is in the market's flow — it's competing. Mostly a matter of waiting your turn in the queue.</span>`;
       }
     }
-    // The call: dump if listing loses to dumping or you're deeply underwater;
-    // re-price if you're priced above an active market; else hold.
-    if(underBE!=null && underBE>0 && instProfit!=null && instProfit>=listProfit){
-      rec="Dump the remainder"; recCls="bad";
-    } else if(baseRate!=null && baseRate>=qty/14 && rate!=null && baseRate>0 && rate/baseRate<0.5){
-      rec="Re-price to move it"; recCls="warn";
-    } else if(weekAll!=null && weekAll<0.33 && gain!=null && gain>0){
-      rec="Hold — but slow going"; recCls="warn";
-    } else {
-      rec="Hold — waiting pays"; recCls="good";
-    }
+    // The call — factored into _callVerdict so the board tile reaches the SAME
+    // verdict from the same signals (see below).
+    const v=_callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, weekAll, gain});
+    rec=v.rec; recCls=v.recCls;
     waitBlock=`
       <div class="ind-wait">
         <div class="ind-wait-rec ${recCls}"><span class="ind-wait-rec-lbl">Call</span><b>${rec}</b></div>
@@ -2834,28 +2866,56 @@ function _updateBuildDecider(b, price){
     +waitBlock
     +(gain!=null&&gain>0?`<div class="ind-dec-gain">Listing earns <b>${isk(gain)}</b> more than dumping — if it sells.</div>`:"")
     +(beLine?`<div class="ind-dec-belines">${beLine}</div>`:"");
-
-  // Mirror the call onto the card's collapsed header as a tiny warning sign, so a
-  // build that needs a decision (re-price / dump) is visible without expanding —
-  // the badge only lights up on an actionable call, staying quiet on "hold".
-  _setBuildActionBadge(b, rec, recCls);
 }
-// Paint (or clear) the small action flag on a card's header row from the decider's
-// "Call". Only the two act-now verdicts — dump ("bad") and re-price ("warn") —
-// raise a sign; "hold" (good) and the slow-going hold leave it hidden so the badge
-// means "there's something to do", not just "here's a status".
-function _setBuildActionBadge(b, rec, recCls){
-  const el=document.querySelector(`.ind-build-action[data-id="${CSS.escape(b.id)}"]`);
-  if(!el) return;
-  // A slow-going hold is still a hold — no action, no flag.
-  const act=(recCls==="bad") ? {sign:"⚠", cls:"dump", tip:rec}
-          :(recCls==="warn" && /re-?price/i.test(rec||"")) ? {sign:"⚠", cls:"reprice", tip:rec}
-          : null;
-  if(!act){ el.hidden=true; el.textContent=""; el.className="ind-build-action"; el.removeAttribute("title"); return; }
-  el.hidden=false;
-  el.className=`ind-build-action ${act.cls}`;
-  el.textContent=act.sign;
-  el.title=`Suggested action: ${act.tip}`;
+// The Listed-stage "Call" — the ONE recommendation the decider makes about a lot
+// still on the market: dump / re-price / hold. Factored out (from the numbers the
+// decider already has) so the board tile can flag the same verdict WITHOUT drawing
+// the whole decider. Returns {rec, recCls, action}: `action` is the two act-now
+// verdicts only — "dump" or "reprice" — and null for either hold, so a caller can
+// cheaply ask "does this need me?" A slow-going hold is still a hold: no action.
+function _callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, weekAll, gain}){
+  let rec, recCls, action=null;
+  if(underBE!=null && underBE>0 && instProfit!=null && instProfit>=listProfit){
+    rec="Dump the remainder"; recCls="bad"; action="dump";
+  } else if(baseRate!=null && baseRate>=qty/14 && rate!=null && baseRate>0 && rate/baseRate<0.5){
+    rec="Re-price to move it"; recCls="warn"; action="reprice";
+  } else if(weekAll!=null && weekAll<0.33 && gain!=null && gain>0){
+    rec="Hold — but slow going"; recCls="warn";
+  } else {
+    rec="Hold — waiting pays"; recCls="good";
+  }
+  return {rec, recCls, action};
+}
+// The board tile's action flag: reach the same Call the decider would, from the
+// cached live quote + sell-analysis (IND.decider[id]) if the build has been opened
+// or its market prefetched. Returns null when we don't yet have the market data to
+// decide (the tile then shows no flag — better silent than wrong). Only the two
+// act-now verdicts surface; a hold returns null so the flag means "do something".
+function _tileActionFlag(b){
+  const st=IND.decider[b.id];
+  if(!st || st.marketState!=="done" || !st.market || !st.market.series || !st.market.series.length) return null;
+  if(typeof _priceConditionedDailyRate!=="function" || typeof _unitsAheadInQueue!=="function"
+     || typeof _sellThroughProb!=="function") return null;
+  const ctx=_deciderCtx(b);
+  const {stax, bfee}=ctx.fees, cpu=ctx.cpu, qty=ctx.remaining;
+  // Price the call at the same default the decider opens on: undercut the live best
+  // ask (the "climb the queue" price), falling back to frozen/best-ask.
+  const bestAsk=(st.live&&st.live.ask!=null)?st.live.ask:null;
+  const frozen=ctx.s.ask;
+  const price=(bestAsk!=null)?bestAsk*0.9999:(frozen!=null?frozen:ctx.be.list);
+  if(price==null) return null;
+  const listProfit=(cpu!=null)?(price*(1-stax-bfee)-cpu)*qty:null;
+  const bid=(st.live&&st.live.bid!=null)?st.live.bid:ctx.s.bid;
+  const instProfit=(bid!=null&&cpu!=null)?(bid*(1-stax)-cpu)*qty:null;
+  const gain=(listProfit!=null&&instProfit!=null)?listProfit-instProfit:null;
+  const underBE=(ctx.be.list!=null)?ctx.be.list-price:null;
+  const m=st.market;
+  const rate=_priceConditionedDailyRate(m.series, price);
+  const baseRate=_priceConditionedDailyRate(m.series, null);
+  if(rate==null) return null;
+  const weekAll=_sellThroughProb(_unitsAheadInQueue(m.sell_book, price), rate, qty, 7).all;
+  const v=_callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, weekAll, gain});
+  return v.action ? {action:v.action, tip:v.rec} : null;
 }
 // Copy the currently-dialled list price to the cent (Math.round to 2dp),
 // matching the modal's copy behaviour so a listed order pastes straight in.

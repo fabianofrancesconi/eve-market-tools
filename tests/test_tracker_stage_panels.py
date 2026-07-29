@@ -191,31 +191,46 @@ class TestInlineDecider:
         # The honest slow-vs-overpriced read (unconditioned baseline vs price).
         assert "baseRate" in fn
         assert "priced above market" in fn
-        # A clear recommendation framing.
+        # A clear recommendation framing — the verdict itself is factored into the
+        # shared _callVerdict helper (see test_call_verdict_is_a_shared_helper).
         assert "ind-wait-rec" in fn
-        assert "Re-price to move it" in fn
-        assert "Dump the remainder" in fn
+        assert "_callVerdict({" in fn
 
-    def test_card_shows_action_flag_from_the_call(self):
-        # The decider's "Call" is mirrored onto the collapsed card header as a
-        # tiny warning sign, so a build that needs a decision is visible without
-        # expanding. The header carries a placeholder the decider populates.
-        card = _sim_fn("_buildCardHtml")
-        assert "ind-build-action" in card
-        # The decider hands its call to the badge painter after drawing the body.
+    def test_call_verdict_is_a_shared_helper(self):
+        # The Listed-stage Call (dump / re-price / hold) is factored out so the
+        # board tile reaches the SAME verdict as the decider from the same signals.
         upd = _sim_fn("_updateBuildDecider")
-        assert "_setBuildActionBadge(b, rec, recCls)" in upd
-        # The painter lights up only on act-now verdicts (dump/re-price); a hold
-        # (good) or slow-going hold stays hidden so the flag means "do something".
-        paint = _sim_fn("_setBuildActionBadge")
-        assert 'recCls==="bad"' in paint          # dump
-        assert 'recCls==="warn"' in paint         # re-price
-        assert "re-?price" in paint               # not a slow-going hold
-        assert "el.hidden=true" in paint          # cleared when no action
-        assert "Suggested action:" in paint
+        assert "_callVerdict({" in upd            # decider defers to the helper
+        v = _sim_fn("_callVerdict")
+        assert "Dump the remainder" in v
+        assert "Re-price to move it" in v
+        # Only the two act-now verdicts expose an `action`; both holds leave it null
+        # so a caller can cheaply ask "does this need me?".
+        assert 'action="dump"' in v
+        assert 'action="reprice"' in v
+        assert "action=null" in v.replace(" ", "")
+
+    def test_listed_tile_shows_action_flag(self):
+        # The kanban tile — not just the opened card — flags a lot that needs a
+        # re-price/dump, so it's spottable across the board. Built from the shared
+        # verdict over the prefetched market; only act-now verdicts render.
+        tile = _sim_fn("_buildTileHtml")
+        assert "_tileActionFlag(b)" in tile
+        assert "ind-tile-action" in tile
+        flag = _sim_fn("_tileActionFlag")
+        # Needs the prefetched sell-analysis; silent (null) until it lands.
+        assert 'st.marketState!=="done"' in flag
+        assert "_callVerdict(" in flag
+        assert "return v.action ?" in flag
+        # The board prefetches every listed build's market so tiles can flag without
+        # the user opening each card, and repaints the tile when the fetch lands.
+        assert "_prefetchListedFlags(box, (buckets.listed||[]))" in _IND_JS
+        assert "_renderTileFlag(b)" in _sim_fn("_fetchDeciderMarket")
+        # Tile carries data-stage so the async repaint can target listed tiles only.
+        assert 'data-stage="${stage}"' in tile
         # And the flag has its own styling in the two act-now colours.
-        assert ".ind-build-action.reprice" in _CSS
-        assert ".ind-build-action.dump" in _CSS
+        assert ".ind-tile-action.reprice" in _CSS
+        assert ".ind-tile-action.dump" in _CSS
 
     def test_breakeven_is_only_a_warning_not_a_headline(self):
         # Break-even is NOT a margin readout; it only surfaces as a ⚠ flag when

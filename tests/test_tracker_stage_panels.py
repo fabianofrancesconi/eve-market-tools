@@ -196,6 +196,27 @@ class TestInlineDecider:
         assert "Re-price to move it" in fn
         assert "Dump the remainder" in fn
 
+    def test_card_shows_action_flag_from_the_call(self):
+        # The decider's "Call" is mirrored onto the collapsed card header as a
+        # tiny warning sign, so a build that needs a decision is visible without
+        # expanding. The header carries a placeholder the decider populates.
+        card = _sim_fn("_buildCardHtml")
+        assert "ind-build-action" in card
+        # The decider hands its call to the badge painter after drawing the body.
+        upd = _sim_fn("_updateBuildDecider")
+        assert "_setBuildActionBadge(b, rec, recCls)" in upd
+        # The painter lights up only on act-now verdicts (dump/re-price); a hold
+        # (good) or slow-going hold stays hidden so the flag means "do something".
+        paint = _sim_fn("_setBuildActionBadge")
+        assert 'recCls==="bad"' in paint          # dump
+        assert 'recCls==="warn"' in paint         # re-price
+        assert "re-?price" in paint               # not a slow-going hold
+        assert "el.hidden=true" in paint          # cleared when no action
+        assert "Suggested action:" in paint
+        # And the flag has its own styling in the two act-now colours.
+        assert ".ind-build-action.reprice" in _CSS
+        assert ".ind-build-action.dump" in _CSS
+
     def test_breakeven_is_only_a_warning_not_a_headline(self):
         # Break-even is NOT a margin readout; it only surfaces as a ⚠ flag when
         # the chosen list price is actually underwater.

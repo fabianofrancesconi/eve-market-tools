@@ -2149,6 +2149,7 @@ function _buildCardHtml(b, linked){
   return `<div class="ind-build-card ${badge.key} stage-${stage}" data-id="${b.id}">
     <div class="ind-build-row">
       <span class="ind-build-status ${badge.key}">${badge.label}</span>
+      <span class="ind-build-action" data-id="${b.id}" hidden></span>
       <span class="ind-build-name">${b.product_name||"?"}</span>
       <span class="ind-build-runs">${n.toLocaleString()} run(s)</span>
       <span class="ind-build-when">frozen ${when}</span>
@@ -2785,6 +2786,7 @@ function _updateBuildDecider(b, price){
   // units sit ahead in the queue at/below this price (the hidden reason nothing
   // sells), a slow-vs-overpriced diagnosis, and a hold / re-price / dump call.
   let waitBlock="";
+  let rec=null, recCls=null;
   if(stage==="listed" && haveOdds){
     // Queue depth — units listed at or under the chosen price that must clear
     // before yours. The prominent "you're behind N units" reason.
@@ -2811,7 +2813,6 @@ function _updateBuildDecider(b, price){
     }
     // The call: dump if listing loses to dumping or you're deeply underwater;
     // re-price if you're priced above an active market; else hold.
-    let rec, recCls;
     if(underBE!=null && underBE>0 && instProfit!=null && instProfit>=listProfit){
       rec="Dump the remainder"; recCls="bad";
     } else if(baseRate!=null && baseRate>=qty/14 && rate!=null && baseRate>0 && rate/baseRate<0.5){
@@ -2833,6 +2834,28 @@ function _updateBuildDecider(b, price){
     +waitBlock
     +(gain!=null&&gain>0?`<div class="ind-dec-gain">Listing earns <b>${isk(gain)}</b> more than dumping — if it sells.</div>`:"")
     +(beLine?`<div class="ind-dec-belines">${beLine}</div>`:"");
+
+  // Mirror the call onto the card's collapsed header as a tiny warning sign, so a
+  // build that needs a decision (re-price / dump) is visible without expanding —
+  // the badge only lights up on an actionable call, staying quiet on "hold".
+  _setBuildActionBadge(b, rec, recCls);
+}
+// Paint (or clear) the small action flag on a card's header row from the decider's
+// "Call". Only the two act-now verdicts — dump ("bad") and re-price ("warn") —
+// raise a sign; "hold" (good) and the slow-going hold leave it hidden so the badge
+// means "there's something to do", not just "here's a status".
+function _setBuildActionBadge(b, rec, recCls){
+  const el=document.querySelector(`.ind-build-action[data-id="${CSS.escape(b.id)}"]`);
+  if(!el) return;
+  // A slow-going hold is still a hold — no action, no flag.
+  const act=(recCls==="bad") ? {sign:"⚠", cls:"dump", tip:rec}
+          :(recCls==="warn" && /re-?price/i.test(rec||"")) ? {sign:"⚠", cls:"reprice", tip:rec}
+          : null;
+  if(!act){ el.hidden=true; el.textContent=""; el.className="ind-build-action"; el.removeAttribute("title"); return; }
+  el.hidden=false;
+  el.className=`ind-build-action ${act.cls}`;
+  el.textContent=act.sign;
+  el.title=`Suggested action: ${act.tip}`;
 }
 // Copy the currently-dialled list price to the cent (Math.round to 2dp),
 // matching the modal's copy behaviour so a listed order pastes straight in.

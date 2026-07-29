@@ -1699,6 +1699,14 @@
   .ind-build-status.built { color:var(--stg-built); }
   .ind-build-status.listed { color:var(--stg-listed); }
   .ind-build-status.sold, .ind-build-status.done { color:var(--stg-sold); }
+  /* Tiny action flag on the header row — lit only when the decider's Call is a
+     "do something" verdict (re-price or dump), so the eye finds the build that
+     needs a decision without expanding every card. */
+  .ind-build-action { font-size:12px; line-height:1; cursor:default;
+    animation:ind-action-pulse 2.2s ease-in-out infinite; }
+  .ind-build-action.reprice { color:var(--gold,#c8a040); }
+  .ind-build-action.dump { color:var(--red); }
+  @keyframes ind-action-pulse { 0%,100%{ opacity:1; } 50%{ opacity:.45; } }
   .ind-build-name { font-weight:700; color:var(--fg); min-width:150px; }
   .ind-build-runs { color:var(--dim); }
   .ind-build-when { color:var(--dim2); font-size:11.5px; margin-left:auto; white-space:nowrap; }

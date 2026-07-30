@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.7"
+__version__ = "1.156.8"
 
 import argparse
 import base64
@@ -2168,6 +2168,14 @@ _CHAR_DATA_CACHE = {}  # {cid: (timestamp, result)}
 _CHAR_DATA_TTL = 120   # seconds
 _CHAR_DATA_SIG = {}    # {cid: signature of the last-seen character-owned state}
 
+# Per-character health of the wallet-transactions pull that feeds the sell ledger.
+# {cid: {"ok_at": ts|None, "err_at": ts|None, "err": str|None, "count": int|None}}.
+# The fetch is best-effort (a failure is swallowed so the rest of the sweep still
+# runs), but a *silent* swallow once let the ledger stall for ~17h with sales
+# happening and nobody the wiser. This makes the last good/failed pull observable
+# (surfaced via /api/char/data) so a stall is visible instead of invisible.
+_WALLET_TX_HEALTH = {}
+
 
 class _CharPubSub:
     """Change + schedule notifier backing the /api/char/stream SSE push.
@@ -2290,10 +2298,30 @@ def _fetch_one_char_data_uncached(acct, cid):
     transactions = []
     try:
         transactions, _tx_meta = sso_core.fetch_wallet_transactions(token, cid, SESSION)
-    except requests.HTTPError:
-        # Missing wallet scope / transient ESI error — instant-sell accrual just
-        # sits out this sweep; listed-order tracking is unaffected.
+        _WALLET_TX_HEALTH[cid] = {"ok_at": time.time(), "err_at": None,
+                                  "err": None, "count": len(transactions)}
+    except requests.RequestException as e:
+        # Missing wallet scope / auth quirk / transient ESI error — instant-sell
+        # accrual sits out this sweep; listed-order tracking is unaffected. Catch
+        # the whole RequestException family (not just HTTPError): a Timeout /
+        # ConnectionError here would otherwise abort the entire char sweep. NEVER
+        # swallow silently — a silent failure once stalled the sell ledger for
+        # ~17h. Log the status + body and record the failure so it's observable.
         transactions = []
+        resp = getattr(e, "response", None)
+        status = getattr(resp, "status_code", None)
+        body = ""
+        if resp is not None:
+            try:
+                body = resp.text[:300]
+            except Exception:
+                body = ""
+        print(f"[wallet-tx] fetch failed for {char_name} ({cid}): "
+              f"status={status} {type(e).__name__}: {e} {body}", file=sys.stderr)
+        prev = _WALLET_TX_HEALTH.get(cid) or {}
+        _WALLET_TX_HEALTH[cid] = {"ok_at": prev.get("ok_at"), "err_at": time.time(),
+                                  "err": f"{status or type(e).__name__}",
+                                  "count": prev.get("count")}
     skills = sso_core.fetch_skills(token, cid, SESSION)
     queue = sso_core.fetch_skillqueue(token, cid, SESSION)
     loyalty, loyalty_meta = sso_core.fetch_loyalty_points(token, cid, SESSION)
@@ -2461,6 +2489,9 @@ def _fetch_one_char_data_uncached(acct, cid):
         "market_orders_expires": orders_meta.get("expires"),
         "accounting_level": accounting_lvl,
         "broker_relations_level": broker_rel_lvl,
+        # Wallet-transaction pull health — lets the UI flag a stalled sell ledger
+        # (sales stop being ingested) instead of silently showing "0 sold".
+        "wallet_tx_health": _WALLET_TX_HEALTH.get(cid),
     }
 
 

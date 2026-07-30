@@ -96,3 +96,42 @@ git push origin v1.2.4           # second tag alone
 
 Do **not** use an HTTPS remote — it falls back to a stale `fabiano_adobe` keychain
 credential (Adobe work account) that lacks push access and fails with 403.
+
+## Production Postgres (Railway)
+
+Prod state lives in Railway Postgres, **not** the volume's JSON files — the file
+paths (`IND_*_PATH` under `CACHE_DIR`) are only used when `DATABASE_URL` is unset
+(legacy single-user mode). On the deploy, `pg_store.enabled()` is true, so every
+account-scoped blob is a row in the `mono_kv` table keyed `"<name>:<account_id>"`
+(JSONB `value` column). Tables are `mono_*`-prefixed (`mono_kv`, `mono_accounts`,
+`mono_user_settings`, …).
+
+Connect **without exposing the password on the command line** (the auto-mode
+classifier blocks inline prod credentials). The Postgres service's own
+`DATABASE_URL` uses the internal host `postgres.railway.internal` (unreachable from
+outside), so use `DATABASE_PUBLIC_URL`, which points at the public TCP proxy. Let
+the `railway` CLI inject it:
+
+```
+railway run --service Postgres bash -c 'psql "$DATABASE_PUBLIC_URL" -c "\conninfo"'
+```
+
+The CLI must be linked to the project/prod environment first (`railway status` to
+check; it authenticates via the user's own login — `railway connect Postgres` needs
+a TTY so it doesn't work from here, but `railway run` does). Handy reads:
+
+```
+# what account-scoped blobs exist + when each last changed
+railway run --service Postgres bash -c 'psql "$DATABASE_PUBLIC_URL" -c \
+  "SELECT key, pg_column_size(value) AS bytes, updated_at FROM mono_kv WHERE key LIKE '"'"'ind_%'"'"' ORDER BY key;"'
+
+# dump one blob to inspect locally
+railway run --service Postgres bash -c 'psql "$DATABASE_PUBLIC_URL" -t -A -c \
+  "SELECT value FROM mono_kv WHERE key='"'"'ind_sell_ledger:<account_id>'"'"';"' > /tmp/ledger.json
+```
+
+Key blobs: `ind_tracked_builds:<aid>` (build snapshots), `ind_sell_ledger:<aid>`
+(per-product wallet sell fills — `{str(type_id): [{transaction_id, ts, units,
+price}]}`), `ind_listed_units:<aid>` (`{str(char_id): {str(type_id): volume}}`).
+The MCP `railway` tools (list_projects/services/variables, get_logs, tcp proxies)
+work too; `railway logs --service eve-market-tools` tails the app.

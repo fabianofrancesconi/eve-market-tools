@@ -177,6 +177,85 @@ class TestFetchBumpsOnChange:
         assert bumps == []                              # identical → no nudge
 
 
+# ── Wallet-transactions pull health (the silent-swallow that stalled the ledger)
+# A failed wallet/transactions fetch must NOT abort the sweep and must NOT vanish
+# silently: it's recorded in _WALLET_TX_HEALTH and surfaced on the bundle so a
+# stalled sell ledger is observable. A success clears the error.
+
+class TestWalletTxHealth:
+    def _setup(self, monkeypatch, tmp_path, *, tx):
+        """Wire a minimal char fetch; ``tx`` is either a transactions list to
+        return or an Exception instance to raise from fetch_wallet_transactions."""
+        cache = tmp_path / "cache"
+        cache.mkdir(exist_ok=True)
+        monkeypatch.setattr(lp_web, "CACHE_DIR", cache)
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", cache / "jobs.json")
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", cache / "order_events.json")
+        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda a, cid: None)
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda a, cid: None)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_wallet", lambda *a, **k: 1_000.0)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skills",
+                            lambda *a, **k: {"total_sp": 1, "skills": []})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skillqueue", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points",
+                            lambda *a, **k: ([], {}))
+        monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: ([], {}))
+
+        def _tx(*a, **k):
+            if isinstance(tx, Exception):
+                raise tx
+            return tx, {}
+        monkeypatch.setattr(lp_web.sso_core, "fetch_wallet_transactions", _tx)
+
+    def _acct(self):
+        return _acct({1: {"name": "Main", "access_token": "tok",
+                          "expires_at": time.time() + 3600}})
+
+    def test_success_records_ok_and_count(self, monkeypatch, tmp_path):
+        lp_web._WALLET_TX_HEALTH.pop(1, None)
+        self._setup(monkeypatch, tmp_path,
+                    tx=[{"transaction_id": 1, "is_buy": False}])
+        bundle = lp_web._fetch_one_char_data_uncached(self._acct(), 1)
+        h = lp_web._WALLET_TX_HEALTH[1]
+        assert h["ok_at"] is not None and h["err_at"] is None
+        assert h["err"] is None and h["count"] == 1
+        assert bundle["wallet_tx_health"] is h        # surfaced on the bundle
+
+    def test_httperror_is_swallowed_and_recorded(self, monkeypatch, tmp_path):
+        lp_web._WALLET_TX_HEALTH.pop(1, None)
+        resp = type("R", (), {"status_code": 403, "text": "forbidden"})()
+        err = lp_web.requests.HTTPError("403"); err.response = resp
+        self._setup(monkeypatch, tmp_path, tx=err)
+        bundle = lp_web._fetch_one_char_data_uncached(self._acct(), 1)  # must NOT raise
+        h = lp_web._WALLET_TX_HEALTH[1]
+        assert h["err_at"] is not None and h["err"] == "403"
+        assert bundle["wallet_tx_health"]["err"] == "403"
+
+    def test_timeout_does_not_abort_sweep(self, monkeypatch, tmp_path):
+        # A Timeout is a RequestException but NOT an HTTPError — the old
+        # `except requests.HTTPError` let it propagate and kill the whole sweep.
+        lp_web._WALLET_TX_HEALTH.pop(1, None)
+        self._setup(monkeypatch, tmp_path,
+                    tx=lp_web.requests.Timeout("slow"))
+        bundle = lp_web._fetch_one_char_data_uncached(self._acct(), 1)  # must NOT raise
+        assert bundle["name"] == "Main"                 # sweep completed
+        assert lp_web._WALLET_TX_HEALTH[1]["err"] == "Timeout"
+
+    def test_success_after_failure_clears_error_keeps_first_ok(self, monkeypatch, tmp_path):
+        # A recovery keeps a truthy ok_at and drops the error marker.
+        resp = type("R", (), {"status_code": 500, "text": "boom"})()
+        err = lp_web.requests.HTTPError("500"); err.response = resp
+        self._setup(monkeypatch, tmp_path, tx=err)
+        lp_web._WALLET_TX_HEALTH.pop(1, None)
+        lp_web._fetch_one_char_data_uncached(self._acct(), 1)
+        assert lp_web._WALLET_TX_HEALTH[1]["err"] == "500"
+        self._setup(monkeypatch, tmp_path, tx=[])       # now succeeds (empty)
+        lp_web._fetch_one_char_data_uncached(self._acct(), 1)
+        h = lp_web._WALLET_TX_HEALTH[1]
+        assert h["err"] is None and h["err_at"] is None and h["ok_at"] is not None
+
+
 # ── do_char_data exposes loyalty freshness ────────────────────────────────────
 
 class TestLoyaltyAsOf:

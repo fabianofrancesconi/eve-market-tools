@@ -52,6 +52,58 @@ MODEL DETAILS
 
 Every function here is pure — plain dicts in, plain data out. ``lp-web`` owns all
 fetching/persistence and feeds this module already-parsed lots / fills / volumes.
+
+KNOWN FAILURE MODES / DESIGN FLAWS (read before debugging "sold looks wrong")
+----------------------------------------------------------------------------
+The model above is clean, but it rests on assumptions that break in real use.
+When a tracked build's ``sold`` count looks wrong, it is almost always ONE of
+these — check them in order before suspecting the allocator:
+
+1. **The ledger only knows what the wallet-transactions FEED delivered.** ``sold``
+   is derived *purely* from the wallet ledger — never from the sell order's own
+   ``volume_remain`` dropping. So if the ``/wallet/transactions`` pull fails or
+   stalls, sales simply don't exist to this module and every affected build reads
+   under-sold (``0 / N`` in the worst case) even while its order visibly sells
+   down. This is invisible unless surfaced: it was swallowed silently in lp-web
+   (``except HTTPError: transactions=[]``) and stalled the ledger ~17h in prod on
+   2026-07-30. lp-web now logs the failure and exposes ``wallet_tx_health`` per
+   character (a gold "sales sync failed" badge on the Character panel). **If sold
+   is low, first confirm the fills are actually IN the ledger** (dump
+   ``ind_sell_ledger:<account_id>`` from Postgres — see CLAUDE.md) before touching
+   anything here. The feed reaches ~30 days / 2500 rows back; a sale that both
+   happens during an outage AND ages out of that window before a successful pull
+   is lost permanently (no order-diff fallback exists anymore).
+
+2. **The delivery gate strands pre-delivery fills of a fungible item.** A fill
+   only lands on a lot with ``done_at <= fill.ts`` ("can't sell before you make
+   it"). When a NEWER build is delivered while OLDER stock of the same fungible
+   item is still selling, those sales predate the only live lot's delivery, fail
+   the gate, and pile into ``summary.unallocated`` — the new build reads unsold
+   even though units are moving. This is a design tension, not a bug in the pass:
+   the older, already-sold inventory belongs to builds that are now archived
+   (their sales frozen), so the fungible fills have no live lot to attach to.
+   Observed on Standup Light Missile (37848), 2026-07-30: unallocated=33800.
+   A real fix means reconciling against the order's observed sell-down (the
+   physical stock) rather than only the wallet FIFO — a model change, deferred.
+
+3. **Archived/frozen builds are excluded from the FIFO, by design — double-edged.**
+   Dropping dead builds (:func:`~lp-web._live_builds`) is what killed the old
+   LINKED-vs-built drift, but it also means a fungible sale that "should" have
+   been attributed to an archived batch instead flows to the oldest *live* lot
+   (or to unallocated). Archiving a build freezes its realized profit at a point
+   in time; later sales of the same type can't retro-adjust it. If realized
+   totals look off after archiving, this is why.
+
+4. **``listed`` and ``sold`` come from DIFFERENT inputs and can look contradictory
+   mid-stall.** ``listed`` is a fresh snapshot of open-order ``volume_remain``
+   each sweep; ``sold`` is the accumulated ledger. During a ledger stall (flaw 1)
+   the order snapshot keeps updating while sold does not, so you get the tell-tale
+   ``sold=0, listed=1494, produced=4200`` shape — listed + unsold don't reconcile
+   against sold. That mismatch is itself a *symptom of flaw 1*, not a separate bug.
+
+The invariant "late ESI data self-heals on the next recompute" is only true while
+the feed is HEALTHY. Flaws 1–3 are the cases where there is no later data to heal
+from, or it can never attach. Keep that caveat in mind.
 """
 
 

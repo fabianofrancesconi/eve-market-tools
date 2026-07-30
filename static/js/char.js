@@ -393,6 +393,23 @@ function _fmtOrdersExpires(httpDate){
   return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
 }
 
+// A warning chip shown when this character's wallet-transactions pull (the feed
+// behind the sell ledger — "how many units sold, for what profit") last failed.
+// A stalled ledger silently reads "0 sold" on tracked builds even while orders
+// keep selling, so surfacing it turns an invisible failure into a visible one.
+// `h` is the per-character wallet_tx_health {ok_at, err_at, err, count} or null.
+function _walletTxWarnHTML(h){
+  if(!h || !h.err_at) return "";              // never failed, or last pull was ok
+  const errAt=new Date(h.err_at*1000);
+  const errTxt=isNaN(errAt)?"":errAt.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+  const okTxt=h.ok_at?new Date(h.ok_at*1000).toLocaleString():"never";
+  const tip=`EVE's wallet-transactions feed failed (${h.err||"error"}) at ${errTxt}. `
+    +`Sales stop being counted while it's down, so tracked builds may under-report `
+    +`"sold". Last successful sync: ${okTxt}. This usually clears on its own.`;
+  return `<span class="char-card-note char-tx-warn" title="${authEsc(tip)}">`
+    +`⚠ sales sync failed (${authEsc(String(h.err||"error"))})</span>`;
+}
+
 // Loyalty points as a horizontal chip strip — one reading per corporation
 // (corp name label over the LP figure), mirroring the Tracker's sum-strip so
 // the whole set reads at a glance rather than as a vertical table. When
@@ -486,9 +503,10 @@ function _renderCharPanel(c){
 
   // Market orders
   const ordersExp=_fmtOrdersExpires(c.market_orders_expires);
+  const txWarn=_walletTxWarnHTML(c.wallet_tx_health);
   h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Market orders`;
   if(cOrders.length) h+=` <span class="char-card-sub">(${cOrders.length} · ${fmtISK(ordersVal)} ISK)</span>`;
-  h+=`</h3>`+(ordersExp?`<span class="char-card-note" title="ESI caches market orders ~20 min. New/changed orders won't appear until this time.">updates at ${ordersExp}</span>`:"")+`</div><div class="char-card-body">`;
+  h+=`</h3>`+txWarn+(ordersExp?`<span class="char-card-note" title="ESI caches market orders ~20 min. New/changed orders won't appear until this time.">updates at ${ordersExp}</span>`:"")+`</div><div class="char-card-body">`;
   if(cOrders.length){
     const cols=_orderCols(false);
     h+=`<div class="char-card-scroll char-orders-scroll"><table class="mini char-orders-tbl"><thead><tr>`;
@@ -600,9 +618,13 @@ function _renderAllPanel(chars){
   const allOrdersExp=_fmtOrdersExpires(chars.reduce((latest,c)=>{
     const e=c.market_orders_expires; return e&&(!latest||e>latest)?e:latest;
   },null));
+  // Flag the sales-sync stall for whichever character it's currently failing on
+  // (so a stalled ledger is visible on the combined panel too, not just per-char).
+  const txFailC=chars.find(c=>c.wallet_tx_health&&c.wallet_tx_health.err_at);
+  const allTxWarn=txFailC?_walletTxWarnHTML(txFailC.wallet_tx_health):"";
   h+=`<section class="char-card char-card-wide"><div class="char-card-header"><h3>Market orders`;
   if(allOrders.length) h+=` <span class="char-card-sub">(${allOrders.length} · ${fmtISK(ordersVal)} ISK)</span>`;
-  h+=`</h3>`+(allOrdersExp?`<span class="char-card-note" title="ESI caches market orders ~20 min. New/changed orders won't appear until this time.">updates at ${allOrdersExp}</span>`:"")+`</div><div class="char-card-body">`;
+  h+=`</h3>`+allTxWarn+(allOrdersExp?`<span class="char-card-note" title="ESI caches market orders ~20 min. New/changed orders won't appear until this time.">updates at ${allOrdersExp}</span>`:"")+`</div><div class="char-card-body">`;
   if(allOrders.length){
     const sellOrders=allOrders.filter(o=>!o.is_buy_order);
     const buyOrders=allOrders.filter(o=>o.is_buy_order);

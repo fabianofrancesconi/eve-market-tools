@@ -2531,6 +2531,21 @@ function _deciderState(b){
     IND.decider[b.id]=st; }
   return st;
 }
+// The reachable instant-sell bid + fillable units for dumping `qty` into buy orders
+// RIGHT NOW, honouring each order's min_volume. A buyer demanding more units than
+// you have (e.g. 60k min vs a 4.2k batch) can't be filled, so its bid must not set
+// the dump price — walkBook skips it. Prefers the live buy book; when none shipped
+// (old state / fetch failed) falls back to the raw top bid (live, else frozen).
+//   bid     — proceeds-weighted reachable bid (null = no order can take the batch)
+//   fillQty — units the reachable buy orders actually absorb (≤ qty)
+function _dumpQuote(st, frozenBid, qty){
+  const book=(st&&st.live&&st.live.buy_book)?st.live.buy_book:null;
+  const bw=(book&&book.length&&typeof walkBook==="function")?walkBook(book,qty):null;
+  if(bw) return {bid:bw.filled>0?bw.avg:null, fillQty:bw.filled};
+  if(book) return {bid:null, fillQty:0};   // book shipped but empty → nobody buying
+  const raw=(st&&st.live&&st.live.bid!=null)?st.live.bid:frozenBid;
+  return {bid:raw!=null?raw:null, fillQty:qty};
+}
 // Everything the decider math needs, resolved once per render: owner fees (live
 // skills, falling back to the snapshot), per-unit cost basis, break-even, and how
 // many units the slider prices (the unsold remainder, or the whole lot pre-sale).
@@ -2577,12 +2592,13 @@ function _wireBuildDecider(card, b){
     if(chip){ e.preventDefault(); _updateBuildDecider(b, +chip.dataset.price); }
     const copy=e.target.closest && e.target.closest(".ind-dec-copy");
     if(copy){ e.preventDefault(); _deciderCopy(b, copy); }
-    // Instant-route copy grabs the live bid (or the frozen one), not the slider.
+    // Instant-route copy grabs the REACHABLE bid (what a buyer who can take the
+    // batch actually pays, honouring min_volume), not the slider or an unfillable
+    // top bid.
     const copyInst=e.target.closest && e.target.closest(".ind-dec-copy-inst");
     if(copyInst){ e.preventDefault();
-      const st2=_deciderState(b);
-      const bid=(st2.live&&st2.live.bid!=null)?st2.live.bid:(b.snapshot||{}).bid;
-      _deciderCopyValue(bid, copyInst); }
+      const st2=_deciderState(b), ctx2=_deciderCtx(b);
+      _deciderCopyValue(_dumpQuote(st2, ctx2.s.bid, ctx2.remaining).bid, copyInst); }
   });
   _renderDeciderDrift(b);
   _renderDeciderBody(b);
@@ -2600,7 +2616,10 @@ function _fetchDeciderLive(b){
     broker:String(((s.broker_fee||0)*100)), runs:"1", refresh_prices:"1"});
   fetch("/api/ind/detail?"+p).then(r=>r.json()).then(fresh=>{
     const st=IND.decider[b.id]; if(!st) return;
-    st.live=(fresh&&!fresh.error)?{ask:fresh.ask, bid:fresh.bid}:null;
+    // buy_book comes along so "Dump now" can honour each buy order's min_volume:
+    // a 60k-min buyer can't take a 4.2k batch, so its bid mustn't set the dump
+    // price/profit. The decider gates against it in _updateBuildDecider.
+    st.live=(fresh&&!fresh.error)?{ask:fresh.ask, bid:fresh.bid, buy_book:fresh.buy_book}:null;
     st.liveState="done";
     _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); _renderTileFlag(b);
   }).catch(()=>{ const st=IND.decider[b.id]; if(!st) return;
@@ -2778,12 +2797,14 @@ function _updateBuildDecider(b, price){
   // LIST route — sell at the chosen price; pays sales tax + a fresh broker fee.
   const listNetUnit=price*(1-stax-bfee);
   const listProfit=(cpu!=null)?(listNetUnit-cpu)*qty:null;
-  // INSTANT route — dump the lot into buy orders at the live bid; pays sales tax
-  // only (no broker on an immediate sell). Falls back to the frozen bid if the
-  // live quote hasn't landed.
-  const bid=(st.live&&st.live.bid!=null)?st.live.bid:ctx.s.bid;
+  // INSTANT route — dump the lot into buy orders; pays sales tax only (no broker
+  // on an immediate sell). _dumpQuote walks the live buy book for the `qty` unsold
+  // units honouring each order's min_volume, so a buyer wanting more than the batch
+  // (60k min vs 4.2k) can't set the price. fillQty is what actually fits.
+  const dq=_dumpQuote(st, ctx.s.bid, qty), bid=dq.bid, fillQty=dq.fillQty;
+  const buyBook=(st.live&&st.live.buy_book)?st.live.buy_book:null;   // for the note below
   const instNetUnit=(bid!=null)?bid*(1-stax):null;
-  const instProfit=(instNetUnit!=null&&cpu!=null)?(instNetUnit-cpu)*qty:null;
+  const instProfit=(instNetUnit!=null&&cpu!=null)?(instNetUnit-cpu)*fillQty:null;
   // How much patience buys you — the extra ISK the list route earns over dumping.
   const gain=(listProfit!=null&&instProfit!=null)?listProfit-instProfit:null;
 
@@ -2835,7 +2856,7 @@ function _updateBuildDecider(b, price){
           <span class="ind-dec-route-p">${bid!=null?isk(bid)+"/u":"no bid"}</span>
           ${bid!=null?`<button class="ind-dec-copy-inst" title="Copy the instant-sell price (the live buy-order bid) to paste into EVE">⧉</button>`:""}</div>
         <div class="ind-dec-route-profit ${pn(instProfit)}">${_signIsk(instProfit)}</div>
-        <div class="ind-dec-route-note">${bid!=null?"into buy orders, immediate":"nobody's buying right now"}</div>
+        <div class="ind-dec-route-note">${bid==null?(buyBook?`no buy order will take ${qty.toLocaleString()} units (all demand a larger minimum)`:"nobody's buying right now"):fillQty<qty?`only ${fillQty.toLocaleString()} of ${qty.toLocaleString()} fit buy orders — rest unsold`:"into buy orders, immediate"}</div>
       </div>
     </div>`;
 
@@ -3015,8 +3036,10 @@ function _tileActionFlag(b){
              :(bestAsk!=null)?bestAsk*0.9999:(frozen!=null?frozen:ctx.be.list);
   if(price==null) return null;
   const listProfit=(cpu!=null)?(price*(1-stax-bfee)-cpu)*qty:null;
-  const bid=(st.live&&st.live.bid!=null)?st.live.bid:ctx.s.bid;
-  const instProfit=(bid!=null&&cpu!=null)?(bid*(1-stax)-cpu)*qty:null;
+  // Dump profit honours min_volume (see _dumpQuote): the board flag must not say
+  // "dump" on a bid from a buyer who can't take the batch.
+  const dq=_dumpQuote(st, ctx.s.bid, qty), bid=dq.bid;
+  const instProfit=(bid!=null&&cpu!=null)?(bid*(1-stax)-cpu)*dq.fillQty:null;
   const gain=(listProfit!=null&&instProfit!=null)?listProfit-instProfit:null;
   const underBE=(ctx.be.list!=null)?ctx.be.list-price:null;
   const m=st.market;

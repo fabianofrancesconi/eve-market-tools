@@ -112,6 +112,44 @@ class TestOrderbookStillAggregates:
         assert book == [[100.0, 12], [110.0, 3]]  # cheapest first, levels merged
 
 
+def _buy(price, vol, min_volume=1, location=STATION):
+    return {"location_id": location, "price": price, "volume_remain": vol,
+            "issued": "2024-01-01T00:00:00Z", "duration": 90,
+            "is_buy_order": True, "min_volume": min_volume}
+
+
+class TestOrderbookBuySideCarriesMinVolume:
+    def test_buy_levels_have_min_volume_highest_first(self):
+        # A min-1 and a min-60000 order at the SAME price stay distinct levels so a
+        # walker can skip the one it can't meet — they don't merge into one.
+        s = _session([
+            _buy(13000.0, 60000, min_volume=60000),
+            _buy(6797.0, 5417, min_volume=1),
+            _buy(6797.0, 100, min_volume=1),   # merges with the line above (same price+min)
+        ])
+        book = lp_core.fetch_orderbook_jita(34, "buy", s,
+                                            station_id=STATION, region_id=REGION)
+        assert book == [[13000.0, 60000, 60000], [6797.0, 5517, 1]]  # highest bid first
+
+    def test_same_price_different_min_volume_stay_separate(self):
+        s = _session([
+            _buy(100.0, 10, min_volume=1),
+            _buy(100.0, 500, min_volume=200),
+        ])
+        book = lp_core.fetch_orderbook_jita(34, "buy", s,
+                                            station_id=STATION, region_id=REGION)
+        # Two distinct levels at the same price; order between equal-price levels is
+        # not specified, so compare as a set of tuples.
+        assert {tuple(x) for x in book} == {(100.0, 10, 1), (100.0, 500, 200)}
+
+    def test_missing_min_volume_defaults_to_one(self):
+        s = _session([{"location_id": STATION, "price": 50.0, "volume_remain": 7,
+                       "is_buy_order": True}])  # no min_volume key
+        book = lp_core.fetch_orderbook_jita(34, "buy", s,
+                                            station_id=STATION, region_id=REGION)
+        assert book == [[50.0, 7, 1]]
+
+
 # ---------------------------------------------------------------------------
 # fetch_order_rank (v1.34.0) -- "am I the best price, and if not, what's my
 # queue position" for the character's own market orders.

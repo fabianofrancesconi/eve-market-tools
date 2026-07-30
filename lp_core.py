@@ -409,13 +409,30 @@ def fetch_orderbook_jita(type_id, side, session,
     fill (the cheapest seller rarely stocks everything you need).
 
     side: "sell" (asks, cheapest first) or "buy" (bids, highest first).
-    Returns [[price, volume], ...] filtered to station_id, sorted in the order
-    you'd consume it. Not cached (the book moves constantly)."""
+
+    Sell side returns [[price, volume], ...]. Buy side returns
+    [[price, volume, min_volume], ...] -- a buy order carries a *minimum volume*
+    it will accept in one transaction (usually 1, but a big buyer may demand e.g.
+    60 000 units), so a batch smaller than that can't fill it at all. Levels are
+    keyed by (price, min_volume) on the buy side so a min-1 and a min-60k order at
+    the same price stay distinct and the walker can skip the ones it can't meet.
+
+    Filtered to station_id, sorted in the order you'd consume it. Not cached (the
+    book moves constantly)."""
+    orders = _fetch_station_orders(type_id, side, session, station_id, region_id)
+    if side == "buy":
+        levels = {}
+        for o in orders:
+            key = (o["price"], o.get("min_volume") or 1)
+            levels[key] = levels.get(key, 0) + o["volume_remain"]
+        book = [[p, v, mv] for (p, mv), v in levels.items()]
+        book.sort(key=lambda x: x[0], reverse=True)
+        return book[:max_levels]
     levels = {}
-    for o in _fetch_station_orders(type_id, side, session, station_id, region_id):
+    for o in orders:
         levels[o["price"]] = levels.get(o["price"], 0) + o["volume_remain"]
     book = [[p, v] for p, v in levels.items()]
-    book.sort(key=lambda x: x[0], reverse=(side == "buy"))
+    book.sort(key=lambda x: x[0])
     return book[:max_levels]
 
 

@@ -1450,17 +1450,26 @@ function _updateBuildPeekSim(price){
   // (bid, tax only, no broker), and the undercut-best-ask optimistic case.
   const floor=$("#bp-sim-floor");
   if(floor){
-    const bid=live&&live.bid!=null?live.bid:P.s.bid;
+    // Dump-now price: walk the live buy book for the UNSOLD units, skipping orders
+    // whose min_volume that count can't meet (a 60k-min buyer can't take your 4.2k
+    // remainder). effBid is the reachable proceeds-weighted bid; fillQty is how many
+    // of the remainder those orders actually absorb. Falls back to the raw top bid
+    // only when no book is available (old snapshot, pre-book live quote).
+    const buyBook=(live&&live.buy_book)?live.buy_book:null;
+    const bw=(buyBook&&buyBook.length)?walkBook(buyBook,remaining):null;
+    const bid=(bw&&bw.filled>0)?bw.avg:(buyBook?null:(live&&live.bid!=null?live.bid:P.s.bid));
+    const fillQty=bw?bw.filled:remaining;
     const instUnit=(bid!=null)?bid*(1-stax):null;
-    const instProfit=(instUnit!=null&&cpu!=null)?(instUnit-cpu)*remaining:null;
+    const instProfit=(instUnit!=null&&cpu!=null)?(instUnit-cpu)*fillQty:null;
     const giveUp=(remProfit!=null&&instProfit!=null)?remProfit-instProfit:null;
     const bestAsk=live&&live.ask!=null?live.ask:null;
     const ucUnit=(bestAsk!=null)?bestAsk*0.9999*(1-stax-bfee):null;
     const ucProfit=(ucUnit!=null&&cpu!=null)?(ucUnit-cpu)*remaining:null;
     floor.innerHTML=`
       <div class="bp-floor-head">Reality check on the ${remaining.toLocaleString()} unsold</div>
-      ${instProfit!=null?`<div class="bp-floor-row"><span>⚡ Dump into buy orders now</span>
-        <span class="${pn(instProfit)}">${sign(instProfit)}${isk(instProfit)}</span></div>`:""}
+      ${instProfit!=null?`<div class="bp-floor-row"><span>⚡ Dump into buy orders now${fillQty<remaining?` <small>(only ${fillQty.toLocaleString()} fit standing orders)</small>`:""}</span>
+        <span class="${pn(instProfit)}">${sign(instProfit)}${isk(instProfit)}</span></div>`
+        :(buyBook?`<div class="bp-floor-row"><span>⚡ Dump into buy orders now</span><span class="bp-na">no order will take ${remaining.toLocaleString()}</span></div>`:"")}
       ${ucProfit!=null?`<div class="bp-floor-row"><span>↧ Undercut best ask (${isk(bestAsk)})</span>
         <span class="${pn(ucProfit)}">${sign(ucProfit)}${isk(ucProfit)}</span></div>`:""}
       ${giveUp!=null&&giveUp>0?`<div class="bp-floor-note">Dumping now gives up <b>${isk(giveUp)}</b> vs. your simulated list price.</div>`:""}`;
@@ -1496,7 +1505,10 @@ function _fetchBuildPeekLive(b, id){
   });
   fetch("/api/ind/detail?"+p).then(r=>r.json()).then(fresh=>{
     if(_buildPeekId!==id || !_PEEK) return;
-    _PEEK.live=(fresh&&!fresh.error)?{ask:fresh.ask, bid:fresh.bid}:null;
+    // buy_book comes along so the "dump now" floor can honour each buy order's
+    // min_volume — a big buyer whose minimum exceeds the unsold count can't take
+    // the batch, so it mustn't set the dump price.
+    _PEEK.live=(fresh&&!fresh.error)?{ask:fresh.ask, bid:fresh.bid, buy_book:fresh.buy_book}:null;
     _PEEK.liveState="done";
     _applyBuildPeekLive();
   }).catch(()=>{

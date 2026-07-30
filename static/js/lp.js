@@ -547,10 +547,18 @@ function renderDetail(){
   });
 }
 
+// Walk a price-level book to fill `qty` units. Sell levels are [price, volume];
+// buy levels carry a third element, the order's min_volume — the fewest units it
+// accepts in one transaction. A buy order can't be filled unless the units still
+// left to sell (`need`) meet its minimum, so a big buyer wanting 60k when you have
+// only 4.2k left to move is skipped, not counted. Without this a 60k-min bid mints
+// a phantom instant-sell price for a batch that could never reach it.
 function walkBook(book, qty){
   let need=qty, cost=0, filled=0, last=null;
   for(const lvl of (book||[])){
     if(need<=0) break;
+    const minVol=lvl[2];               // buy-side min_volume; undefined on sell levels
+    if(minVol!=null && minVol>need) continue;  // can't meet this order's minimum with what's left
     const take=Math.min(need,lvl[1]);
     cost+=take*lvl[0]; filled+=take; need-=take; last=lvl[0];
   }

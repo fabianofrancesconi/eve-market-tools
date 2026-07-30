@@ -792,18 +792,34 @@ function renderIndDetail(d, container){
   // Batch cost = batch materials (job-level ME rounding) + job & invention × N.
   const jobPlusInvRun=(d.job_cost||0)+(d.invention?d.invention_cost||0:0);
   const batchCost=d.total_cost!=null?matTotCost+jobPlusInvRun*n:null;
+  const qty=d.product.quantity, qtyBatchTot=qty*n;
+  // Instant sell = dump the whole batch into standing buy orders. Walk the live
+  // buy book (highest bid first) for the batch, HONOURING each order's min_volume:
+  // a buyer demanding e.g. 60 000 units per transaction can't be filled by a 4 200
+  // batch, so it's skipped, not counted. This is what makes the instant path real
+  // for the current run count — d.bid / d.buy_volume are the raw top-of-book
+  // aggregates that ignore min_volume and would overstate an unfillable market.
+  //   effBid   — proceeds-weighted average bid actually reachable (null = none reachable)
+  //   fillQty  — units the reachable buy orders can absorb (≤ batch)
+  const hasBook=Array.isArray(d.buy_book);
+  const bw=(hasBook&&d.buy_book.length)?walkBook(d.buy_book,qtyBatchTot):null;
+  // A shipped book (even empty) is authoritative for THIS batch; only when no book
+  // came down do we fall back to the raw aggregates.
+  const effBid=(bw&&bw.filled>0)?bw.avg:(hasBook?null:d.bid);
+  const fillQty=hasBook?(bw?bw.filled:0):(d.buy_volume==null?null:Math.min(d.buy_volume,qtyBatchTot));
   const batchRevL=d.revenue_patient!=null?d.revenue_patient*n:null;
-  const batchRevI=d.revenue_instant!=null?d.revenue_instant*n:null;
+  // Batch instant revenue off what the reachable buy orders actually pay for the
+  // units they can take (tax only, no broker), not qty × top bid × N.
+  const batchRevI=(effBid!=null&&fillQty)?effBid*fillQty*(1-(d.sales_tax||0)):null;
   const batchProfitL=batchRevL!=null?batchRevL-batchCost:null;
   const batchProfitI=batchRevI!=null?batchRevI-batchCost:null;
   const batchTime=d.build_time?d.build_time*n:null;
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   // Fee/tax breakdown — re-derives the ISK amounts folded into revenue_patient
   // / revenue_instant (qty × price × rate) so they can surface as their own card.
-  const qty=d.product.quantity, qtyBatchTot=qty*n;
   const brokerIsk=(d.ask!=null && d.broker_fee)?qty*d.ask*d.broker_fee*n:null;
   const taxListIsk=(d.ask!=null && d.sales_tax)?qty*d.ask*d.sales_tax*n:null;
-  const taxInstantIsk=(d.bid!=null && d.sales_tax)?qty*d.bid*d.sales_tax*n:null;
+  const taxInstantIsk=(effBid!=null && fillQty && d.sales_tax)?effBid*fillQty*d.sales_tax:null;
   const jobCostBatch=d.job_cost!=null?d.job_cost*n:null;
   const inventionCostBatch=d.invention?d.invention_cost*n:0;
   // "Max wallet" — the most runs the assigned character's wallet can afford,
@@ -831,7 +847,7 @@ function renderIndDetail(d, container){
   // Break-even sell price per unit: the price that makes revenue exactly cover
   // total cost, solving qty*price*(1-fees) = total_cost. An instant sale to buy
   // orders pays sales tax only; a list (sell) order also pays the broker fee.
-  const minPriceInstant=(d.profit_instant!=null && d.profit_instant<0
+  const minPriceInstant=(batchProfitI!=null && batchProfitI<0
       && d.total_cost!=null && qty>0 && d.sales_tax!=null && d.sales_tax<1)
     ? d.total_cost/(qty*(1-d.sales_tax)) : null;
   const listFee=(d.sales_tax||0)+(d.broker_fee||0);
@@ -979,11 +995,13 @@ function renderIndDetail(d, container){
       <div class="ind-sell-note">${note}</div>
     </div>`;
   // Batch capacity of the instant path: standing buy orders can only absorb so
-  // many units before you'd be dumping below the top bid. buy_volume is the live
-  // buy-book depth (units). Unknown → no note.
-  const instantDepthNote=(d.buy_volume==null)?"paid to buy orders, sales tax only — no broker fee"
-    : d.buy_volume>=qtyBatchTot ? `buy orders can take all ${fmtNum(qtyBatchTot)} — sales tax only`
-    : `only ${fmtNum(d.buy_volume)} wanted on buy orders vs ${fmtNum(qtyBatchTot)} made — the rest needs listing`;
+  // many units — and only orders whose min_volume the batch can meet count at all.
+  // fillQty is what the reachable buy book actually takes (from walkBook above);
+  // null = we don't know the depth (no book / aggregate unknown).
+  const instantDepthNote=(fillQty==null)?"paid to buy orders, sales tax only — no broker fee"
+    : fillQty>=qtyBatchTot ? `buy orders can take all ${fmtNum(qtyBatchTot)} — sales tax only`
+    : fillQty>0 ? `only ${fmtNum(fillQty)} wanted on buy orders vs ${fmtNum(qtyBatchTot)} made — the rest needs listing`
+    : `no buy order will take ${fmtNum(qtyBatchTot)} units (all demand a larger minimum) — you must list`;
   // Market health strip — can the market actually absorb this batch? Units traded
   // per day, days to offload the whole batch at that rate, competing sell orders
   // already listed, and buy-side depth for an instant exit.
@@ -1048,7 +1066,7 @@ function renderIndDetail(d, container){
         ${sellPath("list", "① List", "List &amp; wait", d.ask, "at ask", batchProfitL, marginL,
           `${fmtNum(qtyBatchTot)} × ${isk(d.ask)}, less broker ${fmtPct1(d.broker_fee)} + tax ${fmtPct1(d.sales_tax)}`,
           listWins)}
-        ${sellPath("instant", "② Instant", "Dump now", d.bid, "at bid", batchProfitI, marginI,
+        ${sellPath("instant", "② Instant", "Dump now", effBid, "at bid", batchProfitI, marginI,
           instantDepthNote, instWins)}
       </div>
       <div class="ind-sell-rail">
@@ -1065,8 +1083,8 @@ function renderIndDetail(d, container){
           "How long your whole batch would take to clear at the recent daily volume — lower is more liquid.")}
         ${mkt(d.sell_volume==null?"—":fmtNum(d.sell_volume), "listed vs you",
           "", "Units already on sell orders here — your competition. Fewer means less undercutting.")}
-        ${mkt(d.buy_volume==null?"—":fmtNum(d.buy_volume), "wanted now",
-          "", "Units standing on buy orders — how many you could dump instantly before the price drops.")}
+        ${mkt(fillQty==null?"—":fmtNum(fillQty), "wanted now",
+          "", "Units on buy orders this batch could actually fill — big buyers whose minimum volume exceeds your batch are excluded (you can't sell them what they demand).")}
         ${mkt(d.tradeability==null?"—":d.tradeability, "liquidity", tradeCls,
           "0–100 liquidity score from daily volume vs your Volume preset, gated on the live book. Higher sells more reliably.")}
       </div>
@@ -2117,11 +2135,17 @@ function _batchEconomics(d, n){
   const cost=(matCost!=null)?matCost+jobPlusInvRun*n
            :(d.total_cost!=null?d.total_cost*n:null);
   const revL=d.revenue_patient!=null?d.revenue_patient*n:null;
-  const revI=d.revenue_instant!=null?d.revenue_instant*n:null;
+  // Instant revenue walks the live buy book for the whole batch, skipping orders
+  // whose min_volume the batch can't meet (see walkBook) — a 60k-min buyer can't
+  // take a 4.2k batch, so it mustn't inflate the dump-now figure. Falls back to
+  // the raw aggregate only when no book shipped.
+  const qtyTot=(d.product&&d.product.quantity?d.product.quantity:1)*n;
+  const bw=(d.buy_book&&d.buy_book.length)?walkBook(d.buy_book,qtyTot):null;
+  const revI=(bw&&bw.filled>0)?bw.avg*bw.filled*(1-(d.sales_tax||0))
+           :(d.buy_book?null:(d.revenue_instant!=null?d.revenue_instant*n:null));
   const profitL=(revL!=null&&cost!=null)?revL-cost
               :(d.profit_patient!=null?d.profit_patient*n:null);
-  const profitI=(revI!=null&&cost!=null)?revI-cost
-              :(d.profit_instant!=null?d.profit_instant*n:null);
+  const profitI=(revI!=null&&cost!=null)?revI-cost:null;
   return {cost, profitL, profitI, matCost, time:d.build_time?d.build_time*n:null};
 }
 
@@ -3055,7 +3079,12 @@ function _buildDetailHtml(b){
   const batchCost=be.cost, batchProfitL=be.profitL, batchProfitI=be.profitI;
   const qtyTot=(d.product&&d.product.quantity!=null)?d.product.quantity*n:null;
   const sellL=(d.ask!=null&&qtyTot!=null)?d.ask*qtyTot:null;
-  const sellI=(d.bid!=null&&qtyTot!=null)?d.bid*qtyTot:null;
+  // Instant gross reachable for the batch: walk the frozen buy book honouring
+  // min_volume (see walkBook), so revenue and the per-unit bid shown match the
+  // batch-aware profit from _batchEconomics. Fall back to raw bid only w/o a book.
+  const ibw=(d.buy_book&&d.buy_book.length&&qtyTot!=null)?walkBook(d.buy_book,qtyTot):null;
+  const instBid=(ibw&&ibw.filled>0)?ibw.avg:(d.buy_book?null:d.bid);
+  const sellI=(ibw&&ibw.filled>0)?ibw.cost:(d.buy_book?null:((d.bid!=null&&qtyTot!=null)?d.bid*qtyTot:null));
   const matCostBatch=(be.matCost!=null)?be.matCost:(d.material_cost!=null?d.material_cost*n:null);
   const jobCostBatch=(d.job_cost!=null)?d.job_cost*n:null;
   const inventCostBatch=d.invention&&d.invention_cost!=null?d.invention_cost*n:null;
@@ -3099,7 +3128,7 @@ function _buildDetailHtml(b){
     ${costStrip}
     <div class="ind-bd-exits">
       ${exit("List", "patient sell orders", sellL, isk(d.ask), beL, batchProfitL, "profitL")}
-      ${exit("Instant", "sell into buy orders", sellI, isk(d.bid), beI, batchProfitI, "profitI")}
+      ${exit("Instant", "sell into buy orders", sellI, isk(instBid), beI, batchProfitI, "profitI")}
     </div>
     <div class="ind-build-nowrow">
       <button class="ind-build-now" data-id="${b.id}" title="Fetch the current market prices and compare them against the frozen snapshot">↻ Compare to prices now</button>
@@ -3242,7 +3271,12 @@ function compareBuildToNow(b, btn){
     const cost=_batchEconomics(d, n).cost;
     const stax=d.sales_tax||0, bfee=d.broker_fee||0;
     const revL=(fresh.ask!=null&&qtyTot!=null)?fresh.ask*qtyTot*(1-stax-bfee):null;
-    const revI=(fresh.bid!=null&&qtyTot!=null)?fresh.bid*qtyTot*(1-stax):null;
+    // Instant revenue walks the live buy book for the batch, skipping orders whose
+    // min_volume it can't meet (see walkBook); falls back to raw bid × qty only if
+    // the fetch returned no book.
+    const fbw=(fresh.buy_book&&fresh.buy_book.length&&qtyTot!=null)?walkBook(fresh.buy_book,qtyTot):null;
+    const revI=(fbw&&fbw.filled>0)?fbw.avg*fbw.filled*(1-stax)
+             :(fresh.buy_book?null:((fresh.bid!=null&&qtyTot!=null)?fresh.bid*qtyTot*(1-stax):null));
     const vals={
       sellL:{then:d.ask, now:fresh.ask, tot:qtyTot},
       sellI:{then:d.bid, now:fresh.bid, tot:qtyTot},

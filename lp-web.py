@@ -3857,6 +3857,14 @@ def do_ind_detail(q):
     detail["daily_units"] = dv
     detail["tradeability"] = ind_core.tradeability(dv)
     detail["esi_prices"] = refresh_prices
+    # Live buy-order book for the product so the client can value an instant
+    # ("dump now") sale HONESTLY for the current batch size: each buy order carries
+    # a min_volume it won't transact below, and a batch smaller than that can't fill
+    # it at all. The aggregate bid/buy_volume above ignore that, so a 60k-min buyer
+    # would otherwise mint a phantom instant-sell price for a 4k batch. Batch size
+    # changes client-side (no refetch), so we ship the book and gate there.
+    detail["buy_book"] = fetch_orderbook_jita(
+        bp["product_id"], "buy", SESSION, station_id=station_id, region_id=region_id)
     return detail
 
 

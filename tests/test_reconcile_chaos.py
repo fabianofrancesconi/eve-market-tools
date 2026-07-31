@@ -40,6 +40,7 @@ def _acct():
 def _bind(monkeypatch, tmp_path, acct):
     monkeypatch.setattr(lp_web, "IND_BUILDS_PATH", tmp_path / "builds.json")
     monkeypatch.setattr(lp_web, "IND_SELL_LEDGER_PATH", tmp_path / "ledger.json")
+    monkeypatch.setattr(lp_web, "IND_OBSERVED_LEDGER_PATH", tmp_path / "observed.json")
     monkeypatch.setattr(lp_web, "IND_LISTED_UNITS_PATH", tmp_path / "listed.json")
     monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", tmp_path / "ev.json")
     monkeypatch.setattr(lp_web, "IND_TRACK_MIGRATED_PATH", tmp_path / "migrated.json")
@@ -466,3 +467,97 @@ class TestReconcileChaos:
         assert rows[ids[2]]["realized"]["units"] == 2
         assert rows[ids[2]]["stage"] == "built"    # no order yet
         _assert_invariants(summary, [], "multi_sale", 0)
+
+
+class TestObservedLedgerFullStack:
+    """The Standup Light Missile fix end-to-end: a build whose sell order the app
+    watched empty reads SOLD immediately, even while ESI's wallet-transactions
+    feed still lags — but the money (and archiving) waits for the wallet."""
+
+    def _delivered_build(self, acct, product, done_at=1000.0):
+        import json
+        b = lp_web.do_ind_builds_save({"runs": ["10"],
+            "snapshot": [json.dumps(_snapshot(product, cost=100.0))]})["build"]
+        srv = lp_web._load_tracked_builds(acct)
+        next(x for x in srv if x["id"] == b["id"])["done_at"] = done_at
+        lp_web._save_tracked_builds(acct, srv)
+        return b
+
+    def test_order_diff_moves_card_to_sold_before_wallet(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        product = _PRODUCTS[1]
+        pid = product["type_id"]
+        b = self._delivered_build(acct, product)
+        # The order was listed for 10, then observed to fully sell (filled) — but
+        # NO wallet transaction has arrived yet (the feed lags).
+        lp_web._reconcile_observed_ledger(acct, [
+            {"id": "o1_1", "ts": 2000.0, "type_id": pid, "sold": 10,
+             "filled": True, "expired": False, "is_buy_order": False}])
+        # Order is gone from the market (it filled).
+        lp_web._record_listed_units(acct, 1, [])
+        s = lp_web.do_ind_summary({})
+        row = next(x for x in s["builds"] if x["id"] == b["id"])
+        assert row["stage"] == "sold"              # the fix: not "built"
+        assert row["held_units"] == 0
+        # Money hasn't landed yet — realized units reflect the wallet (0 so far).
+        assert row["realized"]["units"] == 0
+        # Physical union sold leads the wallet-confirmed count → settling flag.
+        assert row["sold_units"] == 10
+        assert row["settling"] is True
+        _assert_invariants(s, [], "observed_sold", 0)
+
+    def test_expired_order_does_not_mark_sold(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        product = _PRODUCTS[1]
+        pid = product["type_id"]
+        b = self._delivered_build(acct, product)
+        # The order VANISHED by expiring, not selling — units returned to hangar.
+        lp_web._reconcile_observed_ledger(acct, [
+            {"id": "o1_1", "ts": 2000.0, "type_id": pid, "sold": 10,
+             "filled": False, "expired": True, "is_buy_order": False}])
+        lp_web._record_listed_units(acct, 1, [])
+        s = lp_web.do_ind_summary({})
+        row = next(x for x in s["builds"] if x["id"] == b["id"])
+        assert row["stage"] == "built"             # still held, nothing sold
+        assert row["held_units"] == 10
+        assert row["settling"] is False            # nothing sold → nothing settling
+
+    def test_archive_refused_until_wallet_confirms(self, monkeypatch, tmp_path):
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        product = _PRODUCTS[1]
+        pid = product["type_id"]
+        b = self._delivered_build(acct, product)
+        # Physically sold out (order-diff), wallet only confirms 6 of 10.
+        lp_web._reconcile_observed_ledger(acct, [
+            {"id": "o1_1", "ts": 2000.0, "type_id": pid, "sold": 10,
+             "filled": True, "expired": False, "is_buy_order": False}])
+        lp_web._reconcile_sell_ledger(acct, [
+            {"transaction_id": 1, "type_id": pid, "quantity": 6, "unit_price": 150.0,
+             "date": "2026-08-01T00:00:00Z", "is_buy": False}])
+        lp_web._record_listed_units(acct, 1, [])
+        # Card reads sold, but archiving is refused — the ISK is still settling.
+        res = lp_web.do_ind_builds_archive({"id": [b["id"]], "archived": ["1"]})
+        assert "error" in res and not res.get("ok")
+        assert "settling" in res["error"] or "confirm" in res["error"]
+        assert not next(x for x in lp_web._load_tracked_builds(acct)
+                        if x["id"] == b["id"]).get("archived")
+
+        # Mid-settlement the card flags provisional (10 physical > 6 confirmed).
+        s_mid = lp_web.do_ind_summary({})
+        row_mid = next(x for x in s_mid["builds"] if x["id"] == b["id"])
+        assert row_mid["settling"] is True
+        assert row_mid["sold_units"] == 10 and row_mid["realized"]["units"] == 6
+
+        # Wallet catches up with the remaining 4 → settling clears, archiving works.
+        lp_web._reconcile_sell_ledger(acct, [
+            {"transaction_id": 2, "type_id": pid, "quantity": 4, "unit_price": 150.0,
+             "date": "2026-08-01T01:00:00Z", "is_buy": False}])
+        s_done = lp_web.do_ind_summary({})
+        row_done = next(x for x in s_done["builds"] if x["id"] == b["id"])
+        assert row_done["settling"] is False
+        res2 = lp_web.do_ind_builds_archive({"id": [b["id"]], "archived": ["1"]})
+        assert res2.get("ok")
+        assert res2["build"]["frozen"]["units"] == 10

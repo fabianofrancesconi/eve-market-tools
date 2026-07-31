@@ -483,6 +483,137 @@ class TestReconcile:
         assert r["lots"]["A"]["stage"] == "listed"   # still held, order on it
 
 
+class TestReconcileObservedSplit:
+    """Units (sold/held/stage) come from the real-time order-diff stream; money
+    (net/cost/profit) from the laggy wallet stream. This is the fix for a build
+    reading "0 / N sold" while its order visibly emptied — the wallet feed hadn't
+    caught up. Reproduces the Standup Light Missile prod case."""
+
+    def test_observed_units_lead_the_wallet(self):
+        # Order-diff saw all 10 units leave; the wallet only reported 6 so far.
+        lots = [_lot("A", 1000, 10, cpu=100.0, tax=0.0)]
+        fills = [{"transaction_id": 1, "units": 6, "price": 200.0, "ts": 1500}]
+        observed = [{"event_id": "e1", "units": 10, "ts": 1500}]
+        r = ind_track.reconcile(lots, fills, 0, observed_fills=observed)
+        rec = r["lots"]["A"]
+        assert rec["sold"] == 10          # physical: fully sold
+        assert rec["sold_paid"] == 6      # wallet has confirmed 6
+        assert rec["held"] == 0
+        assert rec["stage"] == "sold"     # the card moves to SOLD immediately
+        # Money reflects ONLY the 6 confirmed units — nothing fabricated.
+        assert rec["net"] == 6 * 200.0
+        assert rec["cost"] == 6 * 100.0
+        assert r["summary"]["sold"] == 10
+        assert r["summary"]["sold_paid"] == 6
+
+    def test_prod_case_standup_missile(self):
+        # 4200-unit batch: wallet confirms 3206, order-diff saw the full 4200
+        # (the closing 994 sale ESI's wallet feed hadn't yet delivered).
+        lots = [_lot("BATCH", 1000, 4200, cpu=100.0, tax=0.0)]
+        fills = [{"transaction_id": 1, "units": 3206, "price": 130.0, "ts": 1500}]
+        observed = [{"event_id": "e1", "units": 4200, "ts": 1500}]
+        r = ind_track.reconcile(lots, fills, 0, observed_fills=observed)
+        rec = r["lots"]["BATCH"]
+        assert (rec["sold"], rec["sold_paid"], rec["held"], rec["stage"]) == (
+            4200, 3206, 0, "sold")
+
+    def test_wallet_leads_observed_instant_sell(self):
+        # A pure instant-sell (dumped to a buy order) produces a wallet fill but
+        # no order-diff event — the union still counts it via the wallet side.
+        lots = [_lot("A", 1000, 10, cpu=100.0, tax=0.0)]
+        fills = [{"transaction_id": 1, "units": 10, "price": 200.0, "ts": 1500}]
+        r = ind_track.reconcile(lots, fills, 0, observed_fills=[])
+        rec = r["lots"]["A"]
+        assert rec["sold"] == 10 and rec["sold_paid"] == 10
+        assert rec["stage"] == "sold"
+
+    def test_no_observed_data_is_identical_to_before(self):
+        # The union collapses to the wallet stream when observed is None/empty, so
+        # every pre-existing behaviour (and test) is unchanged.
+        lots = [_lot("A", 1000, 10, cpu=100.0, tax=0.05)]
+        fills = [{"transaction_id": 1, "units": 4, "price": 200.0, "ts": 1500}]
+        r_none = ind_track.reconcile(lots, fills, 3)
+        r_empty = ind_track.reconcile(lots, fills, 3, observed_fills=[])
+        for r in (r_none, r_empty):
+            rec = r["lots"]["A"]
+            assert rec["sold"] == 4 and rec["sold_paid"] == 4
+            assert rec["held"] == 6 and rec["listed"] == 3
+            assert rec["stage"] == "listed"
+
+    def test_observed_gated_by_delivery_like_wallet(self):
+        # An observed sale before the lot was produced can't attach either — you
+        # can't watch units leave a batch that doesn't exist yet.
+        lots = [_lot("A", 2000, 10)]
+        observed = [{"event_id": "e1", "units": 10, "ts": 1000}]
+        r = ind_track.reconcile(lots, [], 5, observed_fills=observed)
+        assert r["lots"]["A"]["sold"] == 0        # gated out, same as the wallet
+        assert r["lots"]["A"]["held"] == 10       # all still held
+        assert r["lots"]["A"]["stage"] == "listed"
+
+    def test_observed_frees_held_so_order_delists(self):
+        # Two held lots, one order on the oldest. Order-diff sees the oldest sell
+        # out → it delists and the anchor moves to the newer lot, even with NO
+        # wallet fill yet.
+        lots = [_lot("OLD", 1000, 10), _lot("NEW", 2000, 10)]
+        observed = [{"event_id": "e1", "units": 10, "ts": 1500}]
+        r = ind_track.reconcile(lots, [], 5, observed_fills=observed)
+        assert r["lots"]["OLD"]["stage"] == "sold"
+        assert r["lots"]["OLD"]["held"] == 0
+        assert r["listed_anchor"] == "NEW"
+
+
+class TestMergeObservedFills:
+    def test_merges_sale_events_by_id(self):
+        ledger = {}
+        events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5},
+                  {"id": "o1_200", "ts": 200, "type_id": 34, "sold": 3}]
+        ledger, changed = ind_track.merge_observed_fills(ledger, events)
+        assert changed is True
+        assert len(ledger["34"]) == 2
+        assert sum(f["units"] for f in ledger["34"]) == 8
+
+    def test_dedup_by_event_id_is_idempotent(self):
+        ledger = {}
+        events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5}]
+        ind_track.merge_observed_fills(ledger, events)
+        ledger, changed = ind_track.merge_observed_fills(ledger, events)
+        assert changed is False
+        assert len(ledger["34"]) == 1
+
+    def test_expired_order_is_not_a_sale(self):
+        # An expired order returned its units — they didn't sell.
+        ledger = {}
+        events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5,
+                   "expired": True}]
+        ledger, changed = ind_track.merge_observed_fills(ledger, events)
+        assert changed is False
+        assert ledger == {}
+
+    def test_buy_order_event_ignored(self):
+        ledger = {}
+        events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5,
+                   "is_buy_order": True}]
+        ledger, changed = ind_track.merge_observed_fills(ledger, events)
+        assert changed is False
+
+    def test_skips_missing_fields(self):
+        ledger = {}
+        events = [{"id": "a", "ts": 1, "sold": 5},               # no type_id
+                  {"id": "b", "ts": 1, "type_id": 34, "sold": 0}, # zero units
+                  {"ts": 1, "type_id": 34, "sold": 5}]            # no id
+        ledger, changed = ind_track.merge_observed_fills(ledger, events)
+        assert changed is False
+        assert ledger == {}
+
+    def test_units_carry_no_price(self):
+        # The observed stream is price-free; only units/ts/id are recorded.
+        ledger = {}
+        events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5,
+                   "price": 999.0}]
+        ind_track.merge_observed_fills(ledger, events)
+        assert "price" not in ledger["34"][0]
+
+
 class TestReconcileInvariants:
     """The guarantees the UI relies on, on a spread of hand-built shapes. The
     LINKED-badge theorem — order shows 🔗  ⟺  a lot is Listed  ⟺  flow.listed>0 —

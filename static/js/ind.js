@@ -1437,7 +1437,8 @@ function mergeSummaryBuilds(summary){
     if(!r) return;
     const before=JSON.stringify([b.stage, b.abandoned, b.realized,
                                  b.units_produced, b.cost_per_unit,
-                                 b.is_listed_anchor, b.listed_units, b.held_units]);
+                                 b.is_listed_anchor, b.listed_units, b.held_units,
+                                 b.sold_units, b.settling]);
     b.stage=r.stage;
     b.abandoned=r.abandoned;
     b.realized=r.realized;
@@ -1449,9 +1450,14 @@ function mergeSummaryBuilds(summary){
     b.is_listed_anchor=r.is_listed_anchor;
     b.listed_units=r.listed_units;
     b.held_units=r.held_units;
+    // Physical units gone vs wallet-confirmed profit (realized.units): settling
+    // means the card reads "sold" while ESI's wallet feed still trails the sale.
+    b.sold_units=r.sold_units;
+    b.settling=r.settling;
     if(JSON.stringify([b.stage, b.abandoned, b.realized,
                        b.units_produced, b.cost_per_unit,
-                       b.is_listed_anchor, b.listed_units, b.held_units])!==before) changed=true;
+                       b.is_listed_anchor, b.listed_units, b.held_units,
+                       b.sold_units, b.settling])!==before) changed=true;
   });
   return changed;
 }
@@ -2045,6 +2051,11 @@ function _buildTileHtml(b, linked){
     const rz=_buildRealized(b);
     const early=b.abandoned;
     line=`<span class="ind-tile-dim">${early?"closed":"sold"} ·</span> <b class="${pn(rz.profit)}">${isk(rz.profit)}</b>`;
+    // The card can read "sold" (order-diff saw the order empty) before ESI's
+    // laggy wallet feed has priced every unit. Until it catches up the profit
+    // shown covers only the wallet-confirmed units — flag it as provisional so
+    // a trailing number doesn't look like the final tally.
+    if(b.settling) line+=` <span class="ind-tile-warn" title="Sold, but ESI's wallet feed hasn't priced every unit yet — the profit shown is still settling and will finish updating within a few minutes.">⏳ settling</span>`;
     // Finished builds can be archived straight from the board — the same
     // declutter action the full card offers, brought up to the tile so a sold
     // batch can be filed away without opening it. Dead builds (archived/stopped)

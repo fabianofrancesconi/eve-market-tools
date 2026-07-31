@@ -53,57 +53,69 @@ MODEL DETAILS
 Every function here is pure — plain dicts in, plain data out. ``lp-web`` owns all
 fetching/persistence and feeds this module already-parsed lots / fills / volumes.
 
-KNOWN FAILURE MODES / DESIGN FLAWS (read before debugging "sold looks wrong")
-----------------------------------------------------------------------------
-The model above is clean, but it rests on assumptions that break in real use.
-When a tracked build's ``sold`` count looks wrong, it is almost always ONE of
-these — check them in order before suspecting the allocator:
+THE TWO-STREAM MODEL (read before debugging "sold looks wrong")
+---------------------------------------------------------------
+Sale tracking runs on TWO independent streams because no single ESI feed is both
+timely AND authoritative for money:
 
-1. **The ledger only knows what the wallet-transactions FEED delivered.** ``sold``
-   is derived *purely* from the wallet ledger — never from the sell order's own
-   ``volume_remain`` dropping. So if the ``/wallet/transactions`` pull fails or
-   stalls, sales simply don't exist to this module and every affected build reads
-   under-sold (``0 / N`` in the worst case) even while its order visibly sells
-   down. This is invisible unless surfaced: it was swallowed silently in lp-web
-   (``except HTTPError: transactions=[]``) and stalled the ledger ~17h in prod on
-   2026-07-30. lp-web now logs the failure and exposes ``wallet_tx_health`` per
-   character (a gold "sales sync failed" badge on the Character panel). **If sold
-   is low, first confirm the fills are actually IN the ledger** (dump
-   ``ind_sell_ledger:<account_id>`` from Postgres — see CLAUDE.md) before touching
-   anything here. The feed reaches ~30 days / 2500 rows back; a sale that both
-   happens during an outage AND ages out of that window before a successful pull
-   is lost permanently (no order-diff fallback exists anymore).
+  * UNITS (sold / held / stage) ← the ``observed_fills`` order-diff stream: units
+    the app physically watched leave when an open order's ``volume_remain``
+    dropped. Near-real-time (``/orders`` updates within a sweep), so the lifecycle
+    is correct immediately.
+  * MONEY (net / cost / profit) ← the ``fills`` wallet stream
+    (``/wallet/transactions``): the true ISK, but ESI's transactions feed lags the
+    real sale by up to hours (sometimes much longer than the ~1h it advertises).
 
-2. **The delivery gate strands pre-delivery fills of a fungible item.** A fill
-   only lands on a lot with ``done_at <= fill.ts`` ("can't sell before you make
-   it"). When a NEWER build is delivered while OLDER stock of the same fungible
-   item is still selling, those sales predate the only live lot's delivery, fail
-   the gate, and pile into ``summary.unallocated`` — the new build reads unsold
-   even though units are moving. This is a design tension, not a bug in the pass:
-   the older, already-sold inventory belongs to builds that are now archived
-   (their sales frozen), so the fungible fills have no live lot to attach to.
-   Observed on Standup Light Missile (37848), 2026-07-30: unallocated=33800.
-   A real fix means reconciling against the order's observed sell-down (the
-   physical stock) rather than only the wallet FIFO — a model change, deferred.
+Per lot, ``sold`` (units) is the UNION (max) of the two streams' FIFO allocations;
+``sold_paid`` is the wallet-confirmed subset that ``net``/``cost``/``profit``
+actually cover. So a build reads "sold" the instant its order empties, while its
+profit trails until the wallet catches up — and because the streams are never
+concatenated, nothing double-books. See :func:`reconcile`.
 
-3. **Archived/frozen builds are excluded from the FIFO, by design — double-edged.**
-   Dropping dead builds (:func:`~lp-web._live_builds`) is what killed the old
-   LINKED-vs-built drift, but it also means a fungible sale that "should" have
-   been attributed to an archived batch instead flows to the oldest *live* lot
-   (or to unallocated). Archiving a build freezes its realized profit at a point
-   in time; later sales of the same type can't retro-adjust it. If realized
-   totals look off after archiving, this is why.
+This split is the fix for the recurring bug where a build showed ``0 / N sold``
+(or sat in BUILT with phantom "held" units) while its order had visibly sold out —
+the wallet feed simply hadn't reported the sale yet. Reproduced on Standup Light
+Missile (37848) twice: 2026-07-30 (``sold=0``) and 2026-07-31 (``sold=3206`` of a
+4200 batch whose order had fully filled; the closing 994-unit sale was ~15h behind
+in the wallet feed while ``/wallet`` balance and ``/orders`` both saw it instantly).
 
-4. **``listed`` and ``sold`` come from DIFFERENT inputs and can look contradictory
-   mid-stall.** ``listed`` is a fresh snapshot of open-order ``volume_remain``
-   each sweep; ``sold`` is the accumulated ledger. During a ledger stall (flaw 1)
-   the order snapshot keeps updating while sold does not, so you get the tell-tale
-   ``sold=0, listed=1494, produced=4200`` shape — listed + unsold don't reconcile
-   against sold. That mismatch is itself a *symptom of flaw 1*, not a separate bug.
+REMAINING SHARP EDGES (still true after the split — check before blaming the pass):
 
-The invariant "late ESI data self-heals on the next recompute" is only true while
-the feed is HEALTHY. Flaws 1–3 are the cases where there is no later data to heal
-from, or it can never attach. Keep that caveat in mind.
+1. **Money still lags; ``sold_paid < sold`` is normal mid-settlement.** The UNIT
+   view is right immediately, but realized profit / portfolio ISK only catch up
+   when the wallet feed reports the fill. Archiving is gated on
+   ``sold_paid == sold`` (see :func:`~lp-web.do_ind_builds_archive`) precisely so a
+   build can't freeze its realized snapshot before the money lands — a frozen
+   snapshot is never re-derived. If profit looks low but stage is "sold", the
+   wallet is still behind; it converges. Still surface a failing feed:
+   ``wallet_tx_health`` (a gold "sales sync failed" badge) flags a *broken* pull as
+   opposed to a merely slow one.
+
+2. **A wallet-only sale (instant-sell / dump) has no order-diff event.** Dumping to
+   a buy order produces a wallet fill but no ``volume_remain`` drop, so the union
+   counts it via the wallet side — but its UNITS then lag instead of leading. This
+   is fine (an instant-sell is realized immediately in-game and the wallet feed is
+   usually quick for it), just the opposite asymmetry from a listed sale.
+
+3. **The delivery gate applies to BOTH streams.** A sale (observed or wallet) only
+   lands on a lot with ``done_at <= fill.ts``. When a newer build is delivered
+   while older stock of the same fungible item is still selling, pre-delivery sales
+   fail the gate and pile into ``summary.unallocated``. The order-diff stream is
+   attached to the CURRENT open order, so in practice its events post-date the live
+   lot's delivery and attach cleanly — but a fill (either stream) that genuinely
+   predates the only live lot is still stranded by design (older inventory belongs
+   to now-archived builds whose sales are frozen).
+
+4. **Archived/frozen builds are excluded from the FIFO, by design — double-edged.**
+   Dropping dead builds (:func:`~lp-web._live_builds`) killed the old LINKED-vs-built
+   drift, but a fungible sale that "should" have hit an archived batch instead flows
+   to the oldest *live* lot (or to unallocated). Archiving freezes realized profit;
+   later sales of the same type can't retro-adjust it.
+
+5. **The observed ledger is append-only.** Like the wallet ledger, it only grows
+   (deduped by event id). Rows are tiny; if it ever needs bounding, prune only fills
+   already fully covered by the wallet stream — pruning a still-uncovered observed
+   fill would revert a sold build to built.
 """
 
 
@@ -149,6 +161,46 @@ def merge_sell_fills(ledger, transactions, parse_ts):
             "price": t.get("unit_price") or 0.0,
         })
         seen.add(str(tid))
+        changed = True
+    return ledger, changed
+
+
+def merge_observed_fills(ledger, events):
+    """Fold new order-diff *sale* events into a product-keyed observed-units
+    ledger, deduping by the event's own ``id``.
+
+    ``ledger`` is ``{str(type_id): [{event_id, ts, units}]}`` — the PHYSICAL
+    record of units the app watched leave via an open order's ``volume_remain``
+    dropping (or the order filling). It carries no price: money always comes from
+    the wallet ledger (:func:`merge_sell_fills`); this one exists only so the unit
+    lifecycle (sold / held / stage) tracks in real time instead of waiting on the
+    laggy wallet-transactions feed. ``events`` is the order-event list from
+    ``_compute_order_deltas`` (each ``{id, ts, type_id, sold, expired, ...}``).
+
+    An **expired** order returned its units to the hangar — they did NOT sell — so
+    expired events are skipped. Buy-order events are skipped too (we only track our
+    own produced stock selling). Events missing an id / type_id / positive ``sold``
+    are ignored. The event id is unique per (order, sweep), so re-running never
+    double-books. Returns ``(ledger, changed)``; ``ledger`` mutated in place.
+    """
+    seen = {str(f["event_id"])
+            for fills in ledger.values() for f in fills
+            if f.get("event_id") is not None}
+    changed = False
+    for e in events or []:
+        if e.get("expired") or e.get("is_buy_order"):
+            continue
+        eid = e.get("id")
+        pid = e.get("type_id")
+        units = e.get("sold") or 0
+        if eid is None or pid is None or units <= 0 or str(eid) in seen:
+            continue
+        ledger.setdefault(str(pid), []).append({
+            "event_id": eid,
+            "ts": e.get("ts"),
+            "units": units,
+        })
+        seen.add(str(eid))
         changed = True
     return ledger, changed
 
@@ -384,10 +436,28 @@ def product_pipeline(lots, per_lot, listed_units):
 
 # ── The single authority ─────────────────────────────────────────────────────
 
-def reconcile(lots, fills, listed_units):
+def reconcile(lots, fills, listed_units, observed_fills=None):
     """Reconcile ONE product's lots against its wallet fills and open-order
     volume, in a single ordered pass — the sole place "sold", "listed" and the
     lifecycle stage are decided, so they can never disagree.
+
+    TWO independent sale streams, on purpose (see KNOWN FAILURE MODES flaw 1):
+      * ``fills`` — WALLET sell transactions. The source of truth for *money*
+        (net / cost / profit), but ESI's ``/wallet/transactions`` feed lags the
+        real sale by up to hours, so it must NOT gate the unit lifecycle.
+      * ``observed_fills`` — units the app *physically watched leave* via the
+        real-time order-diff (an open order's ``volume_remain`` dropping / the
+        order filling). Timestamped ``{ts, units}`` (no price — money never comes
+        from here). This is what drives ``sold`` / ``held`` / the stage, so a
+        build reads "sold" the instant its order empties even while the wallet
+        feed is still catching up. Money for those units lands later, from the
+        wallet, and the two reconcile because each unit is capacity-capped and
+        the streams are never merged (so nothing double-books).
+    Per lot, ``sold`` (units) = ``max(wallet-allocated, observed-allocated)`` —
+    the union, so a pure instant-sell the order-diff never saw (wallet-only) and
+    a fresh listed sale the wallet hasn't reported yet (observed-only) both count.
+    When ``observed_fills`` is None/empty the unit stream collapses to the wallet
+    stream and behaviour is exactly as before (money and units share one FIFO).
 
     ``lots`` — every tracked build for the product, delivered or not, each a rich
     lot dict (see :func:`~lp-web._build_lot`):
@@ -433,7 +503,8 @@ def reconcile(lots, fills, listed_units):
       * ``lot.listed ≤ lot.held``; a lot is only listed from held stock.
       * Idempotent: reconciling the same inputs again yields the same result.
     """
-    # 1. Money: FIFO sold across delivered lots (capacity = cap).
+    # 1. Money: FIFO sold across delivered lots (capacity = cap). WALLET stream —
+    #    the only source of net/cost/profit, but it lags the real sale.
     alloc_lots = [{"id": l["id"], "units": l.get("cap") or 0,
                    "cost_per_unit": l.get("cost_per_unit"),
                    "sales_tax": l.get("sales_tax") or 0.0,
@@ -441,15 +512,31 @@ def reconcile(lots, fills, listed_units):
                   for l in lots if l.get("done_at") is not None]
     per_lot, summary = allocate_fifo(alloc_lots, fills)
 
+    # 1b. Units: the same FIFO over the PHYSICALLY-OBSERVED order-diff stream
+    #     (price-free — money never comes from here). Real-time, so it's what the
+    #     unit lifecycle (sold / held / stage) reads; the wallet only catches the
+    #     money up later. Per lot, the unit "sold" is the UNION (max) of the two
+    #     streams: a wallet-only instant-sell and an observed-only fresh listing
+    #     sale both count, and because the streams are never concatenated the same
+    #     unit can't book twice. No observed data → collapses to the wallet count.
+    obs_per_lot, _obs_summary = allocate_fifo(alloc_lots, observed_fills or [])
+    sold_units = {l["id"]: max(per_lot.get(l["id"], {}).get("sold", 0),
+                               obs_per_lot.get(l["id"], {}).get("sold", 0))
+                  for l in lots}
+
     # 2. Listing: live order volume over held stock of *open* delivered lots,
-    #    oldest-first (units = produced; held = produced − sold). Abandoned lots
-    #    are closed positions holding nothing, so the order (and the 🔗 badge it
-    #    drives) must NOT land on them or the badge would point at a written-off
-    #    lot while the visible one reads Built. (Archived lots never reach here.)
+    #    oldest-first (units = produced; held = produced − sold). Held uses the
+    #    UNION sold (physical), so a build whose order emptied stops being listed
+    #    the instant the units leave, not when the wallet feed catches up.
+    #    Abandoned lots are closed positions holding nothing, so the order (and
+    #    the 🔗 badge it drives) must NOT land on them or the badge would point at
+    #    a written-off lot while the visible one reads Built. (Archived lots never
+    #    reach here.)
+    sold_view = {lid: {"sold": n} for lid, n in sold_units.items()}
     listable = [{"id": l["id"], "units": l.get("produced") or 0,
                  "done_at": l.get("done_at")}
                 for l in lots if _open(l)]
-    listed_map = allocate_listed(listable, per_lot, listed_units)
+    listed_map = allocate_listed(listable, sold_view, listed_units)
 
     # 3. Pipeline flow over *open* lots (in-production + delivered, not
     #    abandoned/archived) — the same visible set the listing pass draws on, so
@@ -459,14 +546,22 @@ def reconcile(lots, fills, listed_units):
                             else (l.get("produced") or 0)),
                   "done_at": l.get("done_at")}
                  for l in lots if not l.get("abandoned") and not l.get("archived")]
-    flow = product_pipeline(flow_lots, per_lot, listed_units)
+    flow = product_pipeline(flow_lots, sold_view, listed_units)
 
-    # 4. Per-lot record: fold in held + listed + the delivered stage.
+    # 4. Per-lot record: UNITS (sold/held/stage) from the physical union;
+    #    MONEY (net/cost/profit) verbatim from the wallet stream. ``sold`` is the
+    #    unit count the UI shows and the stage keys off; net/cost/profit trail it
+    #    until the wallet feed reports the same units (then they converge).
     out_lots = {}
     for l in lots:
         lid = l["id"]
-        rec = dict(per_lot.get(lid, {"sold": 0, "net": 0.0, "cost": 0.0,
-                                     "profit": 0.0}))
+        money = per_lot.get(lid, {"sold": 0, "net": 0.0, "cost": 0.0,
+                                  "profit": 0.0})
+        sold_ct = sold_units.get(lid, 0)
+        rec = {"sold": sold_ct,
+               "net": money.get("net", 0.0), "cost": money.get("cost", 0.0),
+               "profit": money.get("profit", 0.0),
+               "sold_paid": money.get("sold", 0)}   # units the wallet has confirmed
         listed_ct = listed_map.get(lid, 0)
         rec["listed"] = listed_ct
         rec["is_listed_anchor"] = False
@@ -476,11 +571,11 @@ def reconcile(lots, fills, listed_units):
         elif l.get("abandoned"):
             rec["held"] = 0
             rec["stage"] = "sold"                    # remainder written off
-        elif (l.get("produced") or 0) > 0 and rec["sold"] >= (l.get("produced") or 0):
+        elif (l.get("produced") or 0) > 0 and sold_ct >= (l.get("produced") or 0):
             rec["held"] = 0
             rec["stage"] = "sold"
         else:
-            rec["held"] = max(0, (l.get("cap") or 0) - rec["sold"])
+            rec["held"] = max(0, (l.get("cap") or 0) - sold_ct)
             rec["stage"] = "listed" if listed_ct > 0 else "built"
         out_lots[lid] = rec
 
@@ -493,6 +588,12 @@ def reconcile(lots, fills, listed_units):
             listed_anchor = l["id"]
             out_lots[l["id"]]["is_listed_anchor"] = True
             break
+
+    # summary.sold is the UNION unit total (so sum(lot.sold) == summary.sold),
+    # while net/cost/profit stay the wallet money — units lead, money trails.
+    summary = dict(summary)
+    summary["sold_paid"] = summary.get("sold", 0)     # wallet-confirmed units
+    summary["sold"] = sum(sold_units.values())
 
     return {"lots": out_lots, "summary": summary, "flow": flow,
             "listed_anchor": listed_anchor}

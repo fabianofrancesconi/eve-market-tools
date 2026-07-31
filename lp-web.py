@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.9"
+__version__ = "1.156.10"
 
 import argparse
 import base64
@@ -87,6 +87,7 @@ JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-
 ORDER_EVENTS_PATH = CACHE_DIR / "order_events.json"  # market order sale/fill events
 IND_BUILDS_PATH = CACHE_DIR / "ind_tracked_builds.json"  # frozen build-batch snapshots
 IND_SELL_LEDGER_PATH = CACHE_DIR / "ind_sell_ledger.json"  # per-product wallet sell fills
+IND_OBSERVED_LEDGER_PATH = CACHE_DIR / "ind_observed_ledger.json"  # per-product order-diff sell units
 IND_LISTED_UNITS_PATH = CACHE_DIR / "ind_listed_units.json"  # per-char open sell-order volume
 IND_TRACK_MIGRATED_PATH = CACHE_DIR / "ind_track_migrated.json"  # one-time migration sentinel
 IND_ARCHIVED_FROZEN_PATH = CACHE_DIR / "ind_archived_frozen.json"  # archived-freeze sentinel
@@ -1225,6 +1226,7 @@ def _compute_order_deltas(prev_orders, last_sales, current_orders, names, char_n
                 "id": f"{oid_str}_{int(now)}",
                 "ts": now,
                 "order_id": int(oid_str),
+                "type_id": prev.get("type_id"),
                 "type_name": prev.get("type_name") or names.get(prev.get("type_id"), "?"),
                 "sold": sold,
                 "price": prev.get("price", 0),
@@ -1468,7 +1470,9 @@ def do_ind_builds_archive(q):
             # (this build still counts as live here) to read its current held
             # count; anything unsold means it isn't a closed position yet.
             ledger = _load_sell_ledger(acct)
-            by_build, _ = _reconcile_products(builds, ledger, _load_listed_units(acct))
+            by_build, _ = _reconcile_products(builds, ledger,
+                                              _load_listed_units(acct),
+                                              _load_observed_ledger(acct))
             rec = by_build.get(build_id)
             held = (rec or {}).get("held", 0)
             if b.get("done_at") is None:
@@ -1476,6 +1480,19 @@ def do_ind_builds_archive(q):
             if held > 0 and not b.get("abandoned"):
                 return {"error": f"{held} unsold — sell them, write them off, or "
                                  "stop tracking this build instead of archiving."}
+            # Physical sell-out (held from the real-time order-diff) can lead the
+            # WALLET feed by hours: the units are gone but the money hasn't landed.
+            # Freezing now would lock in incomplete profit forever (the frozen
+            # snapshot is never re-derived), so refuse until the wallet has
+            # reported every sold unit. Abandoned builds carry a write-off, not a
+            # pending sale, so they're exempt.
+            sold_ct = (rec or {}).get("sold", 0)
+            sold_paid = (rec or {}).get("sold_paid", sold_ct)
+            if not b.get("abandoned") and sold_paid < sold_ct:
+                pending = sold_ct - sold_paid
+                return {"error": f"{pending} unit(s) just sold but the wallet "
+                                 "feed hasn't confirmed the ISK yet — the sale is "
+                                 "still settling. Try again in a few minutes."}
             b["archived"] = True
             b["frozen"] = _freeze_from_record(b, rec)  # lock realized history
         else:
@@ -1514,7 +1531,9 @@ def do_ind_builds_stop(q):
             # Reconcile the LIVE set (this build still counts as live here) to
             # read its realized + current held count before freezing it out.
             ledger = _load_sell_ledger(acct)
-            by_build, _ = _reconcile_products(builds, ledger, _load_listed_units(acct))
+            by_build, _ = _reconcile_products(builds, ledger,
+                                              _load_listed_units(acct),
+                                              _load_observed_ledger(acct))
             rec = by_build.get(build_id)
             b["stopped"] = True
             b["stopped_held"] = int((rec or {}).get("held", 0))
@@ -1614,6 +1633,20 @@ def _save_sell_ledger(acct, ledger):
     _acct_kv_save(acct, "ind_sell_ledger", IND_SELL_LEDGER_PATH, ledger)
 
 
+def _load_observed_ledger(acct):
+    """Per-product PHYSICALLY-observed sell units (order-diff), keyed
+    ``{str(type_id): [{event_id, ts, units}]}``. Drives the real-time unit
+    lifecycle so a build reads "sold" the instant its order empties, without
+    waiting on the laggy wallet-transactions feed (money still comes from the
+    wallet ledger). See :func:`ind_track.merge_observed_fills`."""
+    store = _acct_kv_load(acct, "ind_observed_ledger", IND_OBSERVED_LEDGER_PATH, None)
+    return store if isinstance(store, dict) else {}
+
+
+def _save_observed_ledger(acct, ledger):
+    _acct_kv_save(acct, "ind_observed_ledger", IND_OBSERVED_LEDGER_PATH, ledger)
+
+
 def _build_lot(b):
     """A tracked build as the rich lot dict :func:`ind_track.reconcile` consumes.
 
@@ -1666,7 +1699,7 @@ def _build_lot(b):
     }
 
 
-def _reconcile_products(builds, ledger, listed):
+def _reconcile_products(builds, ledger, listed, observed=None):
     """Reconcile every product's *live* builds against the wallet ledger + open-
     order volume through the single :func:`ind_track.reconcile` authority — so
     sold, listed and stage can never disagree (that was the recurring
@@ -1693,9 +1726,11 @@ def _reconcile_products(builds, ledger, listed):
         groups.setdefault(str(b.get("product_type_id")), []).append(b)
     by_build = {}
     by_product = {}
+    observed = observed or {}
     for pid, group in groups.items():
         lots = [_build_lot(b) for b in group]
-        r = ind_track.reconcile(lots, ledger.get(pid, []), listed.get(pid, 0))
+        r = ind_track.reconcile(lots, ledger.get(pid, []), listed.get(pid, 0),
+                                observed_fills=observed.get(pid, []))
         by_build.update(r["lots"])
         by_product[pid] = {"summary": r["summary"], "flow": r["flow"],
                            "listed_anchor": r["listed_anchor"]}
@@ -1829,8 +1864,16 @@ def _migrate_freeze_archived(acct):
 def _freeze_from_record(b, rec):
     """Realized snapshot for a build from its (archived-included) reconcile
     record — the same shape :func:`_build_realized` returns, but computed from
-    ``rec`` directly so it works even though ``b`` is already flagged archived."""
+    ``rec`` directly so it works even though ``b`` is already flagged archived.
+
+    Freezes the WALLET-CONFIRMED units (``sold_paid``), not the physical union
+    ``sold``: net/cost/profit are wallet money, so the frozen unit count must be
+    the units that money actually covers or the closed snapshot would show more
+    "sold" than it has ISK for. Archiving is already gated on the wallet having
+    caught up (``sold_paid == sold``); a *stop* may freeze mid-settlement, and
+    pinning to ``sold_paid`` keeps that frozen snapshot self-consistent."""
     a = rec or {"sold": 0, "net": 0.0, "cost": 0.0, "profit": 0.0}
+    units = a.get("sold_paid", a.get("sold", 0))
     writeoff = 0.0
     profit = a.get("profit")
     if b.get("abandoned"):
@@ -1838,7 +1881,7 @@ def _freeze_from_record(b, rec):
         writeoff = (int(b.get("writeoff_units") or 0) * cpu) if cpu is not None else 0.0
         if profit is not None:
             profit -= writeoff
-    return {"units": a.get("sold", 0), "net": a.get("net", 0.0),
+    return {"units": units, "net": a.get("net", 0.0),
             "cost_of_sold": a.get("cost"), "writeoff": writeoff, "profit": profit}
 
 
@@ -1861,6 +1904,22 @@ def _reconcile_sell_ledger(acct, transactions):
         ledger, pruned = ind_track.prune_legacy_duplicates(ledger)
         if changed or pruned:
             _save_sell_ledger(acct, ledger)
+
+
+def _reconcile_observed_ledger(acct, order_events):
+    """Fold this character's order-diff *sale* events into the account's observed-
+    units ledger (dedup by event id). This is the real-time PHYSICAL unit stream
+    that drives sold/held/stage; the money still comes from the wallet ledger. A
+    sale seen here shows the build "sold" immediately, hours before ESI's wallet-
+    transactions feed catches up. Idempotent and lock-guarded (shares the sell-
+    ledger lock — both are per-sweep sell-state writes)."""
+    if not acct or not order_events:
+        return
+    with _SELL_LEDGER_LOCK:
+        ledger = _load_observed_ledger(acct)
+        ledger, changed = ind_track.merge_observed_fills(ledger, order_events)
+        if changed:
+            _save_observed_ledger(acct, ledger)
 
 
 def _parse_iso_ts(s):
@@ -1937,7 +1996,10 @@ def _build_realized(b, rec):
                 "cost_of_sold": fz.get("cost_of_sold"),
                 "writeoff": fz.get("writeoff", 0.0), "profit": fz.get("profit")}
     a = rec or {"sold": 0, "net": 0.0, "cost": 0.0, "profit": 0.0}
-    units = a.get("sold", 0)
+    # Realized is a MONEY view: units are the wallet-confirmed count that net/cost/
+    # profit actually cover, not the physical union ``sold`` (which can lead the
+    # wallet feed by hours). The stage/held UI reads the physical ``sold`` instead.
+    units = a.get("sold_paid", a.get("sold", 0))
     net = a.get("net", 0.0)
     cost_of_sold = a.get("cost")
     profit = a.get("profit")
@@ -2003,8 +2065,11 @@ def do_ind_builds_sell_abandon(q):
         if abandon:
             ledger = _load_sell_ledger(acct)
             # Only the sold count matters here; open-order volume is irrelevant to
-            # the write-off, so reconcile with an empty listed map.
-            by_build, _ = _reconcile_products(builds, ledger, {})
+            # the write-off, so reconcile with an empty listed map. Use the
+            # physical (union) sold — units actually gone set what's left to write
+            # off, even if the wallet feed hasn't priced them yet.
+            by_build, _ = _reconcile_products(builds, ledger, {},
+                                              _load_observed_ledger(acct))
             sold = by_build.get(b.get("id"), {}).get("sold", 0)
             produced = _build_units_produced(b) or 0
             b["abandoned"] = True
@@ -2069,7 +2134,8 @@ def do_ind_summary(q):
     builds = _load_tracked_builds(acct)
     ledger = _load_sell_ledger(acct)
     listed = _load_listed_units(acct)
-    by_build, by_prod = _reconcile_products(builds, ledger, listed)
+    observed = _load_observed_ledger(acct)
+    by_build, by_prod = _reconcile_products(builds, ledger, listed, observed)
     realized_profit = realized_net = 0.0
     capital_in_flight = 0.0
     by_product = {}
@@ -2122,6 +2188,14 @@ def do_ind_summary(q):
             "is_listed_anchor": bool((rec or {}).get("is_listed_anchor")),
             "listed_units": (rec or {}).get("listed", 0),
             "held_units": (rec or {}).get("held", 0),
+            # Physical units gone from the market (order-diff union) vs the wallet-
+            # confirmed count in ``realized.units`` (``sold_paid``). When the former
+            # leads the latter the card is "sold" but its ISK is still settling
+            # through ESI's laggy wallet-transactions feed; ``settling`` flags that
+            # gap so the client can label the trailing profit as provisional.
+            "sold_units": (rec or {}).get("sold", 0),
+            "settling": (not _is_dead(b)
+                         and (rec or {}).get("sold", 0) > rz["units"]),
             "abandoned": bool(b.get("abandoned")),
             # A closed position the user filed away — hidden from the board's
             # lanes and (like abandoned) never listed or the 🔗 anchor.
@@ -2444,11 +2518,19 @@ def _fetch_one_char_data_uncached(acct, cid):
 
     last_sales = {}
     if not orders_error:
-        _, last_sales = _track_order_changes(acct, cid, orders_out, names)
+        order_events, last_sales = _track_order_changes(acct, cid, orders_out, names)
         # Record this character's open sell-order volume by product so the
         # tracker can derive the listed/unlisted split (no order↔build linking).
         try:
             _record_listed_units(acct, cid, orders_out)
+        except Exception:
+            pass
+        # Accrue the PHYSICALLY-observed sell units (order-diff) into the observed
+        # ledger — the real-time unit stream that drives sold/held/stage without
+        # waiting on the laggy wallet-transactions feed. Deduped by event id, so
+        # replaying the active-events list every sweep never double-books.
+        try:
+            _reconcile_observed_ledger(acct, order_events)
         except Exception:
             pass
     # All sale money — listed and instant alike — comes from the wallet, deduped

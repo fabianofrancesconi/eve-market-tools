@@ -140,7 +140,11 @@ async function loadSettings(){
         if(Array.isArray(hb)) IND.hidden=new Set(hb);
       }catch(e){} }
       if(ind.notes){ try{
-        const nt=typeof ind.notes==="string"?JSON.parse(ind.notes):ind.notes;
+        // Clone, never alias: in Postgres mode the pref comes back as a live object
+        // that IS the SETTINGS.prefs mirror. Aliasing IND.notes to it would let the
+        // first edit mutate the mirror in place, so setPref's unchanged-check then
+        // skips the write and the note silently fails to save.
+        const nt=typeof ind.notes==="string"?JSON.parse(ind.notes):JSON.parse(JSON.stringify(ind.notes));
         if(nt&&typeof nt==="object") IND.notes=nt;
       }catch(e){} }
       if(ind.sections){ try{

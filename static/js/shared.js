@@ -207,16 +207,35 @@ let _settingsReady = false;
 function setPref(key, value, opts){
   if(value===undefined) value=null;
   const cur = key in SETTINGS.prefs ? SETTINGS.prefs[key] : null;
-  if(JSON.stringify(cur)===JSON.stringify(value)) return;   // unchanged → nothing to do
-  if(value===null) delete SETTINGS.prefs[key]; else SETTINGS.prefs[key]=value;
+  const nextJSON = JSON.stringify(value);
+  if(JSON.stringify(cur)===nextJSON) return;   // unchanged → nothing to do
+  // Store a CLONE of object/array values, never the caller's reference. A caller
+  // that keeps its own handle to the blob (e.g. IND.notes) would otherwise mutate
+  // the mirror in place, so the next setPref sees cur===value and skips the write
+  // — the "notes silently stop saving after the first edit" bug. Primitives are
+  // immutable, so pass them through untouched.
+  const stored = (value!==null && typeof value==="object") ? JSON.parse(nextJSON) : value;
+  if(value===null) delete SETTINGS.prefs[key]; else SETTINGS.prefs[key]=stored;
   if(!_settingsReady) return;
   const delay = (opts && opts.immediate) ? 0 : 400;
   clearTimeout(_prefTimers[key]);
-  _prefTimers[key] = setTimeout(()=>{ delete _prefTimers[key]; _sendPref(key, value); }, delay);
+  _prefTimers[key] = setTimeout(()=>{ delete _prefTimers[key]; _sendPref(key, stored); }, delay);
 }
 function getPref(key, dflt){
   const v = SETTINGS.prefs[key];
   return v===undefined ? dflt : v;
+}
+// A transient centred toast (bottom of the viewport) that fades itself out. Used
+// to confirm a background save the user can't otherwise see happened, e.g. an
+// autosaved blueprint note. Re-arming resets the timer so rapid calls don't stack.
+let _appToastTimer = null;
+function showToast(msg, ms){
+  const t = document.getElementById("app-toast");
+  if(!t) return;
+  t.textContent = msg;
+  t.classList.add("show");
+  if(_appToastTimer) clearTimeout(_appToastTimer);
+  _appToastTimer = setTimeout(()=>t.classList.remove("show"), ms || 2000);
 }
 // Flush any pending debounced pref writes immediately (page hide/close) so
 // another device never opens to a stale view.

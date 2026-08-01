@@ -44,3 +44,20 @@ def test_notes_restored_on_boot():
     # loadSettings applies the stored ind.notes blob back into IND.notes.
     assert "ind.notes" in src
     assert "IND.notes=nt" in src
+
+
+def test_notes_cloned_on_boot_not_aliased():
+    src = lp_web.FRONTEND_SOURCE
+    # The restored blob is deep-cloned, never aliased to the SETTINGS.prefs mirror
+    # — otherwise the first edit mutates the mirror in place and setPref's
+    # unchanged-check silently drops the write (notes stop saving). See
+    # tests/test_pref_note_persistence.py for the behavioural proof.
+    assert "JSON.parse(JSON.stringify(ind.notes))" in src
+
+
+def test_note_save_shows_toast():
+    src = lp_web.FRONTEND_SOURCE
+    # A transient "Note saved" / "Note cleared" toast confirms the background save.
+    assert 'id="app-toast"' in src
+    assert "function showToast(" in src
+    assert 'showToast("Note saved")' in src or "showToast(emptied" in src

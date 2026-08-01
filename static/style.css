@@ -2299,14 +2299,14 @@
   .notes-tree-children.drag-over, .notes-tree.drag-over {
     background:rgba(79,195,247,.06); border-radius:4px;
   }
-  #notes-toast {
+  #notes-toast, #app-toast {
     position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
     background:var(--panel3); border:1px solid var(--line2); color:var(--cyan);
     font-size:13.5px; font-weight:600; padding:8px 18px; border-radius:6px;
     box-shadow:0 4px 16px rgba(0,0,0,.5);
     opacity:0; transition:opacity .25s ease; pointer-events:none; z-index:9000;
   }
-  #notes-toast.show { opacity:1; }
+  #notes-toast.show, #app-toast.show { opacity:1; }
 
   /* ── Wallet history chart ─────────────────────────────────────────── */
   .wallet-chart-wrap {

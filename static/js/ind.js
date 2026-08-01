@@ -1139,9 +1139,16 @@ function renderIndDetail(d, container){
   if(noteBox){
     let last=indNote(d.blueprint_id);
     noteBox.addEventListener("input", ()=>setIndNote(d.blueprint_id, noteBox.value));
+    // On blur the debounced autosave is done; confirm it with a transient toast so
+    // the silent background write is visible, and refresh the 📝 marker if the
+    // note went from empty↔non-empty. Only when the text actually changed.
     noteBox.addEventListener("blur", ()=>{
       const now=indNote(d.blueprint_id);
-      if((!!now)!==(!!last)){ last=now; renderIndTable(); }
+      if(now===last) return;                       // nothing edited
+      if((!!now)!==(!!last)) renderIndTable();      // marker appeared/disappeared
+      const emptied=!now;
+      last=now;
+      if(typeof showToast==="function") showToast(emptied?"Note cleared":"Note saved");
     });
   }
   const trackBtn=box.querySelector(".ind-track-btn");

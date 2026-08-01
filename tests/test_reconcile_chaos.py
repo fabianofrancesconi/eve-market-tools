@@ -470,9 +470,11 @@ class TestReconcileChaos:
 
 
 class TestObservedLedgerFullStack:
-    """The Standup Light Missile fix end-to-end: a build whose sell order the app
-    watched empty reads SOLD immediately, even while ESI's wallet-transactions
-    feed still lags — but the money (and archiving) waits for the wallet."""
+    """The observed-stream fix end-to-end. Only a PARTIAL fill (order stayed open,
+    volume dropped — nobody but a buyer can do that) books an observed sale ahead
+    of the wallet. A full order-vanish is ambiguous (buyout vs cancel vs contract-
+    away), so it books NOTHING and the build waits in "built" until the wallet
+    confirms — this is the phantom-settling fix."""
 
     def _delivered_build(self, acct, product, done_at=1000.0):
         import json
@@ -483,29 +485,63 @@ class TestObservedLedgerFullStack:
         lp_web._save_tracked_builds(acct, srv)
         return b
 
-    def test_order_diff_moves_card_to_sold_before_wallet(self, monkeypatch, tmp_path):
+    def test_partial_fill_moves_units_to_sold_before_wallet(self, monkeypatch, tmp_path):
         acct = _acct()
         _bind(monkeypatch, tmp_path, acct)
         product = _PRODUCTS[1]
         pid = product["type_id"]
         b = self._delivered_build(acct, product)
-        # The order was listed for 10, then observed to fully sell (filled) — but
-        # NO wallet transaction has arrived yet (the feed lags).
+        # The order was listed for 10; a buyer took 4 and the order STAYS OPEN with
+        # 6 remaining — a provable partial sale, booked before the wallet catches up.
         lp_web._reconcile_observed_ledger(acct, [
-            {"id": "o1_1", "ts": 2000.0, "type_id": pid, "sold": 10,
-             "filled": True, "expired": False, "is_buy_order": False}])
-        # Order is gone from the market (it filled).
-        lp_web._record_listed_units(acct, 1, [])
+            {"id": "o1_1", "ts": 2000.0, "type_id": pid, "sold": 4,
+             "filled": False, "partial": True, "expired": False,
+             "is_buy_order": False}])
+        lp_web._record_listed_units(acct, 1, [
+            {"is_buy_order": False, "type_id": pid, "volume_remain": 6}])
         s = lp_web.do_ind_summary({})
         row = next(x for x in s["builds"] if x["id"] == b["id"])
-        assert row["stage"] == "sold"              # the fix: not "built"
-        assert row["held_units"] == 0
+        # 4 physically sold, 6 still held & listed → still on the market (listed).
+        assert row["held_units"] == 6
         # Money hasn't landed yet — realized units reflect the wallet (0 so far).
         assert row["realized"]["units"] == 0
         # Physical union sold leads the wallet-confirmed count → settling flag.
-        assert row["sold_units"] == 10
+        assert row["sold_units"] == 4
         assert row["settling"] is True
-        _assert_invariants(s, [], "observed_sold", 0)
+        _assert_invariants(s, [
+            {"is_buy_order": False, "type_id": pid, "volume_remain": 6}],
+            "observed_partial", 0)
+
+    def test_full_vanish_is_not_sold_without_wallet(self, monkeypatch, tmp_path):
+        # THE PHANTOM FIX. An order that vanished entirely (cancel / contract-away /
+        # buyout — indistinguishable from /orders) books NO observed sale. The units
+        # stay held, the build reads "built", nothing settles, and a hint invites a
+        # re-list. Only a wallet transaction can move it to "sold". Driven through
+        # the REAL order-diff path so the persisted full-vanish event is what feeds
+        # both reconcile (books nothing) and the pending-sale hint.
+        acct = _acct()
+        _bind(monkeypatch, tmp_path, acct)
+        product = _PRODUCTS[1]
+        pid = product["type_id"]
+        b = self._delivered_build(acct, product)
+        order = {"order_id": 55, "type_id": pid, "type_name": product["name"],
+                 "volume_remain": 10, "price": 150.0, "is_buy_order": False}
+        # First sweep sees the open order; second sweep sees it gone entirely.
+        lp_web._track_order_changes(acct, 1, [order], {})
+        lp_web._record_listed_units(acct, 1, [order])
+        events, _ = lp_web._track_order_changes(acct, 1, [], {})
+        lp_web._reconcile_observed_ledger(acct, events)
+        lp_web._record_listed_units(acct, 1, [])   # order gone from the market
+        # The persisted event is a full vanish, not a partial fill.
+        assert any(e["filled"] and not e.get("partial") for e in events)
+        s = lp_web.do_ind_summary({})
+        row = next(x for x in s["builds"] if x["id"] == b["id"])
+        assert row["stage"] == "built"             # NOT sold — nothing proved it
+        assert row["held_units"] == 10
+        assert row["sold_units"] == 0
+        assert row["settling"] is False            # nothing sold → nothing settling
+        assert row["pending_sale"] is True         # but hint the recent disappearance
+        _assert_invariants(s, [], "full_vanish", 0)
 
     def test_expired_order_does_not_mark_sold(self, monkeypatch, tmp_path):
         acct = _acct()
@@ -516,13 +552,15 @@ class TestObservedLedgerFullStack:
         # The order VANISHED by expiring, not selling — units returned to hangar.
         lp_web._reconcile_observed_ledger(acct, [
             {"id": "o1_1", "ts": 2000.0, "type_id": pid, "sold": 10,
-             "filled": False, "expired": True, "is_buy_order": False}])
+             "filled": False, "partial": False, "expired": True,
+             "is_buy_order": False}])
         lp_web._record_listed_units(acct, 1, [])
         s = lp_web.do_ind_summary({})
         row = next(x for x in s["builds"] if x["id"] == b["id"])
         assert row["stage"] == "built"             # still held, nothing sold
         assert row["held_units"] == 10
         assert row["settling"] is False            # nothing sold → nothing settling
+        assert row["pending_sale"] is False        # expiry is not a pending sale
 
     def test_archive_refused_until_wallet_confirms(self, monkeypatch, tmp_path):
         acct = _acct()
@@ -530,10 +568,15 @@ class TestObservedLedgerFullStack:
         product = _PRODUCTS[1]
         pid = product["type_id"]
         b = self._delivered_build(acct, product)
-        # Physically sold out (order-diff), wallet only confirms 6 of 10.
+        # Partial fills physically move all 10 units (order kept shrinking, staying
+        # open each time), but the wallet only confirms 6 so far.
         lp_web._reconcile_observed_ledger(acct, [
-            {"id": "o1_1", "ts": 2000.0, "type_id": pid, "sold": 10,
-             "filled": True, "expired": False, "is_buy_order": False}])
+            {"id": "o1_1", "ts": 2000.0, "type_id": pid, "sold": 4,
+             "filled": False, "partial": True, "expired": False,
+             "is_buy_order": False},
+            {"id": "o1_2", "ts": 2100.0, "type_id": pid, "sold": 6,
+             "filled": False, "partial": True, "expired": False,
+             "is_buy_order": False}])
         lp_web._reconcile_sell_ledger(acct, [
             {"transaction_id": 1, "type_id": pid, "quantity": 6, "unit_price": 150.0,
              "date": "2026-08-01T00:00:00Z", "is_buy": False}])

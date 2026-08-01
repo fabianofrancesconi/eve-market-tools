@@ -881,15 +881,19 @@ function renderCharData(){
   // Order activity (sales + expiries)
   if(events.length){
     const shown=events.slice(0,10);
-    // Header total: ISK sold across the sale events (expired-unsold rows carry no
-    // value), plus a count breakdown of sold vs expired.
-    let totIsk=0, nSold=0, nExpired=0;
+    // Header total: only PROVABLE sales (partial fills) contribute ISK — a full
+    // disappearance isn't confirmed sold until the wallet backs it, so it's
+    // counted separately as "unconfirmed" and adds no ISK. Expired rows are
+    // returned-unsold and carry no value.
+    let totIsk=0, nSold=0, nExpired=0, nUnconfirmed=0;
     for(const e of events){
       if(e.expired){ nExpired++; }
+      else if(e.filled && !e.partial){ nUnconfirmed++; }
       else { nSold++; totIsk+=(e.sold||0)*(e.price||0); }
     }
     const parts=[];
     if(nSold) parts.push(`${nSold} sold`);
+    if(nUnconfirmed) parts.push(`${nUnconfirmed} unconfirmed`);
     if(nExpired) parts.push(`${nExpired} expired`);
     const totStr=`${fmtISK(totIsk)} ISK${parts.length?" · "+parts.join(" · "):""}`;
     html+=`<div class="char-events"><div class="char-events-hdr">`;
@@ -898,14 +902,22 @@ function renderCharData(){
     html+=`<button class="char-events-dismiss" data-eid="all">dismiss all</button></div>`;
     for(const e of shown){
       const isk=e.sold*e.price;
-      // Three outcomes: partial sale (↓), fully sold (✓), or expired unsold (⌛).
-      const icon=e.expired?'⌛':(e.filled?'✓':'↓');
-      const cls=e.expired?' ev-expired':'';
+      // A partial fill (order still open, volume dropped) is a PROVABLE sale —
+      // only a buyer can shrink an open order — so it shows its ISK. A full
+      // disappearance is ambiguous (buyout / cancel / contract all look alike
+      // from /orders), so we DON'T claim it sold: neutral "closed — confirm in
+      // wallet", no ISK, until a wallet transaction actually backs it. Expired
+      // orders returned unsold to the hangar.
+      const closedAmbiguous=e.filled && !e.partial && !e.expired;
+      const icon=e.expired?'⌛':(e.partial?'↓':(closedAmbiguous?'❓':'✓'));
+      const cls=e.expired?' ev-expired':(closedAmbiguous?' ev-unconfirmed':'');
       html+=`<div class="char-event-row${cls}">`;
       html+=`<span class="ev-icon">${icon}</span>`;
       html+=`<span class="ev-qty">${e.sold}x</span> ${authEsc(e.type_name)}`;
       if(e.expired){
         html+=` <span class="ev-tag">expired unsold</span>`;
+      } else if(closedAmbiguous){
+        html+=` <span class="ev-tag" title="The order left the market but this alone doesn't prove a sale — it could be a buyout, a cancel, or a contract. It confirms as sold only when ESI's wallet feed reports the transaction.">closed — confirm in wallet</span>`;
       } else {
         html+=` <span class="ev-isk">${fmtISK(isk)} ISK</span>`;
       }

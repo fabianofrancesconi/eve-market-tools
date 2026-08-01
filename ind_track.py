@@ -177,10 +177,18 @@ def merge_observed_fills(ledger, events):
     laggy wallet-transactions feed. ``events`` is the order-event list from
     ``_compute_order_deltas`` (each ``{id, ts, type_id, sold, expired, ...}``).
 
-    An **expired** order returned its units to the hangar — they did NOT sell — so
-    expired events are skipped. Buy-order events are skipped too (we only track our
-    own produced stock selling). Events missing an id / type_id / positive ``sold``
-    are ignored. The event id is unique per (order, sweep), so re-running never
+    Only a **partial fill** (``e["partial"]`` — the order stayed open with less
+    volume than before) is booked. Only a *buyer* can shrink an open order — you
+    can't partially cancel, and a relist/contract moves the whole order — so a
+    partial drop is a PROVABLE sale, safe to lead the wallet. A **full
+    disappearance** (the order vanished entirely) is ambiguous: buyout, cancel,
+    and contract-away are indistinguishable from ``/orders`` alone, so it is NOT
+    booked here — the units stay held and only a wallet transaction can mark them
+    sold (``sold`` means: another player has them and ISK came in). This is the
+    fix for "cancel + relist showed as sold and settled forever". An **expired**
+    order returned its units to the hangar (never sold); expired and buy-order
+    events are skipped. Events missing an id / type_id / positive ``sold`` are
+    ignored. The event id is unique per (order, sweep), so re-running never
     double-books. Returns ``(ledger, changed)``; ``ledger`` mutated in place.
     """
     seen = {str(f["event_id"])
@@ -188,7 +196,7 @@ def merge_observed_fills(ledger, events):
             if f.get("event_id") is not None}
     changed = False
     for e in events or []:
-        if e.get("expired") or e.get("is_buy_order"):
+        if e.get("expired") or e.get("is_buy_order") or not e.get("partial"):
             continue
         eid = e.get("id")
         pid = e.get("type_id")

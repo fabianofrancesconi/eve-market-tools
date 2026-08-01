@@ -784,6 +784,11 @@
   .char-event-row.ev-expired .ev-icon { color:var(--red); }
   .char-event-row.ev-expired .ev-qty { color:var(--dim); }
   .char-event-row .ev-tag { color:var(--red); font-size:11.5px; text-transform:uppercase; letter-spacing:.5px; }
+  /* A full-disappearance order is unconfirmed, NOT a failure — a sale might well
+     have happened, we just can't prove it until the wallet reports. Neutral/dim,
+     never the red of an expired-unsold. */
+  .char-event-row.ev-unconfirmed .ev-icon { color:var(--dim); }
+  .char-event-row.ev-unconfirmed .ev-tag { color:var(--dim); }
 
   .char-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
   @media(max-width:900px){ .char-grid { grid-template-columns:1fr; } }

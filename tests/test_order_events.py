@@ -59,6 +59,8 @@ class TestTrackOrderChanges:
         assert len(events) == 1
         assert events[0]["sold"] == 200
         assert events[0]["filled"] is False
+        # The order stayed OPEN (volume merely dropped) — a provable partial sale.
+        assert events[0]["partial"] is True
         assert events[0]["type_name"] == "Tritanium"
         assert events[0]["price"] == 5.0
         # last_sales tracks the active order
@@ -85,6 +87,9 @@ class TestTrackOrderChanges:
         assert events[0]["sold"] == 50
         assert events[0]["filled"] is True
         assert events[0]["expired"] is False
+        # The order VANISHED entirely — ambiguous (buyout/cancel/contract), so it is
+        # flagged not-partial and reconcile must not book it as an observed sale.
+        assert events[0]["partial"] is False
         # last_sales should NOT include a filled order
         assert "200" not in last_sales
 

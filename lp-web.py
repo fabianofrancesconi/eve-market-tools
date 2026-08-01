@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.15"
+__version__ = "1.156.16"
 
 import argparse
 import base64
@@ -1223,6 +1223,14 @@ def _compute_order_deltas(prev_orders, last_sales, current_orders, names, char_n
                 expired = True
         sold = prev_remain if cur is None else prev_remain - cur.get("volume_remain", 0)
         if sold > 0:
+            # ``partial`` — the order is STILL OPEN with less volume than before.
+            # Only a buyer can shrink an open order (you can't partially cancel,
+            # and a contract/relist moves the whole order), so a partial drop is a
+            # *provable* sale. A full disappearance (``cur is None``) is ambiguous
+            # — buyout, cancel, or contract-away all look identical from /orders —
+            # so it is NOT provable and must not be booked as an observed sale
+            # (that fabricated the "cancelled shows as sold, settles forever" bug).
+            # The wallet transaction is then the sole authority that it truly sold.
             new_events.append({
                 "id": f"{oid_str}_{int(now)}",
                 "ts": now,
@@ -1233,6 +1241,7 @@ def _compute_order_deltas(prev_orders, last_sales, current_orders, names, char_n
                 "price": prev.get("price", 0),
                 "is_buy_order": prev.get("is_buy_order", False),
                 "filled": cur is None and not expired,
+                "partial": cur is not None,
                 "expired": expired,
                 "character_name": char_name,
                 "dismissed": False,
@@ -2149,6 +2158,21 @@ def do_ind_summary(q):
     listed = _load_listed_units(acct)
     observed = _load_observed_ledger(acct)
     by_build, by_prod = _reconcile_products(builds, ledger, listed, observed)
+    # Products whose sell order recently VANISHED entirely (a full-disappearance
+    # sale event — ``filled`` but not the provable ``partial``). That's ambiguous:
+    # a genuine buyout, a cancel, or a contract-away all look the same, so we no
+    # longer book it as sold — but a still-held build of such a product is in a
+    # "pending sale?" limbo (maybe sold and the wallet hasn't confirmed; maybe you
+    # cancelled/contracted it). The client shows a soft hint on those. Windowed so
+    # a stale week-old vanish doesn't nag forever.
+    _PENDING_WINDOW = 2 * 24 * 3600
+    pending_products = set()
+    _now = time.time()
+    for e in _get_order_events(acct):
+        if (e.get("filled") and not e.get("partial") and not e.get("expired")
+                and not e.get("is_buy_order")
+                and (_now - (e.get("ts") or 0)) < _PENDING_WINDOW):
+            pending_products.add(str(e.get("type_id")))
     realized_profit = realized_net = 0.0
     capital_in_flight = 0.0
     by_product = {}
@@ -2209,6 +2233,19 @@ def do_ind_summary(q):
             "sold_units": (rec or {}).get("sold", 0),
             "settling": (not _is_dead(b)
                          and (rec or {}).get("sold", 0) > rz["units"]),
+            # A delivered build still HOLDING units whose product's sell order
+            # recently vanished outright. The order left the market but nothing
+            # here proves a sale (that would be a wallet transaction) — so it may
+            # have sold (money incoming) or been cancelled/contracted (it stays
+            # Built). The client shows a soft "pending sale?" hint. Cleared the
+            # moment the wallet confirms (the build moves toward Sold) or the units
+            # are re-listed (``listed`` > 0), and never on a dead/abandoned build.
+            "pending_sale": bool(
+                not _is_dead(b) and not b.get("abandoned")
+                and b.get("done_at") is not None
+                and (rec or {}).get("held", 0) > 0
+                and (rec or {}).get("listed", 0) == 0
+                and str(pid) in pending_products),
             "abandoned": bool(b.get("abandoned")),
             # A closed position the user filed away — hidden from the board's
             # lanes and (like abandoned) never listed or the 🔗 anchor.

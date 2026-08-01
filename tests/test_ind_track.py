@@ -563,18 +563,32 @@ class TestReconcileObservedSplit:
 
 
 class TestMergeObservedFills:
-    def test_merges_sale_events_by_id(self):
+    def test_merges_partial_sale_events_by_id(self):
+        # Only PARTIAL fills (order still open, volume dropped) are provable
+        # sales and get booked.
         ledger = {}
-        events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5},
-                  {"id": "o1_200", "ts": 200, "type_id": 34, "sold": 3}]
+        events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5, "partial": True},
+                  {"id": "o1_200", "ts": 200, "type_id": 34, "sold": 3, "partial": True}]
         ledger, changed = ind_track.merge_observed_fills(ledger, events)
         assert changed is True
         assert len(ledger["34"]) == 2
         assert sum(f["units"] for f in ledger["34"]) == 8
 
+    def test_full_disappearance_is_not_booked(self):
+        # An order that vanished entirely is ambiguous — buyout, cancel, or
+        # contract-away all look identical — so it is NOT booked as an observed
+        # sale. Only a wallet transaction can mark it sold. THE PHANTOM FIX:
+        # this is exactly the cancel+relist case that "sold, settled forever".
+        ledger = {}
+        events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5,
+                   "filled": True, "partial": False}]
+        ledger, changed = ind_track.merge_observed_fills(ledger, events)
+        assert changed is False
+        assert ledger == {}
+
     def test_dedup_by_event_id_is_idempotent(self):
         ledger = {}
-        events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5}]
+        events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5, "partial": True}]
         ind_track.merge_observed_fills(ledger, events)
         ledger, changed = ind_track.merge_observed_fills(ledger, events)
         assert changed is False
@@ -584,7 +598,7 @@ class TestMergeObservedFills:
         # An expired order returned its units — they didn't sell.
         ledger = {}
         events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5,
-                   "expired": True}]
+                   "expired": True, "partial": False}]
         ledger, changed = ind_track.merge_observed_fills(ledger, events)
         assert changed is False
         assert ledger == {}
@@ -592,15 +606,16 @@ class TestMergeObservedFills:
     def test_buy_order_event_ignored(self):
         ledger = {}
         events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5,
-                   "is_buy_order": True}]
+                   "is_buy_order": True, "partial": True}]
         ledger, changed = ind_track.merge_observed_fills(ledger, events)
         assert changed is False
 
     def test_skips_missing_fields(self):
         ledger = {}
-        events = [{"id": "a", "ts": 1, "sold": 5},               # no type_id
-                  {"id": "b", "ts": 1, "type_id": 34, "sold": 0}, # zero units
-                  {"ts": 1, "type_id": 34, "sold": 5}]            # no id
+        events = [{"id": "a", "ts": 1, "sold": 5, "partial": True},   # no type_id
+                  {"id": "b", "ts": 1, "type_id": 34, "sold": 0,
+                   "partial": True},                                   # zero units
+                  {"ts": 1, "type_id": 34, "sold": 5, "partial": True}] # no id
         ledger, changed = ind_track.merge_observed_fills(ledger, events)
         assert changed is False
         assert ledger == {}
@@ -609,7 +624,7 @@ class TestMergeObservedFills:
         # The observed stream is price-free; only units/ts/id are recorded.
         ledger = {}
         events = [{"id": "o1_100", "ts": 100, "type_id": 34, "sold": 5,
-                   "price": 999.0}]
+                   "price": 999.0, "partial": True}]
         ind_track.merge_observed_fills(ledger, events)
         assert "price" not in ledger["34"][0]
 

@@ -1461,7 +1461,7 @@ function mergeSummaryBuilds(summary){
     const before=JSON.stringify([b.stage, b.abandoned, b.realized,
                                  b.units_produced, b.cost_per_unit,
                                  b.is_listed_anchor, b.listed_units, b.held_units,
-                                 b.sold_units, b.settling]);
+                                 b.sold_units, b.settling, b.pending_sale]);
     b.stage=r.stage;
     b.abandoned=r.abandoned;
     b.realized=r.realized;
@@ -1477,10 +1477,13 @@ function mergeSummaryBuilds(summary){
     // means the card reads "sold" while ESI's wallet feed still trails the sale.
     b.sold_units=r.sold_units;
     b.settling=r.settling;
+    // A delivered build still holding units whose sell order recently vanished
+    // outright — maybe sold (wallet not yet confirmed) or cancelled/contracted.
+    b.pending_sale=r.pending_sale;
     if(JSON.stringify([b.stage, b.abandoned, b.realized,
                        b.units_produced, b.cost_per_unit,
                        b.is_listed_anchor, b.listed_units, b.held_units,
-                       b.sold_units, b.settling])!==before) changed=true;
+                       b.sold_units, b.settling, b.pending_sale])!==before) changed=true;
   });
   return changed;
 }
@@ -2053,6 +2056,17 @@ function _buildTileHtml(b, linked){
     }
   } else if(stage==="built"){
     line=`<span class="ind-tile-dim">ready ·</span> <b class="${pn(be.profitL)}">${isk(be.profitL)}</b>`;
+    // The sell order for this product recently disappeared while units are still
+    // held here. It might have sold (the profit confirms once ESI's wallet feed
+    // reports it) or you may have cancelled / contracted it (it stays Built). We
+    // don't guess — "sold" means a wallet transaction landed — so flag the limbo.
+    if(b.pending_sale){
+      const tip="This build's sell order recently disappeared. If it sold, the "
+        +"profit will confirm when ESI's wallet feed reports the transaction; if "
+        +"you cancelled or contracted it, it stays Built. Re-list it to move it "
+        +"back to Listed.";
+      line+=` <span class="ind-tile-warn" title="${tip}">⏳ pending sale?</span>`;
+    }
   } else if(stage==="listed"){
     const rz=_buildRealized(b);
     const target=_buildUnits(b)||0;

@@ -158,6 +158,82 @@ class TestPruneLegacyDuplicates:
         assert after["sold"] == 2200         # healed: only the real sale counts
 
 
+class TestPruneStaleObserved:
+    """A phantom observed sale (an order that vanished because it was cancelled
+    or re-priced, which the order-diff can't tell from a buy-out) never gets a
+    wallet transaction, so a build stays "settling" forever. Pruning observed
+    fills older than the wallet catch-up window is the only thing that clears it;
+    for a *real* sale the wallet has long since counted the units, so dropping
+    the observed lead is a no-op. Reproduces the Capital Command Processor case."""
+
+    def test_drops_fill_older_than_window(self):
+        now = 1_000_000.0
+        ledger = {"43900": [
+            {"event_id": "e1", "units": 2, "ts": now - 3 * 86400},  # 3d old
+        ]}
+        ledger, removed = ind_track.prune_stale_observed(ledger, now)
+        assert removed == 1  # one (stale) fill removed
+        assert ledger["43900"] == []
+
+    def test_keeps_fresh_fill(self):
+        now = 1_000_000.0
+        ledger = {"43900": [
+            {"event_id": "e1", "units": 2, "ts": now - 3600},  # 1h old
+        ]}
+        ledger, removed = ind_track.prune_stale_observed(ledger, now)
+        assert removed == 0
+        assert len(ledger["43900"]) == 1
+
+    def test_keeps_undatable_fill(self):
+        # A fill with no ts can't be proven stale, so it survives.
+        now = 1_000_000.0
+        ledger = {"43900": [{"event_id": "e1", "units": 2, "ts": None}]}
+        ledger, removed = ind_track.prune_stale_observed(ledger, now)
+        assert removed == 0
+        assert len(ledger["43900"]) == 1
+
+    def test_boundary_at_window_edge_kept(self):
+        now = 1_000_000.0
+        window = 2 * 86400
+        ledger = {"43900": [{"event_id": "e1", "units": 2, "ts": now - window}]}
+        ledger, removed = ind_track.prune_stale_observed(ledger, now, window)
+        assert removed == 0  # exactly at cutoff is kept (>= cutoff)
+
+    def test_idempotent(self):
+        now = 1_000_000.0
+        ledger = {"43900": [
+            {"event_id": "e1", "units": 2, "ts": now - 3 * 86400},
+            {"event_id": "e2", "units": 5, "ts": now - 3600},
+        ]}
+        ledger, r1 = ind_track.prune_stale_observed(ledger, now)
+        ledger, r2 = ind_track.prune_stale_observed(ledger, now)
+        assert r1 == 1 and r2 == 0
+        assert [f["event_id"] for f in ledger["43900"]] == ["e2"]
+
+    def test_phantom_sale_self_heals_end_to_end(self):
+        # The prod case: build delivered, its 2 units "observed sold" via a
+        # cancel+relist (phantom), but the only wallet fill predates delivery so
+        # it never attaches. sold leads sold_paid → settling. After the observed
+        # fill ages out, sold falls back to the wallet's true 0.
+        now = 1_000_000.0
+        lots = [_lot("BUILD", produced=2, cpu=100.0, tax=0.0, done_at=now - 4 * 86400)]
+        # wallet fill predates delivery → gated out, never attaches
+        fills = [{"transaction_id": 1, "units": 2, "price": 200.0,
+                  "ts": now - 6 * 86400}]
+        observed = [{"event_id": "e1", "units": 2, "ts": now - 3 * 86400}]
+
+        r = ind_track.reconcile(lots, fills, 0, observed_fills=observed)
+        rec = r["lots"]["BUILD"]
+        assert rec["sold"] == 2 and rec["sold_paid"] == 0   # stuck settling
+
+        ledger = {"43900": list(observed)}
+        ledger, removed = ind_track.prune_stale_observed(ledger, now)
+        assert removed == 1
+        r2 = ind_track.reconcile(lots, fills, 0, observed_fills=ledger["43900"])
+        rec2 = r2["lots"]["BUILD"]
+        assert rec2["sold"] == 0 and rec2["sold_paid"] == 0  # healed
+
+
 class TestAllocateFifo:
     def _lot(self, lid, units, cpu=100.0, tax=0.0, done_at=0):
         return {"id": lid, "units": units, "cost_per_unit": cpu,

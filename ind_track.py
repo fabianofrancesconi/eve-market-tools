@@ -256,6 +256,41 @@ def prune_legacy_duplicates(ledger, window=3 * 86400):
     return ledger, removed
 
 
+def prune_stale_observed(ledger, now, window=2 * 86400):
+    """Drop observed (order-diff) fills older than ``window`` seconds before
+    ``now`` — the mechanism that makes a *phantom* observed sale self-heal.
+
+    The observed ledger exists ONLY to let the unit lifecycle lead the laggy
+    wallet-transactions feed in real time (reconcile takes ``max(wallet,
+    observed)`` per lot). Once a fill has aged well past the wallet's ~1h cache
+    and the ~30-day window in which a real transaction re-arrives, the wallet is
+    authoritative for it either way:
+
+      * A *real* sale's wallet transaction has long since merged, so the wallet
+        stream already counts those units — dropping the observed lead is a
+        no-op (the ``max`` is unchanged).
+      * A *phantom* sale — an order that vanished because it was **cancelled or
+        re-priced** (relisted), not bought out — never produces a wallet
+        transaction. ``_compute_order_deltas`` can't tell that apart from a real
+        buy-out (both just drop ``volume_remain`` to nothing), so it books a
+        sale the wallet will never confirm. That's a build stuck "settling"
+        forever; pruning the stale observed fill is the ONLY thing that ever
+        clears it, letting ``sold`` fall back to the wallet's true count.
+
+    ``window`` is deliberately generous (2 days) so a genuinely slow wallet feed
+    is never overtaken. Fills with no ``ts`` (legacy) are kept — undatable, so
+    never provably stale. Idempotent; ``ledger`` mutated in place. Returns
+    ``(ledger, removed)``."""
+    cutoff = now - window
+    removed = 0
+    for pid, fills in ledger.items():
+        kept = [f for f in fills
+                if f.get("ts") is None or f.get("ts") >= cutoff]
+        removed += len(fills) - len(kept)
+        ledger[pid] = kept
+    return ledger, removed
+
+
 # ── Primitive allocators (building blocks of reconcile; individually tested) ──
 
 def _open(lot):

@@ -12,12 +12,13 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.10"
+__version__ = "1.156.11"
 
 import argparse
 import base64
 import concurrent.futures
 import datetime
+import email.utils
 import html
 import json
 import math
@@ -1932,6 +1933,18 @@ def _parse_iso_ts(s):
         return None
 
 
+def _parse_http_date(s):
+    """Unix timestamp for an HTTP-date header (RFC 7231, e.g. ESI's ``Expires``),
+    or None if absent/unparseable. Distinct from :func:`_parse_iso_ts` because the
+    two grammars don't overlap — ``Expires`` is ``Sat, 01 Aug 2026 12:00:00 GMT``."""
+    if not s:
+        return None
+    try:
+        return email.utils.parsedate_to_datetime(s).timestamp()
+    except (ValueError, TypeError, AttributeError, IndexError):
+        return None
+
+
 def _build_units_produced(b):
     """Total units this batch yields: product quantity per run × run count."""
     d = b.get("snapshot") or {}
@@ -2235,7 +2248,23 @@ def do_ind_summary(q):
             "count": len(out),
         },
         "by_product": breakdown,
+        # Epoch of the soonest moment ESI's wallet-transactions cache can serve a
+        # newer page across this account's characters — i.e. the earliest a still-
+        # settling build's profit could catch up. Lets the ⏳ badge show a real
+        # countdown. None if no character has a known expiry yet.
+        "wallet_tx_expires": _account_wallet_tx_expires(acct),
     }
+
+
+def _account_wallet_tx_expires(acct):
+    """Soonest wallet-transactions ``Expires`` epoch across the account's linked
+    characters (None if none known). The wallet feed is what a ⏳ settling build
+    waits on, so this is the earliest its profit could land."""
+    with acct.lock:
+        cids = list(acct.characters.keys())
+    exps = [e for e in (( _WALLET_TX_HEALTH.get(cid) or {}).get("expires")
+                        for cid in cids) if e]
+    return min(exps) if exps else None
 
 
 _CHAR_DATA_CACHE = {}  # {cid: (timestamp, result)}
@@ -2372,8 +2401,12 @@ def _fetch_one_char_data_uncached(acct, cid):
     transactions = []
     try:
         transactions, _tx_meta = sso_core.fetch_wallet_transactions(token, cid, SESSION)
+        # ESI's Expires header is the earliest the feed can serve a newer page, so
+        # it's exactly "when the next fill could land" — surface it (via the summary)
+        # so a ⏳ settling build can show a real countdown instead of a vague "soon".
         _WALLET_TX_HEALTH[cid] = {"ok_at": time.time(), "err_at": None,
-                                  "err": None, "count": len(transactions)}
+                                  "err": None, "count": len(transactions),
+                                  "expires": _parse_http_date(_tx_meta.get("expires"))}
     except requests.RequestException as e:
         # Missing wallet scope / auth quirk / transient ESI error — instant-sell
         # accrual sits out this sweep; listed-order tracking is unaffected. Catch
@@ -2395,7 +2428,8 @@ def _fetch_one_char_data_uncached(acct, cid):
         prev = _WALLET_TX_HEALTH.get(cid) or {}
         _WALLET_TX_HEALTH[cid] = {"ok_at": prev.get("ok_at"), "err_at": time.time(),
                                   "err": f"{status or type(e).__name__}",
-                                  "count": prev.get("count")}
+                                  "count": prev.get("count"),
+                                  "expires": prev.get("expires")}
     skills = sso_core.fetch_skills(token, cid, SESSION)
     queue = sso_core.fetch_skillqueue(token, cid, SESSION)
     loyalty, loyalty_meta = sso_core.fetch_loyalty_points(token, cid, SESSION)

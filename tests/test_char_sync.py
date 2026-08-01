@@ -183,9 +183,11 @@ class TestFetchBumpsOnChange:
 # stalled sell ledger is observable. A success clears the error.
 
 class TestWalletTxHealth:
-    def _setup(self, monkeypatch, tmp_path, *, tx):
+    def _setup(self, monkeypatch, tmp_path, *, tx, tx_meta=None):
         """Wire a minimal char fetch; ``tx`` is either a transactions list to
-        return or an Exception instance to raise from fetch_wallet_transactions."""
+        return or an Exception instance to raise from fetch_wallet_transactions.
+        ``tx_meta`` is the ESI cache-header dict returned alongside a successful
+        pull (e.g. ``{"expires": "<HTTP-date>"}``)."""
         cache = tmp_path / "cache"
         cache.mkdir(exist_ok=True)
         monkeypatch.setattr(lp_web, "CACHE_DIR", cache)
@@ -205,7 +207,7 @@ class TestWalletTxHealth:
         def _tx(*a, **k):
             if isinstance(tx, Exception):
                 raise tx
-            return tx, {}
+            return tx, (tx_meta or {})
         monkeypatch.setattr(lp_web.sso_core, "fetch_wallet_transactions", _tx)
 
     def _acct(self):
@@ -254,6 +256,36 @@ class TestWalletTxHealth:
         lp_web._fetch_one_char_data_uncached(self._acct(), 1)
         h = lp_web._WALLET_TX_HEALTH[1]
         assert h["err"] is None and h["err_at"] is None and h["ok_at"] is not None
+
+    def test_success_records_expires_from_header(self, monkeypatch, tmp_path):
+        # ESI's Expires header (HTTP-date) becomes an epoch on the health record,
+        # so the client can show a real "settling in ~Nm" countdown.
+        lp_web._WALLET_TX_HEALTH.pop(1, None)
+        self._setup(monkeypatch, tmp_path, tx=[],
+                    tx_meta={"expires": "Sat, 01 Aug 2026 12:00:00 GMT"})
+        lp_web._fetch_one_char_data_uncached(self._acct(), 1)
+        exp = lp_web._WALLET_TX_HEALTH[1]["expires"]
+        assert exp == lp_web._parse_http_date("Sat, 01 Aug 2026 12:00:00 GMT")
+        assert isinstance(exp, float)
+
+    def test_missing_expires_header_is_none(self, monkeypatch, tmp_path):
+        lp_web._WALLET_TX_HEALTH.pop(1, None)
+        self._setup(monkeypatch, tmp_path, tx=[])       # meta has no "expires"
+        lp_web._fetch_one_char_data_uncached(self._acct(), 1)
+        assert lp_web._WALLET_TX_HEALTH[1]["expires"] is None
+
+    def test_failure_preserves_last_known_expires(self, monkeypatch, tmp_path):
+        # A failed pull keeps the prior expiry (like count/ok_at) so a transient
+        # blip doesn't blank out the countdown.
+        lp_web._WALLET_TX_HEALTH.pop(1, None)
+        self._setup(monkeypatch, tmp_path, tx=[],
+                    tx_meta={"expires": "Sat, 01 Aug 2026 12:00:00 GMT"})
+        lp_web._fetch_one_char_data_uncached(self._acct(), 1)
+        prev_exp = lp_web._WALLET_TX_HEALTH[1]["expires"]
+        self._setup(monkeypatch, tmp_path, tx=lp_web.requests.Timeout("slow"))
+        lp_web._fetch_one_char_data_uncached(self._acct(), 1)
+        h = lp_web._WALLET_TX_HEALTH[1]
+        assert h["err"] == "Timeout" and h["expires"] == prev_exp
 
 
 # ── do_char_data exposes loyalty freshness ────────────────────────────────────
@@ -483,3 +515,46 @@ class TestNewDataReachesClients:
         lp_web._CHAR_DATA_CACHE.pop(1, None)
         lp_web._fetch_one_char_data(acct, 1)
         assert lp_web._CHAR_PUBSUB.version(id(acct)) == v
+
+
+# ── Wallet-tx expiry: "when does it stop settling?" ───────────────────────────
+
+class TestParseHttpDate:
+    def test_parses_rfc7231_date(self):
+        # Matches the same instant Python's own parser yields (tz-aware → epoch).
+        import email.utils, datetime
+        s = "Sat, 01 Aug 2026 12:00:00 GMT"
+        want = email.utils.parsedate_to_datetime(s).timestamp()
+        assert lp_web._parse_http_date(s) == want
+
+    def test_none_and_garbage_are_none(self):
+        assert lp_web._parse_http_date(None) is None
+        assert lp_web._parse_http_date("") is None
+        assert lp_web._parse_http_date("not a date") is None
+
+
+class TestAccountWalletTxExpires:
+    def test_soonest_across_characters(self):
+        acct = _acct({1: {"name": "A"}, 2: {"name": "B"}})
+        lp_web._WALLET_TX_HEALTH[1] = {"expires": 2000.0}
+        lp_web._WALLET_TX_HEALTH[2] = {"expires": 1500.0}
+        try:
+            assert lp_web._account_wallet_tx_expires(acct) == 1500.0
+        finally:
+            lp_web._WALLET_TX_HEALTH.pop(1, None)
+            lp_web._WALLET_TX_HEALTH.pop(2, None)
+
+    def test_none_when_no_expiry_known(self):
+        acct = _acct({1: {"name": "A"}})
+        lp_web._WALLET_TX_HEALTH.pop(1, None)
+        assert lp_web._account_wallet_tx_expires(acct) is None
+
+    def test_ignores_characters_missing_expiry(self):
+        acct = _acct({1: {"name": "A"}, 2: {"name": "B"}})
+        lp_web._WALLET_TX_HEALTH[1] = {"expires": None}   # never had a good pull
+        lp_web._WALLET_TX_HEALTH[2] = {"expires": 3000.0}
+        try:
+            assert lp_web._account_wallet_tx_expires(acct) == 3000.0
+        finally:
+            lp_web._WALLET_TX_HEALTH.pop(1, None)
+            lp_web._WALLET_TX_HEALTH.pop(2, None)

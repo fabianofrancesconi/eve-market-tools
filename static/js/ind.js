@@ -2055,7 +2055,18 @@ function _buildTileHtml(b, linked){
     // laggy wallet feed has priced every unit. Until it catches up the profit
     // shown covers only the wallet-confirmed units — flag it as provisional so
     // a trailing number doesn't look like the final tally.
-    if(b.settling) line+=` <span class="ind-tile-warn" title="Sold, but ESI's wallet feed hasn't priced every unit yet — the profit shown is still settling and will finish updating within a few minutes.">⏳ settling</span>`;
+    if(b.settling){
+      // ESI's wallet feed caches ~1h; its Expires header (wallet_tx_expires, epoch
+      // seconds, soonest across characters) is the earliest a newer fill can land —
+      // i.e. when this could stop settling. Show it as a countdown when in the future.
+      const exp=(typeof SUMMARY!=="undefined")&&SUMMARY.data&&SUMMARY.data.wallet_tx_expires;
+      const rem=exp?exp-Date.now()/1000:null;
+      const eta=(rem!=null&&rem>0)?` · ~${fmtDur(rem)}`:"";
+      const tip=(rem!=null&&rem>0)
+        ?`Sold, but ESI's wallet feed hasn't priced every unit yet. The feed refreshes in about ${fmtDur(rem)}, when the profit should finish settling.`
+        :"Sold, but ESI's wallet feed hasn't priced every unit yet — the profit shown is still settling and will finish updating shortly.";
+      line+=` <span class="ind-tile-warn" title="${tip}">⏳ settling${eta}</span>`;
+    }
     // Finished builds can be archived straight from the board — the same
     // declutter action the full card offers, brought up to the tile so a sold
     // batch can be filed away without opening it. Dead builds (archived/stopped)

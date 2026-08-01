@@ -24,7 +24,6 @@ import importlib
 import os
 import random
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 lp_web = importlib.import_module("lp-web")
@@ -491,10 +490,9 @@ class TestObservedLedgerFullStack:
         pid = product["type_id"]
         b = self._delivered_build(acct, product)
         # The order was listed for 10, then observed to fully sell (filled) — but
-        # NO wallet transaction has arrived yet (the feed lags). Use a fresh
-        # timestamp so the stale-observed prune doesn't treat it as aged out.
+        # NO wallet transaction has arrived yet (the feed lags).
         lp_web._reconcile_observed_ledger(acct, [
-            {"id": "o1_1", "ts": time.time(), "type_id": pid, "sold": 10,
+            {"id": "o1_1", "ts": 2000.0, "type_id": pid, "sold": 10,
              "filled": True, "expired": False, "is_buy_order": False}])
         # Order is gone from the market (it filled).
         lp_web._record_listed_units(acct, 1, [])
@@ -532,10 +530,9 @@ class TestObservedLedgerFullStack:
         product = _PRODUCTS[1]
         pid = product["type_id"]
         b = self._delivered_build(acct, product)
-        # Physically sold out (order-diff), wallet only confirms 6 of 10. Fresh
-        # timestamp so the stale-observed prune leaves this just-seen sale alone.
+        # Physically sold out (order-diff), wallet only confirms 6 of 10.
         lp_web._reconcile_observed_ledger(acct, [
-            {"id": "o1_1", "ts": time.time(), "type_id": pid, "sold": 10,
+            {"id": "o1_1", "ts": 2000.0, "type_id": pid, "sold": 10,
              "filled": True, "expired": False, "is_buy_order": False}])
         lp_web._reconcile_sell_ledger(acct, [
             {"transaction_id": 1, "type_id": pid, "quantity": 6, "unit_price": 150.0,

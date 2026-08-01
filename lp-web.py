@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.14"
+__version__ = "1.156.15"
 
 import argparse
 import base64
@@ -1913,21 +1913,13 @@ def _reconcile_observed_ledger(acct, order_events):
     that drives sold/held/stage; the money still comes from the wallet ledger. A
     sale seen here shows the build "sold" immediately, hours before ESI's wallet-
     transactions feed catches up. Idempotent and lock-guarded (shares the sell-
-    ledger lock — both are per-sweep sell-state writes).
-
-    Every sweep also prunes observed fills that have aged past the wallet's
-    catch-up window (:func:`ind_track.prune_stale_observed`) — the self-heal for
-    a *phantom* sale (an order that vanished because it was cancelled/re-priced,
-    which the order-diff can't distinguish from a buy-out) that would otherwise
-    leave a build "settling" forever with no wallet transaction to confirm it.
-    Runs regardless of new events so a stuck build clears on the next sweep."""
-    if not acct:
+    ledger lock — both are per-sweep sell-state writes)."""
+    if not acct or not order_events:
         return
     with _SELL_LEDGER_LOCK:
         ledger = _load_observed_ledger(acct)
-        ledger, changed = ind_track.merge_observed_fills(ledger, order_events or [])
-        ledger, pruned = ind_track.prune_stale_observed(ledger, time.time())
-        if changed or pruned:
+        ledger, changed = ind_track.merge_observed_fills(ledger, order_events)
+        if changed:
             _save_observed_ledger(acct, ledger)
 
 

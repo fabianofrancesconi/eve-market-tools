@@ -61,3 +61,11 @@ def test_note_save_shows_toast():
     assert 'id="app-toast"' in src
     assert "function showToast(" in src
     assert 'showToast("Note saved")' in src or "showToast(emptied" in src
+
+
+def test_note_has_clear_button():
+    src = lp_web.FRONTEND_SOURCE
+    # A Clear button wipes the blueprint's note (only shown when a note exists).
+    assert "ind-d-note-clear" in src
+    # It clears the textarea and persists the empty note through the same path.
+    assert 'noteBox.value=""' in src

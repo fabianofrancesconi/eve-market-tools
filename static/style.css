@@ -1166,7 +1166,14 @@
   /* Note editor — a row within the single body column, autosaves. */
   .ind-d-note { display:flex; align-items:flex-start; gap:8px; }
   .ind-d-note-lbl { font-size:11px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.05em; color:var(--dim); padding-top:5px; white-space:nowrap; }
+    letter-spacing:.05em; color:var(--dim); padding-top:5px; white-space:nowrap;
+    display:flex; flex-direction:column; align-items:flex-start; gap:5px; }
+  .ind-d-note-clear { font:inherit; font-size:10.5px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.04em; color:var(--dim);
+    background:transparent; border:1px solid var(--line2); border-radius:4px;
+    padding:2px 7px; cursor:pointer; }
+  .ind-d-note-clear:hover { color:var(--red); border-color:var(--red); }
+  .ind-d-note-clear[hidden] { display:none; }
   .ind-d-note-box { flex:1 1 auto; resize:vertical; min-height:34px; font:inherit;
     font-size:12.5px; color:var(--fg); background:var(--panel2);
     border:1px solid var(--line2); border-radius:5px; padding:5px 8px; }

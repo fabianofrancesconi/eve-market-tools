@@ -1090,7 +1090,9 @@ function renderIndDetail(d, container){
       </div>
     </div>
     <div class="ind-d-note">
-      <label class="ind-d-note-lbl">📝 Note</label>
+      <label class="ind-d-note-lbl">📝 Note
+        <button class="ind-d-note-clear" title="Clear this blueprint's note"${indNote(d.blueprint_id)?"":" hidden"}>Clear</button>
+      </label>
       <textarea class="ind-d-note-box" rows="2" placeholder="Add a note for this blueprint…">${(indNote(d.blueprint_id)||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}</textarea>
     </div>
     <div class="ind-d-timer-card">${timerHtml}</div>
@@ -1136,19 +1138,33 @@ function renderIndDetail(d, container){
   // Note editor — autosaves as you type (debounced by setPref). Re-render the
   // table on blur so the 📝 marker appears/disappears without disrupting typing.
   const noteBox=box.querySelector(".ind-d-note-box");
+  const noteClear=box.querySelector(".ind-d-note-clear");
   if(noteBox){
     let last=indNote(d.blueprint_id);
-    noteBox.addEventListener("input", ()=>setIndNote(d.blueprint_id, noteBox.value));
-    // On blur the debounced autosave is done; confirm it with a transient toast so
-    // the silent background write is visible, and refresh the 📝 marker if the
-    // note went from empty↔non-empty. Only when the text actually changed.
-    noteBox.addEventListener("blur", ()=>{
+    let toastTimer=null;
+    // Persist + reflect a note change: save through the pref funnel, toggle the
+    // 📝 table marker and the Clear button, and confirm with a transient toast.
+    // The toast is debounced off the *edit* (not blur) so it appears reliably ~1s
+    // after you stop typing — blur can be flaky (panel re-renders, focus never
+    // leaves the box). `announce` off lets a silent restore skip the toast.
+    const applyNote=(text, announce)=>{
+      setIndNote(d.blueprint_id, text);
       const now=indNote(d.blueprint_id);
-      if(now===last) return;                       // nothing edited
-      if((!!now)!==(!!last)) renderIndTable();      // marker appeared/disappeared
+      if(now===last) return;
       const emptied=!now;
+      if((!!now)!==(!!last)) renderIndTable();       // marker appeared/disappeared
+      if(noteClear) noteClear.hidden=!now;           // Clear button only when non-empty
       last=now;
-      if(typeof showToast==="function") showToast(emptied?"Note cleared":"Note saved");
+      if(announce && typeof showToast==="function"){
+        clearTimeout(toastTimer);
+        toastTimer=setTimeout(()=>showToast(emptied?"Note cleared":"Note saved"), 600);
+      }
+    };
+    noteBox.addEventListener("input", ()=>applyNote(noteBox.value, true));
+    if(noteClear) noteClear.addEventListener("click", ()=>{
+      noteBox.value="";
+      applyNote("", true);
+      noteBox.focus();
     });
   }
   const trackBtn=box.querySelector(".ind-track-btn");

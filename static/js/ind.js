@@ -245,6 +245,52 @@ function _bpPriceCell(v, r){
   return r.bp_source==="invention"?"invent":"—";
 }
 
+// Two states worth flagging in the planner before you commit to a batch, both
+// derived from the tracked builds for this blueprint:
+//   • "in use"   — an in-progress build (planned/building) still occupies the
+//                  blueprint, so you can't start another run of it right now.
+//   • "on sale"  — a delivered build (built/listed) is still holding unsold
+//                  units, i.e. you already have stock of this item on (or headed
+//                  for) the market — a nudge not to double down.
+// Returns {inUse, onSaleUnits, occupied[]} or null when nothing is tracked.
+function indBlueprintFlags(bpId){
+  const builds=IND.builds.filter(b=>b.blueprint_id===bpId);
+  if(!builds.length) return null;
+  const occupied=builds.filter(b=>_isInProgressStage(_buildStage(b)));
+  let onSaleUnits=0;
+  builds.forEach(b=>{
+    const st=_buildStage(b);
+    if(st!=="built" && st!=="listed") return;   // sold/in-progress don't count as "unsold stock"
+    const held=(b.held_units!=null)
+      ? b.held_units
+      : Math.max(0, (b.units_produced||0) - (_buildRealized(b).units||0));
+    onSaleUnits+=held;
+  });
+  if(!occupied.length && onSaleUnits<=0) return null;
+  return {inUse:occupied.length>0, onSaleUnits, occupied};
+}
+
+// The small pill(s) shown after the item name (planner row) / in the detail
+// header. `full` uses longer wording for the roomier detail panel.
+function indFlagPills(bpId, full){
+  const f=indBlueprintFlags(bpId);
+  if(!f) return "";
+  let out="";
+  if(f.inUse){
+    const n=f.occupied.length;
+    const stg=(_STAGE_LABEL[_buildStage(f.occupied[0])]||"tracked").toLowerCase();
+    const tip=(n===1
+      ? `Blueprint in use — a tracked build is ${stg}. You can't start another run until it's delivered.`
+      : `Blueprint in use — ${n} tracked builds are still in progress.`).replace(/"/g,'&quot;');
+    out+=`<span class="ind-flag-pill in-use" title="${tip}">🔧 ${full?"In use":"In use"}</span>`;
+  }
+  if(f.onSaleUnits>0){
+    const tip=(`You still have ${f.onSaleUnits.toLocaleString()} unsold unit${f.onSaleUnits===1?"":"s"} of this item from an earlier build — already listed or ready to list. Consider clearing that stock before making more.`).replace(/"/g,'&quot;');
+    out+=`<span class="ind-flag-pill on-sale" title="${tip}">🏷 ${full?`${f.onSaleUnits.toLocaleString()} unsold`:`${fmtNum(f.onSaleUnits)} unsold`}</span>`;
+  }
+  return out;
+}
+
 function indRowHtml(r, idx){
   const fav=IND.favorites.has(r.blueprint_id);
   const hid=IND.hidden.has(r.blueprint_id);
@@ -268,6 +314,7 @@ function indRowHtml(r, idx){
       if(rz) txt+=` <span class="ind-busy-note" title="${indResearchTip(rz)}">🔬 ${rz.activity||"researching"}</span>`;
       const nt=indNote(r.blueprint_id);
       if(nt) txt+=` <span class="ind-note-mark" title="${nt.replace(/"/g,'&quot;')}">📝</span>`;
+      txt+=indFlagPills(r.blueprint_id, false);
       if(r.group_name) txt+=`<span class="ind-group-sub">${r.group_name}</span>`;
     }
     let cls=c.cls||"";
@@ -1019,7 +1066,7 @@ function renderIndDetail(d, container){
         : `<span class="ind-not-yours">✗ Not in your blueprints</span>`);
   box.innerHTML=`
     <div class="ind-d-head">
-      <span class="ind-d-title">${tier?`<span class="ind-d-tier">${tier}</span>`:""}<b>${d.product.name}</b></span>
+      <span class="ind-d-title">${tier?`<span class="ind-d-tier">${tier}</span>`:""}<b>${d.product.name}</b>${indFlagPills(d.blueprint_id, true)}</span>
       <span class="ind-d-acts">
         <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
         <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy name</button>

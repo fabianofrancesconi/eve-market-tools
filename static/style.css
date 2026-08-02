@@ -374,6 +374,13 @@
   /* 📝 marker in the Item cell for a blueprint that has a note; hover shows it. */
   .ind-note-mark { font-size:10.5px; margin-left:5px; cursor:help; vertical-align:middle;
                    opacity:.85; }
+  /* Planner heads-up pills: this blueprint is currently occupied by a build
+     ("in use"), or you still hold unsold stock of it ("on sale"). */
+  .ind-flag-pill { display:inline-block; font-size:10px; font-weight:600; border-radius:4px;
+                   padding:0 5px; margin-left:6px; white-space:nowrap; cursor:help;
+                   vertical-align:middle; }
+  .ind-flag-pill.in-use { color:#a0cfee; background:#0e2233; border:1px solid #3a6b90; }
+  .ind-flag-pill.on-sale { color:#ffd080; background:#3a2800; border:1px solid #b8860b; }
   .ind-yours { color:#6ecf6e; font-weight:600; margin-left:8px; }
   .ind-alt-owns { color:#a0cfee; font-weight:600; margin-left:8px; }
   .ind-not-yours { color:var(--dim2); margin-left:8px; }

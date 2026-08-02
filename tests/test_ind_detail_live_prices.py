@@ -26,6 +26,16 @@ def test_detail_open_always_refreshes_prices():
     assert 'refresh_prices:"1"' in body
 
 
+def test_detail_open_shows_fetching_spinner():
+    src = lp_web.FRONTEND_SOURCE
+    # The loading placeholder spins and says prices are being fetched, since the
+    # open now always waits on a live ESI order-book pull.
+    i = src.index("function openIndDetail(")
+    body = src[i:i + 1200]
+    assert "_SPIN" in body
+    assert "fetching live prices" in body
+
+
 def test_pull_live_prices_button_is_gone():
     src = lp_web.FRONTEND_SOURCE
     # The manual button and its label are removed — pulling is automatic now.

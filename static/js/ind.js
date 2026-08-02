@@ -791,7 +791,7 @@ function openIndDetail(row, clickedTr){
   const ncol=indVisCols().length;
   const tr=document.createElement("tr");
   tr.className="ind-detail-row";
-  tr.innerHTML=`<td colspan="${ncol}"><div class="ind-d-head">Loading ${row.product_name}…</div></td>`;
+  tr.innerHTML=`<td colspan="${ncol}"><div class="ind-d-head ind-d-loading">${_SPIN} Loading ${row.product_name} — fetching live prices…</div></td>`;
   clickedTr.after(tr);
   tr.querySelector("td").scrollIntoView({block:"nearest", behavior:"smooth"});
   // Always pull live ESI prices when a detail view opens — the table's row
@@ -1135,7 +1135,7 @@ function renderIndDetail(d, container){
         ⚠ Instant profit here differs from the table.
         ${effBid==null||fillQty===0
           ? `No buy order will take your ${fmtNum(qtyBatchTot)} units — every standing bid demands a larger minimum volume, so there's no real instant sale.`
-          : `The table used the top bid of <b>${isk(aggBid)}</b>, but the best you can actually reach for this batch is <b>${isk(effBid)}</b> (bigger bids require a minimum volume you can't meet). The table's instant numbers are optimistic; trust the price shown here.`}
+          : `The table used the top bid of <b>${isk(aggBid)} ISK</b>, but the best you can actually reach for this batch is <b>${isk(effBid)} ISK</b> (bigger bids require a minimum volume you can't meet). The table's instant numbers are optimistic; trust the price shown here.`}
       </div>`:""}
       <div class="ind-sell-rail">
         ${minPriceList!=null?`<span class="ind-rail-cell"><i>Break-even</i><b class="warn">${isk(minPriceList)}</b><em>/unit to list</em></span>`:""}

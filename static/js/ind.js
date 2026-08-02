@@ -279,11 +279,23 @@ function indFlagPills(bpId, full){
   let out="";
   if(f.inUse){
     const n=f.occupied.length;
+    // "In use" is only honest once a run is actually running (building). A build
+    // that's merely planned reserves the blueprint in the planner but hasn't
+    // consumed it yet — call that "Tracked" so it doesn't read as manufacturing.
+    const anyBuilding=f.occupied.some(b=>_buildStage(b)==="building");
+    const label=anyBuilding?"In use":"Tracked";
+    const cls=anyBuilding?"in-use":"tracked";
+    const icon=anyBuilding?"🔧":"📌";
     const stg=(_STAGE_LABEL[_buildStage(f.occupied[0])]||"tracked").toLowerCase();
-    const tip=(n===1
-      ? `Blueprint in use — a tracked build is ${stg}. You can't start another run until it's delivered.`
-      : `Blueprint in use — ${n} tracked builds are still in progress.`).replace(/"/g,'&quot;');
-    out+=`<span class="ind-flag-pill in-use" title="${tip}">🔧 ${full?"In use":"In use"}</span>`;
+    const tip=(anyBuilding
+      ? (n===1
+          ? `Blueprint in use — a tracked build is ${stg}. You can't start another run until it's delivered.`
+          : `Blueprint in use — ${n} tracked builds are in progress.`)
+      : (n===1
+          ? `You're already tracking a planned build of this blueprint (not started yet). Kick it off from Tracked builds rather than planning another.`
+          : `You're already tracking ${n} planned builds of this blueprint.`)
+    ).replace(/"/g,'&quot;');
+    out+=`<span class="ind-flag-pill ${cls}" title="${tip}">${icon} ${label}</span>`;
   }
   if(f.onSaleUnits>0){
     const tip=(`You still have ${f.onSaleUnits.toLocaleString()} unsold unit${f.onSaleUnits===1?"":"s"} of this item from an earlier build — already listed or ready to list. Consider clearing that stock before making more.`).replace(/"/g,'&quot;');

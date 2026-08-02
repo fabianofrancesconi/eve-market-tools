@@ -380,6 +380,7 @@
                    padding:0 5px; margin-left:6px; white-space:nowrap; cursor:help;
                    vertical-align:middle; }
   .ind-flag-pill.in-use { color:#a0cfee; background:#0e2233; border:1px solid #3a6b90; }
+  .ind-flag-pill.tracked { color:#b9a8d8; background:#1c1430; border:1px solid #5a4a80; }
   .ind-flag-pill.on-sale { color:#ffd080; background:#3a2800; border:1px solid #b8860b; }
   .ind-yours { color:#6ecf6e; font-weight:600; margin-left:8px; }
   .ind-alt-owns { color:#a0cfee; font-weight:600; margin-left:8px; }

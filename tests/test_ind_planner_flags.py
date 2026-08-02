@@ -46,4 +46,14 @@ def test_pills_rendered_in_row_and_detail():
 def test_pill_styles_present():
     src = lp_web.FRONTEND_SOURCE
     assert ".ind-flag-pill.in-use" in src
+    assert ".ind-flag-pill.tracked" in src
     assert ".ind-flag-pill.on-sale" in src
+
+
+def test_occupied_pill_distinguishes_building_from_planned():
+    src = lp_web.FRONTEND_SOURCE
+    # A merely-planned build reads as "Tracked"; only an actually-running
+    # ("building") build reads as "In use".
+    assert 'const anyBuilding=f.occupied.some(b=>_buildStage(b)==="building");' in src
+    assert 'const label=anyBuilding?"In use":"Tracked";' in src
+    assert 'const cls=anyBuilding?"in-use":"tracked";' in src

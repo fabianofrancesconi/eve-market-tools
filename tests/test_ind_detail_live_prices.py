@@ -55,3 +55,26 @@ def test_instant_discrepancy_warning_present():
 def test_instant_warning_styled():
     src = lp_web.FRONTEND_SOURCE
     assert ".ind-instant-warn" in src
+
+
+def test_list_price_reality_check_badge_present():
+    src = lp_web.FRONTEND_SOURCE
+    # List price is flagged when it sits above the 30-day median daily high.
+    assert "hist_high" in src
+    assert "listOverHigh" in src
+    assert "ind-list-warn" in src
+    assert "median" in src.lower()
+
+
+def test_list_price_reality_check_styled():
+    src = lp_web.FRONTEND_SOURCE
+    assert ".ind-list-warn" in src
+
+
+def test_detail_wires_history_high():
+    # The detail endpoint attaches the 30-day median daily high for the product.
+    import inspect
+    src = inspect.getsource(lp_web.do_ind_detail) \
+        if hasattr(lp_web, "do_ind_detail") else lp_web.FRONTEND_SOURCE
+    assert "hist_high" in src
+    assert "fetch_history_highs" in src

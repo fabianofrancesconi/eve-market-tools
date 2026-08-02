@@ -1102,6 +1102,12 @@
     padding:7px 11px; margin-bottom:10px; color:#ffd080; font-size:12.5px; line-height:1.5;
     cursor:help; }
   .ind-cargo-warn b { color:#ffe4a0; }
+  /* List price sits above the 30-day median daily high — the market rarely pays
+     it, so the "list & wait" profit is theoretical. */
+  .ind-list-warn { background:#3a2800; border:1px solid #b8860b; border-radius:6px;
+    padding:7px 11px; margin-top:8px; color:#ffd080; font-size:12.5px; line-height:1.5;
+    cursor:help; }
+  .ind-list-warn b { color:#ffe4a0; }
   /* ── Sell decision: the signature ─────────────────────────────────────────
      Selling in EVE is a fork — list patiently at the ask, or dump instantly into
      buy orders — so the hero IS that fork: two paths side by side, each stating

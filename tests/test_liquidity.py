@@ -189,6 +189,38 @@ class TestMedianDailyAvgPrice:
 
 
 # ---------------------------------------------------------------------------
+# _median_daily_high_price  -- realistic price ceiling (median of daily highs)
+# ---------------------------------------------------------------------------
+
+class TestMedianDailyHighPrice:
+    def test_median_of_high_prices(self):
+        hist = [{"highest": 100.0}, {"highest": 300.0}, {"highest": 200.0}]
+        assert lp_core._median_daily_high_price(hist) == 200.0
+
+    def test_empty_history_is_none(self):
+        assert lp_core._median_daily_high_price([]) is None
+
+    def test_skips_missing_highs(self):
+        hist = [{"highest": None}, {"highest": 50.0}, {"highest": 150.0}]
+        assert lp_core._median_daily_high_price(hist) == 100.0
+
+    def test_all_missing_is_none(self):
+        assert lp_core._median_daily_high_price([{"highest": None}, {}]) is None
+
+    def test_uses_only_last_n_days(self):
+        hist = [{"highest": 1.0} for _ in range(10)] + \
+               [{"highest": 500.0} for _ in range(30)]
+        assert lp_core._median_daily_high_price(hist, days=30) == 500.0
+
+    def test_high_exceeds_average_for_realistic_ceiling(self):
+        # The daily high is the realistic *ceiling*: it sits at or above the
+        # daily average, so the median-of-highs anchors above the fair value.
+        hist = [{"average": 20.0, "highest": 26.0} for _ in range(30)]
+        assert lp_core._median_daily_high_price(hist) == 26.0
+        assert lp_core._median_daily_avg_price(hist) == 20.0
+
+
+# ---------------------------------------------------------------------------
 # fetch_history_prices  (shares the mhist cache with fetch_history_volumes)
 # ---------------------------------------------------------------------------
 

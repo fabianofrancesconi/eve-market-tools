@@ -889,6 +889,16 @@ function renderIndDetail(d, container){
   // Notable when the reachable bid is <90% of the aggregate (incl. 0 = nothing
   // fillable) — that's the gap that turns a rosy table number into a real loss.
   const instBidWarn=(bidGap!=null && bidGap<0.90);
+  // Reality-check the LIST price against 30-day traded history. d.ask is the
+  // current lowest sell order — which can be an aspirational relist the market
+  // never actually pays. d.hist_high is the 30-day median of the daily HIGH: the
+  // most the market genuinely paid on a typical day. If the ask sits meaningfully
+  // above that ceiling, "list & wait" profit is theoretical — you'd sit at the
+  // back of the queue at a price that rarely clears. Flag it when the ask is >5%
+  // over the median high (a little slack so a normal spread doesn't nag).
+  const histHigh=d.hist_high;
+  const listOverHigh=(d.ask!=null && histHigh!=null && histHigh>0 && d.ask>histHigh*1.05);
+  const listOverPct=listOverHigh?((d.ask/histHigh)-1):null;
   // How much of the batch can actually be dumped AT A PROFIT: walk the reachable
   // buy book (honouring min_volume) and count only units whose bid clears the
   // per-unit break-even (cost ÷ units, grossed up for sales tax). The top bids
@@ -1190,6 +1200,9 @@ function renderIndDetail(d, container){
           ? `No buy order will take your ${fmtNum(qtyBatchTot)} units — every standing bid demands a larger minimum volume, so there's no real instant sale.`
           : `The table used the top bid of <b>${isk(aggBid)} ISK</b>, but the best you can actually reach for this batch is <b>${isk(effBid)} ISK</b> (bigger bids require a minimum volume you can't meet). The table's instant numbers are optimistic; trust the price shown here.`}
       </div>`:"")}
+      ${listOverHigh?`<div class="ind-list-warn" title="The list price is the current lowest sell order, which can be an aspirational relist. The 30-day median daily high — the most the market actually paid on a typical day — is ${isk(histHigh)} ISK. Listing above what genuinely clears means sitting at the back of the queue; the profit shown is theoretical.">
+        ⚠ List price <b>${isk(d.ask)} ISK</b> is <b>${fmtPct1(listOverPct)}</b> above the 30-day median high of <b>${isk(histHigh)} ISK</b> — the market rarely pays this much, so it may not sell at that price.
+      </div>`:""}
       <div class="ind-sell-rail">
         ${minPriceList!=null?`<span class="ind-rail-cell"><i>Break-even</i><b class="warn">${isk(minPriceList)}</b><em>/unit to list</em></span>`:""}
         <span class="ind-rail-cell"><i>Build cost</i><b>${isk(batchCost)}</b><em>${fmtNum(qtyBatchTot)} units</em></span>

@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.20"
+__version__ = "1.156.21"
 
 import argparse
 import base64
@@ -57,8 +57,8 @@ import sso_core
 import pg_store
 from lp_core import (
     ESI, HEADERS, HIGH_SPREAD_PCT, JITA_STATION_ID, LPError, build_detail, default_cache_dir,
-    TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_prices,
-    fetch_history_series, fetch_history_volumes,
+    TRADE_HUBS, enrich_liquidity, evaluate, fetch_history_highs,
+    fetch_history_prices, fetch_history_series, fetch_history_volumes,
     fetch_orderbook_jita, fetch_order_rank, fetch_prices, fetch_prices_esi,
     fetch_sell_order_stats, get_offers,
     load_json, resolve_corp_id, resolve_corp_name, resolve_names,
@@ -4040,6 +4040,14 @@ def do_ind_detail(q):
                                SESSION, CACHE_DIR).get(bp["product_id"])
     detail["daily_units"] = dv
     detail["tradeability"] = ind_core.tradeability(dv)
+    # Realistic price ceiling: the 30-day median of the daily HIGH — the most the
+    # market actually paid on a typical day. Shares the history cache above (no
+    # extra ESI call). The client compares the optimistic list price (lowest ask,
+    # which may be an aspirational relist) against this and flags a list price the
+    # market has essentially never paid.
+    detail["hist_high"] = fetch_history_highs(
+        [bp["product_id"]], TRADE_HUBS[station_id]["region_id"],
+        SESSION, CACHE_DIR).get(bp["product_id"])
     detail["esi_prices"] = refresh_prices
     # Live buy-order book for the product so the client can value an instant
     # ("dump now") sale HONESTLY for the current batch size: each buy order carries

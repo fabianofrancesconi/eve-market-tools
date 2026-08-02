@@ -556,6 +556,20 @@ def _median_daily_avg_price(history, days=HISTORY_DAYS):
     return statistics.median(prices)
 
 
+def _median_daily_high_price(history, days=HISTORY_DAYS):
+    """Median of the last `days` daily *high* traded prices from an ESI history
+    list. The daily high is the most anyone actually paid that day, so the median
+    of highs is a realistic ceiling — "the top of what genuinely clears" — as
+    opposed to the current lowest sell order, which can be an aspirational relist
+    the market never pays. Median (not max) so one gouge day doesn't set the bar.
+    None when there's no usable history."""
+    highs = [d.get("highest") for d in history[-days:]]
+    highs = [h for h in highs if h is not None]
+    if not highs:
+        return None
+    return statistics.median(highs)
+
+
 def _daily_price_volume_series(history, days=HISTORY_DAYS):
     """The last `days` days of history reduced to a compact per-day series the
     price-conditioned sell-through model consumes: a list of
@@ -630,6 +644,16 @@ def fetch_history_prices(type_ids, region_id, session, cache_dir, refresh=False)
     files as fetch_history_volumes, so calling both costs no extra ESI calls."""
     return _fetch_history_summary(type_ids, region_id, session, cache_dir,
                                   _median_daily_avg_price, refresh)
+
+
+def fetch_history_highs(type_ids, region_id, session, cache_dir, refresh=False):
+    """type_id -> median daily HIGH traded price (last HISTORY_DAYS) in
+    `region_id` — a realistic price ceiling (the most the market actually pays),
+    for sanity-checking an optimistic list price. None for a type with no recorded
+    history or on fetch failure. Reuses the same cache files as the other history
+    fetches, so it costs no extra ESI calls."""
+    return _fetch_history_summary(type_ids, region_id, session, cache_dir,
+                                  _median_daily_high_price, refresh)
 
 
 def fetch_history_series(type_ids, region_id, session, cache_dir, refresh=False):

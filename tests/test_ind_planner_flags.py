@@ -57,3 +57,29 @@ def test_occupied_pill_distinguishes_building_from_planned():
     assert 'const anyBuilding=f.occupied.some(b=>_buildStage(b)==="building");' in src
     assert 'const label=anyBuilding?"In use":"Tracked";' in src
     assert 'const cls=anyBuilding?"in-use":"tracked";' in src
+
+
+# ── The "active job marked as built" guard ────────────────────────────────────
+# A single transient jobs-fetch failure used to flip actively-building lots to
+# "built" (permanent, since done_at is monotonic): the failing character dropped
+# out of the combined bundle, its live jobs vanished, and the client read the
+# missing job as "delivered". reconcileBuilds now demands two independent
+# confirmations before stamping done_at.
+
+def test_reconcile_requires_complete_jobs_before_delivering():
+    src = lp_web.FRONTEND_SOURCE
+    # The server's jobs_complete flag gates delivery; absent (older server) it
+    # defaults true so behaviour is preserved, backstopped by the job_end check.
+    assert "const jobsComplete = !AUTH.data || AUTH.data.jobs_complete !== false;" in src
+    # A partial sweep holds the link instead of delivering.
+    assert "if(!jobsComplete){" in src
+
+
+def test_reconcile_requires_job_end_passed_before_delivering():
+    src = lp_web.FRONTEND_SOURCE
+    # A job whose clock hasn't run out cannot have been delivered, whatever the
+    # active-jobs set says — the physical backstop.
+    assert "const endTs=_jobEndTs(b);" in src
+    assert "if(endTs!=null && endTs > Date.now()/1000 + 60){" in src
+    # The end-time helper exists and parses the ISO job end.
+    assert "function _jobEndTs(b){" in src

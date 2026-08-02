@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.22"
+__version__ = "1.156.23"
 
 import argparse
 import base64
@@ -1605,6 +1605,15 @@ def do_ind_builds_link(q):
                     nd = float(v)
                     cur = b.get("done_at")
                     b["done_at"] = nd if cur is None else min(cur, nd)
+                    # Delivery is rare and IRREVERSIBLE (done_at is monotonic), and
+                    # a spurious stamp on a still-building lot is exactly the bug we
+                    # chase — so always leave a line recording it: which lot, when,
+                    # and whether it still held a live job link at the moment.
+                    if cur is None:
+                        print(f"[build-done] stamped done_at={b['done_at']} on "
+                              f"{b.get('product_name','?')} (id={build_id}, "
+                              f"runs={b.get('runs')}, job_id={b.get('job_id')}, "
+                              f"job_end={b.get('job_end')})", file=sys.stderr)
                 except (TypeError, ValueError):
                     pass                     # bad value: leave done_at untouched
         break
@@ -2470,7 +2479,28 @@ def _fetch_one_char_data_uncached(acct, cid):
     skills = sso_core.fetch_skills(token, cid, SESSION)
     queue = sso_core.fetch_skillqueue(token, cid, SESSION)
     loyalty, loyalty_meta = sso_core.fetch_loyalty_points(token, cid, SESSION)
-    jobs = sso_core.fetch_industry_jobs(token, cid, SESSION, include_completed=True)
+    # Industry jobs drive the client's build reconcile (a linked job leaving the
+    # active list = delivered). A SILENT failure here is dangerous: the character
+    # drops out of the combined bundle, its still-active jobs vanish, and every
+    # build linked to them can get wrongly stamped "built" (monotonic, permanent).
+    # So catch the whole RequestException family, log loudly, and flag the sweep
+    # incomplete so the client holds instead of delivering. (This mirrors the
+    # wallet-tx guard above — same lesson, higher stakes.)
+    jobs, jobs_ok = [], True
+    try:
+        jobs = sso_core.fetch_industry_jobs(token, cid, SESSION, include_completed=True)
+    except requests.RequestException as e:
+        jobs_ok = False
+        resp = getattr(e, "response", None)
+        status = getattr(resp, "status_code", None)
+        body = ""
+        if resp is not None:
+            try:
+                body = resp.text[:300]
+            except Exception:
+                body = ""
+        print(f"[industry-jobs] fetch failed for {char_name} ({cid}): "
+              f"status={status} {type(e).__name__}: {e} {body}", file=sys.stderr)
     orders, orders_error, orders_meta = [], None, {}
     try:
         orders, orders_meta = sso_core.fetch_market_orders(token, cid, SESSION)
@@ -2636,6 +2666,10 @@ def _fetch_one_char_data_uncached(acct, cid):
         "loyalty_last_modified": loyalty_meta.get("last_modified"),
         "loyalty_expires": loyalty_meta.get("expires"),
         "jobs": out_jobs,
+        # Whether this character's industry-jobs fetch succeeded. Feeds the
+        # combined bundle's jobs_complete flag so the client won't treat a job
+        # missing due to a failed fetch as "delivered".
+        "jobs_ok": jobs_ok,
         "runs_tracked": runs_tracked,
         "market_orders": orders_out,
         "market_orders_error": orders_error,
@@ -2661,6 +2695,7 @@ def do_char_data(q):
         active_char_id = acct.active_char_id
     results = {}
 
+    dropped_chars = []          # chars whose whole fetch threw (jobs missing entirely)
     if len(char_ids) == 1:
         cid = char_ids[0]
         results[cid] = _fetch_one_char_data(acct, cid)
@@ -2671,8 +2706,14 @@ def do_char_data(q):
                 cid = futures[f]
                 try:
                     results[cid] = f.result()
-                except Exception:
-                    pass
+                except Exception as e:
+                    # A whole-character fetch failure drops that char's jobs from
+                    # the combined bundle. Never let that read as "no jobs" — log
+                    # it and flag the sweep incomplete (jobs_complete below) so the
+                    # client holds instead of wrongly marking builds delivered.
+                    dropped_chars.append(cid)
+                    print(f"[char-data] fetch failed for {cid}: "
+                          f"{type(e).__name__}: {e}", file=sys.stderr)
 
     combined_wallet = sum(r.get("wallet") or 0 for r in results.values())
     combined_jobs = []
@@ -2701,6 +2742,18 @@ def do_char_data(q):
             combined_orders_expires = exp
     combined_jobs.sort(key=lambda x: x.get("end") or "")
     combined_orders.sort(key=lambda o: o.get("issued") or "", reverse=True)
+
+    # jobs_complete: every linked character's industry-jobs actually loaded this
+    # sweep. False if any character was dropped wholesale (dropped_chars) OR
+    # reported its jobs fetch failed (jobs_ok=False). The client refuses to mark
+    # a build delivered when this is False — a job missing from an incomplete
+    # sweep is "unknown", not "finished".
+    jobs_complete = (not dropped_chars
+                     and all(r.get("jobs_ok", True) for r in results.values()))
+    if not jobs_complete:
+        print(f"[char-data] jobs incomplete this sweep (dropped={dropped_chars}, "
+              f"jobs_ok={[ (r.get('character_id'), r.get('jobs_ok', True)) for r in results.values() ]}) "
+              "— client will hold build reconcile", file=sys.stderr)
 
     active_data = results.get(active_char_id) or next(iter(results.values()), {})
 
@@ -2734,6 +2787,9 @@ def do_char_data(q):
         "loyalty_last_modified": active_data.get("loyalty_last_modified"),
         "loyalty_expires": active_data.get("loyalty_expires"),
         "jobs": combined_jobs,
+        # False when any character's jobs failed to load — the client then holds
+        # build reconcile rather than treating missing jobs as delivered.
+        "jobs_complete": jobs_complete,
         "runs_tracked": combined_runs,
         "market_orders": combined_orders,
         "market_orders_error": active_data.get("market_orders_error"),

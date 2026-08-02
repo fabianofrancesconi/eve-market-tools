@@ -1675,6 +1675,23 @@ function _buildJobLocation(b){
   return b.job_location||"";
 }
 
+// Unix seconds of a build's linked manufacturing-job end, or null if unknown.
+// Prefers the live job's end, falls back to the persisted job_end. Used as a
+// physical liveness backstop: a job whose end is still in the future cannot have
+// been delivered, no matter what the active-jobs set says.
+function _jobEndTs(b){
+  let end=null;
+  if(b.job_id!=null){
+    const jobs=(AUTH.data&&AUTH.data.jobs)||[];
+    const j=jobs.find(j=>String(j.job_id)===String(b.job_id));
+    if(j&&j.end) end=j.end;
+  }
+  if(!end) end=b.job_end||null;
+  if(!end) return null;
+  const t=Date.parse(end);            // ISO 8601 ("2026-08-03T12:00:00Z")
+  return isNaN(t)?null:t/1000;
+}
+
 // Recompute each build's status from live jobs and persist the transitions that
 // must survive a reload (first link to a job, and completion). Returns nothing;
 // mutates IND.builds in place and re-renders.
@@ -1683,6 +1700,14 @@ function reconcileBuilds(){
   // Guard: if jobs haven't loaded yet (AUTH.data absent, or no jobs array),
   // we can't tell "job finished" from "not fetched" — don't mark anything done.
   const jobsKnown = !!(AUTH.data && Array.isArray(AUTH.data.jobs));
+  // Stronger guard: did EVERY linked character's jobs actually load this sweep?
+  // The server sets jobs_complete=false when any character's industry-jobs fetch
+  // failed, so its jobs are missing from the combined bundle. A missing job on a
+  // failed character is NOT a delivered job — flipping such a build to "built"
+  // (which is monotonic and irreversible) was the "active job marked as built"
+  // bug. Absent the flag (older server) we default to true to preserve behaviour;
+  // the job_end check below still backstops it.
+  const jobsComplete = !AUTH.data || AUTH.data.jobs_complete !== false;
   const activeJobIds=_activeJobIdSet();
   const claimed=new Set();
   // Pre-seed with EVERY already-linked, still-active job id before the loop.
@@ -1725,7 +1750,27 @@ function reconcileBuilds(){
       claimed.add(String(b.job_id)); return;    // still running under its link
     }
     if(b.job_id!=null && jobsKnown && !activeJobIds.has(String(b.job_id))){
-      // Its linked job left the active list → delivered.
+      // Its linked job is no longer in the live active set. Before treating that
+      // as "delivered" we demand TWO independent confirmations, because a single
+      // transient jobs-fetch failure (one character's ESI call timing out) drops
+      // that character's jobs from the combined bundle while the array stays
+      // non-empty from the OTHER characters — which used to be enough to flip an
+      // actively-building lot to "built" forever (done_at is monotonic).
+      //
+      //  (a) jobsComplete — the server confirms EVERY linked character's jobs
+      //      loaded this sweep. A partial fetch never delivers anything.
+      //  (b) job_end has actually passed — a job with time left on the clock is,
+      //      by definition, still running. This alone would have blocked the bug
+      //      (both mis-marked lots had 1d+/3d+ remaining), but we keep (a) too so
+      //      a build with a missing/blank job_end can't slip through.
+      if(!jobsComplete){
+        claimed.add(String(b.job_id)); return;   // partial fetch — hold, don't deliver
+      }
+      const endTs=_jobEndTs(b);
+      if(endTs!=null && endTs > Date.now()/1000 + 60){
+        claimed.add(String(b.job_id)); return;   // job still has time left — not delivered
+      }
+      // Its linked job left the active list AND its clock has run out → delivered.
       b.done_at=Date.now()/1000; changed=true;
       _patchBuildLink(b, {done_at:b.done_at});
       return;

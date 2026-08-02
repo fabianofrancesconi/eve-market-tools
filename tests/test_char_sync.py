@@ -257,6 +257,7 @@ class TestWalletTxHealth:
         h = lp_web._WALLET_TX_HEALTH[1]
         assert h["err"] is None and h["err_at"] is None and h["ok_at"] is not None
 
+
     def test_success_records_expires_from_header(self, monkeypatch, tmp_path):
         # ESI's Expires header (HTTP-date) becomes an epoch on the health record,
         # so the client can show a real "settling in ~Nm" countdown.
@@ -286,6 +287,83 @@ class TestWalletTxHealth:
         lp_web._fetch_one_char_data_uncached(self._acct(), 1)
         h = lp_web._WALLET_TX_HEALTH[1]
         assert h["err"] == "Timeout" and h["expires"] == prev_exp
+
+
+# ── Industry-jobs fetch health (the "active job marked as built" bug) ──────────
+# A failed industry-jobs fetch must NOT abort the sweep and must NOT vanish
+# silently: it's flagged on the per-char bundle (jobs_ok=False) and rolls up to
+# the combined bundle's jobs_complete=False, so the client holds build reconcile
+# instead of treating the now-missing jobs as "delivered" (which is irreversible).
+
+class TestIndustryJobsHealth:
+    def _setup(self, monkeypatch, tmp_path, *, jobs):
+        """``jobs`` is either a jobs list to return or an Exception to raise from
+        fetch_industry_jobs."""
+        cache = tmp_path / "cache"
+        cache.mkdir(exist_ok=True)
+        monkeypatch.setattr(lp_web, "CACHE_DIR", cache)
+        monkeypatch.setattr(lp_web, "JOBS_TRACK_PATH", cache / "jobs.json")
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", cache / "order_events.json")
+        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda a, cid: None)
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda a, cid: None)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_wallet", lambda *a, **k: 1_000.0)
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skills",
+                            lambda *a, **k: {"total_sp": 1, "skills": []})
+        monkeypatch.setattr(lp_web.sso_core, "fetch_skillqueue", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points",
+                            lambda *a, **k: ([], {}))
+        monkeypatch.setattr(lp_web.sso_core, "fetch_wallet_transactions",
+                            lambda *a, **k: ([], {}))
+        monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: ([], {}))
+
+        def _jobs(*a, **k):
+            if isinstance(jobs, Exception):
+                raise jobs
+            return jobs
+        monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", _jobs)
+
+    def _acct(self):
+        return _acct({1: {"name": "Main", "access_token": "tok",
+                          "expires_at": time.time() + 3600}})
+
+    def test_success_flags_jobs_ok_true(self, monkeypatch, tmp_path):
+        self._setup(monkeypatch, tmp_path, jobs=[])
+        bundle = lp_web._fetch_one_char_data_uncached(self._acct(), 1)
+        assert bundle["jobs_ok"] is True
+
+    def test_httperror_is_swallowed_and_flags_jobs_not_ok(self, monkeypatch, tmp_path):
+        resp = type("R", (), {"status_code": 500, "text": "boom"})()
+        err = lp_web.requests.HTTPError("500"); err.response = resp
+        self._setup(monkeypatch, tmp_path, jobs=err)
+        bundle = lp_web._fetch_one_char_data_uncached(self._acct(), 1)  # must NOT raise
+        assert bundle["jobs_ok"] is False
+        assert bundle["name"] == "Main"                 # sweep completed
+
+    def test_timeout_does_not_abort_sweep(self, monkeypatch, tmp_path):
+        # A Timeout is a RequestException but not an HTTPError — the old bare
+        # call let it propagate, dropping the whole character (and its jobs).
+        self._setup(monkeypatch, tmp_path, jobs=lp_web.requests.Timeout("slow"))
+        bundle = lp_web._fetch_one_char_data_uncached(self._acct(), 1)  # must NOT raise
+        assert bundle["jobs_ok"] is False
+        assert bundle["name"] == "Main"
+
+    def test_combined_bundle_complete_when_all_ok(self, monkeypatch, tmp_path):
+        self._setup(monkeypatch, tmp_path, jobs=[])
+        acct = self._acct(); acct.skill_profiles = {1: {}}; acct.bp_me_tes = {1: {}}
+        lp_web._REQUEST.account = acct
+        lp_web._CHAR_DATA_CACHE.pop(1, None)
+        bundle = lp_web.do_char_data({})
+        assert bundle["jobs_complete"] is True
+
+    def test_combined_bundle_incomplete_when_a_fetch_fails(self, monkeypatch, tmp_path):
+        # A single failed jobs fetch must poison the whole combined bundle's
+        # jobs_complete so the client holds reconcile across every character.
+        self._setup(monkeypatch, tmp_path, jobs=lp_web.requests.Timeout("slow"))
+        acct = self._acct(); acct.skill_profiles = {1: {}}; acct.bp_me_tes = {1: {}}
+        lp_web._REQUEST.account = acct
+        lp_web._CHAR_DATA_CACHE.pop(1, None)
+        bundle = lp_web.do_char_data({})
+        assert bundle["jobs_complete"] is False
 
 
 # ── do_char_data exposes loyalty freshness ────────────────────────────────────

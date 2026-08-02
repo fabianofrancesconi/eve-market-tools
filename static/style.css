@@ -1087,10 +1087,16 @@
   .ind-d-max-cargo:hover:not([disabled]) { background:var(--cyan2); color:var(--bg); }
   .ind-d-max-cargo[disabled] { color:var(--dim); cursor:not-allowed; }
   .ind-d-cargo-box:focus-within { border-color:var(--cyan2); }
-  .ind-copy, .ind-own, .ind-pull-prices { padding:2px 9px; font-size:11.5px; cursor:pointer;
+  .ind-copy, .ind-own { padding:2px 9px; font-size:11.5px; cursor:pointer;
     background:var(--panel); border:1px solid var(--line2); border-radius:5px; color:var(--cyan); }
-  .ind-copy:hover, .ind-own:hover, .ind-pull-prices:hover { border-color:var(--cyan2); }
-  .ind-pull-prices.on { color:#5fb85f; border-color:#5fb85f; }
+  .ind-copy:hover, .ind-own:hover { border-color:var(--cyan2); }
+  /* Instant-sell discrepancy notice: the table's instant profit is computed off
+     the aggregate top bid (ignoring per-order min_volume); this panel walks the
+     real book, so its instant price can be far lower. Explains the gap in place. */
+  .ind-instant-warn { background:#3a2800; border:1px solid #b8860b; border-radius:6px;
+    padding:7px 11px; margin-top:8px; color:#ffd080; font-size:12.5px; line-height:1.5;
+    cursor:help; }
+  .ind-instant-warn b { color:#ffe4a0; }
   /* ── Sell decision: the signature ─────────────────────────────────────────
      Selling in EVE is a fork — list patiently at the ask, or dump instantly into
      buy orders — so the hero IS that fork: two paths side by side, each stating

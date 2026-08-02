@@ -623,8 +623,7 @@ function indSimParams(bpId, extra){
 function reloadIndDetail(bpId){
   const box=document.querySelector("tr.ind-detail-row>td");
   if(!box) return;
-  const p=indParams(indSimParams(bpId, {blueprint_id:bpId,
-    refresh_prices:(IND.openDetail&&IND.openDetail.esi_prices)?"1":"0"}));
+  const p=indParams(indSimParams(bpId, {blueprint_id:bpId, refresh_prices:"1"}));
   fetch("/api/ind/detail?"+p).then(r=>r.json()).then(fresh=>{
     if(fresh.error) return;
     renderIndDetail(fresh);
@@ -795,7 +794,10 @@ function openIndDetail(row, clickedTr){
   tr.innerHTML=`<td colspan="${ncol}"><div class="ind-d-head">Loading ${row.product_name}…</div></td>`;
   clickedTr.after(tr);
   tr.querySelector("td").scrollIntoView({block:"nearest", behavior:"smooth"});
-  const p=indParams(indSimParams(row.blueprint_id, {blueprint_id:row.blueprint_id}));
+  // Always pull live ESI prices when a detail view opens — the table's row
+  // figures come from the (laggy, aggregate) Fuzzwork scan, so the panel refetches
+  // the live order book so its instant/list numbers are the honest, current ones.
+  const p=indParams(indSimParams(row.blueprint_id, {blueprint_id:row.blueprint_id, refresh_prices:"1"}));
   fetch("/api/ind/detail?"+p).then(r=>r.json()).then(d=>{
     if(d.error){ tr.querySelector("td").innerHTML=`<div class="ind-d-head">${d.error}</div>`; return; }
     renderIndDetail(d, tr.querySelector("td"));
@@ -860,6 +862,20 @@ function renderIndDetail(d, container){
   const batchRevI=(effBid!=null&&fillQty)?effBid*fillQty*(1-(d.sales_tax||0)):null;
   const batchProfitL=batchRevL!=null?batchRevL-batchCost:null;
   const batchProfitI=batchRevI!=null?batchRevI-batchCost:null;
+  // Why this panel's INSTANT profit can differ (often dramatically) from the
+  // table's "Profit instant" / "ISK/hr instant": the scan values the instant sell
+  // off the raw aggregate top bid (d.bid) and total buy volume, blind to each buy
+  // order's min_volume. A fat bid from a big buyer who won't transact below (say)
+  // 60k units is unreachable for a small batch — walkBook skips it, so the real
+  // effBid here is much lower (or nothing). We flag it when the reachable price
+  // trails the aggregate bid enough to move the decision. Only meaningful with a
+  // real book and a genuine aggregate bid to compare against.
+  const aggBid=d.bid;
+  const bidGap=(hasBook && aggBid!=null && aggBid>0)
+    ? ((effBid==null?0:effBid)/aggBid) : null;   // reachable ÷ aggregate (≤1)
+  // Notable when the reachable bid is <90% of the aggregate (incl. 0 = nothing
+  // fillable) — that's the gap that turns a rosy table number into a real loss.
+  const instBidWarn=(bidGap!=null && bidGap<0.90);
   const batchTime=d.build_time?d.build_time*n:null;
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   // Fee/tax breakdown — re-derives the ISK amounts folded into revenue_patient
@@ -1070,7 +1086,6 @@ function renderIndDetail(d, container){
       <span class="ind-d-acts">
         <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
         <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy name</button>
-        <button class="ind-pull-prices${d.esi_prices?" on":""}" title="Fetch live prices directly from ESI (more accurate than Fuzzwork aggregate)">${d.esi_prices?"✓ ESI prices":"⟳ Pull live prices"}</button>
         ${(()=>{
           // Persistent "already tracking" state: most players own one blueprint,
           // so an in-progress build for it should read as already-tracked on
@@ -1116,6 +1131,12 @@ function renderIndDetail(d, container){
         ${sellPath("instant", "② Instant", "Dump now", effBid, "at bid", batchProfitI, marginI,
           instantDepthNote, instWins)}
       </div>
+      ${instBidWarn?`<div class="ind-instant-warn" title="The table's instant figures use the aggregate top buy price and total buy volume, ignoring each buy order's minimum volume. This panel walks the live buy book for your ${fmtNum(qtyBatchTot)}-unit batch and skips orders whose minimum you can't meet — so the reachable price here is the honest one.">
+        ⚠ Instant profit here differs from the table.
+        ${effBid==null||fillQty===0
+          ? `No buy order will take your ${fmtNum(qtyBatchTot)} units — every standing bid demands a larger minimum volume, so there's no real instant sale.`
+          : `The table used the top bid of <b>${isk(aggBid)}</b>, but the best you can actually reach for this batch is <b>${isk(effBid)}</b> (bigger bids require a minimum volume you can't meet). The table's instant numbers are optimistic; trust the price shown here.`}
+      </div>`:""}
       <div class="ind-sell-rail">
         ${minPriceList!=null?`<span class="ind-rail-cell"><i>Break-even</i><b class="warn">${isk(minPriceList)}</b><em>/unit to list</em></span>`:""}
         <span class="ind-rail-cell"><i>Build cost</i><b>${isk(batchCost)}</b><em>${fmtNum(qtyBatchTot)} units</em></span>
@@ -1222,15 +1243,6 @@ function renderIndDetail(d, container){
     if(navigator.clipboard&&navigator.clipboard.writeText){
       navigator.clipboard.writeText(d.product.name).then(done).catch(()=>fallbackCopy(d.product.name,done));
     } else fallbackCopy(d.product.name, done);
-  };
-  const pullBtn=box.querySelector(".ind-pull-prices");
-  pullBtn.onclick=()=>{
-    pullBtn.disabled=true; pullBtn.textContent="Fetching…";
-    const p=indParams(indSimParams(d.blueprint_id, {blueprint_id:d.blueprint_id, refresh_prices:"1"}));
-    fetch("/api/ind/detail?"+p).then(r=>r.json()).then(fresh=>{
-      if(fresh.error){ pullBtn.textContent="⚠ "+fresh.error; return; }
-      renderIndDetail(fresh);
-    }).catch(()=>{ pullBtn.disabled=false; pullBtn.textContent="⟳ Pull live prices"; });
   };
   const bpoExpBtn=box.querySelector(".ind-bpo-expand");
   if(bpoExpBtn) bpoExpBtn.onclick=()=>{

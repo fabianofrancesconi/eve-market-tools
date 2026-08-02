@@ -6,6 +6,7 @@ let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es
            favorites:new Set(), hidden:new Set(), notes:{},
            timers:{}, research:{}, savedGroup:null, openDetail:null, colOrder:null,
            colw:{}, colVis:{}, detailRuns:1,
+           detailRunsByBp:{},   // blueprint_id -> last batch size; a fresh blueprint starts at 1
            sim:{},   // blueprint_id -> {me,te} what-if override; in-memory only, never persisted
            fillTotal:0, fillDone:0, tradeWeight:50,
            builds:[], buildsLoaded:false, buildsExpanded:new Set(),
@@ -672,7 +673,13 @@ function scanInd(refreshSde){
       computeIndTradeability();
       persistScan("ind", {...IND.lastData, rows:IND.rows});
       hideIndProgress(); renderIndStatus(); renderIndTable();
-      fillIndTradeability(true);   // score the long tail; refetch live ESI prices
+      // Score the long tail, reusing the 5-min ESI depth cache — NOT a
+      // whole-catalogue force-refresh (that meant ~thousands of live order-book
+      // calls per scan). Opening any row's detail always pulls fresh live prices
+      // for that one item, so the honest instant figures are a click away; the
+      // catalogue fill just needs enough depth to score sellability and gate
+      // phantom instant profits.
+      fillIndTradeability(false);
     } else if(data.type==="error"){
       es.close(); IND.es=null; setIndScanning(false);
       hideIndProgress(); setStatus(data.error, true);
@@ -689,10 +696,12 @@ function scanInd(refreshSde){
 // product so EVERY item ends up with a real tradeability — gracefully: pending
 // rows spin, a status pill counts progress, and the table fills in as it lands.
 // A newer scan/fill cancels this one via IND_FILL_TOKEN.
-// `freshPrices` (set by a user-initiated Scan) forces the liquidity fill to
-// re-pull live ESI prices instead of reusing the 5-minute server cache, so
-// hitting Scan always reflects the latest order book. The tab-open preview
-// leaves it off (reuse the cache — it's just a fast first paint).
+// `freshPrices` forces the liquidity fill to re-pull live ESI prices instead of
+// reusing the 5-minute server cache. Left OFF for the whole-catalogue fill (both
+// on Scan and tab-open): force-refreshing thousands of order books per scan is
+// what made tradeability crawl, and opening any row's detail already pulls that
+// item's live prices fresh — so the catalogue only needs cache-fresh depth to
+// score sellability and suppress phantom instant profits.
 async function fillIndTradeability(freshPrices){
   const token=++IND_FILL_TOKEN;
   const station=(IND.lastData && IND.lastData.station_id) || $("#ind-station").value;
@@ -794,6 +803,10 @@ function openIndDetail(row, clickedTr){
   tr.innerHTML=`<td colspan="${ncol}"><div class="ind-d-head ind-d-loading">${_SPIN} Loading ${row.product_name} — fetching live prices…</div></td>`;
   clickedTr.after(tr);
   tr.querySelector("td").scrollIntoView({block:"nearest", behavior:"smooth"});
+  // Batch size is remembered PER blueprint, not globally: opening a blueprint you
+  // haven't sized yet starts fresh at 1 run, while returning to one you already
+  // dialled in restores that count. (Session-only, like the sim overrides.)
+  IND.detailRuns=Math.max(1, IND.detailRunsByBp[row.blueprint_id]||1);
   // Always pull live ESI prices when a detail view opens — the table's row
   // figures come from the (laggy, aggregate) Fuzzwork scan, so the panel refetches
   // the live order book so its instant/list numbers are the honest, current ones.
@@ -876,6 +889,27 @@ function renderIndDetail(d, container){
   // Notable when the reachable bid is <90% of the aggregate (incl. 0 = nothing
   // fillable) — that's the gap that turns a rosy table number into a real loss.
   const instBidWarn=(bidGap!=null && bidGap<0.90);
+  // How much of the batch can actually be dumped AT A PROFIT: walk the reachable
+  // buy book (honouring min_volume) and count only units whose bid clears the
+  // per-unit break-even (cost ÷ units, grossed up for sales tax). The top bids
+  // are often deep enough to profit; it's the tail of the book that sinks the
+  // average, so "only the first K units sell above break-even" is the honest read
+  // — not "the whole batch loses". Needs a real book + a known per-unit cost.
+  const costPerUnitTot=(batchCost!=null && qtyBatchTot>0)?batchCost/qtyBatchTot:null;
+  const beInstantUnit=(costPerUnitTot!=null && d.sales_tax!=null && d.sales_tax<1)
+    ? costPerUnitTot/(1-d.sales_tax) : null;   // min bid/unit to break even instantly
+  let profitInstUnits=null;   // units of the batch that dump at or above break-even
+  if(hasBook && beInstantUnit!=null){
+    profitInstUnits=0; let need=qtyBatchTot;
+    for(const lvl of d.buy_book){
+      if(need<=0) break;
+      const minVol=lvl[2];
+      if(minVol!=null && minVol>need) continue;   // can't meet this order's minimum
+      if(lvl[0]<beInstantUnit) break;             // book is price-desc; nothing past here profits
+      const take=Math.min(need, lvl[1]);
+      profitInstUnits+=take; need-=take;
+    }
+  }
   const batchTime=d.build_time?d.build_time*n:null;
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   // Fee/tax breakdown — re-derives the ISK amounts folded into revenue_patient
@@ -1111,6 +1145,20 @@ function renderIndDetail(d, container){
       <span class="ind-d-maxwrap">${maxIskRuns!=null?`<button class="ind-d-max-isk" title="Set runs to the most this batch's wallet can afford — materials + job install + broker fee + sales tax at the suggested list price (${isk(costPerRun)}/run against ${isk(walletBal)} in ${maxWho}'s wallet)">💰 Max wallet (${fmtNum(maxIskRuns)})</button>`:""}<span class="ind-d-cargo-box" title="Set runs to the most whose input materials fit this cargo hold. Your m³ is saved across sessions."><span class="ind-d-cargo-ico">📦</span><input class="ind-d-cargo-cap" type="text" inputmode="decimal" placeholder="m³" value="${cargoCap!=null?cargoCap:""}"><button class="ind-d-max-cargo"${inVolRun>0?"":" disabled"}>Max cargo${(()=>{const r=maxCargoRuns(cargoCap);return r!=null?` (${fmtNum(r)})`:"";})()}</button></span></span>
       <span class="ind-d-source" title="Trade hub these prices come from">${d.station_name}</span>
     </div>
+    ${(()=>{
+      // Cargo warning: once a batch's inputs (haul in) or outputs (haul out) no
+      // longer fit the Max cargo m³ the user set, flag it — you'd need multiple
+      // trips. Only when a cap is present and something actually overflows.
+      if(!(cargoCap>0)) return "";
+      const over=[];
+      if(inputBatch!=null && inputBatch>cargoCap)
+        over.push(`inputs need <b>${fmtVol(inputBatch)}</b>`);
+      if(outputBatch!=null && outputBatch>cargoCap)
+        over.push(`outputs need <b>${fmtVol(outputBatch)}</b>`);
+      if(!over.length) return "";
+      return `<div class="ind-cargo-warn" title="This batch won't fit your Max cargo (${fmtVol(cargoCap)}) in one trip — reduce runs or haul in multiple loads.">
+        ⚠ Doesn't fit your ${fmtVol(cargoCap)} cargo: ${over.join(" · ")}.</div>`;
+    })()}
     ${researchHtml}
     ${esiOwned && !isBpo ? `<div class="ind-bpc-warn">
       ⚠ You only have a <b>Blueprint Copy</b> with <b>${bpcRuns} run${bpcRuns===1?"":"s"}</b> remaining — it will be consumed.
@@ -1131,12 +1179,17 @@ function renderIndDetail(d, container){
         ${sellPath("instant", "② Instant", "Dump now", effBid, "at bid", batchProfitI, marginI,
           instantDepthNote, instWins)}
       </div>
-      ${instBidWarn?`<div class="ind-instant-warn" title="The table's instant figures use the aggregate top buy price and total buy volume, ignoring each buy order's minimum volume. This panel walks the live buy book for your ${fmtNum(qtyBatchTot)}-unit batch and skips orders whose minimum you can't meet — so the reachable price here is the honest one.">
+      ${(profitInstUnits!=null && profitInstUnits<qtyBatchTot)?`<div class="ind-instant-warn" title="Instant profit walks the live buy book: the top bids clear your per-unit break-even, but demand thins out and the tail of the book pays below cost. The batch total mixes both, so only the first slice actually dumps at a profit.">
+        ⚠ Only <b>${fmtNum(profitInstUnits)}</b> of your ${fmtNum(qtyBatchTot)} units can be instant-sold at a profit${beInstantUnit!=null?` (break-even <b>${isk(beInstantUnit)} ISK</b>/unit)`:""}.
+        ${profitInstUnits===0
+          ? `Every reachable buy order is below your build cost — dumping the whole batch loses ISK. List &amp; wait instead, or build fewer.`
+          : `The buy orders below that only pay under cost, so dumping all ${fmtNum(qtyBatchTot)} loses on the rest. Sell those ${fmtNum(profitInstUnits)} instantly and list the remainder, or size the batch to ${fmtNum(profitInstUnits)}.`}
+      </div>`:(instBidWarn?`<div class="ind-instant-warn" title="The table's instant figures use the aggregate top buy price and total buy volume, ignoring each buy order's minimum volume. This panel walks the live buy book for your ${fmtNum(qtyBatchTot)}-unit batch and skips orders whose minimum you can't meet — so the reachable price here is the honest one.">
         ⚠ Instant profit here differs from the table.
         ${effBid==null||fillQty===0
           ? `No buy order will take your ${fmtNum(qtyBatchTot)} units — every standing bid demands a larger minimum volume, so there's no real instant sale.`
           : `The table used the top bid of <b>${isk(aggBid)} ISK</b>, but the best you can actually reach for this batch is <b>${isk(effBid)} ISK</b> (bigger bids require a minimum volume you can't meet). The table's instant numbers are optimistic; trust the price shown here.`}
-      </div>`:""}
+      </div>`:"")}
       <div class="ind-sell-rail">
         ${minPriceList!=null?`<span class="ind-rail-cell"><i>Break-even</i><b class="warn">${isk(minPriceList)}</b><em>/unit to list</em></span>`:""}
         <span class="ind-rail-cell"><i>Build cost</i><b>${isk(batchCost)}</b><em>${fmtNum(qtyBatchTot)} units</em></span>
@@ -1259,7 +1312,9 @@ function renderIndDetail(d, container){
     }).catch(()=>{ bpoExpBtn.disabled=false; bpoExpBtn.textContent="Search other regions"; });
   };
   const runsInput=box.querySelector(".ind-d-runs");
-  const setRuns=v=>{ IND.detailRuns=Math.max(1,v); renderIndDetail(d); };
+  const setRuns=v=>{ IND.detailRuns=Math.max(1,v);
+    IND.detailRunsByBp[d.blueprint_id]=IND.detailRuns;   // remember this blueprint's batch size
+    renderIndDetail(d); };
   // Re-rendering rebuilds box.innerHTML, which destroys this very input and
   // drops keyboard focus. So on each keystroke: keep only the digits the user
   // typed, remember the caret offset, re-render, then re-focus the fresh input

@@ -1393,9 +1393,12 @@ class TestIndustryTradeabilityFill:
         html = lp_web.FRONTEND_SOURCE
         assert "function fillIndTradeability(" in html
         assert "/api/ind/liquidity?" in html
-        # The fill only ever runs from an explicit Scan (with freshPrices=true so
-        # the live book is re-pulled), never bare on tab-open / restore.
-        assert "fillIndTradeability(true);" in html
+        # The fill runs from an explicit Scan, reusing the 5-min ESI depth cache
+        # (freshPrices=false) — NOT a whole-catalogue force-refresh, which made
+        # tradeability crawl. Opening a row's detail pulls that item's live prices
+        # fresh, so the honest instant figures are still a click away.
+        assert "fillIndTradeability(false);" in html
+        assert "fillIndTradeability(true);" not in html
         assert "IND_FILL_TOKEN" in html                # stale-fill cancellation
         # Rows spin ONLY while a Scan's fill is actually in flight — outside a
         # fill an unfilled row reads its cached value or "—", never a spinner.

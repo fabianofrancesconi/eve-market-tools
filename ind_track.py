@@ -264,6 +264,77 @@ def prune_legacy_duplicates(ledger, window=3 * 86400):
     return ledger, removed
 
 
+def confirm_filled_events(events, ledger, window=6 * 3600):
+    """Reconcile ambiguous full-disappearance order events against the wallet
+    sell ledger, tagging each one the wallet has since backed as confirmed sold.
+
+    A ``filled`` (full-disappearance) order event is *ambiguous* on its own —
+    buyout, cancel, and contract-away are indistinguishable from ``/orders`` — so
+    the app never books it as sold from the order diff alone. But a genuine buyout
+    leaves a **wallet transaction** for the same ``type_id`` at (about) the same
+    time, which lands in the per-product sell ledger keyed by that transaction_id.
+    This matches the two up so a confirmed sale stops nagging as "confirm in
+    wallet": in the notification panel it becomes a plain ✓ sold, and in the
+    Industry summary it leaves the "pending sale?" limbo and reads as sold.
+
+    ``events`` is the order-event list from :func:`_compute_order_deltas` /
+    ``_get_order_events`` (each ``{id, ts, type_id, sold, filled, partial,
+    expired, is_buy_order, ...}``). ``ledger`` is the wallet sell ledger
+    ``{str(type_id): [{transaction_id, ts, units, price}, ...]}``. A ``filled``
+    event confirms iff the ledger holds one or more fills of the same product
+    whose ``ts`` is within ``window`` seconds of the event (either side — a
+    transaction can post slightly before *or* after the order diff notices the
+    order gone) and whose units sum to at least the event's ``sold``.
+
+    Matching is greedy and 1:1 on fills: each wallet fill can back at most one
+    event, so two orders of the same item that vanished together don't both claim
+    the same transaction (only one is confirmed until a second fill appears).
+    Fills are consumed oldest-first; among events, oldest-first, so the earliest
+    vanish binds to the earliest matching fill. Pure and idempotent: returns a NEW
+    list of events (the inputs are not mutated), each a shallow copy carrying two
+    added keys — ``wallet_confirmed`` (bool) and, when confirmed,
+    ``confirmed_price`` (the units-weighted mean fill price, since the order's
+    listed price can differ from the actual fill price). Non-``filled`` events
+    (partials, expiries, buy orders) pass through untouched with
+    ``wallet_confirmed=False``.
+    """
+    # Fills per product, oldest-first, with a per-fill "already claimed" flag so
+    # one transaction never confirms two separate vanished orders.
+    avail = {}
+    for pid, fills in (ledger or {}).items():
+        avail[str(pid)] = sorted(
+            ({"ts": f.get("ts") or 0, "units": f.get("units") or 0,
+              "price": f.get("price") or 0.0, "used": False}
+             for f in fills if (f.get("units") or 0) > 0),
+            key=lambda f: f["ts"])
+
+    out = []
+    # Oldest event first so the earliest vanish claims the earliest fill.
+    for e in sorted(events or [], key=lambda x: x.get("ts") or 0):
+        ev = dict(e)
+        ev["wallet_confirmed"] = False
+        need = ev.get("sold") or 0
+        ambiguous = (ev.get("filled") and not ev.get("partial")
+                     and not ev.get("expired") and not ev.get("is_buy_order"))
+        if ambiguous and need > 0:
+            ets = ev.get("ts") or 0
+            cand = [f for f in avail.get(str(ev.get("type_id")), [])
+                    if not f["used"] and abs(f["ts"] - ets) <= window]
+            if sum(f["units"] for f in cand) >= need:
+                got = 0
+                cost = 0.0
+                for f in cand:
+                    if got >= need:
+                        break
+                    f["used"] = True
+                    got += f["units"]
+                    cost += f["units"] * f["price"]
+                ev["wallet_confirmed"] = True
+                ev["confirmed_price"] = (cost / got) if got else (ev.get("price") or 0.0)
+        out.append(ev)
+    return out
+
+
 # ── Primitive allocators (building blocks of reconcile; individually tested) ──
 
 def _open(lot):

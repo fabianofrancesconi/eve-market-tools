@@ -308,6 +308,32 @@ class TestGetOrderEvents:
         })
         assert lp_web._get_order_events(_acct()) == []
 
+    def test_wallet_confirmed_annotation(self, monkeypatch, tmp_path):
+        """A full-disappearance event the sell ledger backs is annotated
+        wallet_confirmed — the bridge that clears "confirm in wallet" limbo."""
+        evpath = tmp_path / "ev.json"
+        ledpath = tmp_path / "sell.json"
+        monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)
+        monkeypatch.setattr(lp_web, "IND_SELL_LEDGER_PATH", ledpath)
+        now = time.time()
+        lp_web.save_json(evpath, {
+            "1": [
+                {"id": "sold", "ts": now, "dismissed": False, "type_id": 23559,
+                 "sold": 48, "price": 262500.0, "filled": True, "partial": False,
+                 "expired": False, "is_buy_order": False},
+                {"id": "cancelled", "ts": now, "dismissed": False, "type_id": 999,
+                 "sold": 10, "price": 100.0, "filled": True, "partial": False,
+                 "expired": False, "is_buy_order": False},
+            ],
+            "_prev_1": {},
+        })
+        lp_web.save_json(ledpath, {
+            "23559": [{"transaction_id": 7, "ts": now, "units": 48, "price": 262500.0}],
+        })
+        events = {e["id"]: e for e in lp_web._get_order_events(_acct())}
+        assert events["sold"]["wallet_confirmed"] is True
+        assert events["cancelled"]["wallet_confirmed"] is False
+
     def test_aggregates_multiple_characters(self, monkeypatch, tmp_path):
         evpath = tmp_path / "ev.json"
         monkeypatch.setattr(lp_web, "ORDER_EVENTS_PATH", evpath)

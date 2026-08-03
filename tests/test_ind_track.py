@@ -699,3 +699,110 @@ class TestReconcileInvariants:
     def test_all_scenarios(self):
         for lots, fills, listed_units in self.SCENARIOS:
             self._check(lots, fills, listed_units)
+
+
+class TestConfirmFilledEvents:
+    """The order-diff notification stream and the wallet sell ledger are two
+    independent subsystems; confirm_filled_events is the bridge. A full
+    disappearance (`filled`, not `partial`) is ambiguous — buyout/cancel/contract
+    — so it starts unconfirmed; once a matching wallet transaction lands in the
+    ledger it flips to wallet_confirmed. This mirrors the real 48x Warden I bug:
+    the wallet had the fill 18 min before the order diff saw the order vanish."""
+
+    def _ev(self, **kw):
+        e = {"id": "e1", "ts": 1000.0, "type_id": 23559, "sold": 48,
+             "price": 262500.0, "filled": True, "partial": False,
+             "expired": False, "is_buy_order": False}
+        e.update(kw)
+        return e
+
+    def test_filled_event_confirmed_by_matching_fill(self):
+        events = [self._ev()]
+        ledger = {"23559": [{"transaction_id": 9, "ts": 1000.0, "units": 48,
+                             "price": 262500.0}]}
+        out = ind_track.confirm_filled_events(events, ledger)
+        assert out[0]["wallet_confirmed"] is True
+        assert out[0]["confirmed_price"] == 262500.0
+
+    def test_wallet_fill_slightly_before_event_still_matches(self):
+        # The real case: transaction posted ~18 min BEFORE the order diff noticed.
+        events = [self._ev(ts=1000.0 + 18 * 60)]
+        ledger = {"23559": [{"transaction_id": 9, "ts": 1000.0, "units": 48,
+                             "price": 262500.0}]}
+        out = ind_track.confirm_filled_events(events, ledger)
+        assert out[0]["wallet_confirmed"] is True
+
+    def test_no_matching_fill_stays_unconfirmed(self):
+        # Cancelled/contracted: no wallet transaction ever lands.
+        out = ind_track.confirm_filled_events([self._ev()], {})
+        assert out[0]["wallet_confirmed"] is False
+        assert "confirmed_price" not in out[0]
+
+    def test_wrong_product_does_not_confirm(self):
+        ledger = {"999": [{"transaction_id": 9, "ts": 1000.0, "units": 48,
+                           "price": 262500.0}]}
+        out = ind_track.confirm_filled_events([self._ev()], ledger)
+        assert out[0]["wallet_confirmed"] is False
+
+    def test_fill_outside_window_does_not_confirm(self):
+        # A stale same-item sale from a day earlier must not confirm this vanish.
+        ledger = {"23559": [{"transaction_id": 9, "ts": 1000.0 - 86400,
+                             "units": 48, "price": 262500.0}]}
+        out = ind_track.confirm_filled_events([self._ev()], ledger, window=6 * 3600)
+        assert out[0]["wallet_confirmed"] is False
+
+    def test_partial_units_insufficient_stays_unconfirmed(self):
+        # A fill of fewer units than the event claims can't confirm the whole vanish.
+        ledger = {"23559": [{"transaction_id": 9, "ts": 1000.0, "units": 40,
+                             "price": 262500.0}]}
+        out = ind_track.confirm_filled_events([self._ev(sold=48)], ledger)
+        assert out[0]["wallet_confirmed"] is False
+
+    def test_multiple_fills_sum_to_confirm_weighted_price(self):
+        ledger = {"23559": [
+            {"transaction_id": 9, "ts": 1000.0, "units": 40, "price": 262500.0},
+            {"transaction_id": 10, "ts": 1000.0, "units": 8, "price": 260000.0}]}
+        out = ind_track.confirm_filled_events([self._ev(sold=48)], ledger)
+        assert out[0]["wallet_confirmed"] is True
+        # Units-weighted mean, not the order's listed price.
+        assert out[0]["confirmed_price"] == (40 * 262500.0 + 8 * 260000.0) / 48
+
+    def test_one_fill_confirms_only_one_of_two_vanished_orders(self):
+        # Two orders of the same item vanished together; only one wallet fill so
+        # far — greedy 1:1 means exactly one confirms (oldest binds first).
+        events = [self._ev(id="a", ts=1000.0, sold=10),
+                  self._ev(id="b", ts=1010.0, sold=10)]
+        ledger = {"23559": [{"transaction_id": 9, "ts": 1005.0, "units": 10,
+                             "price": 262500.0}]}
+        out = ind_track.confirm_filled_events(events, ledger)
+        by_id = {e["id"]: e for e in out}
+        assert by_id["a"]["wallet_confirmed"] is True
+        assert by_id["b"]["wallet_confirmed"] is False
+
+    def test_partial_and_expired_events_pass_through(self):
+        events = [
+            {"id": "p", "ts": 1000.0, "type_id": 34, "sold": 5, "price": 5.0,
+             "filled": False, "partial": True, "expired": False, "is_buy_order": False},
+            {"id": "x", "ts": 1000.0, "type_id": 34, "sold": 5, "price": 5.0,
+             "filled": False, "partial": False, "expired": True, "is_buy_order": False},
+        ]
+        # A ledger fill exists but must not touch a partial/expired event.
+        ledger = {"34": [{"transaction_id": 9, "ts": 1000.0, "units": 100, "price": 5.0}]}
+        out = ind_track.confirm_filled_events(events, ledger)
+        assert all(e["wallet_confirmed"] is False for e in out)
+
+    def test_pure_inputs_not_mutated(self):
+        events = [self._ev()]
+        ledger = {"23559": [{"transaction_id": 9, "ts": 1000.0, "units": 48,
+                             "price": 262500.0}]}
+        ind_track.confirm_filled_events(events, ledger)
+        assert "wallet_confirmed" not in events[0]
+        assert "used" not in ledger["23559"][0]
+
+    def test_idempotent(self):
+        events = [self._ev()]
+        ledger = {"23559": [{"transaction_id": 9, "ts": 1000.0, "units": 48,
+                             "price": 262500.0}]}
+        a = ind_track.confirm_filled_events(events, ledger)
+        b = ind_track.confirm_filled_events(events, ledger)
+        assert a == b

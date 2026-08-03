@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.23"
+__version__ = "1.156.24"
 
 import argparse
 import base64
@@ -1295,22 +1295,32 @@ def _track_order_changes(acct, cid, current_orders, names):
 
 
 def _get_order_events(acct):
-    """Return all non-dismissed, non-expired events across the account's chars."""
+    """Return all non-dismissed, non-expired events across the account's chars,
+    each reconciled against the wallet sell ledger. An ambiguous full-disappearance
+    (``filled``) event the wallet has since backed carries ``wallet_confirmed=True``
+    + ``confirmed_price`` — see :func:`ind_track.confirm_filled_events`. This is the
+    ONE place the two subsystems meet, so the notification panel and the Industry
+    summary's "pending sale?" hint agree on what actually sold."""
     now = time.time()
     if pg_store.enabled():
-        return pg_store.order_events_active(acct.account_id, now - ORDER_EVENT_EXPIRY)
-    store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
-    all_events = []
-    for key, val in store.items():
-        if key.startswith("_prev_") or key.startswith("_sales_"):
-            continue
-        if isinstance(val, list):
-            all_events.extend(
-                e for e in val
-                if not e.get("dismissed") and now - e["ts"] < ORDER_EVENT_EXPIRY
-            )
-    all_events.sort(key=lambda e: e["ts"], reverse=True)
-    return all_events
+        events = pg_store.order_events_active(acct.account_id, now - ORDER_EVENT_EXPIRY)
+    else:
+        store = _acct_kv_load(acct, "order_events", ORDER_EVENTS_PATH, {})
+        events = []
+        for key, val in store.items():
+            if key.startswith("_prev_") or key.startswith("_sales_"):
+                continue
+            if isinstance(val, list):
+                events.extend(
+                    e for e in val
+                    if not e.get("dismissed") and now - e["ts"] < ORDER_EVENT_EXPIRY
+                )
+    # Fold in the wallet: a vanished order the sell ledger now backs is confirmed
+    # sold, not "confirm in wallet" limbo. confirm_filled_events sorts oldest-first
+    # for its greedy 1:1 fill matching; restore newest-first for display.
+    events = ind_track.confirm_filled_events(events, _load_sell_ledger(acct))
+    events.sort(key=lambda e: e["ts"], reverse=True)
+    return events
 
 
 def _dismiss_order_event(acct, event_id):
@@ -2179,7 +2189,7 @@ def do_ind_summary(q):
     _now = time.time()
     for e in _get_order_events(acct):
         if (e.get("filled") and not e.get("partial") and not e.get("expired")
-                and not e.get("is_buy_order")
+                and not e.get("is_buy_order") and not e.get("wallet_confirmed")
                 and (_now - (e.get("ts") or 0)) < _PENDING_WINDOW):
             pending_products.add(str(e.get("type_id")))
     realized_profit = realized_net = 0.0

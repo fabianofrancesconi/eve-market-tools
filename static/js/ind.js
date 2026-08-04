@@ -3127,10 +3127,18 @@ function _updateBuildDecider(b, price){
     // Queue depth — units listed at or under YOUR price that clear before yours.
     const behind=(curAhead!=null)?Math.round(curAhead):null;
     const atSub=haveReal?` (listed at ${isk(curPrice)})`:"";
+    // How long those units ahead take to clear at the current price: the queue
+    // drains at the price-conditioned demand rate (curRate units/day), so
+    // behind/curRate days. Same wording as the odds-line ETA (hours <1d, days
+    // <60, else "months+") so the two reads speak the same language.
+    const clearDays=(behind>0 && curRate!=null && curRate>0)?behind/curRate:null;
+    const clearTxt=(clearDays==null||!isFinite(clearDays))?null
+      :(clearDays<1?`~${Math.round(clearDays*24)}h`:(clearDays<60?`~${clearDays.toFixed(clearDays<10?1:0)}d`:"months+"));
+    const clearSub=clearTxt?` (${clearTxt} at the current price)`:"";
     const queueLine=(behind!=null)
       ? (behind<=0
           ? `<span class="ind-wait-queue-v good">You're at the front</span> — nothing's listed below your price${atSub}.`
-          : `<span class="ind-wait-queue-v ${behind>=qty*4?"bad":"warn"}">Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}</span> at or under your price${atSub} — those clear before yours.`)
+          : `<span class="ind-wait-queue-v ${behind>=qty*4?"bad":"warn"}">Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}</span> at or under your price${atSub} — those clear before yours${clearSub}.`)
       : "";
     // Slow-vs-overpriced: if the market trades briskly overall (baseRate) but
     // barely at YOUR price (curRate), you're priced above market; if it's slow at

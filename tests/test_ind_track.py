@@ -806,3 +806,53 @@ class TestConfirmFilledEvents:
         a = ind_track.confirm_filled_events(events, ledger)
         b = ind_track.confirm_filled_events(events, ledger)
         assert a == b
+
+
+class TestWalletOnlySalePending:
+    """An instant-sell (dump) leaves no order-diff event and no wallet
+    transaction for up to ~1h, so it can only be inferred from the balance
+    jumping ahead of the itemized feed. Detector flags exactly that gap and
+    self-clears when a transaction lands to explain the rise."""
+
+    NOW = 10_000.0
+
+    def test_recent_unexplained_rise_is_pending(self):
+        balances = [(self.NOW - 600, 1_000_000.0), (self.NOW - 120, 7_150_000.0)]
+        assert ind_track.wallet_only_sale_pending(balances, [], self.NOW) is True
+
+    def test_transaction_in_interval_explains_rise(self):
+        balances = [(self.NOW - 600, 1_000_000.0), (self.NOW - 120, 7_150_000.0)]
+        # A sell transaction between the two samples accounts for the ISK.
+        tx = [self.NOW - 200]
+        assert ind_track.wallet_only_sale_pending(balances, tx, self.NOW) is False
+
+    def test_transaction_outside_interval_does_not_clear(self):
+        balances = [(self.NOW - 600, 1_000_000.0), (self.NOW - 120, 7_150_000.0)]
+        # An older transaction (before the prior sample) doesn't explain the rise.
+        tx = [self.NOW - 5_000]
+        assert ind_track.wallet_only_sale_pending(balances, tx, self.NOW) is True
+
+    def test_stale_rise_does_not_nag(self):
+        # The jump happened, but the newest sample is older than the window.
+        balances = [(self.NOW - 12_000, 1_000_000.0), (self.NOW - 9_000, 7_150_000.0)]
+        assert ind_track.wallet_only_sale_pending(balances, [], self.NOW) is False
+
+    def test_balance_drop_is_not_a_sale(self):
+        # A buy (or any outflow) lowers the balance — never a pending sale.
+        balances = [(self.NOW - 600, 7_150_000.0), (self.NOW - 120, 1_000_000.0)]
+        assert ind_track.wallet_only_sale_pending(balances, [], self.NOW) is False
+
+    def test_tiny_delta_is_noise(self):
+        balances = [(self.NOW - 600, 1_000_000.0), (self.NOW - 120, 1_000_050.0)]
+        assert ind_track.wallet_only_sale_pending(balances, [], self.NOW) is False
+
+    def test_needs_two_points(self):
+        assert ind_track.wallet_only_sale_pending([(self.NOW - 100, 5.0)], [],
+                                                  self.NOW) is False
+        assert ind_track.wallet_only_sale_pending([], [], self.NOW) is False
+
+    def test_only_two_newest_points_compared(self):
+        # Old noise ahead of a recent clean rise must not defeat detection.
+        balances = [(self.NOW - 9_000, 500.0), (self.NOW - 8_000, 400.0),
+                    (self.NOW - 600, 1_000_000.0), (self.NOW - 120, 7_150_000.0)]
+        assert ind_track.wallet_only_sale_pending(balances, [], self.NOW) is True

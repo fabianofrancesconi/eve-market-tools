@@ -103,6 +103,21 @@ function renderSummary(){
     <button class="sum-ledger-btn" onclick="openBuildLedger()" title="Open the full build ledger">
       <span class="slb-ico">▤</span><span class="slb-lbl">Ledger</span></button>
   </div>`;
+
+  // Instant-sell (dump) settling notice. A dump leaves no per-build trace — no
+  // order-diff event, and no transaction in ESI's wallet feed for up to ~1h — so
+  // it can't be flagged on a specific build. But the wallet BALANCE jumped, which
+  // means ISK the feed hasn't itemized yet has landed. Surface it once for the
+  // whole tracker so a freshly-dumped build reading "0 sold" is expected, not
+  // alarming. Self-clears when the transaction lands (the build then accrues).
+  if(d.wallet_only_sale_pending){
+    const exp=d.wallet_tx_expires;
+    const rem=exp?Math.max(0,exp-Date.now()/1000):0;
+    const when=rem>0?` ESI's wallet feed refreshes in about ${fmtDur(rem)}, when the sale should show up on its build.`:"";
+    body.insertAdjacentHTML("beforeend",
+      `<div class="sum-read-note sum-dump-note" title="An instant-sell (dump) is realized in-game immediately, but ESI's wallet-transactions feed lags the fill by up to ~1h. Until it catches up, the units can't be tied to a build.">`+
+      `⏳ A recent wallet-only sale (dump) is still settling — some units aren't attributed to a build yet.${when}</div>`);
+  }
 }
 
 // ── Build ledger — the full history of every tracked build and its outcome ─────

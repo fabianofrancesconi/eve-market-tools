@@ -676,3 +676,58 @@ def reconcile(lots, fills, listed_units, observed_fills=None):
 
     return {"lots": out_lots, "summary": summary, "flow": flow,
             "listed_anchor": listed_anchor}
+
+
+# ── Instant-sell (dump) settling detector ────────────────────────────────────
+
+def wallet_only_sale_pending(balances, tx_times, now, window=2 * 3600,
+                             min_gap=90):
+    """Heuristic: has ISK arrived that the itemized wallet feed hasn't reported?
+
+    An instant-sell / dump is the one sale the app has NO per-build evidence for.
+    You sell *into* someone's buy order, so — unlike a listed sale — none of YOUR
+    open orders' ``volume_remain`` drops, so the real-time order-diff never sees
+    it (:func:`merge_observed_fills` books nothing), and for up to ~1h ESI's
+    ``/wallet/transactions`` feed hasn't itemized the fill either. In that gap the
+    build honestly reads 0 sold even though the sale is realized in-game; there is
+    no transaction to tie to a lot yet. The reconcile above can't flag it, and a
+    per-build "pending?" badge would be a guess against every held unit.
+
+    The ONE real-time signal a dump leaves is the **wallet balance**: it jumps the
+    instant the sale settles (ESI caches ``/wallet`` only ~2 min), long before the
+    transaction feed catches up. So we flag it at the ACCOUNT level, not per build:
+    a *balance increase* that no ingested transaction near that time explains means
+    ISK landed the feed hasn't priced — most likely a dump still working through.
+    It self-clears the moment the transaction lands (a ``tx_times`` entry then sits
+    in the gap) or the balance point ages out of ``window``.
+
+    ``balances`` — ``[(ts, balance), ...]`` for ONE character (the wallet-history
+    time-series), any order; only the two newest points are compared.
+    ``tx_times`` — timestamps of that character's already-INGESTED wallet
+    transactions (buys included: a buy also moves the balance, so it must be able
+    to explain a *drop* or a jump-then-spend and not be mistaken for a pending
+    sale). ``now`` — current epoch; the rise must be within ``window`` of it so a
+    days-old jump doesn't nag. ``min_gap`` — ISK deltas smaller than this (station
+    fees, tiny corrections) are ignored as noise.
+
+    Returns True iff the newest balance sample is at least ``min_gap`` ISK above
+    the previous one, that rise is within ``window`` of ``now``, and NO ingested
+    transaction timestamp falls in the (prev_ts, latest_ts] interval to account
+    for it. Pure and side-effect-free. Insufficient data → False.
+    """
+    pts = sorted((p for p in (balances or [])
+                  if p and p[0] is not None and p[1] is not None),
+                 key=lambda p: p[0])
+    if len(pts) < 2:
+        return False
+    prev_ts, prev_bal = pts[-2]
+    latest_ts, latest_bal = pts[-1]
+    if latest_bal - prev_bal < min_gap:
+        return False                      # no meaningful inflow (or a net outflow)
+    if now - latest_ts > window:
+        return False                      # the inflow is stale — don't nag forever
+    # An ingested transaction inside the interval already explains the movement.
+    for t in tx_times or []:
+        if t is not None and prev_ts < t <= latest_ts:
+            return False
+    return True

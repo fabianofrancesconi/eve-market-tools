@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.24"
+__version__ = "1.156.25"
 
 import argparse
 import base64
@@ -2309,6 +2309,13 @@ def do_ind_summary(q):
         # settling build's profit could catch up. Lets the ⏳ badge show a real
         # countdown. None if no character has a known expiry yet.
         "wallet_tx_expires": _account_wallet_tx_expires(acct),
+        # Account-level: a wallet balance recently rose by ISK the itemized
+        # transaction feed hasn't reported yet — most likely an instant-sell
+        # (dump) still settling. A dump leaves NO per-build signal (no order-diff,
+        # no transaction for up to ~1h), so this is surfaced once for the whole
+        # tracker rather than guessed onto a specific held build. Self-clears when
+        # the transaction lands or the balance point ages out.
+        "wallet_only_sale_pending": _wallet_only_sale_pending(acct, ledger),
     }
 
 
@@ -2321,6 +2328,38 @@ def _account_wallet_tx_expires(acct):
     exps = [e for e in (( _WALLET_TX_HEALTH.get(cid) or {}).get("expires")
                         for cid in cids) if e]
     return min(exps) if exps else None
+
+
+def _wallet_only_sale_pending(acct, ledger):
+    """True iff any linked character's wallet balance recently rose by ISK that
+    the ingested transaction feed hasn't itemized — the account-level signal of a
+    likely instant-sell (dump) still settling through ESI's laggy feed. See
+    :func:`ind_track.wallet_only_sale_pending` for why a dump is invisible per
+    build and this is the only real-time evidence it happened.
+
+    ``ledger`` is the account's sell ledger — its fill timestamps are the
+    ingested *sell* transactions; that suffices to clear the hint the moment the
+    dump's own transaction lands (it then sits in the balance-rise interval). We
+    don't have per-character buy timestamps handy, but a *buy* lowers the balance,
+    so it can't be mistaken for the balance *rise* this looks for."""
+    now = time.time()
+    with acct.lock:
+        cids = list(acct.characters.keys())
+    if not cids:
+        return False
+    since = now - 6 * 3600      # only need the last few points; keep the query small
+    if pg_store.enabled():
+        raw = pg_store.wallet_history_query(acct.account_id, since)
+        balances = {str(cid): raw.get(cid, []) for cid in cids}
+    else:
+        store = load_json(WALLET_HISTORY_PATH, {})
+        balances = {str(cid): [(ts, bal) for ts, bal in store.get(str(cid), [])
+                               if ts >= since]
+                    for cid in cids}
+    tx_times = [f.get("ts") for fills in (ledger or {}).values() for f in fills]
+    return any(ind_track.wallet_only_sale_pending(balances.get(str(cid), []),
+                                                  tx_times, now)
+               for cid in cids)
 
 
 _CHAR_DATA_CACHE = {}  # {cid: (timestamp, result)}

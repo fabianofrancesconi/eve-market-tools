@@ -2161,6 +2161,9 @@
   .sum-read-note { color:var(--dim); font-size:11px; margin-top:2px; white-space:nowrap; }
   .sum-read-note b.pos { color:var(--green2,#4caf76); }
   .sum-read-note b.neg { color:var(--red); }
+  /* Full-width instant-sell (dump) settling notice under the strip — a sentence,
+     so it must wrap (unlike the terse per-reading notes above). */
+  .sum-dump-note { white-space:normal; margin-top:6px; color:var(--amber,#d9a441); }
   @media (max-width:820px){
     .sum-strip { flex-wrap:wrap; }
     .sum-read { flex-basis:50%; }

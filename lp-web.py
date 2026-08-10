@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.26"
+__version__ = "1.156.27"
 
 import argparse
 import base64
@@ -2654,6 +2654,12 @@ def _fetch_one_char_data_uncached(acct, cid):
             "type_id": o.get("type_id"),
             "type_name": names.get(o.get("type_id"), "?"),
             "price": o.get("price"),
+            # The order's real market. The tracker's decider fetches its sell book
+            # at the build snapshot's hub (clamped to Jita for non-hubs); if you
+            # list somewhere else, that hub's queue is phantom competitors. Exposing
+            # location_id lets the client reconcile "behind N units" against the
+            # authoritative is_best/queue_rank computed here at loc.
+            "location_id": loc,
             "market_sell": order_prices.get(o.get("type_id"), {}).get("sell_min"),
             "volume_remain": o.get("volume_remain"),
             "volume_total": o.get("volume_total"),

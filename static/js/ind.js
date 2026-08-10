@@ -3135,11 +3135,27 @@ function _updateBuildDecider(b, price){
     const clearTxt=(clearDays==null||!isFinite(clearDays))?null
       :(clearDays<1?`~${Math.round(clearDays*24)}h`:(clearDays<60?`~${clearDays.toFixed(clearDays<10?1:0)}d`:"months+"));
     const clearSub=clearTxt?` (${clearTxt} at the current price)`:"";
-    const queueLine=(behind!=null)
-      ? (behind<=0
-          ? `<span class="ind-wait-queue-v good">You're at the front</span> — nothing's listed below your price${atSub}.`
-          : `<span class="ind-wait-queue-v ${behind>=qty*4?"bad":"warn"}">Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}</span> at or under your price${atSub} — those clear before yours${clearSub}.`)
-      : "";
+    // Reconcile against the order's real market. If your live order is listed
+    // somewhere other than the decider's reference hub, the sell_book queue depth
+    // ("behind N units") counts phantom competitors in a market you're not in —
+    // defer to the authoritative standing the server computed at the order's own
+    // location (matches the "Best ✓ / #N" the orders panel shows).
+    const standing=_linkedOrderStanding(b, st.market.station_id);
+    let queueLine;
+    if(standing){
+      const where=standing.price!=null?` (listed at ${isk(standing.price)})`:"";
+      queueLine=standing.is_best
+        ? `<span class="ind-wait-queue-v good">You're at the front</span> — best ask at your market${where}.`
+        : (standing.rank!=null
+            ? `<span class="ind-wait-queue-v ${standing.total&&standing.rank>=standing.total*0.5?"bad":"warn"}">#${standing.rank} of ${standing.total} in the queue</span> at your market${where} — undercut to climb.`
+            : "");
+    } else {
+      queueLine=(behind!=null)
+        ? (behind<=0
+            ? `<span class="ind-wait-queue-v good">You're at the front</span> — nothing's listed below your price${atSub}.`
+            : `<span class="ind-wait-queue-v ${behind>=qty*4?"bad":"warn"}">Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}</span> at or under your price${atSub} — those clear before yours${clearSub}.`)
+        : "";
+    }
     // Slow-vs-overpriced: if the market trades briskly overall (baseRate) but
     // barely at YOUR price (curRate), you're priced above market; if it's slow at
     // ANY price, it's just a quiet market. This is the honest read that replaces
@@ -3168,9 +3184,14 @@ function _updateBuildDecider(b, price){
     const reprice=_repricePaysOff({curPrice, curOdds:curWeekAll, cpu, stax, bfee,
       bestAsk:bestAskNow, series:st.market.series, sell_book:st.market.sell_book,
       qty, horizon:7});
+    // Don't call for a re-price against a market you're not listed in: if your
+    // order is already best at its OWN market (different from the decider hub),
+    // the hub's book that _repricePaysOff walked is phantom competition. Same
+    // reconciliation as the queue line above, so the Call agrees with it.
+    const repriceWorth=(standing&&standing.is_best)?false:reprice.worth;
     const v=_callVerdict({underBE:curUnderBE, instProfit, listProfit:curListProfit,
                           baseRate, rate:curRate, qty, weekAll:curWeekAll, gain:curGain,
-                          repriceWorthIt:reprice.worth});
+                          repriceWorthIt:repriceWorth});
     rec=v.rec; recCls=v.recCls;
     waitBlock=`
       <div class="ind-wait">
@@ -3197,6 +3218,25 @@ function _buildListedOrderPrice(b){
   if(typeof _peekLinkedOrder!=="function") return null;
   const o=_peekLinkedOrder(b);
   return (o && o.price!=null) ? o.price : null;
+}
+// The decider fetches its sell book at the build snapshot's hub (server clamps a
+// non-hub station to Jita). But your real order can be listed at a DIFFERENT
+// market — a nullsec/lowsec structure, a non-Jita hub. When it is, walking the
+// snapshot hub's book to count "units ahead of you" is nonsense: it tallies
+// competitors in a market you're not even in, so a genuinely-best order shows as
+// "behind 1,395 units — re-price". The order object already carries its TRUE
+// standing (is_best / queue_rank / queue_total), computed server-side at its own
+// location_id. This returns that standing when the order's market differs from
+// the decider book's station (station_id), else null (locations agree — the
+// sell_book queue depth is authoritative and richer, so use it). null also when
+// there's no live order or its location is unknown (can't tell — trust the book).
+function _linkedOrderStanding(b, bookStationId){
+  if(typeof _peekLinkedOrder!=="function") return null;
+  const o=_peekLinkedOrder(b);
+  if(!o || o.location_id==null || bookStationId==null) return null;
+  if(Number(o.location_id)===Number(bookStationId)) return null;  // same market — book wins
+  if(o.is_best==null && o.queue_rank==null) return null;          // no rank fetched
+  return {is_best:!!o.is_best, rank:o.queue_rank, total:o.queue_total, price:o.price};
 }
 // Does re-pricing actually PAY, once its cost is counted? Re-pricing is NOT free:
 // relisting the remainder burns a fresh broker fee AND books less per unit (you
@@ -3302,8 +3342,13 @@ function _tileActionFlag(b){
   // "re-price" when undercutting wouldn't recover its own broker fee + lower price.
   const reprice=_repricePaysOff({curPrice:price, curOdds:weekAll, cpu, stax, bfee,
     bestAsk, series:m.series, sell_book:m.sell_book, qty, horizon:7});
+  // Never flag "re-price" against a market you're not listed in — if your order
+  // is already best at its own market (≠ the decider hub), the book above is
+  // phantom competition. Mirrors the decider's Call so tile and panel agree.
+  const standing=_linkedOrderStanding(b, m.station_id);
+  const repriceWorth=(standing&&standing.is_best)?false:reprice.worth;
   const v=_callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, weekAll,
-                        gain, repriceWorthIt:reprice.worth});
+                        gain, repriceWorthIt:repriceWorth});
   return v.action ? {action:v.action, tip:v.rec} : null;
 }
 // Copy the currently-dialled list price to the cent (Math.round to 2dp),

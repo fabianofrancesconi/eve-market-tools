@@ -215,6 +215,37 @@ class TestInlineDecider:
         flag = _sim_fn("_tileActionFlag")
         assert "_buildListedOrderPrice(b)" in flag
 
+    def test_queue_depth_reconciles_against_orders_real_market(self):
+        # The decider fetches its sell book at the build snapshot's hub (the server
+        # clamps a non-hub station to Jita). If your live order is actually listed
+        # at a DIFFERENT market, walking that hub's book counts phantom competitors
+        # — a genuinely-best order showed "Behind 1,395 units — re-price". The
+        # order object carries its TRUE standing (is_best/queue_rank) computed at
+        # its own location_id; defer to that when the markets differ.
+        helper = _sim_fn("_linkedOrderStanding")
+        # Reconciliation triggers only when the order's location ≠ the book's station.
+        assert "o.location_id" in helper
+        assert "bookStationId" in helper
+        assert "return null" in helper  # same market / no rank ⇒ book wins
+        assert "is_best" in helper and "queue_rank" in helper
+        # The queue line consults it and, when best at its own market, says so
+        # instead of inventing "Behind N units".
+        fn = _sim_fn("_updateBuildDecider")
+        assert "_linkedOrderStanding(b, st.market.station_id)" in fn
+        assert "best ask at your market" in fn
+        # And the Call doesn't tell you to re-price against a market you're not in.
+        assert "standing&&standing.is_best" in fn.replace(" ", "")
+        # The board tile flag mirrors the same gate so tile and panel agree.
+        flag = _sim_fn("_tileActionFlag")
+        assert "_linkedOrderStanding(b, m.station_id)" in flag
+        assert "standing&&standing.is_best" in flag.replace(" ", "")
+
+    def test_linked_order_carries_location_id(self):
+        # For the reconciliation above the client needs the order's real market —
+        # the backend must expose location_id on each order it returns.
+        src = (_ROOT / "lp-web.py").read_text()
+        assert '"location_id": loc,' in src
+
     def test_call_verdict_is_a_shared_helper(self):
         # The Listed-stage Call (dump / re-price / hold) is factored out so the
         # board tile reaches the SAME verdict as the decider from the same signals.

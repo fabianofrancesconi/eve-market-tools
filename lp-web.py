@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.156.27"
+__version__ = "1.156.28"
 
 import argparse
 import base64
@@ -729,7 +729,21 @@ def _sweep_loop(interval=3600):
             pass
 
 
-_BG_REFRESH_INTERVAL = 300  # 5 minutes
+def _bg_refresh_interval():
+    """Background-refresh cadence in seconds. Defaults to 300 (5 min) but can be
+    overridden with the BG_REFRESH_INTERVAL_SECS env var. A bad or too-small value
+    (ESI would just serve cache below ~a minute, and a tight loop hammers the API)
+    falls back to the default; values are floored at 60s."""
+    raw = (os.environ.get("BG_REFRESH_INTERVAL_SECS") or "").strip()
+    if not raw:
+        return 300
+    try:
+        return max(60, int(raw))
+    except ValueError:
+        return 300
+
+
+_BG_REFRESH_INTERVAL = _bg_refresh_interval()  # seconds (default 300 = 5 min)
 # Epoch of the next scheduled background refresh, so do_char_data can report an
 # authoritative "next sync in …" that reflects the real server schedule rather
 # than a value each browser invents on load. 0 until the loop establishes it.

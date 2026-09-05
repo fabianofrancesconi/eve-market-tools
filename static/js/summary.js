@@ -113,10 +113,13 @@ function renderSummary(){
   if(d.wallet_only_sale_pending){
     const exp=d.wallet_tx_expires;
     const rem=exp?Math.max(0,exp-Date.now()/1000):0;
-    const when=rem>0?` ESI's wallet feed refreshes in about ${fmtDur(rem)}, when the sale should show up on its build.`:"";
+    const eta=rem>0?`<span class="sdn-eta" title="Estimated time until ESI's wallet feed next refreshes"><span class="sdn-eta-lbl">settles in</span> ~${fmtDur(rem)}</span>`:"";
     body.insertAdjacentHTML("beforeend",
-      `<div class="sum-read-note sum-dump-note" title="An instant-sell (dump) is realized in-game immediately, but ESI's wallet-transactions feed lags the fill by up to ~1h. Until it catches up, the units can't be tied to a build.">`+
-      `⏳ A recent wallet-only sale (dump) is still settling — some units aren't attributed to a build yet.${when}</div>`);
+      `<div class="sum-dump-note" title="An instant-sell (dump) is realized in-game immediately, but ESI's wallet-transactions feed lags the fill by up to ~1h. Until it catches up, the units can't be tied to a build.">`+
+      `<span class="sdn-ico" aria-hidden="true">⏳</span>`+
+      `<div class="sdn-txt"><b>Sale still settling.</b> A recent instant-sell (dump) has landed, but ESI hasn't itemized every unit yet — a few aren't attributed to a build.</div>`+
+      eta+
+      `</div>`);
   }
 }
 

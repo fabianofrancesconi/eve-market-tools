@@ -2161,9 +2161,35 @@
   .sum-read-note { color:var(--dim); font-size:11px; margin-top:2px; white-space:nowrap; }
   .sum-read-note b.pos { color:var(--green2,#4caf76); }
   .sum-read-note b.neg { color:var(--red); }
-  /* Full-width instant-sell (dump) settling notice under the strip — a sentence,
-     so it must wrap (unlike the terse per-reading notes above). */
-  .sum-dump-note { white-space:normal; margin-top:6px; color:var(--amber,#d9a441); }
+  /* Instant-sell (dump) settling notice — a self-contained amber callout that
+     sits below the strip, aligned to its side margins so it reads as part of the
+     same ribbon rather than loose text. Icon badge · lead-in sentence · ETA chip. */
+  .sum-dump-note { display:flex; align-items:center; gap:11px;
+    margin:8px 16px 0; padding:9px 13px; border-radius:8px;
+    border:1px solid color-mix(in srgb, var(--amber,#d9a441) 32%, transparent);
+    background:linear-gradient(180deg,
+      color-mix(in srgb, var(--amber,#d9a441) 13%, transparent),
+      color-mix(in srgb, var(--amber,#d9a441) 6%, transparent));
+    color:var(--fg); font-size:12.5px; line-height:1.45; }
+  .sum-dump-note .sdn-ico { flex:none; display:flex; align-items:center;
+    justify-content:center; width:26px; height:26px; border-radius:7px;
+    font-size:14px; background:color-mix(in srgb, var(--amber,#d9a441) 20%, transparent);
+    color:var(--amber,#d9a441); }
+  .sum-dump-note .sdn-txt { flex:1 1 auto; min-width:0; color:var(--dim); }
+  .sum-dump-note .sdn-txt b { color:var(--amber,#d9a441); font-weight:700; }
+  .sum-dump-note .sdn-eta { flex:none; display:inline-flex; align-items:baseline;
+    gap:5px; padding:4px 10px; border-radius:6px; white-space:nowrap;
+    font-variant-numeric:tabular-nums; font-weight:700; font-size:12px;
+    color:var(--amber,#d9a441);
+    background:color-mix(in srgb, var(--amber,#d9a441) 15%, transparent);
+    border:1px solid color-mix(in srgb, var(--amber,#d9a441) 25%, transparent); }
+  .sum-dump-note .sdn-eta-lbl { font-size:9.5px; font-weight:700; letter-spacing:.5px;
+    text-transform:uppercase; opacity:.75; }
+  @media (max-width:560px){
+    .sum-dump-note { flex-wrap:wrap; }
+    .sum-dump-note .sdn-txt { flex-basis:calc(100% - 37px); }
+    .sum-dump-note .sdn-eta { margin-left:37px; }
+  }
   @media (max-width:820px){
     .sum-strip { flex-wrap:wrap; }
     .sum-read { flex-basis:50%; }

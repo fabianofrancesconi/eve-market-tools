@@ -2177,14 +2177,15 @@
     color:var(--amber,#d9a441); }
   .sum-dump-note .sdn-txt { flex:1 1 auto; min-width:0; color:var(--dim); }
   .sum-dump-note .sdn-txt b { color:var(--amber,#d9a441); font-weight:700; }
-  .sum-dump-note .sdn-eta { flex:none; display:inline-flex; align-items:baseline;
-    gap:5px; padding:4px 10px; border-radius:6px; white-space:nowrap;
-    font-variant-numeric:tabular-nums; font-weight:700; font-size:12px;
-    color:var(--amber,#d9a441);
+  .sum-dump-note .sdn-eta { flex:none; display:inline-flex; flex-direction:column;
+    align-items:flex-end; gap:1px; padding:5px 11px; border-radius:7px;
+    white-space:nowrap; text-align:right; color:var(--amber,#d9a441);
     background:color-mix(in srgb, var(--amber,#d9a441) 15%, transparent);
-    border:1px solid color-mix(in srgb, var(--amber,#d9a441) 25%, transparent); }
-  .sum-dump-note .sdn-eta-lbl { font-size:9.5px; font-weight:700; letter-spacing:.5px;
-    text-transform:uppercase; opacity:.75; }
+    border:1px solid color-mix(in srgb, var(--amber,#d9a441) 28%, transparent); }
+  .sum-dump-note .sdn-eta-lbl { font-size:9px; font-weight:700; letter-spacing:.6px;
+    text-transform:uppercase; opacity:.72; }
+  .sum-dump-note .sdn-eta-val { font-size:15px; font-weight:800; line-height:1;
+    font-variant-numeric:tabular-nums; }
   @media (max-width:560px){
     .sum-dump-note { flex-wrap:wrap; }
     .sum-dump-note .sdn-txt { flex-basis:calc(100% - 37px); }

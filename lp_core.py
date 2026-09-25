@@ -8,6 +8,7 @@ Pipeline: corp name -> corp_id -> LP offers (ESI) -> Jita IV-4 prices
 (Fuzzwork) -> profit/ISK-per-LP evaluation, plus on-demand per-offer detail
 (the full shopping list of required items and the m3 it occupies).
 """
+import concurrent.futures
 import json
 import math
 import os
@@ -233,55 +234,92 @@ def _summarise_orders(orders):
     }
 
 
+# Serialises the read-merge-write of each esi_prices_<station>.json cache so
+# parallel fetchers (the Industry tradeability fill runs several at once) can't
+# drop each other's freshly fetched entries.
+_PRICE_CACHE_LOCK = threading.Lock()
+
+
+def _price_entry_fresh(entry, file_ts, now):
+    """Freshness is tracked PER ENTRY (`_t` = when that type's book was pulled).
+    A single file-wide stamp — refreshed on every merge — let an entry fetched
+    hours ago pass as "5 minutes fresh" as long as anything else had been fetched
+    recently. Legacy entries without `_t` fall back to the file's `_ts`."""
+    return now - entry.get("_t", file_ts) < PRICE_CACHE_TTL
+
+
 def fetch_prices_esi(type_ids, session, station_id=JITA_STATION_ID,
                      region_id=JITA_REGION_ID, cache_dir=None, refresh=False,
-                     emit=None):
+                     emit=None, workers=1):
     """Like fetch_prices() but queries ESI directly for live orders per type,
     with a 5-minute disk cache. More accurate than Fuzzwork aggregates (no lag,
-    real order depth). Pass refresh=True to bypass the cache."""
+    real order depth). Pass refresh=True to bypass the cache. `workers` > 1
+    fetches the uncached types in parallel (one ESI order-book call each)."""
     if cache_dir is None:
         cache_dir = default_cache_dir()
     cache_path = Path(cache_dir) / f"esi_prices_{station_id}.json"
     now = time.time()
-    cached = load_json(cache_path, {})
-    cache_valid = (now - cached.get("_ts", 0) < PRICE_CACHE_TTL)
 
     ids = sorted(set(type_ids))
     out = {}
-    if not refresh and cache_valid:
+    missing = ids
+    if not refresh:
+        cached = load_json(cache_path, {})
+        file_ts = cached.get("_ts", 0)
         missing = []
         for tid in ids:
             entry = cached.get(str(tid))
-            if entry:
-                out[tid] = entry
+            if entry and _price_entry_fresh(entry, file_ts, now):
+                out[tid] = {k: v for k, v in entry.items() if k != "_t"}
             else:
                 missing.append(tid)
         if not missing:
             return out
-    else:
-        missing = ids
 
-    total = len(missing)
-    for idx, tid in enumerate(missing):
+    def _one(tid):
         try:
-            orders = _esi_orders_for_type(tid, session, station_id, region_id)
-            out[tid] = _summarise_orders(orders)
+            return _summarise_orders(_esi_orders_for_type(tid, session, station_id, region_id))
         except Exception:
             # Couldn't verify (rate limit / timeout / transient ESI error). Emit
             # None volumes — NOT 0.0 — so the caller can tell "we don't know the
             # depth" apart from "the book is genuinely empty". Scoring a liquid
             # item 0 (and hiding it under a min-tradeability filter) on a transient
             # hiccup would be worse than leaving it unscored until the next fill.
-            out[tid] = {"sell_min": None, "buy_max": None,
-                        "sell_volume": None, "buy_volume": None}
-        if emit and idx % 20 == 0:
-            emit(idx, total)
+            return {"sell_min": None, "buy_max": None,
+                    "sell_volume": None, "buy_volume": None}
 
-    # Merge into existing cache (don't overwrite unrelated types)
-    for tid, v in out.items():
-        cached[str(tid)] = v
-    cached["_ts"] = now
-    save_json(cache_path, cached)
+    total = len(missing)
+    if workers > 1 and total > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, total)) as pool:
+            results = pool.map(_one, missing)
+            for idx, tid in enumerate(missing):
+                out[tid] = next(results)
+                if emit and idx % 20 == 0:
+                    emit(idx, total)
+    else:
+        for idx, tid in enumerate(missing):
+            out[tid] = _one(tid)
+            if emit and idx % 20 == 0:
+                emit(idx, total)
+
+    # Merge into the existing cache (don't overwrite unrelated types). Failed
+    # verifies (all-None) aren't cached, so a rate-limit burst doesn't pin
+    # "unknown depth" on those types for the next five minutes.
+    with _PRICE_CACHE_LOCK:
+        cached = load_json(cache_path, {})
+        old_ts = cached.get("_ts", 0)
+        for k, v in cached.items():
+            # Pin legacy entries to the stamp they were valid under before the
+            # file-wide `_ts` moves forward, so they age out on time.
+            if k != "_ts" and isinstance(v, dict) and "_t" not in v:
+                v["_t"] = old_ts
+        for tid in missing:
+            v = out[tid]
+            if v.get("sell_volume") is None and v.get("buy_volume") is None:
+                continue
+            cached[str(tid)] = {**v, "_t": now}
+        cached["_ts"] = now
+        save_json(cache_path, cached)
     return out
 
 
@@ -594,47 +632,49 @@ def _daily_price_volume_series(history, days=HISTORY_DAYS):
 
 
 def _fetch_history_summary(type_ids, region_id, session, cache_dir, summarize,
-                           refresh=False):
+                           refresh=False, workers=1):
     """Shared per-type ESI market-history fetch + cache, reduced to one number
     per type by `summarize(history_list)`. One HTTP round-trip per uncached type
     -- the expensive call, so resolve it off the main scan path / in the
-    background.
+    background. `workers` > 1 runs the uncached fetches in parallel.
 
     Shares the `mhist_{region}_{type}.json` cache files the price-chart endpoint
     uses (same format, HISTORY_TTL_SECONDS window). Maps a type to None when it
     has no recorded history (the market never traded it) or on fetch failure."""
-    out = {}
     now = time.time()
-    for tid in sorted(set(type_ids)):
+
+    def _one(tid):
         path = Path(cache_dir) / f"mhist_{region_id}_{tid}.json"
-        data = None
         if not refresh:
             cached = load_json(path, None)
             if cached and now - cached.get("_ts", 0) < HISTORY_TTL_SECONDS:
-                data = cached["data"]
-        if data is None:
-            try:
-                r = session.get(f"{ESI}/markets/{region_id}/history/",
-                                params={"type_id": tid}, headers=HEADERS, timeout=20)
-                check_esi_rate_limit(r)
-                if r.status_code != 200:
-                    out[tid] = None
-                    continue
-                data = sorted(r.json(), key=lambda x: x["date"])
-                save_json(path, {"_ts": now, "data": data})
-            except requests.RequestException:
-                out[tid] = None
-                continue
-        out[tid] = summarize(data)
-    return out
+                return summarize(cached["data"])
+        try:
+            r = session.get(f"{ESI}/markets/{region_id}/history/",
+                            params={"type_id": tid}, headers=HEADERS, timeout=20)
+            check_esi_rate_limit(r)
+            if r.status_code != 200:
+                return None
+            data = sorted(r.json(), key=lambda x: x["date"])
+            save_json(path, {"_ts": now, "data": data})
+        except requests.RequestException:
+            return None
+        return summarize(data)
+
+    ids = sorted(set(type_ids))
+    if workers > 1 and len(ids) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(ids))) as pool:
+            return dict(zip(ids, pool.map(_one, ids)))
+    return {tid: _one(tid) for tid in ids}
 
 
-def fetch_history_volumes(type_ids, region_id, session, cache_dir, refresh=False):
+def fetch_history_volumes(type_ids, region_id, session, cache_dir, refresh=False,
+                          workers=1):
     """type_id -> median daily traded volume (last HISTORY_DAYS) in `region_id`,
     via ESI market history. None for a type with no recorded history or on
     fetch failure. See _fetch_history_summary for caching."""
     return _fetch_history_summary(type_ids, region_id, session, cache_dir,
-                                  _mean_daily_volume, refresh)
+                                  _mean_daily_volume, refresh, workers)
 
 
 def fetch_history_prices(type_ids, region_id, session, cache_dir, refresh=False):

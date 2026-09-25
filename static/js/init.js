@@ -20,10 +20,10 @@ async function restoreLastScans(){
       computeIndTradeability();
       if(ACTIVE_TAB==="ind"){ renderIndStatus(); renderIndTable(); }
       restored.ind=true;
-      // Deliberately NO fillIndTradeability() on restore: the market fill is an
-      // expensive ESI pull and only ever runs on an explicit Scan. Cached rows
-      // keep whatever score the scan that produced them stored (stale is fine);
-      // any never-scored rows just read "—".
+      // The tradeability fill runs server-side; if it's still going for this
+      // scan, resume following it (rows already carry everything it has scored
+      // so far). A finished or absent job answers "none" and this is a no-op.
+      pollIndFill();
     }
   }catch(e){}
   return restored;

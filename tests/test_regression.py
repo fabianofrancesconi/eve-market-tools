@@ -1389,39 +1389,8 @@ class TestIndustryTradeabilityFill:
         src = Path(lp_web.__file__).read_text(encoding="utf-8")
         assert 'r["liq_loaded"] = True' in src
 
-    def test_frontend_background_fill_wired(self):
-        html = lp_web.FRONTEND_SOURCE
-        assert "function fillIndTradeability(" in html
-        assert "/api/ind/liquidity?" in html
-        # The fill runs from an explicit Scan, reusing the 5-min ESI depth cache
-        # (freshPrices=false) — NOT a whole-catalogue force-refresh, which made
-        # tradeability crawl. Opening a row's detail pulls that item's live prices
-        # fresh, so the honest instant figures are still a click away.
-        assert "fillIndTradeability(false);" in html
-        assert "fillIndTradeability(true);" not in html
-        assert "IND_FILL_TOKEN" in html                # stale-fill cancellation
-        # Rows spin ONLY while a Scan's fill is actually in flight — outside a
-        # fill an unfilled row reads its cached value or "—", never a spinner.
-        assert "function _indLiqSpin(r){ return IND.fillTotal>0 && !r.liq_loaded; }" in html
-        assert "_indLiqSpin(r) ? _SPIN" in html
-
-    def test_fill_skips_unprofitable_rows(self):
-        """Tradeability is only worth fetching for rows that turn a profit in some
-        sell mode; money-losing rows get their spinner retired with a null score
-        instead of costing an ESI market call."""
-        html = lp_web.FRONTEND_SOURCE
-        assert "if(!_isProfitable(r)){ r.liq_loaded=true; r.tradeability=null; continue; }" in html
-
-    def test_restore_does_not_auto_fill(self):
-        """The expensive market fill must NOT be kicked off on cache-restore or
-        tab-open — only an explicit Scan fetches tradeability. (Reverses the old
-        v1.66.8 auto-resume, which scored the market just from opening the tab.)"""
-        html = lp_web.FRONTEND_SOURCE
-        assert "if(IND.rows.some(r=>!r.liq_loaded)) fillIndTradeability()" not in html
-        # loadOwnedPreview seeds rows for display but must not fill the market.
-        preview = html[html.index("function loadOwnedPreview("):]
-        preview = preview[:preview.index("function closeIndDetail(")]
-        assert "fillIndTradeability" not in preview
+    # Frontend wiring for the (now server-side) fill lives in
+    # tests/test_ind_fill_job.py.
 
 
 # ---------------------------------------------------------------------------

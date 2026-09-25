@@ -161,11 +161,12 @@ function persistScan(tab, blob){
   navigator.sendBeacon("/api/save-scan", new Blob(
     [JSON.stringify({tab, blob})], {type:"application/json"}));
 }
+// LP only. The Industry scan is saved server-side (by its tradeability fill
+// job); a beacon couldn't carry it anyway — it's megabytes, and sendBeacon
+// silently drops anything over 64 KB.
 function persistAllScans(){
   if(STATE.lastScanData && STATE.rows.length)
     persistScan("lp", {...STATE.lastScanData, rows:STATE.rows});
-  if(IND.lastData && IND.rows.length && !IND.lastData.favorites_only && !IND.lastData.owned_only)
-    persistScan("ind", {...IND.lastData, rows:IND.rows});
 }
 document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden") persistAllScans(); });
 window.addEventListener("beforeunload", persistAllScans);

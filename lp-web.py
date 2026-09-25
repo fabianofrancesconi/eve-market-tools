@@ -81,8 +81,11 @@ SESSION = requests.Session()
 _RETRY = Retry(total=3, connect=3, read=3, backoff_factor=0.3,
                status_forcelist=(502, 503, 504),
                allowed_methods=frozenset(Retry.DEFAULT_ALLOWED_METHODS | {"POST"}))
-SESSION.mount("https://", HTTPAdapter(max_retries=_RETRY))
-SESSION.mount("http://", HTTPAdapter(max_retries=_RETRY))
+# pool_maxsize > the default 10: the Industry tradeability fill fetches with
+# several worker threads per job, and an undersized pool just discards (and
+# re-handshakes) the surplus connections.
+SESSION.mount("https://", HTTPAdapter(max_retries=_RETRY, pool_maxsize=32))
+SESSION.mount("http://", HTTPAdapter(max_retries=_RETRY, pool_maxsize=32))
 CACHE_DIR = default_cache_dir()
 JOBS_TRACK_PATH = CACHE_DIR / "ind_jobs_delivered.json"  # cumulative delivered-run counter
 ORDER_EVENTS_PATH = CACHE_DIR / "order_events.json"  # market order sale/fill events
@@ -3947,20 +3950,26 @@ def do_ind_scan(q, emit=None):
     finally:
         conn.close()
 
-    # Market depth for the top-ranked rows plus every favourite and owned BP (one
-    # cached call per product type), so pinned sections always carry a score.
+    # Market history for the top of BOTH ISK/hr rankings (listed and instant)
+    # plus every favourite and owned BP, so the rows you look at first — and the
+    # pinned sections — already carry a score. The long tail is scored by the
+    # server-side background fill (_start_ind_fill) after the result returns.
     # Only rows that turn a profit in some sell mode are worth a market fetch —
-    # tradeability is meaningless for a build that loses ISK however you sell it,
-    # and the front end blanks its score anyway — so skip the ESI call for them.
-    scored = [r for r in (rows[:IND_HISTORY_TOP_N]
-                          + [r for r in rows[IND_HISTORY_TOP_N:]
-                             if r["favorite"] or r["owned_bp_me_te"]])
-              if row_is_profitable(r)]
+    # tradeability is meaningless for a build that loses ISK however you sell it
+    # — so those are retired right here with no score (read "—", no spinner).
+    for r in rows:
+        if not row_is_profitable(r):
+            r["tradeability"] = None
+            r["liq_loaded"] = True
+    head = set(ind_core.fill_priority(rows)[:IND_HISTORY_TOP_N])
+    scored = [r for r in rows if row_is_profitable(r)
+              and (r["product_id"] in head or r["favorite"] or r["owned_bp_me_te"])]
     if scored:
         _emit({"type": "progress", "pct": 88,
                "msg": f"Checking market depth for {len(scored)} items…", "sub": ""})
         product_ids = {r["product_id"] for r in scored}
-        daily = fetch_history_volumes(product_ids, region_id, SESSION, CACHE_DIR)
+        daily = fetch_history_volumes(product_ids, region_id, SESSION, CACHE_DIR,
+                                      workers=IND_FILL_WORKERS)
         for r in scored:
             dv = daily.get(r["product_id"])
             r["daily_vol"] = dv
@@ -4001,46 +4010,199 @@ def do_ind_scan(q, emit=None):
 
 
 def do_ind_liquidity(q):
-    """Background tradeability fill for the Industry table. The scan scores only
-    the top-ranked rows inline (to stay fast); the front end then walks the rest
-    of the catalogue here in chunks, so every item eventually gets a real
-    tradeability without blocking the initial result. One cached ESI market-
-    history call per uncached product type.
-
-    station + comma-separated product type_ids in -> {type_id: {daily_vol,
-    tradeability}} out. daily_vol/tradeability are None for a product the market
-    has never traded; the caller derives days-to-sell from its own batch size."""
+    """On-demand tradeability for a handful of Industry products (station +
+    comma-separated product type_ids in -> {type_id: {daily_vol, tradeability,
+    buy_volume, sell_volume, bid, ask}} out). The whole-catalogue fill after a
+    Scan runs server-side (_IndFillJob); this stays for ad-hoc lookups.
+    daily_vol/tradeability are None for a product the market has never traded;
+    the caller derives days-to-sell from its own batch size."""
     station_id = int(q.get("station", [str(JITA_STATION_ID)])[0] or JITA_STATION_ID)
     if station_id not in TRADE_HUBS:
         station_id = JITA_STATION_ID
     region_id = TRADE_HUBS[station_id]["region_id"]
     raw = q.get("type_ids", [""])[0]
     type_ids = [int(x) for x in raw.split(",") if x.strip().isdigit()]
-    # A user-initiated Scan passes refresh=1 so the live ESI prices are re-pulled
-    # fresh (bypassing the 5-minute disk cache) rather than reused from a prior
-    # fill; the background tab-open preview leaves it off and reuses the cache.
     refresh = q.get("refresh", ["0"])[0] in ("1", "true", "on")
-    daily = fetch_history_volumes(set(type_ids), region_id, SESSION, CACHE_DIR)
+    daily = fetch_history_volumes(set(type_ids), region_id, SESSION, CACHE_DIR,
+                                  workers=IND_FILL_WORKERS)
     # Live order-book depth (real bids/asks on the book right now), so the client
     # can suppress a phantom instant-sell price and score sellability against the
-    # current market — not just 30-day region history. Cached 5 min per station,
+    # current market — not just 30-day region history. Cached 5 min per type,
     # unless refresh forces a fresh pull.
     live = fetch_prices_esi(set(type_ids), SESSION, station_id=station_id,
                             region_id=region_id, cache_dir=CACHE_DIR,
-                            refresh=refresh)
-    out = {}
-    for tid in type_ids:
-        dv = daily.get(tid)
-        p = live.get(tid, {})
-        out[str(tid)] = {
-            "daily_vol": dv,
-            "tradeability": ind_core.tradeability(dv),
-            "buy_volume": p.get("buy_volume"),
-            "sell_volume": p.get("sell_volume"),
-            "bid": p.get("buy_max"),
-            "ask": p.get("sell_min"),
-        }
-    return {"liquidity": out}
+                            refresh=refresh, workers=IND_FILL_WORKERS)
+    return {"liquidity": {str(tid): ind_core.liquidity_entry(daily.get(tid), live.get(tid))
+                          for tid in type_ids}}
+
+
+# ── Industry tradeability fill: a server-side background job ─────────────────
+# A Scan scores only the head of the rankings inline (to return fast). The rest
+# of the catalogue — thousands of products, one ESI history + one order-book
+# call each — used to be walked by the BROWSER in serial chunks: it took ~20
+# minutes, died the moment the tab navigated away, and its results were saved by
+# a sendBeacon of the whole (multi-MB) scan that the browser's 64 KB beacon cap
+# silently dropped. Now the server owns it: one job per account, started when
+# the scan finishes, fetching in parallel in priority order (ind_core.
+# fill_priority) and checkpointing into the saved scan, so leaving or reloading
+# the page loses nothing. The page polls /api/ind/fill-status for progress.
+#
+# Limitation: the job lives in memory — a server restart mid-fill keeps every
+# checkpointed score but doesn't resume; unscored rows read "—" until a rescan.
+IND_FILL_WORKERS = max(1, int(os.environ.get("IND_FILL_WORKERS", "8") or 8))
+IND_FILL_BATCH = 48            # products per fetch round (between cancel checks)
+IND_FILL_SAVE_EVERY = 10.0     # seconds between checkpoint saves of the scan
+_IND_FILL_JOBS = {}            # account_id -> _IndFillJob (latest scan's job)
+_IND_FILL_LOCK = threading.Lock()        # guards _IND_FILL_JOBS
+_IND_FILL_SAVE_LOCK = threading.Lock()   # orders checkpoint saves vs. cancellation
+# Cap concurrent fills across accounts so several users scanning at once can't
+# multiply the ESI fan-out without bound; later jobs queue.
+_IND_FILL_SLOTS = threading.BoundedSemaphore(3)
+
+
+class _IndFillJob:
+    def __init__(self, acct, scan):
+        self.acct = acct
+        # The job owns a private copy: the caller's dict is still being streamed
+        # to the browser while the fill starts patching rows.
+        self.scan = {**scan, "rows": [dict(r) for r in scan.get("rows") or []]}
+        self.scanned_at = scan.get("scanned_at")
+        station_id = scan.get("station_id")
+        self.station_id = station_id if station_id in TRADE_HUBS else JITA_STATION_ID
+        self.cancelled = threading.Event()
+        self.lock = threading.Lock()   # guards scan rows, entries and counters
+        self.entries = []   # [(product_id, entry|None)], append-only; status cursor indexes it
+        self.status = "running"
+        self._by_product = {}
+        for r in self.scan["rows"]:
+            self._by_product.setdefault(r["product_id"], []).append(r)
+        self.pending = [pid for pid in ind_core.fill_priority(self.scan["rows"])
+                        if any(not r.get("liq_loaded") for r in self._by_product[pid])]
+        self.total = len(self.pending)
+        self.done = 0
+
+    def snapshot(self):
+        """A consistent copy of the scan as filled so far (rows copied, so the
+        caller may mutate / serialise it while the fill keeps patching)."""
+        with self.lock:
+            if self.scan is None:
+                return None
+            return {**self.scan, "rows": [dict(r) for r in self.scan["rows"]]}
+
+    def _save(self):
+        # Under the save lock and re-checking cancellation, so a superseded job
+        # can never land a checkpoint AFTER the newer scan's job has saved.
+        with _IND_FILL_SAVE_LOCK:
+            if self.cancelled.is_set():
+                return
+            blob = self.snapshot()
+            if blob is not None:
+                _save_last_scan(self.acct, "ind", blob)
+
+    def _fetch(self, chunk, region_id):
+        """{product_id: entry} for one round, or None per product when both
+        attempts fail (e.g. ESI error-limited) — the row is then retired with no
+        score rather than spinning forever."""
+        for attempt in range(2):
+            try:
+                daily = fetch_history_volumes(chunk, region_id, SESSION, CACHE_DIR,
+                                              workers=IND_FILL_WORKERS)
+                live = fetch_prices_esi(chunk, SESSION, station_id=self.station_id,
+                                        region_id=region_id, cache_dir=CACHE_DIR,
+                                        workers=IND_FILL_WORKERS)
+                return {pid: ind_core.liquidity_entry(daily.get(pid), live.get(pid))
+                        for pid in chunk}
+            except Exception as e:  # noqa: BLE001
+                print(f"[ind-fill] round failed (attempt {attempt + 1}): "
+                      f"{type(e).__name__}: {e}", file=sys.stderr)
+                if self.cancelled.wait(5):
+                    break
+        return {pid: None for pid in chunk}
+
+    def run(self):
+        with _IND_FILL_SLOTS:
+            try:
+                self._run()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+                with self.lock:
+                    self.status = "error"
+            finally:
+                if self.status == "running":
+                    with self.lock:
+                        self.status = "cancelled" if self.cancelled.is_set() else "done"
+                # Free the scan copy once it's durably saved; the status endpoint
+                # only needs `entries`.
+                if self.status == "done":
+                    with self.lock:
+                        self.scan = None
+                        self._by_product = {}
+
+    def _run(self):
+        self._save()   # the scan as returned — durable before the long tail starts
+        region_id = TRADE_HUBS[self.station_id]["region_id"]
+        last_save = time.time()
+        for i in range(0, len(self.pending), IND_FILL_BATCH):
+            if self.cancelled.is_set():
+                return
+            chunk = self.pending[i:i + IND_FILL_BATCH]
+            got = self._fetch(chunk, region_id)
+            if self.cancelled.is_set():
+                return
+            with self.lock:
+                for pid in chunk:
+                    for r in self._by_product.get(pid, ()):
+                        ind_core.apply_liquidity(r, got[pid])
+                    self.entries.append((pid, got[pid]))
+                self.done += len(chunk)
+            if time.time() - last_save >= IND_FILL_SAVE_EVERY:
+                self._save()
+                last_save = time.time()
+        self._save()
+
+
+def _ind_fill_job(acct):
+    with _IND_FILL_LOCK:
+        return _IND_FILL_JOBS.get(getattr(acct, "account_id", None))
+
+
+def _start_ind_fill(acct, scan, background=True):
+    """Supersede the account's previous fill (if any) and start scoring `scan`'s
+    long tail. The job also performs the scan's initial save."""
+    job = _IndFillJob(acct, scan)
+    with _IND_FILL_LOCK:
+        old = _IND_FILL_JOBS.get(getattr(acct, "account_id", None))
+        if old is not None:
+            old.cancelled.set()
+        _IND_FILL_JOBS[getattr(acct, "account_id", None)] = job
+    if background:
+        threading.Thread(target=job.run, daemon=True, name="ind-fill").start()
+    return job
+
+
+def do_ind_fill_status(q):
+    """Progress of the account's tradeability fill for the scan the page shows
+    (`scanned_at`), plus every entry landed since the `since` cursor, so a page
+    that opens mid-fill (or reconnects) picks up exactly where it left off.
+    status: running | done | cancelled | error | none (no job for that scan)."""
+    acct = require_account()
+    job = _ind_fill_job(acct)
+    try:
+        scanned_at = float(q.get("scanned_at", ["0"])[0] or 0)
+        since = max(0, int(q.get("since", ["0"])[0] or 0))
+    except ValueError:
+        raise LPError("bad scanned_at / since")
+    if job is None:
+        return {"status": "none"}
+    if job.scanned_at != scanned_at:
+        # The page holds an older scan than the account's latest (e.g. it was
+        # reopened while that scan was still running) — tell it to reload.
+        return {"status": "none", "latest_scanned_at": job.scanned_at}
+    with job.lock:
+        new = job.entries[since:]
+        return {"status": job.status, "total": job.total, "done": job.done,
+                "cursor": since + len(new),
+                "entries": {str(pid): e for pid, e in new}}
 
 
 def do_ind_detail(q):
@@ -4287,6 +4449,7 @@ _GET_ROUTES = {
     "/api/history": do_history,
     "/api/ind/groups": do_ind_groups,
     "/api/ind/liquidity": do_ind_liquidity,
+    "/api/ind/fill-status": do_ind_fill_status,
     "/api/ind/detail": do_ind_detail,
     "/api/ind/sell-analysis": do_ind_sell_analysis,
     "/api/ind/bpo-search": do_ind_bpo_search,
@@ -4550,11 +4713,14 @@ class Handler(BaseHTTPRequestHandler):
             emit = self._sse_emit
             try:
                 result = scan_fn(q, emit=emit)
+                # A full Industry scan hands off to the background tradeability
+                # fill BEFORE the result streams out, so the page's first
+                # fill-status poll already finds the job. The job saves the scan.
+                if tag == "ind" and not result.get("favorites_only") and not result.get("owned_only"):
+                    _start_ind_fill(current_account(), result)
                 emit({"type": "result", **result})
                 if tag == "lp":
                     _save_last_scan(current_account(), "lp", result)
-                elif tag == "ind" and not result.get("favorites_only") and not result.get("owned_only"):
-                    _save_last_scan(current_account(), "ind", result)
             except LPError as e:
                 print(f"[{tag}] LPError: {e}", file=sys.stderr)
                 emit({"type": "error", "error": str(e)})
@@ -4627,7 +4793,12 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/last-scan":
                 acct = current_account()
                 lp_data = _load_last_scan(acct, "lp")
-                ind_data = _load_last_scan(acct, "ind")
+                # Mid-fill, the running job's in-memory scan is fresher than its
+                # last checkpoint.
+                job = _ind_fill_job(acct) if acct is not None else None
+                ind_data = job.snapshot() if job is not None and job.status == "running" else None
+                if ind_data is None:
+                    ind_data = _load_last_scan(acct, "ind")
                 if ind_data and ind_data.get("rows"):
                     _patch_group_names(ind_data["rows"])
                 self._send_json({"lp": lp_data, "ind": ind_data})
@@ -4696,7 +4867,10 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
                 tab = data.get("tab", "")
                 blob = data.get("blob")
-                if tab in ("lp", "ind") and blob:
+                # LP only: the Industry scan is saved server-side by its
+                # tradeability fill job — a browser copy (possibly stale or
+                # mid-fill) must never overwrite it.
+                if tab == "lp" and blob:
                     _save_last_scan(current_account(), tab, blob)
                 self._send_json({"ok": True})
             elif parsed.path == "/api/orders/dismiss":

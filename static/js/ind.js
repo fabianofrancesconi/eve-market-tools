@@ -683,15 +683,10 @@ function scanInd(refreshSde){
       es.close(); IND.es=null; setIndScanning(false);
       IND.rows=data.rows; IND.lastData=data;
       computeIndTradeability();
-      persistScan("ind", {...IND.lastData, rows:IND.rows});
       hideIndProgress(); renderIndStatus(); renderIndTable();
-      // Score the long tail, reusing the 5-min ESI depth cache — NOT a
-      // whole-catalogue force-refresh (that meant ~thousands of live order-book
-      // calls per scan). Opening any row's detail always pulls fresh live prices
-      // for that one item, so the honest instant figures are a click away; the
-      // catalogue fill just needs enough depth to score sellability and gate
-      // phantom instant profits.
-      fillIndTradeability(false);
+      // The server already started scoring the long tail (and saved the scan);
+      // follow its progress.
+      pollIndFill();
     } else if(data.type==="error"){
       es.close(); IND.es=null; setIndScanning(false);
       hideIndProgress(); setStatus(data.error, true);
@@ -703,74 +698,77 @@ function scanInd(refreshSde){
   };
 }
 
-// The scan scores only the top-ranked rows inline (to return fast). This walks
-// the rest of the catalogue afterwards in chunks, fetching market history per
-// product so EVERY item ends up with a real tradeability — gracefully: pending
-// rows spin, a status pill counts progress, and the table fills in as it lands.
-// A newer scan/fill cancels this one via IND_FILL_TOKEN.
-// `freshPrices` forces the liquidity fill to re-pull live ESI prices instead of
-// reusing the 5-minute server cache. Left OFF for the whole-catalogue fill (both
-// on Scan and tab-open): force-refreshing thousands of order books per scan is
-// what made tradeability crawl, and opening any row's detail already pulls that
-// item's live prices fresh — so the catalogue only needs cache-fresh depth to
-// score sellability and suppress phantom instant profits.
-async function fillIndTradeability(freshPrices){
+// The scan scores only the head of the rankings inline (to return fast); the
+// rest of the catalogue is scored by a SERVER-SIDE background job the scan
+// starts (_IndFillJob in lp-web.py). It runs regardless of this page — leave or
+// reload and nothing is lost — and checkpoints its results into the saved scan.
+// This just polls for progress and patches the entries that landed since its
+// cursor: pending rows spin, a status pill counts progress, and the table fills
+// in as it lands. Called after a Scan and on page load; when there's no job for
+// the scan on screen the server answers "none" and the poll stops quietly. A
+// newer scan/poll cancels this one via IND_FILL_TOKEN.
+async function pollIndFill(){
   const token=++IND_FILL_TOKEN;
-  const station=(IND.lastData && IND.lastData.station_id) || $("#ind-station").value;
-  // Group still-pending rows by product type so one history lookup updates every
-  // blueprint that builds the same item.
+  const d0=IND.lastData;
+  if(!d0 || d0.favorites_only || d0.owned_only || !d0.scanned_at) return;
   const byProduct=new Map();
   for(const r of IND.rows){
-    if(r.liq_loaded) continue;
-    // Tradeability only matters once a build is worth making — don't spend an ESI
-    // history/order-book call on rows that lose ISK in every sell mode. Retire
-    // their spinner (liq_loaded) with a null score so they read "—", not "…".
-    if(!_isProfitable(r)){ r.liq_loaded=true; r.tradeability=null; continue; }
     if(!byProduct.has(r.product_id)) byProduct.set(r.product_id, []);
     byProduct.get(r.product_id).push(r);
   }
-  const ids=[...byProduct.keys()];
-  // Even with nothing left to fetch we may have just retired unprofitable rows'
-  // spinners above, so recompute + repaint before bailing.
-  if(!ids.length){ IND.fillTotal=0; computeIndTradeability(); renderIndStatus(); renderIndTable(); return; }
-  // Repaint once now that the fill is live so the rows being fetched flip to a
-  // spinner immediately, instead of flashing "no data" until the first chunk lands.
-  IND.fillTotal=ids.length; IND.fillDone=0; renderIndStatus(); renderIndTable();
-  const CHUNK=60;
-  for(let i=0;i<ids.length;i+=CHUNK){
-    if(token!==IND_FILL_TOKEN) return;   // superseded by a newer scan
-    const chunk=ids.slice(i,i+CHUNK);
-    let liq=null;
+  let cursor=0;
+  while(token===IND_FILL_TOKEN){
+    let st=null;
     try{
-      const qp={station:station, type_ids:chunk.join(",")};
-      if(freshPrices) qp.refresh="1";
-      const p=new URLSearchParams(qp);
-      const d=await (await fetch("/api/ind/liquidity?"+p)).json();
-      liq=d.liquidity||null;
-    }catch(e){ liq=null; }
-    if(token!==IND_FILL_TOKEN) return;
-    for(const pid of chunk){
-      const e=liq && liq[pid];
-      for(const r of (byProduct.get(pid)||[])){
-        if(e){
-          r.daily_vol=e.daily_vol;
-          r.days_to_sell=(e.daily_vol>0)?((r.out_qty*r.runs)/e.daily_vol):null;
-          // Live order-book depth from the ESI verify — used to gate the phantom
-          // instant-sell price and to score tradeability against the current book.
-          if(e.buy_volume!==undefined) r.buy_volume=e.buy_volume;
-          if(e.sell_volume!==undefined) r.sell_volume=e.sell_volume;
-          applyLiveDepth(r, e);
-        }
-        r.liq_loaded=true;   // clear the spinner even on a failed/empty fetch
+      const p=new URLSearchParams({scanned_at:d0.scanned_at, since:cursor});
+      st=await (await fetch("/api/ind/fill-status?"+p)).json();
+    }catch(e){ st=null; }   // transient: retry on the next tick
+    if(token!==IND_FILL_TOKEN) return;   // superseded by a newer scan
+    if(st && !st.error){
+      if(st.status==="none"){
+        // A newer scan exists server-side (this page was reopened while it was
+        // still running) — swap it in, unless a scan of our own is in flight.
+        if(st.latest_scanned_at>d0.scanned_at && !IND.es) reloadIndLastScan();
+        break;
       }
+      const entries=st.entries||{};
+      let changed=false;
+      for(const pid in entries){
+        const e=entries[pid];
+        for(const r of (byProduct.get(+pid)||[])){
+          if(e){
+            r.daily_vol=e.daily_vol;
+            r.days_to_sell=(e.daily_vol>0)?((r.out_qty*r.runs)/e.daily_vol):null;
+            // Live order-book depth — used to gate the phantom instant-sell
+            // price and to score tradeability against the current book.
+            if(e.buy_volume!==undefined) r.buy_volume=e.buy_volume;
+            if(e.sell_volume!==undefined) r.sell_volume=e.sell_volume;
+            applyLiveDepth(r, e);
+          }
+          r.liq_loaded=true;   // clear the spinner even on a failed/empty fetch
+          changed=true;
+        }
+      }
+      cursor=st.cursor;
+      IND.fillTotal=st.status==="running" ? st.total : 0;
+      IND.fillDone=st.done;
+      if(changed) computeIndTradeability();
+      renderIndStatus();
+      if(changed) renderIndTable();
+      if(st.status!=="running") break;
     }
-    IND.fillDone=Math.min(i+chunk.length, ids.length);
-    computeIndTradeability();
-    renderIndStatus(); renderIndTable();
+    await new Promise(res=>setTimeout(res, 2000));
   }
-  IND.fillTotal=0; renderIndStatus();
-  if(IND.lastData && !IND.lastData.favorites_only && !IND.lastData.owned_only)
-    persistScan("ind", {...IND.lastData, rows:IND.rows});
+  if(token===IND_FILL_TOKEN){ IND.fillTotal=0; renderIndStatus(); renderIndTable(); }
+}
+
+async function reloadIndLastScan(){
+  let d=null;
+  try{ d=(await (await fetch("/api/last-scan")).json()).ind; }catch(e){ return; }
+  if(!d || !d.rows || !d.rows.length || IND.es) return;
+  IND.rows=d.rows; IND.lastData=d; IND._lazyRendered=0;
+  computeIndTradeability(); renderIndStatus(); renderIndTable();
+  pollIndFill();
 }
 
 // Loads all ESI-owned blueprints + favourites silently and without touching

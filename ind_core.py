@@ -659,6 +659,95 @@ def tradeability(daily_volume, full=TRADEABILITY_FULL):
     return int(round(max(0.0, min(1.0, score)) * 100))
 
 
+def _row_profitable(r):
+    return any(r.get(k) is not None and r[k] > 0
+               for k in ("profit_patient", "profit_instant"))
+
+
+def fill_priority(rows, head=100):
+    """Product type_ids to score for tradeability, most valuable first.
+
+    Interleaves the two rankings a user actually reads — ISK/hr listed and ISK/hr
+    instant — one from each in turn (patient #1, instant #1, patient #2, …), so
+    the top of EITHER sort lands within seconds instead of the instant-sell
+    leaders waiting behind the whole patient list. After the first `head`
+    products come favourites and owned blueprints (their pinned sections should
+    always carry a score), then the rest of the interleave. Only profitable rows
+    qualify — tradeability is meaningless for a build that loses ISK however you
+    sell it — and a product built by several blueprints appears once."""
+    cand = [r for r in rows if _row_profitable(r)]
+
+    def ranked(key):
+        return sorted((r for r in cand if r.get(key) is not None),
+                      key=lambda r: r[key], reverse=True)
+
+    patient, instant = ranked("isk_per_hour_patient"), ranked("isk_per_hour_instant")
+    interleaved = []
+    for i in range(max(len(patient), len(instant))):
+        interleaved.extend(lst[i] for lst in (patient, instant) if i < len(lst))
+    pinned = [r for r in cand if r.get("favorite") or r.get("owned_bp_me_te")]
+    seen, out = set(), []
+    for r in interleaved[:head] + pinned + interleaved[head:] + cand:
+        if r["product_id"] not in seen:
+            seen.add(r["product_id"])
+            out.append(r["product_id"])
+    return out
+
+
+_INSTANT_FIELDS = ("profit_instant", "total_profit_instant", "isk_per_hour_instant",
+                   "margin_instant", "bid", "payback_runs_instant")
+
+
+def apply_live_depth(r, e):
+    """Re-gate a row's instant-sell figures against the live ESI book depth `e`
+    ({buy_volume, sell_volume, bid}). Mirrors the front end's applyLiveDepth: if
+    the live buy book can't absorb the batch (out_qty × runs) — or has no bid —
+    the "instant sell" isn't real, so every instant-derived field is blanked and
+    the *_best figures fall back to patient. Only acts on VERIFIED depth: both
+    volumes None (not fetched / errored) leaves the row untouched. Only ever
+    suppresses, never fabricates."""
+    if e.get("buy_volume") is None and e.get("sell_volume") is None:
+        return
+    need = (r.get("out_qty") or 1) * (r.get("runs") or 1)
+    if e.get("bid") is None or (e.get("buy_volume") or 0) < need:
+        for k in _INSTANT_FIELDS:
+            r[k] = None
+        r["profit_best"] = r.get("profit_patient")
+        r["margin_best"] = r.get("margin_patient")
+        r["isk_per_hour_best"] = r.get("isk_per_hour_patient")
+
+
+def apply_liquidity(r, e):
+    """Patch one scan row with a tradeability-fill entry `e` (see
+    liquidity_entry) — or mark it done with no data when `e` is None — so the
+    saved scan carries the result and a reload shows it."""
+    if e is not None:
+        dv = e.get("daily_vol")
+        r["daily_vol"] = dv
+        r["days_to_sell"] = ((r.get("out_qty") or 1) * (r.get("runs") or 1) / dv) if dv else None
+        r["tradeability"] = e.get("tradeability")
+        if "buy_volume" in e:
+            r["buy_volume"] = e["buy_volume"]
+        if "sell_volume" in e:
+            r["sell_volume"] = e["sell_volume"]
+        apply_live_depth(r, e)
+    r["liq_loaded"] = True
+
+
+def liquidity_entry(daily_vol, live):
+    """The per-product payload a tradeability fill produces from its two market
+    reads: ~30d median daily volume and the live book summary."""
+    live = live or {}
+    return {
+        "daily_vol": daily_vol,
+        "tradeability": tradeability(daily_vol),
+        "buy_volume": live.get("buy_volume"),
+        "sell_volume": live.get("sell_volume"),
+        "bid": live.get("buy_max"),
+        "ask": live.get("sell_min"),
+    }
+
+
 def units_ahead_in_queue(sell_levels, price):
     """How many units are listed at or below `price` on the sell side -- the
     queue that must clear (or be undercut) before a fresh order at `price` starts

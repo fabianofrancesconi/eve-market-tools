@@ -1924,7 +1924,7 @@
   .ind-ins-v.neg, .ind-ins-v.bad { color:var(--red); }
   .ind-ins-v.warn { color:var(--gold,#c8a040); }
   @media (max-width:520px){
-    .ind-ins-stats { grid-template-columns:1fr; gap:6px; }
+    .ind-ins-stats { grid-template-columns:1fr 1fr; gap:8px 12px; }
     .ind-ins-stat + .ind-ins-stat { border-left:0; padding-left:0; }
     .ind-ins-acts { margin-left:0; }
   }

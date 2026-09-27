@@ -1485,7 +1485,14 @@ setInterval(()=>{
         const tl=el.closest(".ind-tile"); if(tl) tl.classList.add("ready");
         const bar=tl&&tl.querySelector(".ind-tile-bar"); if(bar) bar.remove();
       }
-      else if(inBuildCard){ el.textContent="ready for delivery"; el.removeAttribute("data-end"); }
+      else if(inBuildCard){
+        el.removeAttribute("data-end");
+        // The building insight re-renders into its "Ready for delivery" state
+        // (title, colour, full bar); other card countdowns just say so.
+        const ins=el.closest(".ind-insight");
+        const bb=ins&&IND.builds.find(x=>x.id===ins.dataset.id);
+        if(bb) _renderInsight(bb); else el.textContent="Ready for delivery";
+      }
       else if(IND.openDetail) renderIndDetail(IND.openDetail);
     } else {
       el.textContent=(isCell||isTile)?fmtCountdownShort(rem):fmtCountdown(rem);
@@ -1493,6 +1500,16 @@ setInterval(()=>{
   });
   tickCharRefreshTimer();
 }, 1000);
+
+// Esc closes the focused build card (the ✕ says "Close (Esc)") — unless a modal
+// is open or you're typing in a field, which own Esc themselves.
+document.addEventListener("keydown", e=>{
+  if(e.key!=="Escape" || !IND.focusedBuild || typeof ACTIVE_TAB==="undefined" || ACTIVE_TAB!=="ind") return;
+  const t=e.target, tag=t&&t.tagName;
+  if(tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT"||(t&&t.isContentEditable)) return;
+  if(document.querySelector(".ind-modal:not(.hidden), #chartExpandModal:not(.hidden), #arbChartModal:not(.hidden)")) return;
+  IND.focusedBuild=null; renderIndBuilds();
+});
 
 // ══════════════════════════════════════════════════════════════════════════
 // TRACKED BUILDS
@@ -1598,9 +1615,12 @@ function indOnTrackerPush(){
 // no-op push never disturbs an open card (a dragged slider, a scrolled drawer).
 // The last summary is folded back in before rendering so tiles keep their lane
 // while the fresh roll-up is in flight.
+let _indBuildsSeq=0;
 function refreshIndBuilds(){
   if(!AUTH.loggedIn || !IND.buildsLoaded) return;
+  const seq=++_indBuildsSeq;
   fetch("/api/ind/builds").then(r=>r.json()).then(res=>{
+    if(seq!==_indBuildsSeq) return;               // a newer pull superseded this one
     if(!res || !Array.isArray(res.builds)) return;
     const raw=JSON.stringify(res.builds);
     if(raw!==IND.buildsRaw){
@@ -1609,9 +1629,12 @@ function refreshIndBuilds(){
       if(IND.focusedBuild && !IND.builds.some(b=>b.id===IND.focusedBuild)) IND.focusedBuild=null;
       if(typeof SUMMARY!=="undefined" && SUMMARY.data) mergeSummaryBuilds(SUMMARY.data);
       _updateTrackCount();
-      // reconcileBuilds re-links jobs, renders and re-pulls the summary itself.
-      if(AUTH.data && AUTH.data.jobs){ reconcileBuilds(); return; }
-      renderIndBuilds();
+      // reconcileBuilds re-links jobs and renders — and re-pulls the summary
+      // itself, but only once a build is past planning.
+      if(AUTH.data && AUTH.data.jobs){
+        reconcileBuilds();
+        if(IND.builds.some(b=>b.done_at)) return;
+      } else renderIndBuilds();
     }
     if(typeof loadSummary==="function") loadSummary();
   }).catch(()=>{});
@@ -1710,6 +1733,11 @@ function _activeJobIdSet(){
 // Resolved station/structure name of the live job a build is linked to, or ""
 // if that job isn't in the current fetch. The server resolves facility_id to a
 // name (falling back to "Structure" for unnamed citadels) on each job.
+// HTML-escape a player-supplied string (character / structure / product name)
+// before it's interpolated into markup.
+function _indEsc(s){
+  return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
 function _buildJobLocation(b){
   // Prefer the live job's resolved location; fall back to the location persisted
   // when the build first linked, so built/listed/sold builds (whose job has left
@@ -2342,8 +2370,8 @@ function _buildTileHtml(b, linked){
   }
 
   return `<div class="ind-tile stage-${stage}${focused?" focused":""}${ready?" ready":""}" role="listitem"
-      tabindex="0" data-id="${b.id}" data-stage="${stage}" title="${(b.product_name||"").replace(/"/g,'&quot;')} — click for full detail">
-    <div class="ind-tile-name">${b.product_name||"?"}</div>
+      tabindex="0" data-id="${b.id}" data-stage="${stage}" title="${_indEsc(b.product_name)} — click for full detail">
+    <div class="ind-tile-name">${_indEsc(b.product_name||"?")}</div>
     <div class="ind-tile-runs">${n.toLocaleString()} run${n===1?"":"s"}</div>
     <div class="ind-tile-line">${line}</div>
     ${bar}
@@ -2457,7 +2485,7 @@ function _buildCardHtml(b, linked){
   return `<div class="ind-build-card ${badge.key} stage-${stage}" data-id="${b.id}">
     <div class="ind-build-row">
       <span class="ind-build-status ${badge.key}">${badge.label}</span>
-      <span class="ind-build-name">${b.product_name||"?"}</span>
+      <span class="ind-build-name">${_indEsc(b.product_name||"?")}</span>
       <span class="ind-build-runs">${n.toLocaleString()} run${n===1?"":"s"}</span>
       <button class="ind-build-toggle${expanded?" open":""}" aria-expanded="${expanded}" title="Show or hide the nitty gritty — pricing tools, cost basis, materials and build management">${expanded?"Hide details ▴":"Details ▾"}</button>
       <button class="ind-focus-close" title="Close (Esc)">✕</button>
@@ -2504,8 +2532,8 @@ function _stageTip(b, s, cls){
   if(s==="building"){
     if(active){
       const end=b.job_end?Date.parse(b.job_end):null;
-      const loc=_buildJobLocation(b);
-      const meta=(b.char_name?" · "+b.char_name:"")+(loc?" · 📍 "+loc:"");
+      const loc=_indEsc(_buildJobLocation(b));
+      const meta=(b.char_name?" · "+_indEsc(b.char_name):"")+(loc?" · 📍 "+loc:"");
       return end&&isFinite(end)
         ? `Building — manufacturing job running, ETA ${_stageTs(end/1000)}${meta}.`
         : (b.job_id!=null?`Building — job running${meta}.`
@@ -2619,7 +2647,7 @@ function _insightInner(b, stage, close){
     if(close){
       const cn=close.runs;
       return _insightShell({eyebrow:"Next step", title:`A ${cn.toLocaleString()}× job is already running`,
-        sub:`No exact ${n.toLocaleString()}× job, but this blueprint is in production${close.character_name?" on "+close.character_name:""}. Link it to re-base this build onto ${cn.toLocaleString()} run${cn===1?"":"s"}.`,
+        sub:`No exact ${n.toLocaleString()}× job, but this blueprint is in production${close.character_name?" on "+_indEsc(close.character_name):""}. Link it to re-base this build onto ${cn.toLocaleString()} run${cn===1?"":"s"}.`,
         warn:planWarn, stats, actions:`<button class="ind-build-linkclose" data-job="${close.job_id}" data-runs="${cn}" title="Link this build to that job and re-base it onto ${cn.toLocaleString()} run(s)">Link to ${cn.toLocaleString()}× job</button>`});
     }
     return _insightShell({eyebrow:"Next step", title:`Start ${n.toLocaleString()} run${n===1?"":"s"} in EVE`,
@@ -2632,10 +2660,10 @@ function _insightInner(b, stage, close){
     // answer; the market drift is the one reason to keep an eye on it meanwhile.
     const end=b.job_end?Date.parse(b.job_end):null;
     const hasEnd=end&&isFinite(end);
-    const loc=_buildJobLocation(b);
-    const meta=[b.char_name, loc?"📍 "+loc:"",
-      hasEnd?"ETA "+new Date(end).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""].filter(Boolean).join(" · ");
+    const loc=_indEsc(_buildJobLocation(b));
     const ready=hasEnd&&end<=Date.now();
+    const meta=[_indEsc(b.char_name), loc?"📍 "+loc:"",
+      hasEnd?(ready?"Finished ":"ETA ")+new Date(end).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""].filter(Boolean).join(" · ");
     const title=!hasEnd?"Running"
       :(ready?"Ready for delivery":`<span class="ind-live-timer" data-end="${end}">${fmtCountdown(end-Date.now())}</span>`);
     const startMs=(b.created_at||0)*1000;
@@ -2942,8 +2970,8 @@ function _buildDetailsHtml(b, stage){
   else
     btns.push(`<button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>`);
   const when=_stageTs(b.created_at);
-  const loc=_buildJobLocation(b);
-  const facts=[when?"Tracked "+when:"", b.char_name, loc?"📍 "+loc:""].filter(Boolean).join(" · ");
+  const loc=_indEsc(_buildJobLocation(b));
+  const facts=[when?"Tracked "+when:"", _indEsc(b.char_name), loc?"📍 "+loc:""].filter(Boolean).join(" · ");
   html+=sec("Manage", `<div class="ind-dt-manage">${btns.join("")}</div>${facts?`<div class="ind-dt-note">${facts}</div>`:""}`);
   return `<div class="ind-details">${html}</div>`;
 }
@@ -3035,6 +3063,15 @@ function _wireBuildDecider(card, b){
     if(e.target && e.target.classList.contains("ind-dec-slider"))
       _updateBuildDecider(b, +e.target.value);
   });
+  // Track a slider drag so a data refresh landing mid-drag waits for release.
+  root.addEventListener("pointerdown", e=>{
+    if(!(e.target && e.target.classList.contains("ind-dec-slider"))) return;
+    st.dragging=true;
+    window.addEventListener("pointerup", ()=>{
+      st.dragging=false;
+      if(st.bodyStale){ st.bodyStale=false; _renderDeciderBody(b); }
+    }, {once:true});
+  });
   root.addEventListener("click", e=>{
     const chip=e.target.closest && e.target.closest(".bp-chip");
     if(chip){ e.preventDefault(); _updateBuildDecider(b, +chip.dataset.price); }
@@ -3072,10 +3109,10 @@ function _fetchDeciderLive(b, quiet){
     // price/profit. The decider gates against it in _updateBuildDecider.
     st.live=ok?{ask:fresh.ask, bid:fresh.bid, buy_book:fresh.buy_book}:null;
     st.liveState="done";
-    _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); _renderTileFlag(b); _renderInsight(b);
+    _renderDeciderDrift(b); _deciderRepaintBody(b); _renderBuildWatch(b); _renderTileFlag(b); _renderInsight(b);
   }).catch(()=>{ const st=IND.decider[b.id]; if(!st) return;
     if(quiet && st.live) return;
-    st.liveAt=Date.now(); st.live=null; st.liveState="error"; _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); _renderInsight(b); });
+    st.liveAt=Date.now(); st.live=null; st.liveState="error"; _renderDeciderDrift(b); _deciderRepaintBody(b); _renderBuildWatch(b); _renderInsight(b); });
 }
 // Make sure a build's cached market read exists AND is fresh: first sight kicks
 // the normal fetch (the UI shows "Reading the market…"); a read older than
@@ -3083,7 +3120,9 @@ function _fetchDeciderLive(b, quiet){
 // new ones land, and a failed refresh keeps them — so an open board tracks the
 // market without a reload and without flicker. `needMarket` adds the order book
 // (built/listed); the live quote alone serves building.
-const _DECIDER_TTL=5*60*1000;
+// A bit under the 5-min background sweep, so each sweep finds the read stale
+// (at exactly 5 min, jitter made every other sweep skip it).
+const _DECIDER_TTL=4*60*1000;
 function _deciderEnsure(b, needMarket){
   const st=_deciderState(b), now=Date.now();
   if(st.liveState==="idle"){ st.liveState="loading"; _fetchDeciderLive(b); }
@@ -3107,10 +3146,18 @@ function _fetchDeciderMarket(b, quiet){
     st.marketAt=Date.now();
     st.market=ok?m:null;
     st.marketState=ok?"done":"error";
-    _renderDeciderBody(b); _renderTileFlag(b); _renderInsight(b);
+    _deciderRepaintBody(b); _renderTileFlag(b); _renderInsight(b);
   }).catch(()=>{ const st=IND.decider[b.id]; if(!st) return;
     if(quiet && st.market) return;
-    st.marketAt=Date.now(); st.market=null; st.marketState="error"; _renderDeciderBody(b); _renderInsight(b); });
+    st.marketAt=Date.now(); st.market=null; st.marketState="error"; _deciderRepaintBody(b); _renderInsight(b); });
+}
+// Re-render the decider body as fresh data lands — unless the slider is mid-drag
+// (a background refresh replacing the <input> would yank it from under the
+// pointer). Then it's marked stale and repainted when the drag ends.
+function _deciderRepaintBody(b){
+  const st=_deciderState(b);
+  if(st.dragging){ st.bodyStale=true; return; }
+  _renderDeciderBody(b);
 }
 // The predicted→now line: the list price you froze when tracking vs. the live
 // best ask, with the drift %. This is the "market moved under me" signal the

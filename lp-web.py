@@ -486,9 +486,11 @@ def _get_account_by_id(account_id):
     if data is None:
         return None
     acct = _hydrate_account(account_id, data)
+    # Two requests can race to hydrate the same account; keep whichever landed
+    # first so every session shares ONE Account object — the live-update pubsub is
+    # keyed on id(acct), and a split would leave a browser listening on the wrong one.
     with _REGISTRY_LOCK:
-        _ACCOUNTS[account_id] = acct
-    return acct
+        return _ACCOUNTS.setdefault(account_id, acct)
 
 
 _SESSION_TOUCH_INTERVAL = 3600           # bump DB last_seen at most hourly per sid
@@ -528,7 +530,7 @@ def _resolve_session(sid):
     acct = _get_account_by_id(account_id)
     if acct is not None:
         with _REGISTRY_LOCK:
-            _SESSIONS[sid] = acct
+            acct = _SESSIONS.setdefault(sid, acct)
     return acct
 
 
@@ -997,6 +999,7 @@ def do_auth_switch(q):
 def _forget_account(acct):
     """Drop an account and all its sessions from the caches + store."""
     _CHAR_PUBSUB.forget(id(acct))
+    _forget_tracker_digests(acct)
     with _REGISTRY_LOCK:
         _ACCOUNTS.pop(acct.account_id, None)
         for sid in [s for s, a in _SESSIONS.items() if a is acct]:
@@ -2175,7 +2178,8 @@ def _record_listed_units(acct, cid, orders):
             store = {}
         store[str(cid)] = per
         _acct_kv_save(acct, "ind_listed_units", IND_LISTED_UNITS_PATH, store)
-    _notify_tracker(acct, "ind_listed_units", store)
+        # Inside the lock, so the recorded digest is always the blob last written.
+        _notify_tracker(acct, "ind_listed_units", store)
 
 
 def do_ind_summary(q):
@@ -2505,6 +2509,14 @@ def _notify_tracker(acct, name, data):
             return
         _TRACKER_DIGESTS[key] = digest
     _CHAR_PUBSUB.bump_tracker(id(acct))
+
+
+def _forget_tracker_digests(acct):
+    """Drop a forgotten account's save digests — id() values get reused, and a
+    stale digest would swallow a new account's first change notification."""
+    with _TRACKER_DIGESTS_LOCK:
+        for key in [k for k in _TRACKER_DIGESTS if k[0] == id(acct)]:
+            _TRACKER_DIGESTS.pop(key, None)
 
 
 def _next_sync_in():

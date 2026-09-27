@@ -183,3 +183,96 @@ class TestClientLiveBoard:
         assert 'ACTIVE_TAB!=="ind"' in fn and 'IND.mode!=="summary"' in fn
         assert 'stage==="listed"' in fn
         assert "IND.focusedBuild" in fn
+
+
+class TestLiveUpdateRobustness:
+    def test_hydration_race_keeps_one_account_object(self, monkeypatch):
+        # Two requests hydrating the same account at once must end up sharing one
+        # Account: the tracker pubsub is keyed on id(acct), so a split leaves a
+        # browser's stream listening on an object nobody bumps.
+        racer = lp_web.Account(77)
+
+        def account_get(aid):
+            lp_web._ACCOUNTS[aid] = racer        # the other thread won meanwhile
+            return {"characters": {}}
+        monkeypatch.setattr(lp_web.pg_store, "account_get", account_get)
+        monkeypatch.setattr(lp_web, "_hydrate_account", lambda aid, d: lp_web.Account(aid))
+        monkeypatch.setattr(lp_web, "_ACCOUNTS", {})
+        assert lp_web._get_account_by_id(77) is racer
+
+    def test_session_cache_keeps_first_account(self, monkeypatch):
+        first = lp_web.Account(78)
+        monkeypatch.setattr(lp_web, "_SESSIONS", {})
+        monkeypatch.setattr(lp_web.pg_store, "session_get",
+                            lambda sid: (lp_web._SESSIONS.__setitem__(sid, first), 78)[1])
+        monkeypatch.setattr(lp_web, "_get_account_by_id", lambda aid: lp_web.Account(aid))
+        assert lp_web._resolve_session("sid-x") is first
+
+    def test_forgetting_an_account_drops_its_digests(self):
+        acct = _acct()
+        lp_web._save_tracked_builds(acct, [{"id": "a"}])
+        assert any(k[0] == id(acct) for k in lp_web._TRACKER_DIGESTS)
+        lp_web._forget_tracker_digests(acct)
+        assert not any(k[0] == id(acct) for k in lp_web._TRACKER_DIGESTS)
+        src = (_ROOT / "lp-web.py").read_text()
+        fn = src[src.index("def _forget_account("):src.index("def do_auth_logout(")]
+        assert "_forget_tracker_digests(acct)" in fn
+
+    def test_listed_units_notify_under_the_ledger_lock(self):
+        src = (_ROOT / "lp-web.py").read_text()
+        fn = src[src.index("def _record_listed_units("):src.index("def do_ind_summary(")]
+        # Indented into the `with _SELL_LEDGER_LOCK:` block.
+        assert '\n        _notify_tracker(acct, "ind_listed_units", store)' in fn
+
+
+class TestClientRobustness:
+    def test_refresh_always_repulls_the_summary(self):
+        fn = _sim_fn("refreshIndBuilds")
+        # reconcileBuilds only re-pulls it once a build is delivered; otherwise the
+        # refresh must, or a new/edited planned build leaves the strip stale.
+        assert "if(IND.builds.some(b=>b.done_at)) return;" in fn
+        assert "reconcileBuilds(); return;" not in fn
+
+    def test_refresh_drops_out_of_order_replies(self):
+        fn = _sim_fn("refreshIndBuilds")
+        assert "const seq=++_indBuildsSeq" in fn
+        assert "if(seq!==_indBuildsSeq) return" in fn
+
+    def test_background_data_never_rebuilds_a_dragged_slider(self):
+        rp = _sim_fn("_deciderRepaintBody")
+        assert "st.dragging" in rp and "st.bodyStale=true" in rp
+        for fetcher in ("_fetchDeciderLive", "_fetchDeciderMarket"):
+            fn = _sim_fn(fetcher)
+            assert "_deciderRepaintBody(b)" in fn
+            assert "_renderDeciderBody(b)" not in fn
+        wire = _sim_fn("_wireBuildDecider")
+        assert '"pointerdown"' in wire and "st.dragging=true" in wire
+        assert '"pointerup"' in wire and "st.bodyStale" in wire
+
+    def test_market_ttl_is_under_the_sweep(self):
+        # The sweep fires every 5 min; a TTL of exactly 5 min made alternate
+        # sweeps find the read "fresh" and skip it.
+        import re
+        m = re.search(r"const _DECIDER_TTL=(\d+)\*60\*1000;", _IND_JS)
+        assert m and int(m.group(1)) < 5
+
+    def test_escape_closes_the_focused_card(self):
+        i = _IND_JS.index('if(e.key!=="Escape" || !IND.focusedBuild')
+        handler = _IND_JS[i:i + 600]
+        assert "IND.focusedBuild=null; renderIndBuilds();" in handler
+        assert 'tag==="INPUT"' in handler
+        assert ".ind-modal:not(.hidden)" in handler
+
+    def test_building_countdown_zero_repaints_the_insight(self):
+        i = _IND_JS.index("else if(inBuildCard){")
+        assert "_renderInsight(bb)" in _IND_JS[i:i + 400]
+        ins = _sim_fn("_insightInner")
+        assert '(ready?"Finished ":"ETA ")' in ins
+
+    def test_player_strings_are_escaped(self):
+        assert "function _indEsc(" in _IND_JS
+        ins = _sim_fn("_insightInner")
+        assert "_indEsc(b.char_name)" in ins
+        assert "_indEsc(close.character_name)" in ins
+        assert "_indEsc(_buildJobLocation(b))" in ins
+        assert "_indEsc(b.product_name" in _sim_fn("_buildTileHtml")

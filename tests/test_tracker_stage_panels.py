@@ -103,7 +103,7 @@ class TestStagePanels:
         assert "Profit if listed" in built and "Profit if dumped now" in built
         assert "Dump into buy orders" in built
         read = _sim_fn("_builtRead")
-        assert "0.9999" in read
+        assert "eveUndercut(bestAsk)" in read
         assert "_dumpQuote(" in read
 
     def test_listed_shows_the_call_from_the_shared_read(self):
@@ -300,7 +300,7 @@ class TestInlineDecider:
         assert "out.fee=bfee*target*qty" in ev.replace(" ", "")
         assert "-out.fee" in ev.replace(" ", "")
         # Undercut the cheapest COMPETING ask; only a move down is a re-price.
-        assert "compAsk*0.9999" in ev
+        assert "eveUndercut(compAsk)" in ev
         # Never re-price into a loss: break-even covers cost + both broker fees.
         assert "(cpu+bfee*curPrice)/(1-stax-bfee)" in ev.replace(" ", "")
         assert "!out.belowBE" in ev
@@ -357,8 +357,8 @@ class TestInlineDecider:
         assert '(under && v.recCls==="good")?"warn"' in ins
 
     def test_prices_shown_at_full_value_not_abbreviated(self):
-        # EVE orders are to the cent — the decider's prices must use fmtISKFull
-        # (14,589.99), never fmtISK's abbreviation (14.6K). The drift line, the
+        # The decider's prices must be exact — fmtISKFull
+        # (14,589), never fmtISK's abbreviation (14.6K). The drift line, the
         # slider body/chips and the per-unit readout all format with fmtISKFull.
         for name in ("_renderDeciderDrift", "_renderDeciderBody",
                      "_updateBuildDecider"):
@@ -370,7 +370,8 @@ class TestInlineDecider:
     def test_full_formatter_exists(self):
         shared = (_ROOT / "static" / "js" / "shared.js").read_text()
         assert "function fmtISKFull(" in shared
-        assert "minimumFractionDigits:2" in shared.replace(" ", "")
+        # Cents only below 1,000 ISK; above it every valid EVE price is whole.
+        assert "minimumFractionDigits:d" in shared.replace(" ", "")
 
     def test_full_market_link_opens_modal(self):
         # The deep-dive stays in the tested modal — one link opens it on Market.

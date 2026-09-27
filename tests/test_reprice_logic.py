@@ -25,6 +25,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 _IND_JS = (_ROOT / "static" / "js" / "ind.js").read_text()
 _CHAR_JS = (_ROOT / "static" / "js" / "char.js").read_text()
 _LP_JS = (_ROOT / "static" / "js" / "lp.js").read_text()
+_SHARED_JS = (_ROOT / "static" / "js" / "shared.js").read_text()
 
 
 def _extract_fn(src, name):
@@ -57,6 +58,8 @@ def _extract_const(src, name):
 _CHAR_FNS = ["_unitsAheadInQueue", "_priceConditionedDailyRate", "_sellThroughProb",
              "_demandSurvivals", "_erfc"]
 _CHAR_CONSTS = ["_HISTORY_WINDOW_DAYS", "_DEMAND_DISPERSION", "_NORMAL_APPROX_MEAN"]
+_SHARED_FNS = ["_eveTickCents", "_eveCents", "eveTick", "eveSnapDown", "eveSnapUp",
+               "eveSnap", "eveUndercut"]
 _IND_FNS = ["_bookWithoutOwn", "_expectedUnitsSold", "_repricePaysOff", "_callVerdict",
             "_deciderBook", "_linkedOrderStanding", "_buildListedOrderPrice",
             "_listedUnderBE", "_listedRead", "_tileActionFlag", "_dumpQuote"]
@@ -66,6 +69,7 @@ def _lib():
     parts = [_extract_const(_CHAR_JS, c) for c in _CHAR_CONSTS]
     parts += [_extract_fn(_CHAR_JS, f) for f in _CHAR_FNS]
     parts += [_extract_fn(_LP_JS, "walkBook")]
+    parts += [_extract_fn(_SHARED_JS, f) for f in _SHARED_FNS]
     parts += [_extract_fn(_IND_JS, f) for f in _IND_FNS]
     return "\n".join(parts)
 
@@ -140,7 +144,9 @@ class TestRepricePaysOff:
         # 1.49M: undercutting sells far more this week and stays above break-even.
         r = _call("_repricePaysOff", _ctx())
         assert r["candidate"] and r["worth"]
-        assert r["target"] == pytest.approx(1_490_000 * 0.9999)
+        # One EVE price tick under the competitor (4 significant digits), not a
+        # fractional ×0.9999 that EVE would reject.
+        assert r["target"] == 1_489_000
         assert not r["belowBE"]
         assert r["eRep"] > r["eHold"]
 

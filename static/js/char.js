@@ -1428,7 +1428,7 @@ function _renderBuildPeekSim(){
   const isk=_peekIsk;
   // Reference prices for the slider ticks.
   const beList=be.list, frozen=s.ask, bestAsk=live.ask, bid=live.bid!=null?live.bid:s.bid;
-  const undercut=bestAsk!=null?bestAsk*0.9999:null;   // one ISK-ish under best ask
+  const undercut=bestAsk!=null?eveUndercut(bestAsk):null;   // one price tick under best ask
   const refs=[beList,frozen,bestAsk,bid,undercut].filter(v=>v!=null);
   if(!refs.length){ slot.innerHTML=`<div class="bp-sim-loading">Not enough price data to simulate.</div>`; return; }
   // Slider window: a little below break-even (or bid) up to a little above the
@@ -1445,7 +1445,7 @@ function _renderBuildPeekSim(){
     <input id="bp-sim-slider" class="bp-sim-slider" type="range" min="${lo}" max="${hi}" step="${step}" value="${start}"${
       beList!=null?` style="${_peekRailStyle(lo,hi,beList)}"`:""}>
     <div class="bp-sim-chips">
-      ${chip("Break-even ",beList)}
+      ${chip("Break-even ",eveSnapUp(beList))}
       ${chip("Best ask ",bestAsk)}
       ${chip("Undercut ",undercut)}
       ${chip("Frozen ",frozen)}
@@ -1467,6 +1467,7 @@ function _peekRailStyle(lo,hi,be){
 // Recompute the simulator outputs for a chosen list price.
 function _updateBuildPeekSim(price){
   const P=_PEEK; if(!P) return;
+  price=eveSnap(price);   // linear slider → a valid 4-significant-digit EVE price
   const {be,remaining,rz,stax,bfee,live}=P, isk=_peekIsk, sign=_peekSign, pn=_peekPn;
   const cpu=P.cpu;
   const priceEl=$("#bp-sim-price"); if(priceEl) priceEl.textContent=isk(price);
@@ -1513,7 +1514,7 @@ function _updateBuildPeekSim(price){
     const instProfit=(instUnit!=null&&cpu!=null)?(instUnit-cpu)*fillQty:null;
     const giveUp=(remProfit!=null&&instProfit!=null)?remProfit-instProfit:null;
     const bestAsk=live&&live.ask!=null?live.ask:null;
-    const ucUnit=(bestAsk!=null)?bestAsk*0.9999*(1-stax-bfee):null;
+    const ucUnit=(bestAsk!=null)?eveUndercut(bestAsk)*(1-stax-bfee):null;
     const ucProfit=(ucUnit!=null&&cpu!=null)?(ucUnit-cpu)*remaining:null;
     floor.innerHTML=`
       <div class="bp-floor-head">Reality check on the ${remaining.toLocaleString()} unsold</div>
@@ -1781,7 +1782,7 @@ function _renderBuildPeekProb(){
   }
   const be=P.be&&P.be.list, bestAsk=m.best_ask, frozen=P.s.ask;
   const proposed=(_buildProposedPrice?_buildProposedPrice(P.b):frozen);
-  const undercut=bestAsk!=null?bestAsk*0.9999:null;
+  const undercut=bestAsk!=null?eveUndercut(bestAsk):null;
   const refs=[be,bestAsk,frozen,undercut,proposed].filter(v=>v!=null);
   const lo=refs.length?Math.min(...refs)*0.9:0, hi=refs.length?Math.max(...refs)*1.15:1;
   const start=(proposed!=null)?proposed:(bestAsk!=null?bestAsk:hi);
@@ -1798,7 +1799,7 @@ function _renderBuildPeekProb(){
       ${chip("Best ask ",bestAsk)}
       ${chip("Undercut ",undercut)}
       ${chip("Proposed ",proposed)}
-      ${chip("Break-even ",be)}
+      ${chip("Break-even ",eveSnapUp(be))}
     </div>
     <div class="bp-mkt-out" id="bp-mkt-out"></div>
     <div class="bp-mkt-note">Odds use how much recent trade actually happened at or above your price, spread over each listing duration — so a price the market rarely pays stays low even over months. A guide, not a guarantee; a fresh undercut can change it fast.</div>`;
@@ -1807,6 +1808,7 @@ function _renderBuildPeekProb(){
 
 function _updateBuildPeekProb(price){
   const P=_PEEK; if(!P||!P.market) return; const m=P.market, isk=_peekIsk;
+  price=eveSnap(price);
   const priceEl=$("#bp-mkt-price"); if(priceEl) priceEl.textContent=isk(price);
   const slider=$("#bp-mkt-slider"); if(slider && +slider.value!==price) slider.value=price;
   const qty=Math.max(1, P.remaining||1);

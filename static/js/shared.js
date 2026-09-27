@@ -83,7 +83,54 @@ function fmtNum(n){ return (n===null||n===undefined)? "-" : Math.round(n).toLoca
 // that's a per-unit price a player acts on; keep fmtISK for aggregate totals.
 function fmtISKFull(n){
   if(n===null||n===undefined) return "-";
-  return n.toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2});
+  // A valid order price at or above 1,000 ISK is always whole (see eveTick), so
+  // cents there are noise; below it the tick can be 0.01–0.1 and cents matter.
+  const d=Math.abs(n)>=1000?0:2;
+  return n.toLocaleString(undefined,{minimumFractionDigits:d, maximumFractionDigits:d});
+}
+// EVE's market only accepts order prices with at most FOUR significant digits,
+// and never finer than 0.01 ISK: 34,290,000 and 1,234 and 12.34 are valid,
+// 34,286,571 is not. eveTick(p) is the price step at p's magnitude (1e7..1e8 →
+// 10,000; 1e3..1e4 → 1; <100 → 0.01). Math runs in integer cents so float noise
+// never lands a price a hair off the grid.
+function _eveTickCents(cents){
+  const digits=String(Math.max(1, Math.round(cents))).length;
+  return Math.pow(10, Math.max(0, digits-4));
+}
+function eveTick(p){
+  return _eveTickCents(Math.round(Math.abs(p)*100))/100;
+}
+// p in whole cents, rounded `dir`-wards — but a value already on a cent (bar
+// float noise, e.g. 12.34*100 = 1233.9999…) stays put.
+function _eveCents(p, dir){
+  const x=p*100, r=Math.round(x);
+  return Math.abs(x-r)<1e-4 ? r : (dir<0?Math.floor(x):Math.ceil(x));
+}
+// The nearest valid order price at or below / at or above / nearest to `p`.
+function eveSnapDown(p){
+  if(p==null || !(p>0)) return p;
+  const c=_eveCents(p,-1), t=_eveTickCents(c);
+  return Math.max(1, Math.floor(c/t)*t)/100;
+}
+function eveSnapUp(p){
+  if(p==null || !(p>0)) return p;
+  const c=_eveCents(p,1), t=_eveTickCents(c);
+  const up=Math.ceil(c/t)*t;          // may cross into the next magnitude (9,999.5 → 10,000)
+  return up/100;
+}
+function eveSnap(p){
+  if(p==null || !(p>0)) return p;
+  const d=eveSnapDown(p), u=eveSnapUp(p);
+  return (p-d<=u-p)?d:u;
+}
+// One tick under `p` — the price that undercuts an order listed at `p`. Crossing
+// a magnitude drops to the finer tick below it (10,000,000 → 9,999,000).
+function eveUndercut(p){
+  if(p==null || !(p>0)) return null;
+  const c=Math.round(p*100);
+  if(c<=1) return null;
+  const t=_eveTickCents(c-1);
+  return Math.floor((c-1)/t)*t/100;
 }
 // Generic 1..5 "heat" bucket for a 1-based rank within a set of `total`. Maps
 // position → one of the .heat-N classes (heat-1 = front/best, heat-5 = back).

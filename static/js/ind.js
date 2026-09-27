@@ -2572,8 +2572,8 @@ function _buildProposedPrice(b){
   const d=b.snapshot||{};
   const be=_buildBreakEven(b).list;
   const ask=d.ask;
-  if(ask==null) return be;
-  return (be!=null)?Math.max(ask, be):ask;
+  if(ask==null) return eveSnapUp(be);
+  return (be!=null)?eveSnapUp(Math.max(ask, be)):ask;
 }
 
 // ── Stage insight ────────────────────────────────────────────────────────────
@@ -2631,7 +2631,7 @@ function _insightInner(b, stage, close){
   const s=b.snapshot||{}, n=Math.max(1, b.runs||1);
   const econ=_batchEconomics(s, n);
   const copyBtn=(price, label)=>price==null?"":
-    `<button class="ind-ins-copy" data-price="${price}" title="Copy ${full(price)} to the cent, ready to paste into EVE">⧉ ${label||"Copy price"}</button>`;
+    `<button class="ind-ins-copy" data-price="${price}" title="Copy ${full(price)}, ready to paste into EVE">⧉ ${label||"Copy price"}</button>`;
 
   if(stage==="planned"){
     // "Is it started yet?" — the only thing that moves a planned build forward is
@@ -2643,7 +2643,7 @@ function _insightInner(b, stage, close){
     ];
     const fbe=_buildBreakEven(b).list;
     const planWarn=(econ.profitL!=null && econ.profitL<0 && fbe!=null)
-      ? `At the ask when you tracked it (${full(s.ask)}) this batch loses money — break-even is ${full(fbe)}/unit.`:"";
+      ? `At the ask when you tracked it (${full(s.ask)}) this batch loses money — break-even is ${full(eveSnapUp(fbe))}/unit.`:"";
     if(close){
       const cn=close.runs;
       return _insightShell({eyebrow:"Next step", title:`A ${cn.toLocaleString()}× job is already running`,
@@ -2704,11 +2704,11 @@ function _insightInner(b, stage, close){
        tip:r.fillQty<=0?"No buy order can take this batch right now"
          :r.fillQty<r.qty?`Only ${r.fillQty.toLocaleString()} of ${r.qty.toLocaleString()} units fit today's buy orders`:"Straight into buy orders, sales tax only"},
       odds,
-      {k:"Break-even", v:full(r.be.list), tip:_BE_TIP},
+      {k:"Break-even", v:full(eveSnapUp(r.be.list)), tip:_BE_TIP},
     ];
     // Dumping pays sales tax only, so its break-even is the lower "instant" one.
     const dumpWarn=(r.bid!=null && r.be.instant!=null && r.bid<r.be.instant-0.005)
-      ? `Dumping is under break-even (${full(r.be.instant)} after tax) — it loses ${isk(-r.instProfit)} on the batch.`:"";
+      ? `Dumping is under break-even (${full(eveSnapUp(r.be.instant))} after tax) — it loses ${isk(-r.instProfit)} on the batch.`:"";
     if(r.dump && r.price==null) return _insightShell({eyebrow:"Ready to sell", title:"No sell orders to list against", titleCls:"warn",
       sub:`Nobody's listing this right now — buy orders pay ${full(r.bid)}/unit for the whole batch.`,
       warn:dumpWarn, stats, actions:copyBtn(r.bid, "Copy bid")});
@@ -2760,13 +2760,13 @@ function _insightInner(b, stage, close){
         actions=copyBtn(lr.dumpBid, "Copy bid");
         break;
       case "reprice":
-        sub=`${lr.queueShort}. Undercutting to ${full(rp.target)} should sell ${units(rp.eRep)} of ${lr.qty.toLocaleString()} this week vs ${units(rp.eHold)} at your price — ${_signIsk(rp.gain)} after the new broker fee, still above break-even (${full(rp.repBE)}).`;
+        sub=`${lr.queueShort}. Undercutting to ${full(rp.target)} should sell ${units(rp.eRep)} of ${lr.qty.toLocaleString()} this week vs ${units(rp.eHold)} at your price — ${_signIsk(rp.gain)} after the new broker fee, still above break-even (${full(eveSnapUp(rp.repBE))}).`;
         actions=copyBtn(rp.target);
         break;
       case "underbe":
         // Still say when the undercut would out-earn holding: selling at a loss can
         // be the right stop-loss — that's the user's call, so give them the number.
-        sub=`${lr.queueShort}, but undercutting to ${full(rp.target)} would be under your break-even of ${full(rp.repBE)} once the new broker fee is paid.`
+        sub=`${lr.queueShort}, but undercutting to ${full(rp.target)} would be under your break-even of ${full(eveSnapUp(rp.repBE))} once the new broker fee is paid.`
           +(rp.gain!=null&&rp.gain>0?` It would still bank ${isk(rp.gain)} more than holding this week — a stop-loss, only if you've given up on your price.`:"");
         break;
       case "fee":
@@ -2862,7 +2862,7 @@ function _builtRead(b){
   if(st.liveState==="idle"||st.liveState==="loading") return {loading:true};
   const frozen=ctx.s.ask;
   const bestAsk=st.live?st.live.ask:null;
-  const price=(bestAsk!=null)?bestAsk*0.9999:frozen;
+  const price=(bestAsk!=null)?eveUndercut(bestAsk):frozen;
   const listProfit=(price!=null&&cpu!=null)?(price*(1-stax-bfee)-cpu)*qty:null;
   const dq=_dumpQuote(st, ctx.s.bid, qty);
   const instProfit=(dq.bid!=null&&cpu!=null)?(dq.bid*(1-stax)-cpu)*dq.fillQty:null;
@@ -3275,7 +3275,7 @@ function _renderDeciderBody(b){
   }
   const be=ctx.be.list, frozen=ctx.s.ask;
   const bestAsk=st.live?st.live.ask:null;
-  const undercut=bestAsk!=null?bestAsk*0.9999:null;
+  const undercut=bestAsk!=null?eveUndercut(bestAsk):null;
   const refs=[be,frozen,bestAsk,undercut].filter(v=>v!=null);
   if(!refs.length){
     slot.innerHTML=`<div class="ind-dec-loading">Live market unavailable — can't suggest a price right now.</div>`;
@@ -3293,12 +3293,12 @@ function _renderDeciderBody(b){
   slot.innerHTML=`
     <div class="ind-dec-price"><span class="ind-dec-price-v" data-role="price">${isk(st.price)}</span>
       <span class="ind-dec-price-u">/ unit</span>
-      <button class="ind-dec-copy" title="Copy this price to the cent, ready to paste into EVE's sell order">⧉ Copy</button></div>
+      <button class="ind-dec-copy" title="Copy this price, ready to paste into EVE's sell order">⧉ Copy</button></div>
     <input class="ind-dec-slider bp-sim-slider" type="range" min="${lo}" max="${hi}" step="${step}" value="${st.price}"${railStyle}>
     <div class="bp-sim-chips">
       ${chip("Undercut ",undercut)}
       ${chip("Best ask ",bestAsk)}
-      ${chip("Break-even ",be)}
+      ${chip("Break-even ",eveSnapUp(be))}
       ${chip("Predicted ",frozen)}
     </div>
     <div class="ind-dec-out" data-role="out"></div>`;
@@ -3314,6 +3314,7 @@ function _updateBuildDecider(b, price){
   if(!root) return;
   const st=_deciderState(b), ctx=_deciderCtx(b), isk=v=>v==null?"—":fmtISKFull(v);
   const stage=root.dataset.stage||"";
+  price=eveSnap(price);   // the slider is linear; EVE only takes 4-significant-digit prices
   st.price=price;
   const priceEl=root.querySelector('[data-role="price"]'); if(priceEl) priceEl.textContent=isk(price);
   const slider=root.querySelector(".ind-dec-slider"); if(slider && +slider.value!==price) slider.value=price;
@@ -3340,7 +3341,7 @@ function _updateBuildDecider(b, price){
   // a listed build can differ from your real order (the "Why" block covers that).
   const underBE=(ctx.be.list!=null)?ctx.be.list-price:null;
   const beLine=(underBE!=null && underBE>0)
-    ? `<span class="ind-dec-be bad">⚠ ${isk(price)} is under break-even (${isk(ctx.be.list)}) — listing there loses ${isk(underBE*(1-ctx.fees.stax-ctx.fees.bfee))}/unit</span>`
+    ? `<span class="ind-dec-be bad">⚠ ${isk(price)} is under break-even (${isk(eveSnapUp(ctx.be.list))}) — listing there loses ${isk(underBE*(1-ctx.fees.stax-ctx.fees.bfee))}/unit</span>`
     : "";
 
   // Sell-through odds + the raw market signals behind them (queue depth, the
@@ -3408,10 +3409,10 @@ function _updateBuildDecider(b, price){
           sells ${u(rp.eRep)} of ${lr.qty.toLocaleString()} in a week vs ${u(rp.eHold)} at your price;
           new broker fee ${isk(rp.fee)}; net <b class="${pn(rp.gain)}">${rp.gain==null?"—":_signIsk(rp.gain)}</b> vs holding
           (anything unsold after a week valued at today's bid).
-          Break-even after the new fee: <b class="${rp.belowBE?"neg":""}">${isk(rp.repBE)}</b>${rp.belowBE?" — the undercut is below it, so it would sell at a loss":""}.</div>`
+          Break-even after the new fee: <b class="${rp.belowBE?"neg":""}">${isk(eveSnapUp(rp.repBE))}</b>${rp.belowBE?" — the undercut is below it, so it would sell at a loss":""}.</div>`
       : "";
     const beRow=(lr.be!=null && lr.haveReal)
-      ? `<div class="ind-wait-be${lr.underBE!=null?" bad":""}">Break-even <b>${isk(lr.be)}</b> / unit — you're listed
+      ? `<div class="ind-wait-be${lr.underBE!=null?" bad":""}">Break-even <b>${isk(eveSnapUp(lr.be))}</b> / unit — you're listed
           ${lr.curPrice>=lr.be?`${isk(lr.curPrice-lr.be)} above it`:`<b>${isk(lr.be-lr.curPrice)} below it: every sale loses money</b>`}.</div>`
       : "";
     waitBlock=`
@@ -3534,9 +3535,10 @@ function _repricePaysOff(ctx){
   if(!ctx) return none;
   const {curPrice, compAsk, ahead, curRate, cpu, stax, bfee, series, qty, horizon}=ctx;
   if(curPrice==null || compAsk==null) return none;
-  // Only a move DOWN is a re-price: undercut the cheapest competitor by a hair.
-  const target=compAsk*0.9999;
-  if(!(target<curPrice-0.005)) return none;
+  // Only a move DOWN is a re-price: undercut the cheapest competitor by one
+  // price tick (EVE takes 4 significant digits, so 34,300,000 → 34,290,000).
+  const target=eveUndercut(compAsk);
+  if(target==null || !(target<curPrice-0.005)) return none;
   const out={...none, candidate:true, target};
   // Break-even for the re-listed units: cost + the fee already paid on your
   // current listing + the fresh fee at the new price, all out of the after-tax sale.
@@ -3634,7 +3636,7 @@ function _listedRead(b){
   let compAsk=(hasBook&&book.length)?book[0][0]:null;
   if(!hasBook && liveAsk!=null && !(haveReal && liveAsk>=listedPrice-0.005)) compAsk=liveAsk;
   const curPrice=haveReal?listedPrice
-             :(compAsk!=null)?compAsk*0.9999:(frozen!=null?frozen:ctx.be.list);
+             :(compAsk!=null)?eveUndercut(compAsk):(frozen!=null?frozen:eveSnapUp(ctx.be.list));
   if(curPrice==null) return null;
   const underBE=(ctx.be.list!=null && curPrice<ctx.be.list-0.005)?ctx.be.list:null;
   // Demand at your price (curRate) vs the market's full pace ignoring price
@@ -3718,21 +3720,22 @@ function _tileActionFlag(b){
   const r=_listedRead(b);
   if(r && r.v.action) return {action:r.v.action, tip:`Suggested action: ${r.v.rec}`};
   const u=r?(r.underBE!=null?{price:r.curPrice, be:r.underBE}:null):_listedUnderBE(b);
-  if(u) return {action:"underbe", tip:`Listed at ${fmtISKFull(u.price)}, under your break-even of ${fmtISKFull(u.be)} — every sale loses money`};
+  if(u) return {action:"underbe", tip:`Listed at ${fmtISKFull(u.price)}, under your break-even of ${fmtISKFull(eveSnapUp(u.be))} — every sale loses money`};
   return null;
 }
 // The label a tile flag shows for each action.
 const _TILE_FLAG_LABEL={dump:"Dump", reprice:"Re-price", underbe:"Below break-even"};
-// Copy the currently-dialled list price to the cent (Math.round to 2dp),
+// Copy the currently-dialled list price (snapped to a valid EVE price),
 // matching the modal's copy behaviour so a listed order pastes straight in.
 function _deciderCopy(b, btn){
   const st=_deciderState(b);
   _deciderCopyValue(st.price, btn);
 }
-// Copy any price value to the cent, with a transient "✓ Copied" on the button.
+// Copy any price value as a valid EVE order price (4 significant digits, see
+// eveTick), with a transient "✓ Copied" on the button.
 function _deciderCopyValue(price, btn){
   if(price==null) return;
-  const txt=String(Math.round(price*100)/100);
+  const txt=String(eveSnap(price));
   const done=()=>{ const o=btn.textContent; btn.textContent="✓"; setTimeout(()=>{btn.textContent=o;},1200); };
   if(navigator.clipboard&&navigator.clipboard.writeText)
     navigator.clipboard.writeText(txt).then(done).catch(()=>fallbackCopy(txt,done));

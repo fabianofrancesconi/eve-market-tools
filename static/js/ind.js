@@ -2118,11 +2118,8 @@ function renderIndBuilds(){
       // The full card for whichever tile is focused, docked under the board.
       const fb=IND.focusedBuild ? IND.builds.find(b=>b.id===IND.focusedBuild) : null;
       if(fb){
+        // The card's own header carries the close button (✕), so no extra head.
         html+=`<div class="ind-focus" data-id="${fb.id}">
-          <div class="ind-focus-head">
-            <span class="ind-focus-lbl">Build detail</span>
-            <button class="ind-focus-close" title="Close (Esc)">✕ Close</button>
-          </div>
           ${_buildCardHtml(fb, linked)}
         </div>`;
       }
@@ -2392,73 +2389,33 @@ function _batchEconomics(d, n){
 
 function _buildCardHtml(b, linked){
   const n=Math.max(1, b.runs||1);
-  const st=_buildStatus(b);
-  const when=b.created_at?new Date(b.created_at*1000).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):"";
-  // Status line: warning if no job yet, live countdown + ETA while building.
-  // Once built/listed/sold there's no line — the stepper hover carries the state.
-  // Gate on the lifecycle `stage`, not the raw job status: a linked job can still
-  // sit in ESI's active list after the batch has been listed and fully sold, so
-  // _buildStatus would say "building" and render a live countdown on a Sold card.
   const stage=_buildStage(b);
-  let statusLine="";
-  if(stage==="planned" && st.key==="awaiting"){
-    // If a running job for this blueprint exists with a different run count,
-    // offer it as a one-click close match instead of only nagging. `linked` is
-    // shared across cards this render, and includes jobs already suggested to an
-    // earlier awaiting card — so two awaiting builds of the same blueprint never
-    // both point at the same job (which would double-link on accept).
-    const claimedJobs=linked||new Set();
-    const close=AUTH.loggedIn ? _findCloseJobForBuild(b, claimedJobs) : null;
-    if(close){
-      claimedJobs.add(String(close.job_id));   // reserve it for this card
-      const cn=close.runs;
-      statusLine=`<span class="ind-build-warn">No exact match — but a running `
-        +`<b>${cn.toLocaleString()}×</b> job of this blueprint`
-        +`${close.character_name?" ("+close.character_name+")":""} is in progress `
-        +`(you tracked ${n.toLocaleString()}×).</span> `
-        +`<button class="ind-build-linkclose" data-job="${close.job_id}" `
-        +`data-runs="${cn}" title="Link this build to that job and re-base it onto ${cn.toLocaleString()} run(s)">`
-        +`Link to ${cn.toLocaleString()}× job</button>`;
-    } else {
-      statusLine=`<span class="ind-build-warn">No matching in-game job yet — start ${n.toLocaleString()}× run(s) of this blueprint in EVE${AUTH.loggedIn?" and it'll link automatically":"; log in with EVE to link"}.</span>`;
-    }
-  } else if(stage==="building"){
-    const end=b.job_end?Date.parse(b.job_end):null;
-    // The linked live job carries a resolved station/structure name — show where
-    // the batch is being built so a multi-location industrialist knows where to
-    // pick it up.
-    const loc=_buildJobLocation(b);
-    const meta=(b.char_name?" · "+b.char_name:"")+(loc?" · 📍 "+loc:"");
-    statusLine=end && isFinite(end)
-      ? `<span class="ind-build-live ind-live-timer" data-end="${end}">${fmtCountdown(end-Date.now())}</span> <span class="ind-build-eta">ETA ${new Date(end).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}${meta}</span>`
-      : `<span class="ind-build-live">running${meta}</span>`;
+  // A planned build with no exact job may still have a running job of the same
+  // blueprint at a different run count — offered as a one-click close match. The
+  // `linked` set is shared across this render and includes jobs already offered
+  // to an earlier awaiting card, so two builds never point at the same job.
+  let close=null;
+  if(stage==="planned" && _buildStatus(b).key==="awaiting" && AUTH.loggedIn){
+    const claimed=linked||new Set();
+    close=_findCloseJobForBuild(b, claimed);
+    if(close) claimed.add(String(close.job_id));   // reserve it for this card
   }
-  // Once the build is finished (built/listed/sold) the stepper + sell block carry
-  // the state; the old "Build finished <date>" line is gone — its timestamp now
-  // lives in the stepper's hover tooltip.
   const expanded=IND.buildsExpanded.has(b.id);
-  const detail=expanded?_buildDetailHtml(b):"";
   const badge=_buildBadge(b, stage);
-  const stepper=_buildStepperHtml(b, stage);
-  const sellBlock=_buildSellHtml(b, stage);
-  // Header is pure identity now — name, run count, when it was frozen. The
-  // economics (cost, both exit strategies, build time) used to crowd this row as
-  // eight dim chips AND repeat in the expanded detail below; they now live in one
-  // place, the detail's readout, so the panel reads top-to-bottom without saying
-  // the same numbers twice.
+  // One anatomy for every stage: identity header → stepper → the stage's single
+  // insight (what matters right now) → the Details drawer, opened on demand,
+  // which holds every number, tool and management action behind that insight.
   return `<div class="ind-build-card ${badge.key} stage-${stage}" data-id="${b.id}">
     <div class="ind-build-row">
       <span class="ind-build-status ${badge.key}">${badge.label}</span>
       <span class="ind-build-name">${b.product_name||"?"}</span>
-      <span class="ind-build-runs">${n.toLocaleString()} run(s)</span>
-      <span class="ind-build-when">frozen ${when}</span>
-      <button class="ind-build-toggle" title="Show or hide the full frozen breakdown — cost basis, both sell strategies and the material list">${expanded?"▲ Hide detail":"▼ Full detail"}</button>
-      ${(stage==="listed"||stage==="sold")?"":`<button class="ind-build-del" title="Stop tracking this build">✕</button>`}
+      <span class="ind-build-runs">${n.toLocaleString()} run${n===1?"":"s"}</span>
+      <button class="ind-build-toggle${expanded?" open":""}" aria-expanded="${expanded}" title="Show or hide the nitty gritty — pricing tools, cost basis, materials and build management">${expanded?"Hide details ▴":"Details ▾"}</button>
+      <button class="ind-focus-close" title="Close (Esc)">✕</button>
     </div>
-    ${stepper}
-    ${statusLine?`<div class="ind-build-substatus">${statusLine}</div>`:""}
-    ${sellBlock}
-    ${detail}
+    ${_buildStepperHtml(b, stage)}
+    ${_buildInsightHtml(b, stage, close)}
+    ${expanded?_buildDetailsHtml(b, stage):""}
   </div>`;
 }
 
@@ -2540,210 +2497,336 @@ function _buildProposedPrice(b){
   return (be!=null)?Math.max(ask, be):ask;
 }
 
-// The sell section of a card — the stage's actionable heart. Each lifecycle
-// stage answers ONE question, and the panel shows only what serves that answer;
-// everything else lives behind the "Full detail" toggle. Sales are FULLY
-// AUTOMATIC in the pooled model (money accrues from wallet transactions, no order
-// linking), so there are no start/link/close/edit buttons.
-//  • planned  → "what do I buy, and is it worth it?" — the batch shopping bill
-//               plus a list-vs-instant profit hint.
-//  • building → "where is it and when's it done?" — nothing to act on but a look-
-//               ahead at the market (the price decider works pre-delivery too).
-//  • built    → "what do I list it at?" — the inline price decider: predicted-vs-
-//               now drift, a break-even-aware price slider, live sell-through odds
-//               and a copy-to-the-cent price.
-//  • listed   → "should I re-price to move it?" — sold-so-far + the same decider,
-//               scoped to the unsold remainder.
-//  • sold      → "how did I do vs the plan?" — real profit against the prediction,
-//               with a what-if for dumping into buy orders instead.
-function _buildSellHtml(b, stage){
-  const isk=v=>v===null||v===undefined?"—":fmtISK(v);
+// ── Stage insight ────────────────────────────────────────────────────────────
+// The focused face of an opened build: ONE answer to the question its stage
+// poses, in the same anatomy at every stage so the eye always knows where to look:
+//   eyebrow  — the stage's framing ("Next step", "In production", …)
+//   title    — the answer itself (an instruction, a countdown, a verdict, a result)
+//   sub      — one plain line of context for that answer
+//   stats    — at most three supporting figures
+//   actions  — the one thing to do about it (copy a price, link a job, archive)
+// Per stage:
+//  • planned  → "start the runs in EVE" (or link a close-match job) + cost/profit/time
+//  • building → the live countdown + where/when + how the market moved meanwhile
+//  • built    → the price to list at (or "dump"), with both exits' profit + odds
+//  • listed   → the hold / re-price / dump Call and the one reason behind it
+//  • sold     → real profit, judged against the plan and against dumping
+// Everything else — the price slider, queue diagnosis, cost basis, materials,
+// plan-vs-reality breakdown and the manage buttons — lives in the Details drawer
+// (_buildDetailsHtml). Built/building/listed insights depend on the live quote +
+// order book, so they re-render in place (_renderInsight) as those fetches land.
+function _buildInsightHtml(b, stage, close){
+  return `<div class="ind-insight stage-${stage}" data-id="${b.id}" data-stage="${stage}">${_insightInner(b, stage, close)}</div>`;
+}
+// The shared shell every stage fills — the single source of the insight layout.
+function _insightShell({eyebrow, title, titleCls, sub, bar, stats, actions}){
+  const stat=x=>`<div class="ind-ins-stat"${x.tip?` title="${String(x.tip).replace(/"/g,"&quot;")}"`:""}>
+      <span class="ind-ins-k">${x.k}</span><span class="ind-ins-v ${x.cls||""}">${x.v}</span></div>`;
+  const list=(stats||[]).filter(Boolean);
+  return `<div class="ind-ins-eyebrow">${eyebrow}</div>
+    <div class="ind-ins-head">
+      <div class="ind-ins-title ${titleCls||""}">${title}</div>
+      ${actions?`<div class="ind-ins-acts">${actions}</div>`:""}
+    </div>
+    ${sub?`<div class="ind-ins-sub">${sub}</div>`:""}
+    ${bar!=null?`<div class="ind-ins-bar"><i style="width:${Math.max(0,Math.min(100,bar)).toFixed(1)}%"></i></div>`:""}
+    ${list.length?`<div class="ind-ins-stats">${list.map(stat).join("")}</div>`:""}`;
+}
+function _insightInner(b, stage, close){
+  const isk=v=>v==null?"—":fmtISK(v);
+  const full=v=>v==null?"—":fmtISKFull(v);
   const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
   const s=b.snapshot||{}, n=Math.max(1, b.runs||1);
   const econ=_batchEconomics(s, n);
+  const copyBtn=(price, label)=>price==null?"":
+    `<button class="ind-ins-copy" data-price="${price}" title="Copy ${full(price)} to the cent, ready to paste into EVE">⧉ ${label||"Copy price"}</button>`;
 
   if(stage==="planned"){
-    // Pre-commitment view: "is this build still worth starting?" The two exit
-    // routes are the anchor — but framed as a FORECAST, priced at today's market,
-    // that will drift by the time the lot is actually in hand. The shopping bill
-    // sits above as the stake; a forecast rail below foreshadows the time delta
-    // (roughly the build time) so the user starts expecting predicted≠reality.
-    const matCost=(econ.matCost!=null)?econ.matCost
-      :(s.material_cost!=null?s.material_cost*n:null);
-    const nMats=(s.required_items||[]).length;
-    const units=_buildUnits(b);
-    const horizon=econ.time!=null?fmtDur(econ.time):null;
-    return `<div class="ind-sell ind-plan" data-id="${b.id}">
-      <div class="ind-plan-buy">
-        <span class="ind-plan-lbl">Shopping bill</span>
-        <span class="ind-plan-cost">${isk(matCost)}</span>
-        <span class="ind-plan-sub">${nMats?`${nMats.toLocaleString()} material${nMats===1?"":"s"} · `:""}${units!=null?`${units.toLocaleString()} unit${units===1?"":"s"} out`:""} · full list below</span>
-      </div>
-      <div class="ind-plan-out" data-role="routes">
-        <div class="ind-plan-way list">
-          <span class="ind-plan-way-lbl">Sell &amp; wait</span>
-          <b class="${pn(econ.profitL)}">${_signIsk(econ.profitL)}</b>
-          <span class="ind-plan-way-sub">list &amp; be patient — if it sells</span>
-        </div>
-        <div class="ind-plan-way instant">
-          <span class="ind-plan-way-lbl">or dump now</span>
-          <b class="${pn(econ.profitI)}">${_signIsk(econ.profitI)}</b>
-          <span class="ind-plan-way-sub">straight into buy orders — sure thing</span>
-        </div>
-      </div>
-      <div class="ind-plan-forecast">⌛ <b>Forecast</b> at today's prices${horizon?` — this lands in about <b>${horizon}</b> of build time`:""}. The market can move by delivery, so re-check the real spread once it's built.</div>
-    </div>`;
+    // "Is it started yet?" — the only thing that moves a planned build forward is
+    // starting the job in game; the economics are the stake, shown as three stats.
+    const stats=[
+      {k:"Batch cost", v:isk(econ.cost), tip:"Materials + job install (+ invention) for the whole batch, at the prices frozen when tracked"},
+      {k:"Profit if listed", v:_signIsk(econ.profitL), cls:pn(econ.profitL), tip:"Forecast at the frozen ask — the market can move by delivery"},
+      {k:"Build time", v:econ.time!=null?fmtDur(econ.time):"—"},
+    ];
+    if(close){
+      const cn=close.runs;
+      return _insightShell({eyebrow:"Next step", title:`A ${cn.toLocaleString()}× job is already running`,
+        sub:`No exact ${n.toLocaleString()}× job, but this blueprint is in production${close.character_name?" on "+close.character_name:""}. Link it to re-base this build onto ${cn.toLocaleString()} run${cn===1?"":"s"}.`,
+        stats, actions:`<button class="ind-build-linkclose" data-job="${close.job_id}" data-runs="${cn}" title="Link this build to that job and re-base it onto ${cn.toLocaleString()} run(s)">Link to ${cn.toLocaleString()}× job</button>`});
+    }
+    return _insightShell({eyebrow:"Next step", title:`Start ${n.toLocaleString()} run${n===1?"":"s"} in EVE`,
+      sub:AUTH.loggedIn?"It links to this build automatically once the job appears.":"Log in with EVE to link the job automatically.",
+      stats});
   }
 
   if(stage==="building"){
-    // Dead time — nothing to act on yet, but the delta accrues here. The ETA +
-    // location sit in the status line above; this panel gives the user a REASON
-    // to check: has the market moved under the frozen plan since it started? The
-    // watch (wired async) shows frozen-ask → live-ask drift and what that does to
-    // the projected list profit — early warning that the forecast is drifting,
-    // without pretending they can list yet.
-    return `<div class="ind-sell ind-sell-peek" data-id="${b.id}">
-      <div class="ind-watch" data-id="${b.id}" data-role="watch">
-        <div class="ind-watch-load">Checking how the market's moved since you started this build…</div>
-      </div>
-      <button class="ind-sell-analyze" title="Open the price decision tool: market trend + the odds this batch sells within a day at a given price — look ahead before it's delivered">📊 See the full market ▸</button>
-    </div>`;
+    // "When's it done, and is the plan still holding?" — the countdown IS the
+    // answer; the market drift is the one reason to keep an eye on it meanwhile.
+    const end=b.job_end?Date.parse(b.job_end):null;
+    const hasEnd=end&&isFinite(end);
+    const loc=_buildJobLocation(b);
+    const meta=[b.char_name, loc?"📍 "+loc:"",
+      hasEnd?"ETA "+new Date(end).toLocaleString([],{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):""].filter(Boolean).join(" · ");
+    const ready=hasEnd&&end<=Date.now();
+    const title=!hasEnd?"Running"
+      :(ready?"Ready for delivery":`<span class="ind-live-timer" data-end="${end}">${fmtCountdown(end-Date.now())}</span>`);
+    const startMs=(b.created_at||0)*1000;
+    const pct=(hasEnd&&end>startMs)?(Date.now()-startMs)/(end-startMs)*100:null;
+    const w=_buildWatchRead(b);
+    const drift=(w&&w.pct!=null)
+      ? {k:"Market since start", v:w.still?"steady":`${w.up?"▲":"▼"} ${w.pct.toFixed(1)}%`, cls:w.still?"":(w.up?"pos":"neg"),
+         tip:`Frozen ask ${full(w.frozen)} → live ${full(w.now)}`}
+      : {k:"Market since start", v:(w&&w.loading)?"checking…":"—"};
+    const profit=(w&&w.nowProfit!=null)
+      ? {k:"Profit at today's ask", v:_signIsk(w.nowProfit), cls:pn(w.nowProfit), tip:`Planned ${_signIsk(econ.profitL)} at the frozen ask`}
+      : {k:"Profit if listed", v:_signIsk(econ.profitL), cls:pn(econ.profitL)};
+    return _insightShell({eyebrow:"In production", title, titleCls:ready?"pos":"live",
+      sub:meta||"Manufacturing job running.", bar:ready?100:pct,
+      stats:[pct!=null?{k:"Progress", v:`${Math.max(0,Math.min(100,pct)).toFixed(0)}%`}:null, profit, drift]});
   }
 
   if(stage==="built"){
-    // THE decision stage: what to list at. The inline decider carries it — a
-    // live drift vs the frozen prediction, a price slider with sell-through odds,
-    // and BOTH exit routes side by side: list at your chosen price (patient) vs
-    // dump into buy orders now (instant). Each shows its own profit so the trade
-    // — more ISK later vs. cash today — is a direct comparison, not a guess.
-    return `<div class="ind-sell ind-sell-nudge" data-id="${b.id}">
-      <div class="ind-sell-headrow">
-        <span class="ind-sell-head">It's built — list or dump?</span>
-        <span class="ind-sell-subhead">the plan meets the market</span>
-      </div>
-      ${_buildDeciderHtml(b, stage)}
-      <div class="ind-sell-hint">List it in EVE at your chosen price, or dump into buy orders — sales track themselves from your wallet, oldest batch first. Nothing to link.</div>
-      <div class="ind-sell-foot">
-        <button class="ind-sell-edit" title="Correct this build's run count if it didn't match reality. Re-scales produced units; sold units are untouched.">Edit runs</button>
-        <button class="ind-sell-stop" title="Stop tracking this build. Anything already sold stays in your stats (frozen); the unsold units are left untracked and flagged. Reversible.">Stop tracking ▸</button>
-        <button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>
-      </div>
-    </div>`;
+    // "What do I list it at?" — one price, copyable, with both exits' profit so the
+    // list-vs-dump trade is visible without the slider (that's in Details).
+    const r=_builtRead(b);
+    if(r.loading) return _insightShell({eyebrow:"Ready to sell", title:"Reading the market…",
+      sub:"Fetching the live best ask and buy orders.", stats:[]});
+    if(r.price==null && r.bid==null) return _insightShell({eyebrow:"Ready to sell",
+      title:"No live price right now", sub:"Couldn't read the market — open Details to price it by hand.", stats:[]});
+    const odds=r.weekAll!=null
+      ? {k:"Sells within a week", v:`${(r.weekAll*100).toFixed(0)}%`, cls:r.weekAll>=0.66?"pos":(r.weekAll<0.33?"neg":"warn"),
+         tip:"Odds the whole batch sells within 7 days at this price, from recent trading volume and the queue ahead of you"}
+      : {k:"Sells within a week", v:r.marketLoading?"…":"—"};
+    const driftTxt=r.driftPct==null?"":(Math.abs(r.driftPct)<1?" · market's holding near your plan"
+      :` · market is ${Math.abs(r.driftPct).toFixed(1)}% ${r.driftPct>0?"above":"below"} your plan`);
+    const stats=[
+      {k:"Profit if listed", v:_signIsk(r.listProfit), cls:pn(r.listProfit), tip:"At the suggested price, after sales tax + broker fee"},
+      {k:"Profit if dumped now", v:_signIsk(r.instProfit), cls:pn(r.instProfit),
+       tip:r.fillQty<r.qty?`Only ${r.fillQty.toLocaleString()} of ${r.qty.toLocaleString()} units fit today's buy orders`:"Straight into buy orders, sales tax only"},
+      odds,
+    ];
+    if(r.dump) return _insightShell({eyebrow:"Ready to sell", title:"Dump into buy orders", titleCls:"warn",
+      sub:`Listing at the best ask would lose money — buy orders pay ${full(r.bid)}/unit.`,
+      stats, actions:copyBtn(r.bid, "Copy bid")});
+    return _insightShell({eyebrow:"Ready to sell", title:`List at ${full(r.price)}`,
+      sub:(r.bestAsk!=null?"Just under the current best ask":"At your planned ask — no live quote")+driftTxt+".",
+      stats, actions:copyBtn(r.price)});
+  }
+
+  if(stage==="listed"){
+    // "Keep waiting, or act?" — the Call, with the one reason behind it. The queue
+    // and demand diagnosis that produced it are spelled out in Details.
+    const rz=_buildRealized(b);
+    const target=_buildUnits(b)||0;
+    const st=_deciderState(b);
+    const lr=_listedRead(b);
+    const listedAt=_buildListedOrderPrice(b);
+    const stats=[
+      {k:"Sold", v:`${rz.units.toLocaleString()} / ${target.toLocaleString()}`, tip:"Sales accrue from your wallet automatically, oldest batch first"},
+      {k:"Realized", v:_signIsk(rz.profit), cls:pn(rz.profit)},
+      {k:"Your price", v:full(listedAt), tip:listedAt==null?"No open sell order of this item found":"Your open sell order for this item"},
+    ];
+    const bar=target>0?rz.units/target*100:0;
+    if(!lr){
+      const loading=st.marketState==="idle"||st.marketState==="loading";
+      return _insightShell({eyebrow:"On the market", title:loading?"Reading the market…":"Selling",
+        sub:loading?"Checking your place in the queue and recent demand."
+          :`${rz.units.toLocaleString()} of ${target.toLocaleString()} sold — sales accrue from your wallet automatically.`,
+        bar, stats});
+    }
+    const v=lr.v;
+    let sub, actions="";
+    if(v.action==="dump"){
+      sub=`Your price is under break-even — dumping the ${lr.qty.toLocaleString()} left nets ${_signIsk(lr.instProfit)}.`;
+      actions=copyBtn(lr.dumpBid, "Copy bid");
+    } else if(v.action==="reprice"){
+      sub=`${lr.queueShort} — undercut to ${full(lr.target)} to join the flow.`;
+      actions=copyBtn(lr.target);
+    } else if(v.rec.startsWith("Hold — re-pricing")){
+      sub="You're priced above the market, but a fresh broker fee + a lower price would eat the gain.";
+    } else if(v.rec.startsWith("Hold — but")){
+      sub=`${lr.queueShort}. Slow market — expect this one to take a while.`;
+    } else {
+      sub=`${lr.queueShort}.`;
+    }
+    return _insightShell({eyebrow:"On the market", title:v.rec, titleCls:v.recCls, sub, bar, stats, actions});
   }
 
   if(stage==="stopped"){
-    // A dead, frozen build the user stopped following with stock still unsold.
-    // What sold keeps its real profit; the held remainder was orphaned onto the
-    // market untracked (surfaced by the per-product badge elsewhere). Only action
-    // is to resume tracking — which hands its lots back to reconcile live.
+    // A frozen build the user stopped following with stock still unsold. The only
+    // action is to resume tracking, which hands its lots back to reconcile.
     const rz=_buildRealized(b);
     const orphan=b.stopped_held||0;
-    return `<div class="ind-sell ind-sell-stopped-panel" data-id="${b.id}">
-      <div class="ind-done-hero">
-        <div class="ind-done-lbl">Stopped tracking · realized</div>
-        <div class="ind-done-val ${pn(rz.profit)}">${_signIsk(rz.profit)}</div>
-        <div class="ind-done-sub">${rz.units.toLocaleString()} sold${orphan>0?` · ${orphan.toLocaleString()} left on the market, untracked`:""}</div>
-      </div>
-      <div class="ind-sell-foot">
-        <button class="ind-sell-resume" title="Resume tracking this build — reconcile picks its lots back up and later sales of this item can accrue to it again.">Resume tracking</button>
-        <button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>
-      </div>
-    </div>`;
+    return _insightShell({eyebrow:"Stopped tracking", title:_signIsk(rz.profit), titleCls:pn(rz.profit),
+      sub:orphan>0?`${orphan.toLocaleString()} unit${orphan===1?"":"s"} left on the market, untracked — their sales won't count here.`:"Nothing left unsold.",
+      stats:[{k:"Sold", v:rz.units.toLocaleString()}, {k:"Realized", v:_signIsk(rz.profit), cls:pn(rz.profit)}],
+      actions:`<button class="ind-sell-resume" title="Resume tracking this build — reconcile picks its lots back up and later sales of this item can accrue to it again.">Resume tracking</button>`});
   }
 
-  if(stage==="listed"||stage==="sold"){
-    const rz=_buildRealized(b);
-    const target=_buildUnits(b)||0;
-    const cpu=b.cost_per_unit;
-    const remain=Math.max(0, target-rz.units);
-    const closed=stage==="sold";
-    const closedEarly=closed&&b.abandoned;
-
-    if(closed){
-      // Game over — compare the plan against reality. The hero is the real
-      // realized profit; beside it, what we predicted when the build was tracked
-      // (frozen list estimate) and the delta, plus a what-if: had you dumped the
-      // whole lot into buy orders at the frozen bid instead.
-      const predicted=econ.profitL;               // the plan: patient list
-      const actual=rz.profit;
-      const delta=(predicted!=null&&actual!=null)?actual-predicted:null;
-      const whatIfInstant=econ.profitI;            // if you'd dumped at the frozen bid
-      const costSub=closedEarly&&rz.writeoff>0
-        ? `net ${isk(rz.net)} − sold cost ${isk(rz.cost)} − write-off ${isk(rz.writeoff)}`
-        : `net ${isk(rz.net)} − cost ${isk(rz.cost)}`;
-      // The verdict against the plan: did waiting-and-listing beat dumping? Compare
-      // what actually landed to the frozen dump-now counterfactual — "patience paid
-      // off" only if the real sale cleared what an instant dump would have.
-      const patience=(actual!=null&&whatIfInstant!=null)?actual-whatIfInstant:null;
-      const beatPlan=delta!=null&&delta>=0;
-      const paid=patience!=null&&patience>=0;
-      const verdictCls=delta==null?"":(beatPlan?"pos":"neg");
-      const verdict=delta==null?"How did it do?"
-        :(beatPlan?"✓ Beat the plan":"Missed the plan");
-      return `<div class="ind-sell ind-sell-done-panel" data-id="${b.id}">
-        <div class="ind-done-verdict ${verdictCls}">${verdict}${delta!=null?` by <b>${isk(Math.abs(delta))}</b>`:""}</div>
-        <div class="ind-done-hero">
-          <div class="ind-done-lbl">Real profit${closedEarly?" (closed early)":""}</div>
-          <div class="ind-done-val ${pn(actual)}">${_signIsk(actual)}</div>
-          <div class="ind-done-sub">${rz.units.toLocaleString()} / ${target.toLocaleString()} sold · ${costSub}</div>
-        </div>
-        <div class="ind-done-scenarios">
-          <div class="ind-done-scn plan">
-            <span class="ind-done-scn-lbl">You predicted</span>
-            <span class="ind-done-scn-v">${_signIsk(predicted)}</span>
-            <span class="ind-done-scn-sub">the patient-list plan</span>
-          </div>
-          <div class="ind-done-scn actual">
-            <span class="ind-done-scn-lbl">What happened</span>
-            <span class="ind-done-scn-v ${pn(actual)}">${_signIsk(actual)}</span>
-            <span class="ind-done-scn-sub ${pn(delta)}" title="How the real sale landed against the list profit you projected when tracking this build">${delta==null?"—":(delta>=0?"▲ beat plan by ":"▼ missed plan by ")+isk(Math.abs(delta))}</span>
-          </div>
-        </div>
-        <div class="ind-done-compare">
-          <div class="ind-done-row whatif">
-            <span class="ind-done-k">If you'd dumped at the frozen bid instead</span>
-            <span class="ind-done-v ${pn(whatIfInstant)}" title="Profit if you'd instant-sold the whole batch into buy orders at the bid frozen when tracked, instead of listing">${_signIsk(whatIfInstant)}</span>
-          </div>
-          ${patience!=null?`<div class="ind-done-row patience">
-            <span class="ind-done-k">${paid?"Patience paid off":"Patience cost you"}</span>
-            <span class="ind-done-v ${paid?"pos":"neg"}" title="What listing-and-waiting earned over dumping the whole lot at the frozen bid">${paid?"+":"−"}${isk(Math.abs(patience))}</span>
-          </div>`:""}
-        </div>
-        <div class="ind-sell-foot">
-          <span class="ind-sell-done">${closedEarly?`✓ Closed early · ${rz.units.toLocaleString()} of ${target.toLocaleString()} sold`:`✓ Fully sold`}</span>
-          ${closedEarly?`<button class="ind-sell-abandon" data-undo="1" title="Undo the write-off: restore the unsold remainder as held stock.">Undo abandon</button>`:""}
-          <button class="ind-sell-archive" title="${b.archived?"Move this build back into the active tracker":"Hide this finished build in the collapsed Archived section. It still counts in your portfolio stats."}">${b.archived?"Unarchive":"Archive"}</button>
-          <button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>
-        </div>
-      </div>`;
-    }
-
-    // Listed: on the market, selling. The job here is fine-tuning the price to
-    // move the remainder — so the decider leads, with a compact sold-so-far line
-    // above it. Full remainder projection stays in Full detail.
-    const watchMsg=rz.units>0
-      ? `${rz.units.toLocaleString()} of ${target.toLocaleString()} sold — sales accrue from your wallet automatically${remain>0?` · ${remain.toLocaleString()} left`:""}.`
-      : `On the market — sales will accrue here from your wallet as units sell.`;
-    return `<div class="ind-sell ind-sell-live" data-id="${b.id}">
-      <div class="ind-listed-progress">
-        <div class="ind-listed-bar"><i class="${pn(rz.profit)==="neg"?"neg":""}" style="width:${target>0?Math.min(100,rz.units/target*100).toFixed(1):0}%"></i></div>
-        <div class="ind-listed-line"><span>${watchMsg}</span>
-          <b class="${pn(rz.profit)}">${_signIsk(rz.profit)} <small>realized</small></b></div>
-      </div>
-      <div class="ind-sell-headrow">
-        <span class="ind-sell-head">Keep waiting, or re-price?</span>
-        <span class="ind-sell-subhead">${remain.toLocaleString()} unit${remain===1?"":"s"} still to move</span>
-      </div>
-      ${_buildDeciderHtml(b, stage)}
-      <div class="ind-sell-foot">
-        ${remain>0?`<button class="ind-sell-abandon" title="Give up on the ${remain.toLocaleString()} unsold unit(s): write off their frozen cost as a loss so capital-in-flight clears and later sales of this item flow to your next batch. Reversible.">Abandon remainder ▸</button>`:""}
-        <button class="ind-sell-edit" title="Correct this build's run count if it didn't match reality. Re-scales produced units; sold units are untouched.">Edit runs</button>
-        <button class="ind-sell-stop" title="Stop tracking this build. What's already sold stays in your stats (frozen); the ${remain.toLocaleString()} unsold unit(s) are left on the market untracked and flagged. Reversible.">Stop tracking ▸</button>
-        <button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>
-      </div>
-    </div>`;
+  if(stage==="sold"){
+    // "How did I do?" — the real profit is the answer; the plan and the dump
+    // counterfactual are the two yardsticks it's judged against.
+    const r=_soldRead(b);
+    const verdict=r.delta==null?"":(r.delta>=0?`Beat your plan by ${isk(Math.abs(r.delta))}`:`Missed your plan by ${isk(Math.abs(r.delta))}`);
+    const early=b.abandoned?`Closed early — ${r.rz.units.toLocaleString()} of ${r.target.toLocaleString()} sold`:"";
+    const settling=b.settling?"⏳ still settling as the wallet feed catches up":"";
+    return _insightShell({eyebrow:b.abandoned?"Closed early":"Result", title:`${_signIsk(r.actual)} profit`, titleCls:pn(r.actual),
+      sub:[verdict, early, settling].filter(Boolean).join(" · ")||"Fully sold.",
+      stats:[
+        {k:"Planned", v:_signIsk(r.predicted), tip:"The list profit projected when you tracked this build"},
+        {k:"Vs dumping", v:r.patience==null?"—":_signIsk(r.patience), cls:pn(r.patience),
+         tip:"What listing-and-waiting earned over dumping the whole lot at the frozen bid"},
+        {k:"Sold", v:`${r.rz.units.toLocaleString()} / ${r.target.toLocaleString()}`},
+      ],
+      actions:(b.archived||b.stopped)?`<button class="ind-sell-archive" title="Move this build back into the active tracker">Unarchive</button>`
+        :`<button class="ind-sell-archive" title="Hide this finished build in the collapsed Archived section. It still counts in your portfolio stats.">📦 Archive</button>`});
   }
   return "";
+}
+// Re-paint a build's insight from the current decider cache — called as the live
+// quote / order book land. A no-op when the build isn't open or its stage has no
+// async inputs (planned/sold/stopped are fully static).
+function _renderInsight(b){
+  const root=document.querySelector(`.ind-insight[data-id="${CSS.escape(b.id)}"]`);
+  if(!root) return;
+  const stage=root.dataset.stage;
+  if(stage!=="building"&&stage!=="built"&&stage!=="listed") return;
+  root.innerHTML=_insightInner(b, stage, null);
+}
+// Wire an insight: its copy buttons (delegated on the persistent root, since the
+// inner HTML is replaced as data lands) and the fetches its stage needs — the live
+// quote for building/built/listed, plus the order book for built/listed. Shares
+// the decider's cache so opening Details afterwards costs no extra requests.
+function _wireInsight(card, b){
+  const root=card.querySelector(`.ind-insight[data-id="${CSS.escape(b.id)}"]`);
+  if(!root) return;
+  root.addEventListener("click", e=>{
+    const c=e.target.closest && e.target.closest(".ind-ins-copy");
+    if(c){ e.preventDefault(); _deciderCopyValue(+c.dataset.price, c); }
+  });
+  const stage=root.dataset.stage;
+  if(stage!=="building"&&stage!=="built"&&stage!=="listed") return;
+  const st=_deciderState(b);
+  if(st.liveState==="idle"){ st.liveState="loading"; _fetchDeciderLive(b); }
+  if(stage!=="building" && st.marketState==="idle"){ st.marketState="loading"; _fetchDeciderMarket(b); }
+}
+// The Built insight's numbers: the suggested list price (undercut the live best
+// ask — the same default the Details slider opens on), both exits' profit over
+// the batch, the week sell-through odds at that price, and the drift vs the plan.
+// `dump` flips the advice when listing would book a loss that dumping beats.
+function _builtRead(b){
+  const st=_deciderState(b), ctx=_deciderCtx(b);
+  const {stax, bfee}=ctx.fees, cpu=ctx.cpu, qty=ctx.remaining;
+  if(st.liveState==="idle"||st.liveState==="loading") return {loading:true};
+  const frozen=ctx.s.ask;
+  const bestAsk=st.live?st.live.ask:null;
+  const price=(bestAsk!=null)?bestAsk*0.9999:frozen;
+  const listProfit=(price!=null&&cpu!=null)?(price*(1-stax-bfee)-cpu)*qty:null;
+  const dq=_dumpQuote(st, ctx.s.bid, qty);
+  const instProfit=(dq.bid!=null&&cpu!=null)?(dq.bid*(1-stax)-cpu)*dq.fillQty:null;
+  let weekAll=null;
+  const m=st.market;
+  if(price!=null && st.marketState==="done" && m && m.series && m.series.length){
+    const rate=_priceConditionedDailyRate(m.series, price);
+    if(rate!=null) weekAll=_sellThroughProb(_unitsAheadInQueue(m.sell_book, price), rate, qty, 7).all;
+  }
+  const driftPct=(bestAsk!=null&&frozen)?(bestAsk-frozen)/frozen*100:null;
+  const dump=(listProfit!=null&&listProfit<0&&instProfit!=null&&instProfit>listProfit)
+          ||(price==null&&dq.bid!=null);
+  return {price, bestAsk, bid:dq.bid, fillQty:dq.fillQty, qty, listProfit, instProfit,
+          weekAll, driftPct, dump, marketLoading:st.marketState==="loading"||st.marketState==="idle"};
+}
+// Plan vs reality for a finished build: real profit against the frozen list
+// forecast (delta) and against dumping the whole lot at the frozen bid (patience).
+function _soldRead(b){
+  const s=b.snapshot||{}, n=Math.max(1, b.runs||1);
+  const econ=_batchEconomics(s, n);
+  const rz=_buildRealized(b);
+  const predicted=econ.profitL, actual=rz.profit, whatIfInstant=econ.profitI;
+  return {rz, target:_buildUnits(b)||0, predicted, actual, whatIfInstant,
+    delta:(predicted!=null&&actual!=null)?actual-predicted:null,
+    patience:(actual!=null&&whatIfInstant!=null)?actual-whatIfInstant:null};
+}
+
+// ── Details drawer ───────────────────────────────────────────────────────────
+// The nitty gritty behind the insight, opened by the header's Details button.
+// Titled sections in a fixed order so every stage reads the same way:
+//   Pricing (built/listed)      — the full price decider: drift, slider, both routes,
+//                                  and (listed) the queue + demand reasoning behind the Call
+//   Market since you started    — (building) frozen → live ask drift and its ISK impact
+//   Plan vs reality (sold)      — predicted vs actual, the dump what-if, patience
+//   Economics                   — the frozen cost basis, both exits, materials
+//   Manage                      — edit / stop / abandon / delete, plus the tracked-at facts
+function _buildDetailsHtml(b, stage){
+  const isk=v=>v==null?"—":fmtISK(v);
+  const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
+  const sec=(title, body, cls)=>`<section class="ind-dt-sec${cls?" "+cls:""}"><h4 class="ind-dt-h">${title}</h4>${body}</section>`;
+  const rz=_buildRealized(b);
+  const target=_buildUnits(b)||0;
+  const remain=Math.max(0, target-rz.units);
+  let html="";
+
+  if(stage==="built"||stage==="listed"){
+    html+=sec("Pricing", _buildDeciderHtml(b, stage)
+      +`<div class="ind-dt-note">List it in EVE or dump into buy orders — sales track themselves from your wallet, oldest batch first. Nothing to link.</div>`);
+  }
+  if(stage==="building"){
+    html+=sec("Market since you started", `<div class="ind-watch" data-id="${b.id}" data-role="watch"></div>
+      <button class="ind-sell-analyze ind-dt-link" title="Open the price decision tool: market trend + the odds this batch sells at a given price — look ahead before it's delivered">See the full market ▸</button>`);
+  }
+  if(stage==="sold"){
+    const r=_soldRead(b);
+    const closedEarly=!!b.abandoned;
+    const costSub=closedEarly&&rz.writeoff>0
+      ? `net ${isk(rz.net)} − sold cost ${isk(rz.cost)} − write-off ${isk(rz.writeoff)}`
+      : `net ${isk(rz.net)} − cost ${isk(rz.cost)}`;
+    const paid=r.patience!=null&&r.patience>=0;
+    html+=sec("Plan vs reality", `<div class="ind-done-scenarios">
+        <div class="ind-done-scn plan">
+          <span class="ind-done-scn-lbl">You predicted</span>
+          <span class="ind-done-scn-v">${_signIsk(r.predicted)}</span>
+          <span class="ind-done-scn-sub">the patient-list plan</span>
+        </div>
+        <div class="ind-done-scn actual">
+          <span class="ind-done-scn-lbl">What happened</span>
+          <span class="ind-done-scn-v ${pn(r.actual)}">${_signIsk(r.actual)}</span>
+          <span class="ind-done-scn-sub ${pn(r.delta)}" title="How the real sale landed against the list profit you projected when tracking this build">${r.delta==null?"—":(r.delta>=0?"▲ beat plan by ":"▼ missed plan by ")+isk(Math.abs(r.delta))}</span>
+        </div>
+      </div>
+      <div class="ind-done-compare">
+        <div class="ind-done-row"><span class="ind-done-k">Real profit${closedEarly?" (closed early)":""}</span>
+          <span class="ind-done-v">${costSub}</span></div>
+        <div class="ind-done-row whatif">
+          <span class="ind-done-k">If you'd dumped at the frozen bid instead</span>
+          <span class="ind-done-v ${pn(r.whatIfInstant)}" title="Profit if you'd instant-sold the whole batch into buy orders at the bid frozen when tracked, instead of listing">${_signIsk(r.whatIfInstant)}</span>
+        </div>
+        ${r.patience!=null?`<div class="ind-done-row patience">
+          <span class="ind-done-k">${paid?"Patience paid off":"Patience cost you"}</span>
+          <span class="ind-done-v ${paid?"pos":"neg"}" title="What listing-and-waiting earned over dumping the whole lot at the frozen bid">${paid?"+":"−"}${isk(Math.abs(r.patience))}</span>
+        </div>`:""}
+      </div>`);
+  }
+  html+=sec(`Economics <small>frozen when tracked${stage==="planned"?" · a forecast — the market can move by delivery":""}</small>`, _buildDetailHtml(b));
+
+  // Management: every stage's non-primary actions, in one quiet row at the end.
+  const btns=[];
+  if(stage==="listed" && remain>0)
+    btns.push(`<button class="ind-sell-abandon" title="Give up on the ${remain.toLocaleString()} unsold unit(s): write off their frozen cost as a loss so capital-in-flight clears and later sales of this item flow to your next batch. Reversible.">Abandon remainder</button>`);
+  if(stage==="sold" && b.abandoned)
+    btns.push(`<button class="ind-sell-abandon" data-undo="1" title="Undo the write-off: restore the unsold remainder as held stock.">Undo abandon</button>`);
+  if(stage==="built"||stage==="listed")
+    btns.push(`<button class="ind-sell-edit" title="Correct this build's run count if it didn't match reality. Re-scales produced units; sold units are untouched.">Edit runs</button>`,
+      `<button class="ind-sell-stop" title="Stop tracking this build. What's already sold stays in your stats (frozen); ${remain>0?`the ${remain.toLocaleString()} unsold unit(s) are left on the market untracked and flagged`:"nothing is left unsold"}. Reversible.">Stop tracking</button>`);
+  if(stage==="planned"||stage==="building")
+    btns.push(`<button class="ind-build-del" title="Stop tracking this build">Stop tracking</button>`);
+  else
+    btns.push(`<button class="ind-sell-delete" title="Delete this build — its share of the tracked realized profit is removed from your stats. Can't be undone.">Delete</button>`);
+  const when=_stageTs(b.created_at);
+  const loc=_buildJobLocation(b);
+  const facts=[when?"Tracked "+when:"", b.char_name, loc?"📍 "+loc:""].filter(Boolean).join(" · ");
+  html+=sec("Manage", `<div class="ind-dt-manage">${btns.join("")}</div>${facts?`<div class="ind-dt-note">${facts}</div>`:""}`);
+  return `<div class="ind-details">${html}</div>`;
 }
 
 // A signed ISK string: "+1.2M" / "−0.4M" / "—", keeping the sign explicit so a
@@ -2862,9 +2945,9 @@ function _fetchDeciderLive(b){
     // price/profit. The decider gates against it in _updateBuildDecider.
     st.live=(fresh&&!fresh.error)?{ask:fresh.ask, bid:fresh.bid, buy_book:fresh.buy_book}:null;
     st.liveState="done";
-    _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); _renderTileFlag(b);
+    _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); _renderTileFlag(b); _renderInsight(b);
   }).catch(()=>{ const st=IND.decider[b.id]; if(!st) return;
-    st.live=null; st.liveState="error"; _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); });
+    st.live=null; st.liveState="error"; _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); _renderInsight(b); });
 }
 // Order book + recent history for the sell-through odds. Cached; the slider then
 // recomputes the odds locally (price-conditioned) with no refetch.
@@ -2878,9 +2961,9 @@ function _fetchDeciderMarket(b){
     const st=IND.decider[b.id]; if(!st) return;
     st.market=(m&&!m.error)?m:null;
     st.marketState=(m&&!m.error)?"done":"error";
-    _renderDeciderBody(b); _renderTileFlag(b);
+    _renderDeciderBody(b); _renderTileFlag(b); _renderInsight(b);
   }).catch(()=>{ const st=IND.decider[b.id]; if(!st) return;
-    st.market=null; st.marketState="error"; _renderDeciderBody(b); });
+    st.market=null; st.marketState="error"; _renderDeciderBody(b); _renderInsight(b); });
 }
 // The predicted→now line: the list price you froze when tracking vs. the live
 // best ask, with the drift %. This is the "market moved under me" signal the
@@ -2929,29 +3012,19 @@ function _renderDeciderDrift(b){
 function _renderBuildWatch(b){
   const slot=document.querySelector(`.ind-watch[data-id="${CSS.escape(b.id)}"]`);
   if(!slot) return;
-  const st=_deciderState(b), ctx=_deciderCtx(b), isk=v=>v==null?"—":fmtISKFull(v);
-  const frozen=(b.snapshot||{}).ask;
-  const now=st.live?st.live.ask:null;
-  if(st.liveState==="loading"||st.liveState==="idle"){
+  const isk=v=>v==null?"—":fmtISKFull(v);
+  const w=_buildWatchRead(b);
+  if(w.loading){
     slot.innerHTML=`<div class="ind-watch-load">Checking how the market's moved since you started this build…</div>`;
     return;
   }
-  if(now==null){
+  if(w.now==null){
     slot.innerHTML=`<div class="ind-watch-load">Market read unavailable right now — nothing to act on yet anyway; it's still in production.</div>`;
     return;
   }
-  const diff=(frozen!=null)?now-frozen:null;
-  const pctN=(frozen)?Math.abs(diff/frozen*100):null;
-  const up=diff>0;
+  const {frozen, now, diff, pctN, up, still, pdiff}=w;
   const cls=diff>0?"pos":(diff<0?"neg":"");
   const arrow=diff>0?"▲":(diff<0?"▼":"");
-  // What the move does to the projected list profit — re-price the whole lot at
-  // the live ask (frozen fees + cost) vs. the frozen plan, so drift reads in ISK.
-  const {stax, bfee}=ctx.fees, cpu=ctx.cpu, qty=ctx.target||ctx.remaining;
-  const planProfit=(frozen!=null&&cpu!=null)?(frozen*(1-stax-bfee)-cpu)*qty:null;
-  const nowProfit=(cpu!=null)?(now*(1-stax-bfee)-cpu)*qty:null;
-  const pdiff=(planProfit!=null&&nowProfit!=null)?nowProfit-planProfit:null;
-  const still=(diff==null||pctN==null||pctN<1);
   const head=still
     ? `Market's holding near your plan`
     : (up?`Market's up since you started` : `Market's down since you started`);
@@ -2965,6 +3038,26 @@ function _renderBuildWatch(b){
     </div>
     ${pdiff!=null&&!still?`<div class="ind-watch-note">At today's ask the lot would clear <b class="${pdiff>=0?"pos":"neg"}">${pdiff>=0?"+":"−"}${isk(Math.abs(pdiff))}</b> ${pdiff>=0?"more":"less"} than planned — nothing to do yet, but worth knowing when it lands.</div>`
       :`<div class="ind-watch-note">Still in production — nothing to act on. You'll set the real price once it's built.</div>`}`;
+}
+// The numbers behind the building-stage watch, shared by the insight (a compact
+// drift stat + profit at today's ask) and the Details watch (the full sentence).
+// Reads the decider's cached live quote (st.live) — no separate fetch path.
+function _buildWatchRead(b){
+  const st=_deciderState(b), ctx=_deciderCtx(b);
+  if(st.liveState==="loading"||st.liveState==="idle") return {loading:true};
+  const frozen=(b.snapshot||{}).ask;
+  const now=st.live?st.live.ask:null;
+  if(now==null) return {frozen, now:null};
+  const diff=(frozen!=null)?now-frozen:null;
+  const pctN=(frozen)?Math.abs(diff/frozen*100):null;
+  // What the move does to the projected list profit — re-price the whole lot at
+  // the live ask (same fees + cost) vs. the frozen plan, so drift reads in ISK.
+  const {stax, bfee}=ctx.fees, cpu=ctx.cpu, qty=ctx.target||ctx.remaining;
+  const planProfit=(frozen!=null&&cpu!=null)?(frozen*(1-stax-bfee)-cpu)*qty:null;
+  const nowProfit=(cpu!=null)?(now*(1-stax-bfee)-cpu)*qty:null;
+  const pdiff=(planProfit!=null&&nowProfit!=null)?nowProfit-planProfit:null;
+  return {frozen, now, diff, pct:pctN, pctN, up:diff>0,
+          still:(diff==null||pctN==null||pctN<1), nowProfit, pdiff};
 }
 // Wire the building-stage watch: kick the shared live-quote fetch (cached on the
 // decider state) if it hasn't run, then paint whatever's cached.
@@ -3101,101 +3194,19 @@ function _updateBuildDecider(b, price){
       </div>
     </div>`;
 
-  // ── Listed-stage waiting support ─────────────────────────────────────────
-  // "Should I keep waiting, or is my price wrong?" gets its own block: how many
-  // units sit ahead in the queue at/below this price (the hidden reason nothing
-  // sells), a slow-vs-overpriced diagnosis, and a hold / re-price / dump call.
+  // ── Listed-stage "why" ───────────────────────────────────────────────────
+  // The Call itself leads the insight above; here Details spells out the
+  // reasoning behind it — queue depth (the hidden reason nothing sells) and the
+  // slow-vs-overpriced diagnosis — from the SAME read (_listedRead) so the two
+  // never disagree. It describes your real listing, not the slider's what-if.
   let waitBlock="";
-  let rec=null, recCls=null;
-  if(stage==="listed" && haveOdds){
-    // The waiting support answers "how's MY listing doing?" — so it reasons about
-    // the price you're ACTUALLY listed at (your live sell order), NOT the slider's
-    // exploratory price. The slider is a what-if for re-pricing; using it here made
-    // the panel claim "you're at the front" (true at the undercut default) while
-    // your real order sat at #6. Fall back to the slider price only when no live
-    // order is found (not yet listed / order cache cold).
-    const listedPrice=_buildListedOrderPrice(b);
-    const curPrice=(listedPrice!=null)?listedPrice:price;
-    const haveReal=listedPrice!=null;
-    // Queue depth + demand recomputed AT YOUR LISTED PRICE (ahead/rate above were
-    // at the slider price, for the odds read; these are your true standing).
-    const curAhead=_unitsAheadInQueue(st.market.sell_book, curPrice);
-    const curRate=_priceConditionedDailyRate(st.market.series, curPrice);
-    const curWeekAll=(curRate!=null)?_sellThroughProb(curAhead, curRate, qty, 7).all:weekAll;
-    // Queue depth — units listed at or under YOUR price that clear before yours.
-    const behind=(curAhead!=null)?Math.round(curAhead):null;
-    const atSub=haveReal?` (listed at ${isk(curPrice)})`:"";
-    // How long those units ahead take to clear at the current price: the queue
-    // drains at the price-conditioned demand rate (curRate units/day), so
-    // behind/curRate days. Same wording as the odds-line ETA (hours <1d, days
-    // <60, else "months+") so the two reads speak the same language.
-    const clearDays=(behind>0 && curRate!=null && curRate>0)?behind/curRate:null;
-    const clearTxt=(clearDays==null||!isFinite(clearDays))?null
-      :(clearDays<1?`~${Math.round(clearDays*24)}h`:(clearDays<60?`~${clearDays.toFixed(clearDays<10?1:0)}d`:"months+"));
-    const clearSub=clearTxt?` (${clearTxt} at the current price)`:"";
-    // Reconcile against the order's real market. If your live order is listed
-    // somewhere other than the decider's reference hub, the sell_book queue depth
-    // ("behind N units") counts phantom competitors in a market you're not in —
-    // defer to the authoritative standing the server computed at the order's own
-    // location (matches the "Best ✓ / #N" the orders panel shows).
-    const standing=_linkedOrderStanding(b, st.market.station_id);
-    let queueLine;
-    if(standing){
-      const where=standing.price!=null?` (listed at ${isk(standing.price)})`:"";
-      queueLine=standing.is_best
-        ? `<span class="ind-wait-queue-v good">You're at the front</span> — best ask at your market${where}.`
-        : (standing.rank!=null
-            ? `<span class="ind-wait-queue-v ${standing.total&&standing.rank>=standing.total*0.5?"bad":"warn"}">#${standing.rank} of ${standing.total} in the queue</span> at your market${where} — undercut to climb.`
-            : "");
-    } else {
-      queueLine=(behind!=null)
-        ? (behind<=0
-            ? `<span class="ind-wait-queue-v good">You're at the front</span> — nothing's listed below your price${atSub}.`
-            : `<span class="ind-wait-queue-v ${behind>=qty*4?"bad":"warn"}">Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}</span> at or under your price${atSub} — those clear before yours${clearSub}.`)
-        : "";
-    }
-    // Slow-vs-overpriced: if the market trades briskly overall (baseRate) but
-    // barely at YOUR price (curRate), you're priced above market; if it's slow at
-    // ANY price, it's just a quiet market. This is the honest read that replaces
-    // an invented weekday signal (history carries no dates).
-    let diag="";
-    if(baseRate!=null && baseRate>0 && curRate!=null){
-      const share=curRate/baseRate;                 // how much of the pace your price captures
-      if(baseRate<qty/14){                          // <~half the lot a week even wide open
-        diag=`<span class="ind-wait-diag slow">Quiet market — it trades slowly at any price. Waiting is about patience, not your price.</span>`;
-      } else if(share<0.5){
-        diag=`<span class="ind-wait-diag over">The market's active, but little of it trades at your price — you're likely <b>priced above market</b>. Undercut to join the flow.</span>`;
-      } else {
-        diag=`<span class="ind-wait-diag fair">Your price is in the market's flow — it's competing. Mostly a matter of waiting your turn in the queue.</span>`;
-      }
-    }
-    // The call — reasons about YOUR listed price too. list/instant profit at the
-    // real price so "dump beats waiting" compares against what you're actually
-    // asking, not the slider. Factored into _callVerdict so the board tile agrees.
-    const curListProfit=(cpu!=null)?(curPrice*(1-stax-bfee)-cpu)*qty:null;
-    const curGain=(curListProfit!=null&&instProfit!=null)?curListProfit-instProfit:null;
-    const curUnderBE=(ctx.be.list!=null)?ctx.be.list-curPrice:null;
-    // Fee-aware re-price gate: undercutting burns a fresh broker fee and books less
-    // per unit, so it must beat holding in EXPECTED value (odds × profit) over the
-    // same 1-week horizon — a transient dip won't clear the bar, a stop-loss will.
-    const bestAskNow=(st.live&&st.live.ask!=null)?st.live.ask:ctx.s.ask;
-    const reprice=_repricePaysOff({curPrice, curOdds:curWeekAll, cpu, stax, bfee,
-      bestAsk:bestAskNow, series:st.market.series, sell_book:st.market.sell_book,
-      qty, horizon:7});
-    // Don't call for a re-price against a market you're not listed in: if your
-    // order is already best at its OWN market (different from the decider hub),
-    // the hub's book that _repricePaysOff walked is phantom competition. Same
-    // reconciliation as the queue line above, so the Call agrees with it.
-    const repriceWorth=(standing&&standing.is_best)?false:reprice.worth;
-    const v=_callVerdict({underBE:curUnderBE, instProfit, listProfit:curListProfit,
-                          baseRate, rate:curRate, qty, weekAll:curWeekAll, gain:curGain,
-                          repriceWorthIt:repriceWorth});
-    rec=v.rec; recCls=v.recCls;
+  const lr=(stage==="listed")?_listedRead(b):null;
+  if(lr){
     waitBlock=`
       <div class="ind-wait">
-        <div class="ind-wait-rec ${recCls}"><span class="ind-wait-rec-lbl">Call</span><b>${rec}</b></div>
-        ${queueLine?`<div class="ind-wait-queue">${queueLine}</div>`:""}
-        ${diag?`<div class="ind-wait-diags">${diag}</div>`:""}
+        <div class="ind-wait-rec ${lr.v.recCls}"><span class="ind-wait-rec-lbl">Why "${lr.v.rec}"</span></div>
+        ${lr.queueLine?`<div class="ind-wait-queue">${lr.queueLine}</div>`:""}
+        ${lr.diag?`<div class="ind-wait-diags">${lr.diag}</div>`:""}
       </div>`;
   }
 
@@ -3302,51 +3313,116 @@ function _callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, wee
   }
   return {rec, recCls, action};
 }
-// The board tile's action flag: reach the same Call the decider would, from the
-// cached live quote + sell-analysis (IND.decider[id]) if the build has been opened
-// or its market prefetched. Returns null when we don't yet have the market data to
-// decide (the tile then shows no flag — better silent than wrong). Only the two
-// act-now verdicts surface; a hold returns null so the flag means "do something".
-function _tileActionFlag(b){
+// The Listed-stage read — ONE place that turns the cached live quote + order book
+// (IND.decider[id]) into the hold / re-price / dump Call and the reasons for it.
+// The insight headline, the Details "why" block and the board tile flag all take
+// it from here, so the three always agree. Returns null until the market data
+// needed to decide has landed (better silent than wrong).
+//
+// It reasons about YOUR ACTUAL listed price (your live sell order), not a what-if:
+// your standing in the queue is a fact about the price you're really listed at.
+// Falls back to the undercut-best-ask default only when no live order is found.
+function _listedRead(b){
   const st=IND.decider[b.id];
   if(!st || st.marketState!=="done" || !st.market || !st.market.series || !st.market.series.length) return null;
   if(typeof _priceConditionedDailyRate!=="function" || typeof _unitsAheadInQueue!=="function"
      || typeof _sellThroughProb!=="function") return null;
+  const isk=v=>v==null?"—":fmtISKFull(v);
   const ctx=_deciderCtx(b);
   const {stax, bfee}=ctx.fees, cpu=ctx.cpu, qty=ctx.remaining;
-  // Reason about YOUR ACTUAL listed price — the flag is a statement about your
-  // current standing, so it must use the price you're really listed at (matching
-  // the decider's waiting support). Fall back to the undercut-best-ask default
-  // only when no live order is found (order cache cold / not yet listed).
+  const m=st.market;
   const bestAsk=(st.live&&st.live.ask!=null)?st.live.ask:null;
   const frozen=ctx.s.ask;
   const listedPrice=_buildListedOrderPrice(b);
-  const price=(listedPrice!=null)?listedPrice
+  const haveReal=listedPrice!=null;
+  const curPrice=haveReal?listedPrice
              :(bestAsk!=null)?bestAsk*0.9999:(frozen!=null?frozen:ctx.be.list);
-  if(price==null) return null;
-  const listProfit=(cpu!=null)?(price*(1-stax-bfee)-cpu)*qty:null;
-  // Dump profit honours min_volume (see _dumpQuote): the board flag must not say
-  // "dump" on a bid from a buyer who can't take the batch.
-  const dq=_dumpQuote(st, ctx.s.bid, qty), bid=dq.bid;
-  const instProfit=(bid!=null&&cpu!=null)?(bid*(1-stax)-cpu)*dq.fillQty:null;
-  const gain=(listProfit!=null&&instProfit!=null)?listProfit-instProfit:null;
-  const underBE=(ctx.be.list!=null)?ctx.be.list-price:null;
-  const m=st.market;
-  const rate=_priceConditionedDailyRate(m.series, price);
+  if(curPrice==null) return null;
+  // Demand at your price (curRate) vs the market's full pace ignoring price
+  // (baseRate), and the queue of units listed at or under your price.
+  const curRate=_priceConditionedDailyRate(m.series, curPrice);
   const baseRate=_priceConditionedDailyRate(m.series, null);
-  if(rate==null) return null;
-  const weekAll=_sellThroughProb(_unitsAheadInQueue(m.sell_book, price), rate, qty, 7).all;
-  // Same fee-aware re-price gate the decider uses, so the board flag never says
-  // "re-price" when undercutting wouldn't recover its own broker fee + lower price.
-  const reprice=_repricePaysOff({curPrice:price, curOdds:weekAll, cpu, stax, bfee,
-    bestAsk, series:m.series, sell_book:m.sell_book, qty, horizon:7});
-  // Never flag "re-price" against a market you're not listed in — if your order
-  // is already best at its own market (≠ the decider hub), the book above is
-  // phantom competition. Mirrors the decider's Call so tile and panel agree.
+  if(curRate==null) return null;
+  const curAhead=_unitsAheadInQueue(m.sell_book, curPrice);
+  const curWeekAll=_sellThroughProb(curAhead, curRate, qty, 7).all;
+  const curListProfit=(cpu!=null)?(curPrice*(1-stax-bfee)-cpu)*qty:null;
+  // Dump profit honours min_volume (see _dumpQuote): never say "dump" on a bid
+  // from a buyer who can't take the batch.
+  const dq=_dumpQuote(st, ctx.s.bid, qty);
+  const instProfit=(dq.bid!=null&&cpu!=null)?(dq.bid*(1-stax)-cpu)*dq.fillQty:null;
+  const curGain=(curListProfit!=null&&instProfit!=null)?curListProfit-instProfit:null;
+  const curUnderBE=(ctx.be.list!=null)?ctx.be.list-curPrice:null;
+
+  // Queue depth — units listed at or under YOUR price that clear before yours, and
+  // how long they take to drain at the price-conditioned rate (behind/curRate days).
+  const behind=(curAhead!=null)?Math.round(curAhead):null;
+  const atSub=haveReal?` (listed at ${isk(curPrice)})`:"";
+  const clearDays=(behind>0 && curRate!=null && curRate>0)?behind/curRate:null;
+  const clearTxt=(clearDays==null||!isFinite(clearDays))?null
+    :(clearDays<1?`~${Math.round(clearDays*24)}h`:(clearDays<60?`~${clearDays.toFixed(clearDays<10?1:0)}d`:"months+"));
+  const clearSub=clearTxt?` (${clearTxt} at the current price)`:"";
+  // Reconcile against the order's real market. If your live order is listed
+  // somewhere other than the decider's reference hub, the sell_book queue depth
+  // counts phantom competitors in a market you're not in — defer to the standing
+  // the server computed at the order's own location (matches the orders panel).
   const standing=_linkedOrderStanding(b, m.station_id);
+  let queueLine="", queueShort="";
+  if(standing){
+    const where=standing.price!=null?` (listed at ${isk(standing.price)})`:"";
+    if(standing.is_best){
+      queueLine=`<span class="ind-wait-queue-v good">You're at the front</span> — best ask at your market${where}.`;
+      queueShort="You're the best ask at your market";
+    } else if(standing.rank!=null){
+      queueLine=`<span class="ind-wait-queue-v ${standing.total&&standing.rank>=standing.total*0.5?"bad":"warn"}">#${standing.rank} of ${standing.total} in the queue</span> at your market${where} — undercut to climb.`;
+      queueShort=`You're #${standing.rank} of ${standing.total} in the queue`;
+    }
+  } else if(behind!=null){
+    if(behind<=0){
+      queueLine=`<span class="ind-wait-queue-v good">You're at the front</span> — nothing's listed below your price${atSub}.`;
+      queueShort="You're at the front of the queue";
+    } else {
+      queueLine=`<span class="ind-wait-queue-v ${behind>=qty*4?"bad":"warn"}">Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}</span> at or under your price${atSub} — those clear before yours${clearSub}.`;
+      queueShort=`Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}${clearTxt?` (${clearTxt} to clear)`:""}`;
+    }
+  }
+  if(!queueShort) queueShort="Waiting its turn";
+  // Slow-vs-overpriced: if the market trades briskly overall (baseRate) but barely
+  // at YOUR price (curRate), you're priced above market; if it's slow at ANY price,
+  // it's just a quiet market.
+  let diag="";
+  if(baseRate!=null && baseRate>0){
+    const share=curRate/baseRate;                 // how much of the pace your price captures
+    if(baseRate<qty/14){                          // <~half the lot a week even wide open
+      diag=`<span class="ind-wait-diag slow">Quiet market — it trades slowly at any price. Waiting is about patience, not your price.</span>`;
+    } else if(share<0.5){
+      diag=`<span class="ind-wait-diag over">The market's active, but little of it trades at your price — you're likely <b>priced above market</b>. Undercut to join the flow.</span>`;
+    } else {
+      diag=`<span class="ind-wait-diag fair">Your price is in the market's flow — it's competing. Mostly a matter of waiting your turn in the queue.</span>`;
+    }
+  }
+  // Fee-aware re-price gate: undercutting burns a fresh broker fee and books less
+  // per unit, so it must beat holding in EXPECTED value (odds × profit) over the
+  // same 1-week horizon — a transient dip won't clear the bar, a stop-loss will.
+  const reprice=_repricePaysOff({curPrice, curOdds:curWeekAll, cpu, stax, bfee,
+    bestAsk, series:m.series, sell_book:m.sell_book, qty, horizon:7});
+  // Never call for a re-price against a market you're not listed in: if your
+  // order is already best at its OWN market (≠ the decider hub), the hub's book
+  // _repricePaysOff walked is phantom competition.
   const repriceWorth=(standing&&standing.is_best)?false:reprice.worth;
-  const v=_callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, weekAll,
-                        gain, repriceWorthIt:repriceWorth});
+  const v=_callVerdict({underBE:curUnderBE, instProfit, listProfit:curListProfit,
+                        baseRate, rate:curRate, qty, weekAll:curWeekAll, gain:curGain,
+                        repriceWorthIt:repriceWorth});
+  return {v, curPrice, haveReal, qty, target:reprice.target, dumpBid:dq.bid,
+          instProfit, listProfit:curListProfit, weekAll:curWeekAll,
+          queueLine, queueShort, diag};
+}
+// The board tile's action flag: the same Call the insight shows, from the cached
+// (prefetched) market. Only the two act-now verdicts surface; a hold — or no
+// market data yet — returns null, so the flag always means "do something".
+function _tileActionFlag(b){
+  const r=_listedRead(b);
+  if(!r) return null;
+  const v=r.v;
   return v.action ? {action:v.action, tip:v.rec} : null;
 }
 // Copy the currently-dialled list price to the cent (Math.round to 2dp),
@@ -3484,9 +3560,8 @@ function _wireBuildCard(box, b){
   _wireSellCard(card, b);
 }
 
-// Wire the sell-section buttons. Pricing/copy for the Built/Listed stages lives
-// entirely inside the inline decider (_wireBuildDecider); this handles the shared
-// actions — market look-ahead, abandon, archive, delete.
+// Wire the card body: the stage insight, the Details drawer (decider, market
+// watch) and the shared actions — market look-ahead, abandon, archive, delete.
 function _wireSellCard(card, b){
   // "Look at the market" — open the tracked-build modal straight on its Market tab
   // (price trend + odds of selling within a day). Falls back to the Industry
@@ -3504,8 +3579,10 @@ function _wireSellCard(card, b){
     if(confirm(`Abandon the ${remain.toLocaleString()} unsold unit(s) of ${b.product_name||"this build"}? Their frozen cost is written off as a loss (so capital-in-flight clears), and later sales of this item flow to your next batch. You can undo this.`))
       setBuildAbandoned(b, true, abandon);
   };
-  // Inline price decider (Built/Listed): draw + fetch its live market in place, so
-  // pricing is decided right here rather than in the modal.
+  // Stage insight (always on): its copy buttons + the market fetches it reads.
+  _wireInsight(card, b);
+  // Details → Pricing (Built/Listed): the full slider decider, sharing the same
+  // cached market, so the what-if lives behind Details rather than up front.
   if(card.querySelector(".ind-decider")) _wireBuildDecider(card, b);
   // Building-stage drift watch: kicks the same live-quote fetch (cached on the
   // decider state) so the "market moved since you started" line can fill in.

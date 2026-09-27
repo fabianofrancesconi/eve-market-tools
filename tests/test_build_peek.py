@@ -47,9 +47,8 @@ class TestBuildingStagePeek:
         # A build that's still running (or "ready for delivery") can already scout
         # the market — the sell block for the building stage carries the Decide
         # price button even though there's no sell action yet.
-        fn = _sim_fn("_buildSellHtml", _IND_JS)
-        head = fn[:fn.index('if(stage==="built")')]
-        assert 'stage==="building"' in head
+        fn = _sim_fn("_buildDetailsHtml", _IND_JS)
+        head = fn[fn.index('if(stage==="building")'):fn.index('if(stage==="sold")')]
         assert "ind-sell-analyze" in head
 
     def test_peek_market_tab_open_at_any_stage(self):

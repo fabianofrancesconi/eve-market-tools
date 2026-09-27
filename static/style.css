@@ -1672,22 +1672,13 @@
     animation:indFocusIn .14s ease-out; }
   @keyframes indFocusIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:none; } }
   @media (prefers-reduced-motion: reduce){ .ind-focus { animation:none; } }
-  .ind-focus-head { display:flex; align-items:center; justify-content:space-between;
-    padding:8px 2px; }
-  .ind-focus-lbl { font-size:11px; font-weight:700; text-transform:uppercase;
-    letter-spacing:.06em; color:var(--dim); }
-  .ind-focus-close { padding:2px 10px; font-size:11.5px; cursor:pointer;
+  .ind-focus-close { padding:1px 8px; font-size:11.5px; cursor:pointer;
     background:var(--panel2); border:1px solid var(--line2); border-radius:4px; color:var(--dim); }
   .ind-focus-close:hover { border-color:var(--cyan); color:var(--cyan); }
   /* Inside the focus panel the card carries no extra frame (the panel is the
-     frame) — keep only its stage left-border accent. */
+     frame); the stage colour rides on the insight rail instead. */
   .ind-focus .ind-build-card { background:transparent; border:none;
-    border-left:3px solid var(--line2); border-radius:0; padding:6px 10px; }
-  .ind-focus .ind-build-card.awaiting { border-left-color:var(--stg-planned); }
-  .ind-focus .ind-build-card.building { border-left-color:var(--stg-building); }
-  .ind-focus .ind-build-card.built { border-left-color:var(--stg-built); }
-  .ind-focus .ind-build-card.listed { border-left-color:var(--stg-listed); }
-  .ind-focus .ind-build-card.sold, .ind-focus .ind-build-card.done { border-left-color:var(--stg-sold); }
+    border-left:0; border-radius:0; padding:8px 2px 2px; }
 
   /* ── Untracked-stock warning banner ──────────────────────────────── */
   .ind-orphan-warn { border:1px solid var(--gold); border-radius:8px;
@@ -1697,9 +1688,6 @@
   .ind-orphan-list { margin:0; padding-left:18px; font-size:12.5px; }
   .ind-orphan-list li { margin:2px 0; }
   .ind-orphan-list b { color:var(--fg); font-variant-numeric:tabular-nums; }
-
-  /* ── Stopped-tracking panel ───────────────────────────────────────── */
-  .ind-sell-stopped-panel .ind-done-lbl { color:var(--gold); }
 
   /* ── Archived drawer ──────────────────────────────────────────────── */
   .ind-archive-drawer { margin-top:16px; }
@@ -1885,50 +1873,79 @@
   .ind-sell-watching { color:var(--cyan); font-size:11.5px; }
   .ind-sell-done { color:var(--green2,#4caf76); font-size:11.5px; font-weight:700; }
 
-  /* ── Stage-specific decision panels ──────────────────────────────────
-     Each lifecycle stage's sell block answers ONE question and shows only
-     what serves that answer. The stage's colour (planned/building/built/
-     listed/sold) tints its left rail so the panel reads as the same object
-     the tile carries. Everything non-actionable lives behind "Full detail". */
+  /* ── Stage insight — the one thing that matters right now ────────────
+     Every stage uses the same anatomy so the card reads the same whatever the
+     build is doing: eyebrow (where it is) → a single headline (what to do /
+     how it went) with at most one action → one line of context → an optional
+     progress bar → three compact stats. The stage colour tints the left rail,
+     tying the insight to the tile and the stepper. Everything else lives in
+     Details (.ind-details). */
+  .ind-insight { --stg:var(--line2); margin-top:10px; padding:11px 14px 12px;
+    background:var(--panel2); border:1px solid var(--line2);
+    border-left:3px solid var(--stg); border-radius:7px;
+    display:flex; flex-direction:column; gap:6px; }
+  .ind-insight.stage-planned { --stg:var(--stg-planned); }
+  .ind-insight.stage-building { --stg:var(--stg-building); }
+  .ind-insight.stage-built { --stg:var(--stg-built); }
+  .ind-insight.stage-listed { --stg:var(--stg-listed); }
+  .ind-insight.stage-sold { --stg:var(--stg-sold); }
+  .ind-insight.stage-stopped { --stg:var(--gold,#c8a040); }
+  .ind-ins-eyebrow { font-size:10px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.07em; color:var(--stg); }
+  .ind-ins-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .ind-ins-title { font-size:17px; font-weight:700; color:var(--fg); line-height:1.25;
+    font-variant-numeric:tabular-nums; }
+  .ind-ins-title.pos, .ind-ins-title.good { color:var(--green2,#4caf76); }
+  .ind-ins-title.neg, .ind-ins-title.bad { color:var(--red); }
+  .ind-ins-title.warn { color:var(--gold,#c8a040); }
+  .ind-ins-title.live { color:var(--stg-building); }
+  .ind-ins-title.muted { color:var(--dim); font-weight:600; font-size:14px; }
+  .ind-ins-acts { display:flex; gap:6px; margin-left:auto; }
+  .ind-ins-copy { padding:3px 11px; font-size:11.5px; cursor:pointer; border-radius:4px;
+    background:var(--panel); border:1px solid var(--stg); color:var(--fg); white-space:nowrap; }
+  .ind-ins-copy:hover { background:var(--panel3); }
+  .ind-ins-sub { font-size:12px; color:var(--dim); line-height:1.45; }
+  .ind-ins-sub b { color:var(--fg); font-weight:600; }
+  .ind-ins-bar { height:4px; border-radius:99px; background:var(--panel3); overflow:hidden; }
+  .ind-ins-bar i { display:block; height:100%; border-radius:99px; background:var(--stg); }
+  .ind-ins-stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:0;
+    margin-top:4px; border-top:1px solid var(--line2); padding-top:8px; }
+  .ind-ins-stat { display:flex; flex-direction:column; gap:1px; min-width:0; padding-right:10px; }
+  .ind-ins-stat + .ind-ins-stat { border-left:1px solid var(--line2); padding-left:12px; }
+  .ind-ins-k { font-size:10px; color:var(--dim2); text-transform:uppercase; letter-spacing:.05em;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ind-ins-v { font-family:"IBM Plex Mono",monospace; font-size:13.5px; font-weight:600;
+    color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ind-ins-v.pos, .ind-ins-v.good { color:var(--green2,#4caf76); }
+  .ind-ins-v.neg, .ind-ins-v.bad { color:var(--red); }
+  .ind-ins-v.warn { color:var(--gold,#c8a040); }
+  @media (max-width:520px){
+    .ind-ins-stats { grid-template-columns:1fr; gap:6px; }
+    .ind-ins-stat + .ind-ins-stat { border-left:0; padding-left:0; }
+    .ind-ins-acts { margin-left:0; }
+  }
 
-  /* Planned — "what do I buy, and is it worth acquiring the mats?" The
-     shopping bill up top, the list-vs-dump outcome below it. */
-  .ind-plan { border-left:3px solid var(--stg-planned,#5a7a95);
-    display:flex; flex-direction:column; gap:9px; }
-  .ind-plan-buy { display:flex; flex-direction:column; gap:1px; }
-  .ind-plan-lbl { color:var(--dim); font-size:10px; font-weight:700;
-    text-transform:uppercase; letter-spacing:.5px; }
-  .ind-plan-cost { font-family:"IBM Plex Mono",monospace; font-size:20px;
-    font-weight:700; color:var(--fg); line-height:1.1; }
-  .ind-plan-sub { color:var(--dim2); font-size:10.5px; }
-  /* The two exit routes — the motif repeated across every stage. On Planned it's
-     a forecast (both dimmed a touch); the shape is the same two-cell split the
-     Built/Listed decider uses, so the eye reads it identically everywhere. */
-  .ind-plan-out { display:flex; gap:0; border-top:1px solid var(--line2);
-    padding-top:9px; }
-  .ind-plan-way { flex:1; display:flex; flex-direction:column; gap:2px;
-    position:relative; }
-  .ind-plan-way + .ind-plan-way { border-left:1px solid var(--line2);
-    padding-left:14px; }
-  .ind-plan-way.instant { opacity:.82; }
-  .ind-plan-way-lbl { color:var(--dim); font-size:10px; font-weight:700;
-    text-transform:uppercase; letter-spacing:.4px; }
-  .ind-plan-way b { font-family:"IBM Plex Mono",monospace; font-size:16px;
-    font-weight:700; color:var(--fg); line-height:1.15; }
-  .ind-plan-way b.pos { color:var(--green2,#4caf76); }
-  .ind-plan-way b.neg { color:var(--red); }
-  .ind-plan-way-sub { color:var(--dim2); font-size:10px; }
-  /* The forecast caveat — foreshadows the delta the whole tracker exists to
-     track. Quiet, dashed, planned-hue so it reads as a note not an alarm. */
-  .ind-plan-forecast { font-size:10.5px; color:var(--dim2); line-height:1.4;
-    border-top:1px dashed var(--line2); padding-top:8px; }
-  .ind-plan-forecast b { color:var(--dim); font-weight:700;
-    font-family:"IBM Plex Mono",monospace; }
+  /* ── Details drawer — the nitty gritty, on demand ────────────────────
+     Plain titled sections in a fixed order (pricing / market / result →
+     economics → manage) so every stage's details read the same way. */
+  .ind-details { margin-top:10px; display:flex; flex-direction:column; gap:0; }
+  .ind-dt-sec { padding:12px 2px; border-top:1px solid var(--line2);
+    display:flex; flex-direction:column; gap:8px; }
+  .ind-dt-h { margin:0; font-size:10.5px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.07em; color:var(--dim); }
+  .ind-dt-h small { font-weight:400; text-transform:none; letter-spacing:0; color:var(--dim2);
+    margin-left:6px; }
+  .ind-dt-note { font-size:10.5px; color:var(--dim2); line-height:1.45; }
+  .ind-dt-link { align-self:flex-start; }
+  .ind-dt-manage { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .ind-dt-manage .ind-sell-delete { margin-left:0; }
+  .ind-details .ind-build-detail { margin-top:0; padding-top:0; border-top:0; }
+  .ind-build-toggle.open { border-color:var(--cyan2); color:var(--cyan); }
+  /* Details + close pin to the right of the card header. */
+  .ind-build-row .ind-build-toggle { margin-left:auto; }
+  .ind-build-row .ind-focus-close { margin-left:-6px; }
 
-  /* Building — nothing to act on, but the delta accrues. The look-ahead becomes
-     a live drift WATCH: a reason to check without pretending you can list yet. */
-  .ind-sell-peek { border-left:3px solid var(--stg-building,#4fc3f7);
-    display:flex; flex-direction:column; align-items:stretch; gap:9px; }
+  /* Building — the market watch (Details → "Market since you started"). */
   .ind-watch { display:flex; flex-direction:column; gap:5px; }
   .ind-watch-load { color:var(--dim2); font-size:11px; font-style:italic; }
   .ind-watch-head { font-size:11.5px; font-weight:700; color:var(--stg-building,#4fc3f7);
@@ -1944,62 +1961,7 @@
   .ind-watch-note b { font-family:"IBM Plex Mono",monospace; font-weight:700; }
   .ind-watch-note b.pos { color:var(--green2,#4caf76); }
   .ind-watch-note b.neg { color:var(--red); }
-  .ind-sell-peek .ind-sell-analyze { align-self:flex-start; }
 
-  /* Built — the decision stage. The inline decider (below) carries both exit
-     routes; this branch just tints the head + rail to the built stage colour. */
-  .ind-sell-nudge { border-left-color:var(--stg-built,#c8a040);
-    display:flex; flex-direction:column; gap:8px; }
-  .ind-sell-nudge .ind-sell-head { color:var(--stg-built,#c8a040); }
-
-  /* Listed — fine-tune to move the remainder. A slim sold-so-far bar leads. */
-  .ind-sell-live { border-left:3px solid var(--stg-listed,#b085f5);
-    display:flex; flex-direction:column; gap:8px; }
-  .ind-sell-live .ind-sell-head { color:var(--stg-listed,#b085f5); }
-
-  /* Shared stage head row — a question + a quiet subhead framing the moment. */
-  .ind-sell-headrow { display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; }
-  .ind-sell-subhead { font-size:10.5px; color:var(--dim2); font-style:italic; }
-  .ind-listed-progress { display:flex; flex-direction:column; gap:5px; }
-  .ind-listed-bar { height:5px; border-radius:99px; background:var(--panel3);
-    overflow:hidden; }
-  .ind-listed-bar i { display:block; height:100%; border-radius:99px;
-    background:var(--stg-listed,#b085f5); transition:width .25s; }
-  .ind-listed-bar i.neg { background:var(--red); }
-  .ind-listed-line { display:flex; align-items:baseline; justify-content:space-between;
-    gap:12px; font-size:11px; color:var(--dim2); }
-  .ind-listed-line b { font-family:"IBM Plex Mono",monospace; font-size:13px;
-    font-weight:700; white-space:nowrap; }
-  .ind-listed-line b.pos { color:var(--green2,#4caf76); }
-  .ind-listed-line b.neg { color:var(--red); }
-  .ind-listed-line small { color:var(--dim); font-weight:400; font-size:10px; }
-
-  /* Sold — the reckoning. A verdict banner (beat/missed) closes the learning
-     loop Planned opened, then a plan-vs-reality two-scenario split (the same
-     two-cell motif as the routes), then the dump counterfactual + whether
-     patience actually paid. */
-  .ind-sell-done-panel { border-left:3px solid var(--stg-sold,#66bb6a);
-    display:flex; flex-direction:column; gap:10px; }
-  /* Verdict — the takeaway, felt at a glance. Tinted rule + faint wash. */
-  .ind-done-verdict { font-size:12px; font-weight:800; letter-spacing:.3px;
-    color:var(--dim); padding:6px 10px; border-radius:6px;
-    border-left:3px solid var(--dim2); background:var(--panel2); }
-  .ind-done-verdict b { font-family:"IBM Plex Mono",monospace; }
-  .ind-done-verdict.pos { color:var(--green2,#66bb6a);
-    border-left-color:var(--green2,#66bb6a);
-    background:color-mix(in srgb, var(--green2,#66bb6a) 9%, transparent); }
-  .ind-done-verdict.neg { color:var(--red);
-    border-left-color:var(--red);
-    background:color-mix(in srgb, var(--red) 9%, transparent); }
-  .ind-done-hero { display:flex; flex-direction:column; gap:1px; }
-  .ind-done-lbl { color:var(--dim); font-size:10px; font-weight:700;
-    text-transform:uppercase; letter-spacing:.5px; }
-  .ind-done-val { font-family:"IBM Plex Mono",monospace; font-size:28px;
-    font-weight:800; line-height:1.05; color:var(--fg); }
-  .ind-done-val.pos { color:var(--green2,#66bb6a); }
-  .ind-done-val.neg { color:var(--red); }
-  .ind-done-sub { color:var(--dim2); font-size:10.5px; }
-  /* Plan vs reality — two cells, side by side, so the divergence is spatial. */
   .ind-done-scenarios { display:grid; grid-template-columns:1fr 1fr; gap:0;
     border:1px solid var(--line2); border-radius:7px; overflow:hidden; }
   @media (max-width:520px){ .ind-done-scenarios { grid-template-columns:1fr; } }

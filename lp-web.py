@@ -19,6 +19,7 @@ import base64
 import concurrent.futures
 import datetime
 import email.utils
+import hashlib
 import html
 import json
 import math
@@ -1380,6 +1381,7 @@ def _load_tracked_builds(acct):
 
 def _save_tracked_builds(acct, builds):
     _acct_kv_save(acct, "ind_tracked_builds", IND_BUILDS_PATH, builds)
+    _notify_tracker(acct, "ind_tracked_builds", builds)
 
 
 def do_ind_builds_list(q):
@@ -1677,6 +1679,7 @@ def _load_sell_ledger(acct):
 
 def _save_sell_ledger(acct, ledger):
     _acct_kv_save(acct, "ind_sell_ledger", IND_SELL_LEDGER_PATH, ledger)
+    _notify_tracker(acct, "ind_sell_ledger", ledger)
 
 
 def _load_observed_ledger(acct):
@@ -2172,6 +2175,7 @@ def _record_listed_units(acct, cid, orders):
             store = {}
         store[str(cid)] = per
         _acct_kv_save(acct, "ind_listed_units", IND_LISTED_UNITS_PATH, store)
+    _notify_tracker(acct, "ind_listed_units", store)
 
 
 def do_ind_summary(q):
@@ -2405,11 +2409,17 @@ class _CharPubSub:
     * A global sweep counter, bumped once per background-refresh sweep. Every
       stream wakes on it and re-publishes the (server-defined, shared) next-sync
       time, so all connected clients' countdowns stay in lockstep — the UI only
-      ever displays the schedule the server hands it."""
+      ever displays the schedule the server hands it.
+    * A per-account *tracker* version, bumped whenever the account's tracked
+      builds, sell ledger or listed-unit counts are saved. Build mutations (track,
+      archive, delete, …) from another tab/device and background ledger fills
+      don't change the character bundle, so without this an open tracker board
+      only caught up on a manual reload."""
 
     def __init__(self):
         self._cond = threading.Condition()
         self._versions = {}   # id(acct) -> int
+        self._tracker = {}    # id(acct) -> int (tracked builds / ledger saves)
         self._sweep = 0       # global background-sweep counter
 
     def version(self, key):
@@ -2426,6 +2436,15 @@ class _CharPubSub:
             self._versions[key] = self._versions.get(key, 0) + 1
             self._cond.notify_all()
 
+    def tracker_version(self, key):
+        with self._cond:
+            return self._tracker.get(key, 0)
+
+    def bump_tracker(self, key):
+        with self._cond:
+            self._tracker[key] = self._tracker.get(key, 0) + 1
+            self._cond.notify_all()
+
     def announce_sweep(self):
         """Signal that a background sweep finished; wake every stream so they
         re-publish the next-sync countdown together."""
@@ -2436,17 +2455,22 @@ class _CharPubSub:
     def forget(self, key):
         with self._cond:
             self._versions.pop(key, None)
+            self._tracker.pop(key, None)
 
-    def wait(self, key, last_version, last_sweep, timeout):
+    def wait(self, key, last_version, last_sweep, timeout, last_tracker=None):
         """Block until this account's version or the global sweep counter differs
-        from what the caller last saw, or the timeout elapses. Returns the current
-        ``(version, sweep)`` either way."""
+        from what the caller last saw (or, when ``last_tracker`` is given, the
+        account's tracker version does), or the timeout elapses. Returns the
+        current ``(version, sweep)`` either way — read the tracker version with
+        ``tracker_version``."""
         deadline = time.time() + timeout
         with self._cond:
             while True:
                 ver = self._versions.get(key, 0)
                 sweep = self._sweep
                 if ver != last_version or sweep != last_sweep:
+                    return ver, sweep
+                if last_tracker is not None and self._tracker.get(key, 0) != last_tracker:
                     return ver, sweep
                 remaining = deadline - time.time()
                 if remaining <= 0:
@@ -2455,6 +2479,32 @@ class _CharPubSub:
 
 
 _CHAR_PUBSUB = _CharPubSub()
+
+
+_TRACKER_DIGESTS = {}           # (id(acct), blob name) -> digest of the last save
+_TRACKER_DIGESTS_LOCK = threading.Lock()
+
+
+def _notify_tracker(acct, name, data):
+    """Tell this account's open browsers their tracker data changed on the server
+    (see _CharPubSub's tracker version) so the board re-pulls it without a reload.
+
+    Only a save whose content actually differs from the last one notifies: several
+    read paths (summary, reconcile) re-save unchanged blobs, and waking the board
+    for those would make it re-pull — which re-saves — in a loop."""
+    if acct is None:
+        return
+    try:
+        digest = hashlib.sha1(json.dumps(data, sort_keys=True, default=str)
+                              .encode()).hexdigest()
+    except (TypeError, ValueError):
+        digest = None
+    key = (id(acct), name)
+    with _TRACKER_DIGESTS_LOCK:
+        if digest is not None and _TRACKER_DIGESTS.get(key) == digest:
+            return
+        _TRACKER_DIGESTS[key] = digest
+    _CHAR_PUBSUB.bump_tracker(id(acct))
 
 
 def _next_sync_in():
@@ -4756,19 +4806,30 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "keep-alive")
             self.end_headers()
             last_ver, last_sweep = _CHAR_PUBSUB.state(key)
+            last_tr = _CHAR_PUBSUB.tracker_version(key)
             if not self._sse_emit({"type": "hello",
                                    "next_sync_in": round(_next_sync_in())}):
                 return
             while True:
                 ver, sweep = _CHAR_PUBSUB.wait(key, last_ver, last_sweep,
-                                               _CHAR_STREAM_HEARTBEAT)
+                                               _CHAR_STREAM_HEARTBEAT,
+                                               last_tracker=last_tr)
+                tr = _CHAR_PUBSUB.tracker_version(key)
+                tracker_changed = tr != last_tr
+                if tracker_changed:
+                    # Tracker-only change (builds / ledger saved): the browser
+                    # re-pulls just the board, not the whole character bundle.
+                    last_tr = tr
+                    if not self._sse_emit({"type": "tracker",
+                                           "next_sync_in": round(_next_sync_in())}):
+                        return
                 if ver != last_ver or sweep != last_sweep:
                     changed = ver != last_ver
                     last_ver, last_sweep = ver, sweep
                     if not self._sse_emit({"type": "sync", "changed": changed,
                                            "next_sync_in": round(_next_sync_in())}):
                         return
-                elif not self._sse_comment("ping"):
+                elif not tracker_changed and not self._sse_comment("ping"):
                     return
         finally:
             _STREAM_SLOTS.release()

@@ -246,6 +246,13 @@ function openCharStream(){
       // "hello" (re)connect → catch up on anything missed while disconnected;
       // a "sync" with changed=true means this account's data actually changed, so
       // re-pull. A plain sweep tick (changed=false) only moves the countdown.
+      // "tracker" = only this account's tracked builds / sell ledger changed
+      // server-side (another tab or device, a background fill): re-pull just the
+      // board. "hello" catches up on any tracker change missed while disconnected.
+      if((m.type==="tracker" || m.type==="hello") && typeof indOnTrackerPush==="function") indOnTrackerPush();
+      if(m.type==="tracker") return;
+      // Each sweep, refresh the market reads behind the board once they've gone stale.
+      if(m.type==="sync" && typeof indRefreshLiveMarket==="function") indRefreshLiveMarket();
       if(m.type==="hello" || (m.type==="sync" && m.changed)){
         refreshCharData();
         // The same stream carries live journal changes (system entered, auto-pause);
@@ -2001,6 +2008,8 @@ async function forceSync(){
 document.addEventListener("visibilitychange", ()=>{
   if(document.hidden || !AUTH.loggedIn) return;
   if(Date.now() >= charRefreshDeadline) refreshCharData();
+  // A backgrounded tab's market reads may have gone stale — refresh what's shown.
+  if(typeof indRefreshLiveMarket==="function") indRefreshLiveMarket();
 });
 
 function fallbackCopy(text, done){

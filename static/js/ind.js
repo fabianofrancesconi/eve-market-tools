@@ -9,7 +9,7 @@ let IND = {rows:[], sort:{key:"isk_per_hour_patient", dir:-1}, lastData:null, es
            detailRunsByBp:{},   // blueprint_id -> last batch size; a fresh blueprint starts at 1
            sim:{},   // blueprint_id -> {me,te} what-if override; in-memory only, never persisted
            fillTotal:0, fillDone:0, tradeWeight:50,
-           builds:[], buildsLoaded:false, buildsExpanded:new Set(),
+           builds:[], buildsRaw:null, buildsLoaded:false, buildsExpanded:new Set(),
            decider:{},   // build id -> cached inline price-decider live/market state (survives re-renders)
            focusedBuild:null,   // pipeline board: id of the tile expanded into the focus panel
            buildGroups:{},   // stage key -> true when that status group is collapsed (legacy prefs; archived still uses it)
@@ -1569,6 +1569,7 @@ function loadIndBuilds(){
   if(!AUTH.loggedIn){ IND.builds=[]; IND.buildsLoaded=true; renderIndBuilds(); return; }
   fetch("/api/ind/builds").then(r=>r.json()).then(res=>{
     IND.builds=(res && res.builds)||[];
+    IND.buildsRaw=JSON.stringify(IND.builds);
     IND.buildsLoaded=true;
     // If jobs are already loaded, reconcile now (links jobs, marks done);
     // otherwise just render — the next char-data refresh will reconcile.
@@ -1578,6 +1579,54 @@ function loadIndBuilds(){
     // even before the user opens the Tracker.
     if(typeof loadSummary==="function") loadSummary();
   }).catch(()=>{ IND.buildsLoaded=true; });
+}
+
+// ── Live board ────────────────────────────────────────────────────────────────
+// The server pushes a "tracker" event on /api/char/stream whenever this account's
+// builds, sell ledger or listed units are saved with new content — a build
+// tracked/archived/deleted in another tab or device, a background wallet fill, an
+// order that appeared or vanished. Re-pull the builds + roll-up so tiles move
+// between lanes on their own, without a page reload. Pushes can come in bursts
+// (one sweep saves several blobs), so they're coalesced.
+let _trackerPushTimer=null;
+function indOnTrackerPush(){
+  clearTimeout(_trackerPushTimer);
+  _trackerPushTimer=setTimeout(refreshIndBuilds, 400);
+}
+// Re-fetch the builds list; only when the server's copy actually differs from
+// what we last loaded is IND.builds replaced and the board re-rendered — so a
+// no-op push never disturbs an open card (a dragged slider, a scrolled drawer).
+// The last summary is folded back in before rendering so tiles keep their lane
+// while the fresh roll-up is in flight.
+function refreshIndBuilds(){
+  if(!AUTH.loggedIn || !IND.buildsLoaded) return;
+  fetch("/api/ind/builds").then(r=>r.json()).then(res=>{
+    if(!res || !Array.isArray(res.builds)) return;
+    const raw=JSON.stringify(res.builds);
+    if(raw!==IND.buildsRaw){
+      IND.buildsRaw=raw;
+      IND.builds=res.builds;
+      if(IND.focusedBuild && !IND.builds.some(b=>b.id===IND.focusedBuild)) IND.focusedBuild=null;
+      if(typeof SUMMARY!=="undefined" && SUMMARY.data) mergeSummaryBuilds(SUMMARY.data);
+      _updateTrackCount();
+      // reconcileBuilds re-links jobs, renders and re-pulls the summary itself.
+      if(AUTH.data && AUTH.data.jobs){ reconcileBuilds(); return; }
+      renderIndBuilds();
+    }
+    if(typeof loadSummary==="function") loadSummary();
+  }).catch(()=>{});
+}
+// Every background sweep: re-read the market for whatever the board is showing
+// (listed tiles' flags + the focused card's insight) once its cached read has
+// gone stale. Off-screen boards wait — entering the Tracker refreshes on render.
+function indRefreshLiveMarket(){
+  if(!AUTH.loggedIn || ACTIVE_TAB!=="ind" || IND.mode!=="summary") return;
+  IND.builds.forEach(b=>{
+    if(b.archived || b.stopped) return;
+    const stage=_buildStage(b), focused=b.id===IND.focusedBuild;
+    if(stage==="listed" || (focused && (stage==="built" || stage==="building")))
+      _deciderEnsure(b, stage!=="building");
+  });
 }
 
 // Fold the server's derived per-build fields from a /api/ind/summary payload
@@ -2310,8 +2359,7 @@ function _prefetchListedFlags(box, listed){
   listed.forEach(b=>{
     const st=_deciderState(b);
     if(st.marketState==="done") _renderTileFlag(b);       // already cached: paint now
-    else if(st.marketState==="idle"){ st.marketState="loading"; _fetchDeciderMarket(b); }
-    if(st.liveState==="idle"){ st.liveState="loading"; _fetchDeciderLive(b); }
+    _deciderEnsure(b, true);                              // fetch, or refresh if stale
   });
 }
 // Paint (or clear) a listed tile's action flag from the current decider cache. A
@@ -2707,9 +2755,7 @@ function _wireInsight(card, b){
   });
   const stage=root.dataset.stage;
   if(stage!=="building"&&stage!=="built"&&stage!=="listed") return;
-  const st=_deciderState(b);
-  if(st.liveState==="idle"){ st.liveState="loading"; _fetchDeciderLive(b); }
-  if(stage!=="building" && st.marketState==="idle"){ st.marketState="loading"; _fetchDeciderMarket(b); }
+  _deciderEnsure(b, stage!=="building");
 }
 // The Built insight's numbers: the suggested list price (undercut the live best
 // ask — the same default the Details slider opens on), both exits' profit over
@@ -2932,7 +2978,7 @@ function _wireBuildDecider(card, b){
 // Live best ask/bid — same endpoint + params the modal uses, replaying the frozen
 // job rate/taxes so only market price moves. Cached; stale responses dropped when
 // the build has left the board.
-function _fetchDeciderLive(b){
+function _fetchDeciderLive(b, quiet){
   const s=b.snapshot||{};
   const p=new URLSearchParams({
     blueprint_id:String(s.blueprint_id||""), station:String(s.station_id||""),
@@ -2940,18 +2986,37 @@ function _fetchDeciderLive(b){
     broker:String(((s.broker_fee||0)*100)), runs:"1", refresh_prices:"1"});
   fetch("/api/ind/detail?"+p).then(r=>r.json()).then(fresh=>{
     const st=IND.decider[b.id]; if(!st) return;
+    const ok=fresh&&!fresh.error;
+    if(!ok && quiet && st.live) return;          // background refresh failed: keep the last good quote
+    st.liveAt=Date.now();
     // buy_book comes along so "Dump now" can honour each buy order's min_volume:
     // a 60k-min buyer can't take a 4.2k batch, so its bid mustn't set the dump
     // price/profit. The decider gates against it in _updateBuildDecider.
-    st.live=(fresh&&!fresh.error)?{ask:fresh.ask, bid:fresh.bid, buy_book:fresh.buy_book}:null;
+    st.live=ok?{ask:fresh.ask, bid:fresh.bid, buy_book:fresh.buy_book}:null;
     st.liveState="done";
     _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); _renderTileFlag(b); _renderInsight(b);
   }).catch(()=>{ const st=IND.decider[b.id]; if(!st) return;
-    st.live=null; st.liveState="error"; _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); _renderInsight(b); });
+    if(quiet && st.live) return;
+    st.liveAt=Date.now(); st.live=null; st.liveState="error"; _renderDeciderDrift(b); _renderDeciderBody(b); _renderBuildWatch(b); _renderInsight(b); });
+}
+// Make sure a build's cached market read exists AND is fresh: first sight kicks
+// the normal fetch (the UI shows "Reading the market…"); a read older than
+// _DECIDER_TTL is re-fetched QUIETLY — the stale numbers stay on screen until the
+// new ones land, and a failed refresh keeps them — so an open board tracks the
+// market without a reload and without flicker. `needMarket` adds the order book
+// (built/listed); the live quote alone serves building.
+const _DECIDER_TTL=5*60*1000;
+function _deciderEnsure(b, needMarket){
+  const st=_deciderState(b), now=Date.now();
+  if(st.liveState==="idle"){ st.liveState="loading"; _fetchDeciderLive(b); }
+  else if(st.liveState!=="loading" && now-(st.liveAt||0)>_DECIDER_TTL){ st.liveAt=now; _fetchDeciderLive(b, true); }
+  if(!needMarket) return;
+  if(st.marketState==="idle"){ st.marketState="loading"; _fetchDeciderMarket(b); }
+  else if(st.marketState!=="loading" && now-(st.marketAt||0)>_DECIDER_TTL){ st.marketAt=now; _fetchDeciderMarket(b, true); }
 }
 // Order book + recent history for the sell-through odds. Cached; the slider then
 // recomputes the odds locally (price-conditioned) with no refetch.
-function _fetchDeciderMarket(b){
+function _fetchDeciderMarket(b, quiet){
   const s=b.snapshot||{}, ctx=_deciderCtx(b);
   const price=ctx.proposed;
   const p=new URLSearchParams({type_id:String(b.product_type_id||""),
@@ -2959,11 +3024,15 @@ function _fetchDeciderMarket(b){
   if(price!=null) p.set("price", String(price));
   fetch("/api/ind/sell-analysis?"+p).then(r=>r.json()).then(m=>{
     const st=IND.decider[b.id]; if(!st) return;
-    st.market=(m&&!m.error)?m:null;
-    st.marketState=(m&&!m.error)?"done":"error";
+    const ok=m&&!m.error;
+    if(!ok && quiet && st.market) return;        // background refresh failed: keep the last good book
+    st.marketAt=Date.now();
+    st.market=ok?m:null;
+    st.marketState=ok?"done":"error";
     _renderDeciderBody(b); _renderTileFlag(b); _renderInsight(b);
   }).catch(()=>{ const st=IND.decider[b.id]; if(!st) return;
-    st.market=null; st.marketState="error"; _renderDeciderBody(b); _renderInsight(b); });
+    if(quiet && st.market) return;
+    st.marketAt=Date.now(); st.market=null; st.marketState="error"; _renderDeciderBody(b); _renderInsight(b); });
 }
 // The predicted→now line: the list price you froze when tracking vs. the live
 // best ask, with the drift %. This is the "market moved under me" signal the

@@ -232,7 +232,9 @@ class TestInlineDecider:
         # Queue depth + demand are recomputed at the listed price, not `ahead`/`rate`
         # (those stay the slider-price odds read).
         assert "curPrice" in fn
-        assert "_unitsAheadInQueue(m.sell_book, curPrice)" in fn
+        # …over the book with YOUR orders stripped (they're not competitors).
+        assert "_deciderBook(b, m)" in fn
+        assert "_unitsAheadInQueue(book, curPrice)" in fn
         # The Call reasons about the listed price too (profit at your real ask).
         assert "curListProfit" in fn
         # The board tile flag takes the very same read.
@@ -256,8 +258,10 @@ class TestInlineDecider:
         fn = _sim_fn("_listedRead")
         assert "_linkedOrderStanding(b, m.station_id)" in fn
         assert "best ask at your market" in fn
-        # And the Call doesn't tell you to re-price against a market you're not in.
-        assert "standing&&standing.is_best" in fn.replace(" ", "")
+        # And the Call doesn't tell you to re-price against a market you're not in:
+        # the off-hub standing goes to the verdict and gates the re-price test.
+        assert "offHub:standing" in fn.replace(" ", "")
+        assert "(haveReal && !standing)" in fn
         # The board tile flag uses the same read, so tile and panel agree.
         assert "_listedRead(b)" in _sim_fn("_tileActionFlag")
 
@@ -275,33 +279,34 @@ class TestInlineDecider:
         assert "_listedRead(b)" in _sim_fn("_updateBuildDecider")
         assert "_listedRead(b)" in _sim_fn("_tileActionFlag")
         v = _sim_fn("_callVerdict")
-        assert "Dump the remainder" in v
+        assert "Dump — buy orders pay nearly your price" in v
         assert "Re-price to move it" in v
-        # Only the two act-now verdicts expose an `action`; both holds leave it null
-        # so a caller can cheaply ask "does this need me?".
-        assert 'action="dump"' in v
-        assert 'action="reprice"' in v
+        # Only the two act-now verdicts expose an `action`; every hold leaves it
+        # null so a caller can cheaply ask "does this need me?". Behaviour is
+        # covered in test_reprice_logic.py.
+        assert '"warn", "dump")' in v
+        assert '"warn", "reprice")' in v
         assert "action=null" in v.replace(" ", "")
+        # Callers branch on the machine-readable kind, never on the copy.
+        assert "switch(v.kind)" in _sim_fn("_insightInner")
 
     def test_reprice_is_gated_on_fee_aware_expected_value(self):
         # Re-pricing is NOT free: it burns a fresh broker fee and books less per
-        # unit. The Call must only tilt to "re-price" when undercutting beats
-        # holding in EXPECTED value (odds × profit), so a transient dip holds and
-        # only a persistent shift (stop-loss) triggers a re-list.
+        # unit. The Call only tilts to "re-price" when undercutting beats holding
+        # in ISK you'd bank over the week (expected units sold × net price), with
+        # the relist fee charged in full up front. Numbers: test_reprice_logic.py.
         ev = _sim_fn("_repricePaysOff")
-        # Hold pays NO fresh broker fee; re-price pays one (1-stax vs 1-stax-bfee).
-        assert "curPrice*(1-stax)-cpu" in ev.replace(" ", "")
-        assert "target*(1-stax-bfee)-cpu" in ev.replace(" ", "")
-        # It's an expected-value comparison (odds × profit on each side).
-        assert "holdEV" in ev and "repEV" in ev
-        # Never re-price into a loss, and require a positive EV gain.
-        assert "repNet>0" in ev.replace(" ", "")
-        # The verdict gates the re-price branch on that test, not just "overpriced".
+        assert "_expectedUnitsSold(" in ev
+        assert "out.fee=bfee*target*qty" in ev.replace(" ", "")
+        assert "-out.fee" in ev.replace(" ", "")
+        # Undercut the cheapest COMPETING ask; only a move down is a re-price.
+        assert "compAsk*0.9999" in ev
+        # Never re-price into a loss: break-even covers cost + both broker fees.
+        assert "(cpu+bfee*curPrice)/(1-stax-bfee)" in ev.replace(" ", "")
+        assert "!out.belowBE" in ev
         v = _sim_fn("_callVerdict")
-        assert "repriceWorthIt" in v
-        assert "overpriced && repriceWorthIt" in v
-        # Overpriced-but-not-worth-it becomes an explicit hold, not a re-price.
         assert "Hold — re-pricing won't pay" in v
+        assert "Hold — undercutting would sell at a loss" in v
         # The shared Listed read feeds the fee-aware gate in.
         assert "_repricePaysOff(" in _sim_fn("_listedRead")
 
@@ -315,8 +320,9 @@ class TestInlineDecider:
         flag = _sim_fn("_tileActionFlag")
         # Needs the prefetched sell-analysis; silent (null) until it lands.
         assert 'st.marketState!=="done"' in _sim_fn("_listedRead")
-        assert "if(!r) return null" in flag
-        assert "return v.action ?" in flag
+        # No read yet → only the market-free break-even check can flag.
+        assert "r?" in flag and ":_listedUnderBE(b)" in flag
+        assert "r.v.action" in flag
         # The board prefetches every listed build's market so tiles can flag without
         # the user opening each card, and repaints the tile when the fetch lands.
         assert "_prefetchListedFlags(box, (buckets.listed||[]))" in _IND_JS
@@ -326,14 +332,29 @@ class TestInlineDecider:
         # And the flag has its own styling in the two act-now colours.
         assert ".ind-tile-action.reprice" in _CSS
         assert ".ind-tile-action.dump" in _CSS
+        assert ".ind-tile-action.underbe" in _CSS
 
-    def test_breakeven_is_only_a_warning_not_a_headline(self):
-        # Break-even is NOT a margin readout; it only surfaces as a ⚠ flag when
-        # the chosen list price is actually underwater.
-        fn = _sim_fn("_updateBuildDecider")
-        assert "/unit above break-even" not in fn
-        assert "Below break-even" in fn
-        assert "underBE" in fn
+    def test_breakeven_is_shown_everywhere_a_price_is_chosen(self):
+        # Break-even decides whether a sale makes or loses money, so it's a
+        # first-class figure: a stat on the Built and Listed insights, a line in
+        # the Details "why", and a ⚠ warning wherever a price is under it.
+        ins = _sim_fn("_insightInner")
+        assert ins.count('"Break-even"') >= 2
+        assert "_beWarn(" in ins
+        assert "ind-ins-warn" in _sim_fn("_insightShell")
+        upd = _sim_fn("_updateBuildDecider")
+        assert "ind-wait-be" in upd
+        assert "every sale loses money" in upd
+        # It's priced off the LIVE fees, not the ones frozen at tracking time.
+        ctx = _sim_fn("_deciderCtx")
+        assert "cpu/(1-fees.stax-fees.bfee)" in ctx.replace(" ", "")
+        assert "_peekOwnerFees(b)" in ctx
+        # The board tile warns too — even before the market read lands.
+        flag = _sim_fn("_tileActionFlag")
+        assert '"underbe"' in flag and "_listedUnderBE(b)" in flag
+        assert ".ind-ins-warn" in _CSS
+        # A green "Hold" never sits on top of a losing listing.
+        assert '(under && v.recCls==="good")?"warn"' in ins
 
     def test_prices_shown_at_full_value_not_abbreviated(self):
         # EVE orders are to the cent — the decider's prices must use fmtISKFull
@@ -389,3 +410,13 @@ class TestDeciderStyling:
         assert "var(--stg-built" in _CSS
         assert "var(--stg-listed" in _CSS
         assert "var(--stg-sold" in _CSS
+
+
+class TestStoppedStage:
+    def test_stopped_builds_get_their_own_badge_and_stepper(self):
+        # The server marks a stopped build stage "stopped" (it's reachable — the
+        # client keeps b.stage once done_at is set). It used to fall through to a
+        # "✓ Sold" badge and an all-grey stepper.
+        assert 'if(stage==="stopped") return {key:"stopped"' in _sim_fn("_buildBadge")
+        assert '"stopped"' in _sim_fn("_buildStepperHtml")
+        assert ".ind-build-status.stopped" in _CSS

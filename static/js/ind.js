@@ -1993,6 +1993,7 @@ function _buildBadge(b, stage){
     const rz=_buildRealized(b);
     return {key:"listed", label:rz.units>0?"◑ Selling":"◔ Listed"};
   }
+  if(stage==="stopped") return {key:"stopped", label:"⏹ Stopped"};
   // sold
   return {key:"sold", label:b.abandoned?"✓ Closed early":"✓ Sold"};
 }
@@ -2306,7 +2307,7 @@ function _buildTileHtml(b, linked){
     const flag=_tileActionFlag(b);
     line=`<span class="ind-tile-dim">${rz.units.toLocaleString()} / ${target.toLocaleString()} sold</span>`;
     bar=`<div class="ind-tile-bar"><span class="ind-tile-bar-fill listed" style="width:${pct.toFixed(1)}%"></span></div>`;
-    if(flag) foot=`<div class="ind-tile-action ${flag.action}" title="Suggested action: ${flag.tip.replace(/"/g,'&quot;')}">⚠ ${flag.action==="dump"?"Dump":"Re-price"}</div>`;
+    if(flag) foot=`<div class="ind-tile-action ${flag.action}" title="${flag.tip.replace(/"/g,'&quot;')}">⚠ ${_TILE_FLAG_LABEL[flag.action]||flag.action}</div>`;
   } else if(stage==="stopped"){
     const rz=_buildRealized(b);
     const orphan=b.stopped_held||0;
@@ -2373,8 +2374,8 @@ function _renderTileFlag(b){
   if(!flag) return;
   const el=document.createElement("div");
   el.className=`ind-tile-action ${flag.action}`;
-  el.title=`Suggested action: ${flag.tip}`;
-  el.textContent=`⚠ ${flag.action==="dump"?"Dump":"Re-price"}`;
+  el.title=flag.tip;
+  el.textContent=`⚠ ${_TILE_FLAG_LABEL[flag.action]||flag.action}`;
   tile.appendChild(el);
 }
 
@@ -2475,7 +2476,9 @@ function _buildCardHtml(b, linked){
 // happened (completed / started / ETA), so the timestamps live in a popup rather
 // than cluttering the card.
 function _buildStepperHtml(b, stage){
-  const idx=_BUILD_STAGES.indexOf(stage);
+  // A stopped build was untracked while on the market — show the flow up to
+  // Listed, where it left off, rather than an all-grey "not started" stepper.
+  const idx=_BUILD_STAGES.indexOf(stage==="stopped"?"listed":stage);
   const dots=_BUILD_STAGES.map((s,i)=>{
     const cls=i<idx?"done":(i===idx?"active":"todo");
     const tip=_stageTip(b, s, cls).replace(/"/g,"&quot;");
@@ -2566,8 +2569,20 @@ function _buildProposedPrice(b){
 function _buildInsightHtml(b, stage, close){
   return `<div class="ind-insight stage-${stage}" data-id="${b.id}" data-stage="${stage}">${_insightInner(b, stage, close)}</div>`;
 }
+// Break-even: shown as a stat and warned about on every stage where a sale can
+// happen, because it's the line between selling at a profit and at a loss.
+const _BE_TIP="Break-even per unit: your cost basis plus sales tax and broker fee at your current skills. Selling under it loses money.";
+// "<lead> — each sale at <price> loses <x>/unit (<y> on the <n> left)." The
+// per-unit loss of listing at `price` is (break-even − price) × (1 − tax − broker).
+function _beWarn(ctx, price, lead){
+  const be=ctx.be.list, {stax, bfee}=ctx.fees;
+  if(be==null || price==null) return "";
+  const per=(be-price)*(1-stax-bfee), n=ctx.remaining;
+  return `${lead} (${fmtISKFull(be)}) — each sale at ${fmtISKFull(price)} loses ${fmtISK(per)}/unit`
+    +(n>1?`, ${fmtISK(per*n)} on the ${n.toLocaleString()} left.`:".");
+}
 // The shared shell every stage fills — the single source of the insight layout.
-function _insightShell({eyebrow, title, titleCls, sub, bar, stats, actions}){
+function _insightShell({eyebrow, title, titleCls, sub, warn, bar, stats, actions}){
   const stat=x=>`<div class="ind-ins-stat"${x.tip?` title="${String(x.tip).replace(/"/g,"&quot;")}"`:""}>
       <span class="ind-ins-k">${x.k}</span><span class="ind-ins-v ${x.cls||""}">${x.v}</span></div>`;
   const list=(stats||[]).filter(Boolean);
@@ -2577,6 +2592,7 @@ function _insightShell({eyebrow, title, titleCls, sub, bar, stats, actions}){
       ${actions?`<div class="ind-ins-acts">${actions}</div>`:""}
     </div>
     ${sub?`<div class="ind-ins-sub">${sub}</div>`:""}
+    ${warn?`<div class="ind-ins-warn">⚠ ${warn}</div>`:""}
     ${bar!=null?`<div class="ind-ins-bar"><i style="width:${Math.max(0,Math.min(100,bar)).toFixed(1)}%"></i></div>`:""}
     ${list.length?`<div class="ind-ins-stats">${list.map(stat).join("")}</div>`:""}`;
 }
@@ -2597,15 +2613,18 @@ function _insightInner(b, stage, close){
       {k:"Profit if listed", v:_signIsk(econ.profitL), cls:pn(econ.profitL), tip:"Forecast at the frozen ask — the market can move by delivery"},
       {k:"Build time", v:econ.time!=null?fmtDur(econ.time):"—"},
     ];
+    const fbe=_buildBreakEven(b).list;
+    const planWarn=(econ.profitL!=null && econ.profitL<0 && fbe!=null)
+      ? `At the ask when you tracked it (${full(s.ask)}) this batch loses money — break-even is ${full(fbe)}/unit.`:"";
     if(close){
       const cn=close.runs;
       return _insightShell({eyebrow:"Next step", title:`A ${cn.toLocaleString()}× job is already running`,
         sub:`No exact ${n.toLocaleString()}× job, but this blueprint is in production${close.character_name?" on "+close.character_name:""}. Link it to re-base this build onto ${cn.toLocaleString()} run${cn===1?"":"s"}.`,
-        stats, actions:`<button class="ind-build-linkclose" data-job="${close.job_id}" data-runs="${cn}" title="Link this build to that job and re-base it onto ${cn.toLocaleString()} run(s)">Link to ${cn.toLocaleString()}× job</button>`});
+        warn:planWarn, stats, actions:`<button class="ind-build-linkclose" data-job="${close.job_id}" data-runs="${cn}" title="Link this build to that job and re-base it onto ${cn.toLocaleString()} run(s)">Link to ${cn.toLocaleString()}× job</button>`});
     }
     return _insightShell({eyebrow:"Next step", title:`Start ${n.toLocaleString()} run${n===1?"":"s"} in EVE`,
       sub:AUTH.loggedIn?"It links to this build automatically once the job appears.":"Log in with EVE to link the job automatically.",
-      stats});
+      warn:planWarn, stats});
   }
 
   if(stage==="building"){
@@ -2629,8 +2648,11 @@ function _insightInner(b, stage, close){
     const profit=(w&&w.nowProfit!=null)
       ? {k:"Profit at today's ask", v:_signIsk(w.nowProfit), cls:pn(w.nowProfit), tip:`Planned ${_signIsk(econ.profitL)} at the frozen ask`}
       : {k:"Profit if listed", v:_signIsk(econ.profitL), cls:pn(econ.profitL)};
+    const bctx=_deciderCtx(b);
+    const warn=(w&&w.now!=null&&bctx.be.list!=null&&w.now<bctx.be.list-0.005)
+      ? _beWarn(bctx, w.now, "Today's ask is under your break-even"):"";
     return _insightShell({eyebrow:"In production", title, titleCls:ready?"pos":"live",
-      sub:meta||"Manufacturing job running.", bar:ready?100:pct,
+      sub:meta||"Manufacturing job running.", warn, bar:ready?100:pct,
       stats:[pct!=null?{k:"Progress", v:`${Math.max(0,Math.min(100,pct)).toFixed(0)}%`}:null, profit, drift]});
   }
 
@@ -2651,54 +2673,99 @@ function _insightInner(b, stage, close){
     const stats=[
       {k:"Profit if listed", v:_signIsk(r.listProfit), cls:pn(r.listProfit), tip:"At the suggested price, after sales tax + broker fee"},
       {k:"Profit if dumped now", v:_signIsk(r.instProfit), cls:pn(r.instProfit),
-       tip:r.fillQty<r.qty?`Only ${r.fillQty.toLocaleString()} of ${r.qty.toLocaleString()} units fit today's buy orders`:"Straight into buy orders, sales tax only"},
+       tip:r.fillQty<=0?"No buy order can take this batch right now"
+         :r.fillQty<r.qty?`Only ${r.fillQty.toLocaleString()} of ${r.qty.toLocaleString()} units fit today's buy orders`:"Straight into buy orders, sales tax only"},
       odds,
+      {k:"Break-even", v:full(r.be.list), tip:_BE_TIP},
     ];
+    // Dumping pays sales tax only, so its break-even is the lower "instant" one.
+    const dumpWarn=(r.bid!=null && r.be.instant!=null && r.bid<r.be.instant-0.005)
+      ? `Dumping is under break-even (${full(r.be.instant)} after tax) — it loses ${isk(-r.instProfit)} on the batch.`:"";
+    if(r.dump && r.price==null) return _insightShell({eyebrow:"Ready to sell", title:"No sell orders to list against", titleCls:"warn",
+      sub:`Nobody's listing this right now — buy orders pay ${full(r.bid)}/unit for the whole batch.`,
+      warn:dumpWarn, stats, actions:copyBtn(r.bid, "Copy bid")});
     if(r.dump) return _insightShell({eyebrow:"Ready to sell", title:"Dump into buy orders", titleCls:"warn",
-      sub:`Listing at the best ask would lose money — buy orders pay ${full(r.bid)}/unit.`,
-      stats, actions:copyBtn(r.bid, "Copy bid")});
+      sub:`Buy orders pay ${full(r.bid)}/unit — at least what a listing at ${full(r.price)} would net after the broker fee.`,
+      warn:dumpWarn, stats, actions:copyBtn(r.bid, "Copy bid")});
+    const listWarn=(r.price!=null && r.be.list!=null && r.price<r.be.list-0.005)
+      ? _beWarn(r.ctx, r.price, "The market is under your break-even"):"";
     return _insightShell({eyebrow:"Ready to sell", title:`List at ${full(r.price)}`,
       sub:(r.bestAsk!=null?"Just under the current best ask":"At your planned ask — no live quote")+driftTxt+".",
-      stats, actions:copyBtn(r.price)});
+      warn:listWarn, stats, actions:copyBtn(r.price)});
   }
 
   if(stage==="listed"){
     // "Keep waiting, or act?" — the Call, with the one reason behind it. The queue
-    // and demand diagnosis that produced it are spelled out in Details.
+    // and demand diagnosis that produced it are spelled out in Details. Break-even
+    // is always on show here: it decides whether a sale (or a re-price) loses money.
     const rz=_buildRealized(b);
     const target=_buildUnits(b)||0;
     const st=_deciderState(b);
     const lr=_listedRead(b);
+    const ctx=_deciderCtx(b), be=ctx.be.list;
     const listedAt=_buildListedOrderPrice(b);
+    const under=listedAt!=null && be!=null && listedAt<be-0.005;
     const stats=[
       {k:"Sold", v:`${rz.units.toLocaleString()} / ${target.toLocaleString()}`, tip:"Sales accrue from your wallet automatically, oldest batch first"},
       {k:"Realized", v:_signIsk(rz.profit), cls:pn(rz.profit)},
-      {k:"Your price", v:full(listedAt), tip:listedAt==null?"No open sell order of this item found":"Your open sell order for this item"},
+      {k:"Your price", v:full(listedAt), cls:under?"neg":"", tip:listedAt==null?"No open sell order of this item found":"Your open sell order for this item"},
+      {k:"Break-even", v:full(be), tip:_BE_TIP},
     ];
     const bar=target>0?rz.units/target*100:0;
+    const warn=under?_beWarn(ctx, listedAt, "Listed under break-even"):"";
     if(!lr){
       const loading=st.marketState==="idle"||st.marketState==="loading";
       return _insightShell({eyebrow:"On the market", title:loading?"Reading the market…":"Selling",
         sub:loading?"Checking your place in the queue and recent demand."
           :`${rz.units.toLocaleString()} of ${target.toLocaleString()} sold — sales accrue from your wallet automatically.`,
-        bar, stats});
+        warn, bar, stats});
     }
-    const v=lr.v;
+    const v=lr.v, rp=lr.reprice||{};
+    const units=x=>x==null?"?":`~${Math.round(x).toLocaleString()}`;
     let sub, actions="";
-    if(v.action==="dump"){
-      sub=`Your price is under break-even — dumping the ${lr.qty.toLocaleString()} left nets ${_signIsk(lr.instProfit)}.`;
-      actions=copyBtn(lr.dumpBid, "Copy bid");
-    } else if(v.action==="reprice"){
-      sub=`${lr.queueShort} — undercut to ${full(lr.target)} to join the flow.`;
-      actions=copyBtn(lr.target);
-    } else if(v.rec.startsWith("Hold — re-pricing")){
-      sub="You're priced above the market, but a fresh broker fee + a lower price would eat the gain.";
-    } else if(v.rec.startsWith("Hold — but")){
-      sub=`${lr.queueShort}. Slow market — expect this one to take a while.`;
-    } else {
-      sub=`${lr.queueShort}.`;
+    switch(v.kind){
+      case "noorder":
+        sub="No open sell order for this item on your characters yet — it appears with the next character sync, and the call needs your real price.";
+        break;
+      case "dump":
+        sub=`Buy orders take all ${lr.qty.toLocaleString()} left at ${full(lr.dumpBid)} — within 1% of your price, so waiting earns next to nothing.`;
+        actions=copyBtn(lr.dumpBid, "Copy bid");
+        break;
+      case "reprice":
+        sub=`${lr.queueShort}. Undercutting to ${full(rp.target)} should sell ${units(rp.eRep)} of ${lr.qty.toLocaleString()} this week vs ${units(rp.eHold)} at your price — ${_signIsk(rp.gain)} after the new broker fee, still above break-even (${full(rp.repBE)}).`;
+        actions=copyBtn(rp.target);
+        break;
+      case "underbe":
+        // Still say when the undercut would out-earn holding: selling at a loss can
+        // be the right stop-loss — that's the user's call, so give them the number.
+        sub=`${lr.queueShort}, but undercutting to ${full(rp.target)} would be under your break-even of ${full(rp.repBE)} once the new broker fee is paid.`
+          +(rp.gain!=null&&rp.gain>0?` It would still bank ${isk(rp.gain)} more than holding this week — a stop-loss, only if you've given up on your price.`:"");
+        break;
+      case "fee":
+        // gain is already net of the new fee: ≤0 loses ISK, a sliver isn't worth it.
+        sub=`${lr.queueShort}. Undercutting to ${full(rp.target)} would sell ${units(rp.eRep)} of ${lr.qty.toLocaleString()} this week vs ${units(rp.eHold)} at your price — `
+          +(rp.gain==null?"too little history to tell if the new broker fee pays for itself."
+            :rp.gain<=0?`but after the new broker fee (${isk(rp.fee)}) you'd bank ${isk(-rp.gain)} less.`
+            :`only ${_signIsk(rp.gain)} after the new broker fee (${isk(rp.fee)}), too little to be worth re-listing.`);
+        break;
+      case "slow":
+        sub=`${lr.queueShort}. Slow market — ${lr.weekAll==null?"low":`${(lr.weekAll*100).toFixed(0)}%`} odds the rest sells within a week.`;
+        break;
+      case "front":
+        sub="No one's listed at or under your price — sales come as buyers arrive.";
+        break;
+      case "offhub":
+        sub="Your order's market has cheaper listings — undercut there to climb the queue.";
+        break;
+      case "nohistory":
+        sub="Too little recent trading to estimate demand at your price.";
+        break;
+      default:
+        sub=`${lr.queueShort}.`;
     }
-    return _insightShell({eyebrow:"On the market", title:v.rec, titleCls:v.recCls, sub, bar, stats, actions});
+    // A "good" hold isn't good while every sale loses money — tone it down.
+    const titleCls=(under && v.recCls==="good")?"warn":v.recCls;
+    return _insightShell({eyebrow:"On the market", title:v.rec, titleCls, sub, warn, bar, stats, actions});
   }
 
   if(stage==="stopped"){
@@ -2778,10 +2845,16 @@ function _builtRead(b){
     if(rate!=null) weekAll=_sellThroughProb(_unitsAheadInQueue(m.sell_book, price), rate, qty, 7).all;
   }
   const driftPct=(bestAsk!=null&&frozen)?(bestAsk-frozen)/frozen*100:null;
-  const dump=(listProfit!=null&&listProfit<0&&instProfit!=null&&instProfit>listProfit)
-          ||(price==null&&dq.bid!=null);
+  // Dump beats listing when buy orders pay at least what a listing would net per
+  // unit after its broker fee — then waiting can't earn more even if it sells.
+  // Per unit, and only when the buy orders take the WHOLE batch (a partial fill
+  // leaves units to list anyway), so a thin bid never out-votes the full lot.
+  const listUnit=price!=null?price*(1-stax-bfee):null;
+  const dumpUnit=dq.bid!=null?dq.bid*(1-stax):null;
+  const dump=dumpUnit!=null && dq.fillQty>=qty && (listUnit==null || dumpUnit>=listUnit);
   return {price, bestAsk, bid:dq.bid, fillQty:dq.fillQty, qty, listProfit, instProfit,
-          weekAll, driftPct, dump, marketLoading:st.marketState==="loading"||st.marketState==="idle"};
+          weekAll, driftPct, dump, be:ctx.be, ctx,
+          marketLoading:st.marketState==="loading"||st.marketState==="idle"};
 }
 // Plan vs reality for a finished build: real profit against the frozen list
 // forecast (delta) and against dumping the whole lot at the frozen bid (patience).
@@ -2917,14 +2990,19 @@ function _dumpQuote(st, frozenBid, qty){
   return {bid:raw!=null?raw:null, fillQty:qty};
 }
 // Everything the decider math needs, resolved once per render: owner fees (live
-// skills, falling back to the snapshot), per-unit cost basis, break-even, and how
+// skills, falling back to the snapshot), per-unit cost basis, live-fee break-even, and how
 // many units the slider prices (the unsold remainder, or the whole lot pre-sale).
 function _deciderCtx(b){
   const s=b.snapshot||{}, n=Math.max(1, b.runs||1);
   const fees=(typeof _peekOwnerFees==="function")?_peekOwnerFees(b)
     :{stax:s.sales_tax||0, bfee:s.broker_fee||0, live:false, who:null};
-  const be=_buildBreakEven(b);
   const cpu=(b.cost_per_unit!=null)?b.cost_per_unit:_buildCostPerUnit(b);
+  // Break-even per unit at the SAME live fees every profit here uses — the price a
+  // unit must fetch to cover its cost basis: a listing pays sales tax + broker fee,
+  // a dump pays sales tax only. (The Economics section keeps the frozen-fee figure.)
+  const fz=_buildBreakEven(b);
+  const be={list:(cpu!=null&&(1-fees.stax-fees.bfee)>0)?cpu/(1-fees.stax-fees.bfee):fz.list,
+            instant:(cpu!=null&&(1-fees.stax)>0)?cpu/(1-fees.stax):fz.instant};
   const rz=_buildRealized(b);
   const target=_buildUnits(b)||0;
   const remaining=Math.max(1, (rz.units>0?target-rz.units:target)||1);
@@ -3211,10 +3289,11 @@ function _updateBuildDecider(b, price){
   // How much patience buys you — the extra ISK the list route earns over dumping.
   const gain=(listProfit!=null&&instProfit!=null)?listProfit-instProfit:null;
 
-  // Break-even is a quiet flag only: shown when the chosen list price is under it.
+  // Flag a dialled price under break-even — it's about the SLIDER price, which on
+  // a listed build can differ from your real order (the "Why" block covers that).
   const underBE=(ctx.be.list!=null)?ctx.be.list-price:null;
   const beLine=(underBE!=null && underBE>0)
-    ? `<span class="ind-dec-be bad">⚠ Below break-even (${isk(ctx.be.list)}) — you'd lose money</span>`
+    ? `<span class="ind-dec-be bad">⚠ ${isk(price)} is under break-even (${isk(ctx.be.list)}) — listing there loses ${isk(underBE*(1-ctx.fees.stax-ctx.fees.bfee))}/unit</span>`
     : "";
 
   // Sell-through odds + the raw market signals behind them (queue depth, the
@@ -3227,7 +3306,8 @@ function _updateBuildDecider(b, price){
   if(st.marketState==="done" && st.market && st.market.series && st.market.series.length
      && typeof _priceConditionedDailyRate==="function"){
     const m=st.market;
-    ahead=_unitsAheadInQueue(m.sell_book, price);
+    // A listed build's own order is in this book — count other sellers only.
+    ahead=_unitsAheadInQueue(stage==="listed"?_deciderBook(b, m):m.sell_book, price);
     rate=_priceConditionedDailyRate(m.series, price);
     baseRate=_priceConditionedDailyRate(m.series, null);   // full pace, price aside
     if(rate!=null){
@@ -3271,10 +3351,28 @@ function _updateBuildDecider(b, price){
   let waitBlock="";
   const lr=(stage==="listed")?_listedRead(b):null;
   if(lr){
+    // The re-price check spelled out with its actual numbers, so the Call can be
+    // audited: both sides' expected sales over a week, the fee it costs, the net
+    // difference, and the break-even the undercut must stay above.
+    const rp=lr.reprice||{};
+    const u=x=>x==null?"?":`~${Math.round(x).toLocaleString()}`;
+    const repLine=rp.candidate
+      ? `<div class="ind-wait-rep">Re-price check — undercut to <b>${isk(rp.target)}</b>:
+          sells ${u(rp.eRep)} of ${lr.qty.toLocaleString()} in a week vs ${u(rp.eHold)} at your price;
+          new broker fee ${isk(rp.fee)}; net <b class="${pn(rp.gain)}">${rp.gain==null?"—":_signIsk(rp.gain)}</b> vs holding
+          (anything unsold after a week valued at today's bid).
+          Break-even after the new fee: <b class="${rp.belowBE?"neg":""}">${isk(rp.repBE)}</b>${rp.belowBE?" — the undercut is below it, so it would sell at a loss":""}.</div>`
+      : "";
+    const beRow=(lr.be!=null && lr.haveReal)
+      ? `<div class="ind-wait-be${lr.underBE!=null?" bad":""}">Break-even <b>${isk(lr.be)}</b> / unit — you're listed
+          ${lr.curPrice>=lr.be?`${isk(lr.curPrice-lr.be)} above it`:`<b>${isk(lr.be-lr.curPrice)} below it: every sale loses money</b>`}.</div>`
+      : "";
     waitBlock=`
       <div class="ind-wait">
-        <div class="ind-wait-rec ${lr.v.recCls}"><span class="ind-wait-rec-lbl">Why "${lr.v.rec}"</span></div>
+        <div class="ind-wait-rec ${lr.v.recCls}"><span class="ind-wait-rec-lbl">Why</span> <b>${lr.v.rec}</b></div>
+        ${beRow}
         ${lr.queueLine?`<div class="ind-wait-queue">${lr.queueLine}</div>`:""}
+        ${repLine}
         ${lr.diag?`<div class="ind-wait-diags">${lr.diag}</div>`:""}
       </div>`;
   }
@@ -3297,6 +3395,21 @@ function _buildListedOrderPrice(b){
   const o=_peekLinkedOrder(b);
   return (o && o.price!=null) ? o.price : null;
 }
+// The decider's sell book with YOUR listings of this product stripped out (see
+// _bookWithoutOwn) — every open sell order of it on any of your characters in the
+// book's market, since undercutting your own other order never helps. A missing
+// book passes through untouched.
+function _deciderBook(b, m){
+  const book=m&&m.sell_book;
+  if(!Array.isArray(book) || b.product_type_id==null || typeof _peekChars!=="function") return book;
+  let out=book;
+  for(const c of _peekChars()) for(const o of (c.market_orders||[])){
+    if(o.is_buy_order || o.type_id!==b.product_type_id || o.price==null) continue;
+    if(o.location_id!=null && m.station_id!=null && Number(o.location_id)!==Number(m.station_id)) continue;
+    out=_bookWithoutOwn(out, o.price, o.volume_remain||0);
+  }
+  return out;
+}
 // The decider fetches its sell book at the build snapshot's hub (server clamps a
 // non-hub station to Jita). But your real order can be listed at a DIFFERENT
 // market — a nullsec/lowsec structure, a non-Jita hub. When it is, walking the
@@ -3316,71 +3429,129 @@ function _linkedOrderStanding(b, bookStationId){
   if(o.is_best==null && o.queue_rank==null) return null;          // no rank fetched
   return {is_best:!!o.is_best, rank:o.queue_rank, total:o.queue_total, price:o.price};
 }
-// Does re-pricing actually PAY, once its cost is counted? Re-pricing is NOT free:
-// relisting the remainder burns a fresh broker fee AND books less per unit (you
-// undercut to a lower price). So the tilt to "re-price" must clear an expected-
-// value bar, not just "you're priced above market":
-//
-//   E[re-price] = P(sells at the lower price) × profit-after-a-fresh-broker-fee
-//   E[hold]     = P(sells at your current price) × profit-with-NO-new-fee
-//
-// Re-price only when E[re-price] > E[hold] by a margin. This encodes the "grano
-// salis": a *transient* dip keeps hold-odds high, so eating the fee to chase a
-// lower price loses — hold. A *permanent* shift (the stop-loss case) collapses the
-// odds of ever selling at your current price, so E[hold] craters and re-pricing
-// wins despite the fee. `ctx` carries {curPrice, curOdds, cpu, stax, bfee,
-// bestAsk, series, sell_book, qty, horizon} — everything to price both sides; null
-// when the caller lacks a real current price (then re-price never fires).
-function _repricePaysOff(ctx){
-  if(!ctx) return {worth:false, gain:null, target:null};
-  const {curPrice, curOdds, cpu, stax, bfee, bestAsk, series, sell_book, qty, horizon}=ctx;
-  if(curPrice==null || cpu==null || curOdds==null || bestAsk==null) return {worth:false, gain:null, target:null};
-  // The re-price target: undercut the best competing ask to join the flow. Only a
-  // move DOWN is a re-price; if you're already at/under the best ask you're already
-  // competitive and nothing here should push you lower.
-  const target=bestAsk*0.9999;
-  if(!(target<curPrice)) return {worth:false, gain:null, target:null};
-  const repRate=_priceConditionedDailyRate(series, target);
-  if(repRate==null) return {worth:false, gain:null, target};
-  const repOdds=_sellThroughProb(_unitsAheadInQueue(sell_book, target), repRate, qty, horizon).all;
-  // Hold pays NO new broker fee (the fee's already sunk); re-pricing pays a fresh
-  // one on the relisted remainder and clears at the lower target price.
-  const holdNet=(curPrice*(1-stax)-cpu)*qty;
-  const repNet =(target*(1-stax-bfee)-cpu)*qty;
-  const holdEV=(curOdds!=null?curOdds:0)*holdNet;
-  const repEV =(repOdds!=null?repOdds:0)*repNet;
-  const gain=repEV-holdEV;
-  // A margin so a wash never nudges you into paying a fee for nothing; require the
-  // relisted lot to at least still book a profit (never "re-price into a loss").
-  return {worth:(repNet>0 && gain>0), gain, target};
-}
-// The Listed-stage "Call" — the ONE recommendation the decider makes about a lot
-// still on the market: dump / re-price / hold. Factored out (from the numbers the
-// decider already has) so the board tile can flag the same verdict WITHOUT drawing
-// the whole decider. Returns {rec, recCls, action}: `action` is the two act-now
-// verdicts only — "dump" or "reprice" — and null for either hold, so a caller can
-// cheaply ask "does this need me?" A slow-going hold is still a hold: no action.
-// `repriceWorthIt` gates the re-price branch on the fee-aware EV test above — the
-// demand-share signal only says you're overpriced; whether ACTING on it pays (once
-// the fresh broker fee + lower price are counted) is what actually decides it.
-function _callVerdict({underBE, instProfit, listProfit, baseRate, rate, qty, weekAll, gain, repriceWorthIt}){
-  let rec, recCls, action=null;
-  const overpriced=(baseRate!=null && baseRate>=qty/14 && rate!=null && baseRate>0 && rate/baseRate<0.5);
-  if(underBE!=null && underBE>0 && instProfit!=null && instProfit>=listProfit){
-    rec="Dump the remainder"; recCls="bad"; action="dump";
-  } else if(overpriced && repriceWorthIt){
-    rec="Re-price to move it"; recCls="warn"; action="reprice";
-  } else if(overpriced){
-    // Priced above the market, but undercutting wouldn't recover its own cost — a
-    // fresh broker fee + the lower price eat the gain. Sit tight rather than pay to
-    // chase a dip that may lift.
-    rec="Hold — re-pricing won't pay"; recCls="warn";
-  } else if(weekAll!=null && weekAll<0.33 && gain!=null && gain>0){
-    rec="Hold — but slow going"; recCls="warn";
-  } else {
-    rec="Hold — waiting pays"; recCls="good";
+// Your own sell order sits in the very book the decider reads (the server returns
+// the station's full book). Left in, it counts YOUR units as "ahead of you" and
+// makes your own price the "best ask" — so the Call would tell you to undercut
+// yourself. This strips `ownVol` units at `ownPrice` out of the (cheapest-first)
+// book so every queue / undercut figure is about OTHER sellers only.
+function _bookWithoutOwn(book, ownPrice, ownVol){
+  if(!book || ownPrice==null || !(ownVol>0)) return book;
+  let own=ownVol; const out=[];
+  for(const lvl of book){
+    const p=lvl[0], v=lvl[1];
+    if(own>0 && Math.abs(p-ownPrice)<0.005){
+      const take=Math.min(own, v); own-=take;
+      if(v-take>0) out.push([p, v-take, ...lvl.slice(2)]);
+    } else out.push(lvl);
   }
-  return {rec, recCls, action};
+  return out;
+}
+// Expected number of your `qty` units that sell within `horizon` days with
+// `ahead` competing units in front, at `daily` units/day of demand — the sum of
+// each unit's sell-through odds under the same demand model as _sellThroughProb.
+// Unlike "odds the WHOLE lot sells", this moves smoothly with price, so two
+// prices can be compared even when neither would clear a big lot in a week.
+function _expectedUnitsSold(ahead, daily, qty, horizon){
+  if(daily==null) return null;
+  qty=Math.max(1, qty|0||1);
+  if(daily<=0 || !(horizon>0)) return 0;
+  const surv=_demandSurvivals(Math.floor(Math.max(0, ahead||0)), qty, daily*horizon);
+  return Math.min(qty, surv.reduce((s,x)=>s+Math.max(0,Math.min(1,x)), 0));
+}
+// Should you re-price? Compares the next `horizon` days of HOLDING at your current
+// price against UNDERCUTTING the cheapest competing ask, in ISK you'd actually bank:
+//
+//   hold     = E[units sold at your price]   × yourPrice × (1 − tax)
+//   re-price = E[units sold at the undercut] × target    × (1 − tax) − new broker fee
+//   … and every unit still unsold after `horizon` is valued at `residual` per unit
+//     (what today's buy orders pay, after tax) in BOTH cases, so selling sooner
+//     only counts for what it earns above the dump floor.
+//
+// The fee: modifying an order pays a fresh broker fee on the whole remaining order
+// at the new price — for certain, whether or not it sells (it's charged up front),
+// so it's subtracted in full, never scaled by the odds. The original listing fee
+// is sunk either way and doesn't enter the comparison — but it DOES count for
+// break-even: re-pricing below `repBE` means each unit no longer covers its cost
+// plus both broker fees, i.e. you'd be selling at a loss. That is a hard stop.
+// The cost basis cancels out of the comparison (same units either way), so it only
+// enters through break-even.
+//
+// ctx = {curPrice, compAsk, ahead, curRate, cpu, stax, bfee, series, qty, horizon,
+// residual}. compAsk is the cheapest COMPETING ask (your own order excluded) and
+// ahead the competing units at or under your price. Returns {candidate, worth,
+// target, gain, eHold, eRep, fee, repBE, belowBE}: `candidate` = someone is listed
+// at/under you, so undercutting is even possible.
+function _repricePaysOff(ctx){
+  const none={candidate:false, worth:false, target:null, gain:null, eHold:null, eRep:null,
+              fee:null, repBE:null, belowBE:false};
+  if(!ctx) return none;
+  const {curPrice, compAsk, ahead, curRate, cpu, stax, bfee, series, qty, horizon}=ctx;
+  if(curPrice==null || compAsk==null) return none;
+  // Only a move DOWN is a re-price: undercut the cheapest competitor by a hair.
+  const target=compAsk*0.9999;
+  if(!(target<curPrice-0.005)) return none;
+  const out={...none, candidate:true, target};
+  // Break-even for the re-listed units: cost + the fee already paid on your
+  // current listing + the fresh fee at the new price, all out of the after-tax sale.
+  out.repBE=(cpu!=null && (1-stax-bfee)>0)?(cpu+bfee*curPrice)/(1-stax-bfee):null;
+  out.belowBE=out.repBE!=null && target<out.repBE;
+  const repRate=_priceConditionedDailyRate(series, target);
+  if(repRate==null || curRate==null) return out;
+  const h=horizon||7;
+  // Nobody competing sits under the target (it undercuts the cheapest), so the
+  // re-listed lot is at the front of the queue.
+  out.eHold=_expectedUnitsSold(ahead, curRate, qty, h);
+  out.eRep=_expectedUnitsSold(0, repRate, qty, h);
+  const holdUnit=curPrice*(1-stax), repUnit=target*(1-stax);
+  const resid=Math.max(0, Math.min(ctx.residual||0, repUnit));
+  out.fee=bfee*target*qty;
+  const holdV=out.eHold*holdUnit+(qty-out.eHold)*resid;
+  const repV=out.eRep*repUnit+(qty-out.eRep)*resid-out.fee;
+  out.gain=repV-holdV;
+  // A 1% margin on the lot's value so a wash never tells you to pay a fee for
+  // nothing, and never re-price into a loss.
+  out.worth=!out.belowBE && out.gain>0.01*holdV;
+  return out;
+}
+// The Listed-stage "Call" — the ONE recommendation about a lot still on the
+// market, from the facts _listedRead gathered. Pure (no DOM / state) so the board
+// tile and the insight reach the same verdict, and so it's testable. Returns
+// {kind, rec, recCls, action}: `kind` is the machine-readable branch (callers pick
+// their copy from it, never from `rec`), `action` is set only for the act-now
+// verdicts ("reprice" / "dump") so a caller can cheaply ask "does this need me?".
+//   noOrder      — no open sell order found: nothing real to judge
+//   reprice      — {candidate, worth, belowBE} from _repricePaysOff
+//   offHub       — your order is in another market; its own standing, not this book
+//   atFront      — nobody else is listed at or under your price
+//   noHistory    — no trading history to judge demand
+//   thinSpread   — today's buy orders pay within 1% of your price for the whole lot
+//   weekAll      — odds the whole remainder sells within a week at your price
+function _callVerdict({noOrder, reprice, offHub, atFront, noHistory, thinSpread, weekAll}){
+  const v=(kind, rec, recCls, action=null)=>({kind, rec, recCls, action});
+  if(noOrder) return v("noorder", "Can't see your sell order", "muted");
+  if(offHub){
+    if(offHub.is_best) return v("front", "Hold — you're the best ask", "good");
+    return v("offhub", `Hold — #${offHub.rank} of ${offHub.total} at your market`, "warn");
+  }
+  if(thinSpread) return v("dump", "Dump — buy orders pay nearly your price", "warn", "dump");
+  if(noHistory) return v("nohistory", "Hold — not enough trading history to judge", "muted");
+  if(reprice && reprice.candidate){
+    if(reprice.belowBE) return v("underbe", "Hold — undercutting would sell at a loss", "warn");
+    if(reprice.worth) return v("reprice", "Re-price to move it", "warn", "reprice");
+    return v("fee", "Hold — re-pricing won't pay", "warn");
+  }
+  if(weekAll!=null && weekAll<0.33) return v("slow", "Hold — but slow going", "warn");
+  if(atFront) return v("front", "Hold — you're the best ask", "good");
+  return v("hold", "Hold — waiting pays", "good");
+}
+// Is this listed build's live order priced under break-even (cost + tax + broker
+// fee per unit)? Needs no market fetch — just your order and the cost basis — so
+// the board tile can warn even before the market read lands. null when unknown.
+function _listedUnderBE(b){
+  const price=_buildListedOrderPrice(b);
+  if(price==null) return null;
+  const be=_deciderCtx(b).be.list;
+  return (be!=null && price<be-0.005)?{price, be}:null;
 }
 // The Listed-stage read — ONE place that turns the cached live quote + order book
 // (IND.decider[id]) into the hold / re-price / dump Call and the reasons for it.
@@ -3395,46 +3566,54 @@ function _listedRead(b){
   const st=IND.decider[b.id];
   if(!st || st.marketState!=="done" || !st.market || !st.market.series || !st.market.series.length) return null;
   if(typeof _priceConditionedDailyRate!=="function" || typeof _unitsAheadInQueue!=="function"
-     || typeof _sellThroughProb!=="function") return null;
+     || typeof _sellThroughProb!=="function" || typeof _demandSurvivals!=="function") return null;
   const isk=v=>v==null?"—":fmtISKFull(v);
   const ctx=_deciderCtx(b);
   const {stax, bfee}=ctx.fees, cpu=ctx.cpu, qty=ctx.remaining;
   const m=st.market;
-  const bestAsk=(st.live&&st.live.ask!=null)?st.live.ask:null;
+  const liveAsk=(st.live&&st.live.ask!=null)?st.live.ask:null;
   const frozen=ctx.s.ask;
   const listedPrice=_buildListedOrderPrice(b);
   const haveReal=listedPrice!=null;
+  // Reconcile against the order's real market. If your live order is listed
+  // somewhere other than the decider's reference hub, the sell_book queue depth
+  // counts phantom competitors in a market you're not in — defer to the standing
+  // the server computed at the order's own location (matches the orders panel).
+  const standing=_linkedOrderStanding(b, m.station_id);
+  const book=_deciderBook(b, m);
+  const hasBook=Array.isArray(book);
+  // The cheapest COMPETING ask (your order stripped out). No book shipped → fall
+  // back to the live ask, but only when it's clearly not just your own order.
+  let compAsk=(hasBook&&book.length)?book[0][0]:null;
+  if(!hasBook && liveAsk!=null && !(haveReal && liveAsk>=listedPrice-0.005)) compAsk=liveAsk;
   const curPrice=haveReal?listedPrice
-             :(bestAsk!=null)?bestAsk*0.9999:(frozen!=null?frozen:ctx.be.list);
+             :(compAsk!=null)?compAsk*0.9999:(frozen!=null?frozen:ctx.be.list);
   if(curPrice==null) return null;
+  const underBE=(ctx.be.list!=null && curPrice<ctx.be.list-0.005)?ctx.be.list:null;
   // Demand at your price (curRate) vs the market's full pace ignoring price
-  // (baseRate), and the queue of units listed at or under your price.
+  // (baseRate), and the competing units listed at or under your price.
   const curRate=_priceConditionedDailyRate(m.series, curPrice);
   const baseRate=_priceConditionedDailyRate(m.series, null);
-  if(curRate==null) return null;
-  const curAhead=_unitsAheadInQueue(m.sell_book, curPrice);
-  const curWeekAll=_sellThroughProb(curAhead, curRate, qty, 7).all;
+  const curAhead=standing?null:(hasBook?_unitsAheadInQueue(book, curPrice):null);
+  const curWeekAll=curRate!=null?_sellThroughProb(curAhead||0, curRate, qty, 7).all:null;
   const curListProfit=(cpu!=null)?(curPrice*(1-stax-bfee)-cpu)*qty:null;
   // Dump profit honours min_volume (see _dumpQuote): never say "dump" on a bid
   // from a buyer who can't take the batch.
   const dq=_dumpQuote(st, ctx.s.bid, qty);
   const instProfit=(dq.bid!=null&&cpu!=null)?(dq.bid*(1-stax)-cpu)*dq.fillQty:null;
-  const curGain=(curListProfit!=null&&instProfit!=null)?curListProfit-instProfit:null;
-  const curUnderBE=(ctx.be.list!=null)?ctx.be.list-curPrice:null;
+  // Thin spread: the buy orders take the WHOLE remainder within 1% of what your
+  // listing would bank per unit — waiting earns next to nothing over dumping now.
+  const thinSpread=haveReal && dq.bid!=null && dq.fillQty>=qty && dq.bid>=curPrice*0.99;
+  const atFront=!standing && (compAsk==null || compAsk>curPrice+0.005);
 
-  // Queue depth — units listed at or under YOUR price that clear before yours, and
-  // how long they take to drain at the price-conditioned rate (behind/curRate days).
+  // Queue depth — competing units at or under YOUR price that clear before yours,
+  // and how long they take to drain at the price-conditioned rate.
   const behind=(curAhead!=null)?Math.round(curAhead):null;
   const atSub=haveReal?` (listed at ${isk(curPrice)})`:"";
   const clearDays=(behind>0 && curRate!=null && curRate>0)?behind/curRate:null;
   const clearTxt=(clearDays==null||!isFinite(clearDays))?null
     :(clearDays<1?`~${Math.round(clearDays*24)}h`:(clearDays<60?`~${clearDays.toFixed(clearDays<10?1:0)}d`:"months+"));
   const clearSub=clearTxt?` (${clearTxt} at the current price)`:"";
-  // Reconcile against the order's real market. If your live order is listed
-  // somewhere other than the decider's reference hub, the sell_book queue depth
-  // counts phantom competitors in a market you're not in — defer to the standing
-  // the server computed at the order's own location (matches the orders panel).
-  const standing=_linkedOrderStanding(b, m.station_id);
   let queueLine="", queueShort="";
   if(standing){
     const where=standing.price!=null?` (listed at ${isk(standing.price)})`:"";
@@ -3447,53 +3626,56 @@ function _listedRead(b){
     }
   } else if(behind!=null){
     if(behind<=0){
-      queueLine=`<span class="ind-wait-queue-v good">You're at the front</span> — nothing's listed below your price${atSub}.`;
-      queueShort="You're at the front of the queue";
+      queueLine=`<span class="ind-wait-queue-v good">You're at the front</span> — no one else is listed at or below your price${atSub}.`;
+      queueShort="You're the cheapest listing";
     } else {
-      queueLine=`<span class="ind-wait-queue-v ${behind>=qty*4?"bad":"warn"}">Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}</span> at or under your price${atSub} — those clear before yours${clearSub}.`;
+      queueLine=`<span class="ind-wait-queue-v ${behind>=qty*4?"bad":"warn"}">Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}</span> from other sellers at or under your price${atSub} — those clear before yours${clearSub}.`;
       queueShort=`Behind ${behind.toLocaleString()} unit${behind===1?"":"s"}${clearTxt?` (${clearTxt} to clear)`:""}`;
     }
   }
   if(!queueShort) queueShort="Waiting its turn";
   // Slow-vs-overpriced: if the market trades briskly overall (baseRate) but barely
   // at YOUR price (curRate), you're priced above market; if it's slow at ANY price,
-  // it's just a quiet market.
+  // it's just a quiet market. Daily low/high include buy-order fills, so "little
+  // trades at your price" while you're the cheapest ask means the volume is going
+  // into buy orders, not that someone's undercutting you.
   let diag="";
-  if(baseRate!=null && baseRate>0){
+  if(baseRate!=null && baseRate>0 && curRate!=null){
     const share=curRate/baseRate;                 // how much of the pace your price captures
     if(baseRate<qty/14){                          // <~half the lot a week even wide open
       diag=`<span class="ind-wait-diag slow">Quiet market — it trades slowly at any price. Waiting is about patience, not your price.</span>`;
+    } else if(share<0.5 && atFront){
+      diag=`<span class="ind-wait-diag slow">You're already the cheapest listing — most recent volume traded lower, into buy orders, so sales at your price come slowly. There's no one to undercut.</span>`;
     } else if(share<0.5){
-      diag=`<span class="ind-wait-diag over">The market's active, but little of it trades at your price — you're likely <b>priced above market</b>. Undercut to join the flow.</span>`;
+      diag=`<span class="ind-wait-diag over">The market's active, but little of it trades at your price — you're likely <b>priced above market</b>.</span>`;
     } else {
       diag=`<span class="ind-wait-diag fair">Your price is in the market's flow — it's competing. Mostly a matter of waiting your turn in the queue.</span>`;
     }
   }
-  // Fee-aware re-price gate: undercutting burns a fresh broker fee and books less
-  // per unit, so it must beat holding in EXPECTED value (odds × profit) over the
-  // same 1-week horizon — a transient dip won't clear the bar, a stop-loss will.
-  const reprice=_repricePaysOff({curPrice, curOdds:curWeekAll, cpu, stax, bfee,
-    bestAsk, series:m.series, sell_book:m.sell_book, qty, horizon:7});
-  // Never call for a re-price against a market you're not listed in: if your
-  // order is already best at its OWN market (≠ the decider hub), the hub's book
-  // _repricePaysOff walked is phantom competition.
-  const repriceWorth=(standing&&standing.is_best)?false:reprice.worth;
-  const v=_callVerdict({underBE:curUnderBE, instProfit, listProfit:curListProfit,
-                        baseRate, rate:curRate, qty, weekAll:curWeekAll, gain:curGain,
-                        repriceWorthIt:repriceWorth});
-  return {v, curPrice, haveReal, qty, target:reprice.target, dumpBid:dq.bid,
-          instProfit, listProfit:curListProfit, weekAll:curWeekAll,
-          queueLine, queueShort, diag};
+  // Re-price test: only against a market you're actually listed in (an off-hub
+  // order's competition is somewhere else), on a real listed price.
+  const reprice=(haveReal && !standing)
+    ? _repricePaysOff({curPrice, compAsk, ahead:curAhead, curRate, cpu, stax, bfee,
+        series:m.series, qty, horizon:7, residual:dq.bid!=null?dq.bid*(1-stax):0})
+    : _repricePaysOff(null);
+  const v=_callVerdict({noOrder:!haveReal, reprice, offHub:standing, atFront, noHistory:curRate==null,
+                        thinSpread, weekAll:curWeekAll});
+  return {v, curPrice, haveReal, qty, compAsk, reprice, target:reprice.target, dumpBid:dq.bid,
+          instProfit, listProfit:curListProfit, weekAll:curWeekAll, underBE,
+          be:ctx.be.list, queueLine, queueShort, diag};
 }
 // The board tile's action flag: the same Call the insight shows, from the cached
-// (prefetched) market. Only the two act-now verdicts surface; a hold — or no
-// market data yet — returns null, so the flag always means "do something".
+// (prefetched) market — plus a break-even warning that needs no market at all.
+// A hold — or no data yet — returns null, so the flag always means "look at this".
 function _tileActionFlag(b){
   const r=_listedRead(b);
-  if(!r) return null;
-  const v=r.v;
-  return v.action ? {action:v.action, tip:v.rec} : null;
+  if(r && r.v.action) return {action:r.v.action, tip:`Suggested action: ${r.v.rec}`};
+  const u=r?(r.underBE!=null?{price:r.curPrice, be:r.underBE}:null):_listedUnderBE(b);
+  if(u) return {action:"underbe", tip:`Listed at ${fmtISKFull(u.price)}, under your break-even of ${fmtISKFull(u.be)} — every sale loses money`};
+  return null;
 }
+// The label a tile flag shows for each action.
+const _TILE_FLAG_LABEL={dump:"Dump", reprice:"Re-price", underbe:"Below break-even"};
 // Copy the currently-dialled list price to the cent (Math.round to 2dp),
 // matching the modal's copy behaviour so a listed order pastes straight in.
 function _deciderCopy(b, btn){

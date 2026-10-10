@@ -9,11 +9,19 @@
 // blueprint ranking, and the per-blueprint table that backs both charts.
 
 let STATS = { data:null, loading:false, range:"all", period:"week",
-              metric:"blueprints", sort:"profit", dir:-1, seq:0, sig:null };
+              metric:"blueprints", marginView:"pct", sort:"profit", dir:-1, seq:0, sig:null };
 let _statsTimeChart=null, _statsMarginChart=null, _statsChartRetry=0;
 
 const _STATS_RANGES=[["30","30d"],["90","90d"],["365","1y"],["all","All"]];
 const _STATS_PERIODS=[["day","Day"],["week","Week"],["month","Month"]];
+// The by-blueprint ranking reads either as a margin (%) or as ISK profit — a
+// tiny item can top the % list while earning almost nothing, so both matter.
+const _STATS_MARGIN_VIEWS={
+  pct:{label:"%", title:"Margin by blueprint", note:"profit ÷ what the sold units cost to build",
+       val:p=>p.margin, fmt:v=>_statsPct(v), axis:v=>`${Math.round(v)}%`},
+  isk:{label:"ISK", title:"Profit by blueprint", note:"realized profit, after sales tax and build cost",
+       val:p=>p.profit, fmt:v=>`${v>0?"+":""}${fmtISK(v)}`, axis:v=>fmtISK(v)},
+};
 // Each over-time metric: label, how to read it off a bucket, and its formatter.
 const _STATS_METRICS={
   blueprints:{label:"Blueprints", title:"Different blueprints sold",
@@ -100,8 +108,11 @@ function renderStats(){
       <div id="stats-time-chart" class="stats-chart"></div>
     </section>
     <section class="stats-card">
-      <div class="stats-card-head"><h3>Margin by blueprint</h3>
-        <span class="stats-card-note">profit ÷ what the sold units cost to build</span></div>
+      <div class="stats-card-head"><h3 id="stats-margin-title">${_statsMarginView().title}</h3>
+        <div class="stats-card-ctrls">
+          <span id="stats-margin-note" class="stats-card-note">${_statsMarginView().note}</span>
+          ${_statsSeg("marginView", Object.entries(_STATS_MARGIN_VIEWS).map(([k,v])=>[k,v.label]), STATS.marginView)}
+        </div></div>
       <div id="stats-margin-chart" class="stats-chart"></div>
     </section>
     <section class="stats-card">
@@ -178,26 +189,30 @@ function _statsDrawTimeChart(el){
   _statsTimeChart.render();
 }
 
+function _statsMarginView(){ return _STATS_MARGIN_VIEWS[STATS.marginView]||_STATS_MARGIN_VIEWS.pct; }
+
 function _statsDrawMarginChart(el){
-  const rows=(STATS.data.products||[]).filter(p=>p.margin!=null)
-    .sort((a,b)=>b.margin-a.margin);
+  const v=_statsMarginView();
+  const rows=(STATS.data.products||[]).filter(p=>v.val(p)!=null)
+    .sort((a,b)=>v.val(b)-v.val(a));
   if(!rows.length){ el.innerHTML=`<div class="wallet-chart-none">No cost basis recorded for these sales.</div>`; return; }
   const opts={
     chart:{type:"bar", height:Math.max(140, rows.length*30+50), background:"transparent",
       fontFamily:"inherit", toolbar:{show:false}, zoom:{enabled:false}, animations:{enabled:false}},
     theme:{mode:"dark"},
-    series:[{name:"Margin", data:rows.map(p=>+p.margin.toFixed(1))}],
+    series:[{name:STATS.marginView==="isk"?"Profit":"Margin",
+      data:rows.map(p=>STATS.marginView==="isk"?Math.round(p.profit):+p.margin.toFixed(1))}],
     colors:[_STATS_INK.pos],
     plotOptions:{bar:{horizontal:true, barHeight:"62%", borderRadius:3,
       borderRadiusApplication:"end", dataLabels:{position:"top"},
       colors:{ranges:[{from:-1e18, to:-1e-9, color:_STATS_INK.neg}]}}},
     xaxis:{categories:rows.map(p=>p.name),
-      labels:{style:{colors:_STATS_INK.axis, fontSize:"10px"}, formatter:v=>`${Math.round(v)}%`},
+      labels:{style:{colors:_STATS_INK.axis, fontSize:"10px"}, formatter:v.axis},
       axisBorder:{color:_STATS_INK.grid}, axisTicks:{color:_STATS_INK.grid}},
     yaxis:{labels:{maxWidth:240, style:{colors:_STATS_INK.fg, fontSize:"11.5px"}}},
     grid:{borderColor:_STATS_INK.grid, strokeDashArray:3,
       xaxis:{lines:{show:true}}, yaxis:{lines:{show:false}}},
-    dataLabels:{enabled:true, offsetX:26, formatter:v=>_statsPct(v),
+    dataLabels:{enabled:true, offsetX:STATS.marginView==="isk"?30:26, formatter:v.fmt,
       style:{fontSize:"10.5px", fontWeight:600, colors:[_STATS_INK.fg]}},
     legend:{show:false},
     tooltip:{theme:"dark", custom:({dataPointIndex})=>{
@@ -265,6 +280,17 @@ function _statsTableHtml(products){
     if(btn){
       const group=btn.parentElement.dataset.group, k=btn.dataset.k;
       if(group==="range"){ if(STATS.range!==k){ STATS.range=k; loadStats(); } return; }
+      if(group==="marginView"){
+        STATS.marginView=k;
+        btn.parentElement.querySelectorAll(".stats-seg-btn").forEach(b=>b.classList.toggle("active", b===btn));
+        const mv=_statsMarginView();
+        $("#stats-margin-title").textContent=mv.title;
+        $("#stats-margin-note").textContent=mv.note;
+        if(_statsMarginChart){ _statsMarginChart.destroy(); _statsMarginChart=null; }
+        const mc=$("#stats-margin-chart");
+        if(mc && STATS.data && typeof ApexCharts!=="undefined") _statsDrawMarginChart(mc);
+        return;
+      }
       if(group==="metric") STATS.metric=k;
       if(group==="period") STATS.period=k;
       // Only the time chart depends on these — redraw it in place.

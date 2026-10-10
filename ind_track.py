@@ -118,6 +118,8 @@ REMAINING SHARP EDGES (still true after the split — check before blaming the p
    fill would revert a sold build to built.
 """
 
+import datetime as _dt
+
 
 # ── Wallet ledger maintenance ────────────────────────────────────────────────
 
@@ -360,7 +362,20 @@ def _ordered_delivered(lots):
         key=lambda l: (l.get("done_at"), str(l.get("id"))))
 
 
-def allocate_fifo(lots, fills):
+def money_lots(lots):
+    """The allocation view of rich lots (see :func:`reconcile`) that the WALLET
+    money pass runs on: delivered lots only, capacity = ``cap`` (produced minus
+    any abandoned write-off). Shared by :func:`reconcile` and the statistics
+    replay (:func:`sales_stats` callers) so both allocate the exact same lots and
+    the stats can never disagree with the tracker's realized figures."""
+    return [{"id": l["id"], "units": l.get("cap") or 0,
+             "cost_per_unit": l.get("cost_per_unit"),
+             "sales_tax": l.get("sales_tax") or 0.0,
+             "done_at": l.get("done_at")}
+            for l in lots if l.get("done_at") is not None]
+
+
+def allocate_fifo(lots, fills, events=None):
     """FIFO-allocate a product's sold units across its produced lots.
 
     ``lots`` — delivered lots for one product, each
@@ -392,6 +407,12 @@ def allocate_fifo(lots, fills):
     A lot missing cost/tax (old snapshot) still counts its ``sold`` units but
     contributes None-safe zeros to net/cost so it never poisons totals — its own
     ``profit`` is reported as None.
+
+    ``events`` — optional list; when given, every individual allocation (one
+    fill's slice landing on one lot) is appended as ``{lot_id, ts, units, net,
+    cost}`` (``net``/``cost`` None on an uncostable lot). This is the *when* of
+    each sale that the per-lot totals sum away — the statistics view buckets it
+    over time. Purely additive: the return value is identical either way.
     """
     ordered = [l for l in _ordered_delivered(lots) if (l.get("units") or 0) > 0]
     per_lot = {l["id"]: {"sold": 0, "net": 0.0, "cost": 0.0, "profit": 0.0,
@@ -432,6 +453,11 @@ def allocate_fifo(lots, fills):
             else:
                 rec["net"] += take * price * (1 - tax)
                 rec["cost"] += take * cpu
+            if events is not None:
+                events.append({
+                    "lot_id": lot["id"], "ts": fts, "units": take,
+                    "net": None if cpu is None else take * price * (1 - tax),
+                    "cost": None if cpu is None else take * cpu})
         if remaining > 0:
             unallocated += remaining
     net = cost = profit = 0.0
@@ -584,11 +610,7 @@ def reconcile(lots, fills, listed_units, observed_fills=None):
     """
     # 1. Money: FIFO sold across delivered lots (capacity = cap). WALLET stream —
     #    the only source of net/cost/profit, but it lags the real sale.
-    alloc_lots = [{"id": l["id"], "units": l.get("cap") or 0,
-                   "cost_per_unit": l.get("cost_per_unit"),
-                   "sales_tax": l.get("sales_tax") or 0.0,
-                   "done_at": l.get("done_at")}
-                  for l in lots if l.get("done_at") is not None]
+    alloc_lots = money_lots(lots)
     per_lot, summary = allocate_fifo(alloc_lots, fills)
 
     # 1b. Units: the same FIFO over the PHYSICALLY-OBSERVED order-diff stream
@@ -731,3 +753,189 @@ def wallet_only_sale_pending(balances, tx_times, now, window=2 * 3600,
         if t is not None and prev_ts < t <= latest_ts:
             return False
     return True
+
+
+# ── Sales statistics (the Industry → Statistics view) ────────────────────────
+#
+# The tracker answers "where is each batch now?"; statistics answers "what have
+# I sold, when, and which blueprints actually pay?". Both read the SAME money:
+# live builds replay reconcile's wallet FIFO (``allocate_fifo(money_lots(...),
+# events=...)``) so every per-sale slice sums back to the build's realized
+# figures, and dead (archived/stopped) builds — whose realized money is frozen
+# with no timestamps — are placed in time by :func:`scale_to_frozen`. The
+# totals here therefore always equal the tracker's realized profit.
+
+_DAY = 86400
+
+
+def scale_to_frozen(events, frozen, fallback_ts):
+    """Re-weight a dead build's historically-replayed sale slices so they sum to
+    its *frozen* realized snapshot exactly.
+
+    A dead build's money is frozen at close-out and never re-derived, but the
+    snapshot carries no timestamps. Replaying the all-lots FIFO (dead lots
+    included, as they were when they sold) recovers *when* its units sold; that
+    replay usually reproduces the frozen totals exactly, but a later archive
+    order can shift a few fills between batches. So the replay supplies the time
+    *shape* and the frozen snapshot the *amounts*: units, net and cost are each
+    scaled by ``frozen / replayed``. When the replay has nothing usable for a
+    figure (no slices, or zero of it) the whole frozen amount lands as one slice
+    at ``fallback_ts`` (the replay's last sale, else delivery) — never lost.
+
+    ``events`` — ``[{ts, units, net, cost}, ...]`` (net/cost may be None).
+    ``frozen`` — ``{units, net, cost_of_sold, ...}`` from the build.
+    Returns a new list of ``{ts, units, net, cost}``."""
+    fz = frozen or {}
+    want = {"units": fz.get("units") or 0, "net": fz.get("net") or 0.0,
+            "cost": fz.get("cost_of_sold")}
+    if not want["units"] and not want["net"]:
+        return []
+    have = {k: sum((e.get(k) or 0) for e in events) for k in want}
+    usable = [e for e in events if (e.get("units") or 0) > 0]
+    if not usable or not have["units"]:
+        last = fallback_ts
+        return [{"ts": last, "units": want["units"], "net": want["net"],
+                 "cost": want["cost"]}]
+    out = []
+    for e in usable:
+        r = {"ts": e.get("ts")}
+        for k in ("units", "net", "cost"):
+            if k == "cost" and want["cost"] is None:
+                r[k] = None
+            elif have[k]:
+                r[k] = (e.get(k) or 0) * want[k] / have[k]
+            else:
+                # Replay has none of this figure (e.g. net 0 on an uncostable
+                # lot) → spread it by units instead, so it still lands in time.
+                r[k] = (e.get("units") or 0) * want[k] / have["units"]
+        out.append(r)
+    return out
+
+
+def _bucket_start(ts, period):
+    """UTC start of the day / ISO week (Monday) / month containing ``ts``. EVE
+    runs on UTC (downtime, market days), so buckets follow it, not local time."""
+    d = _dt.datetime.fromtimestamp(ts, _dt.timezone.utc)
+    d = d.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "week":
+        d -= _dt.timedelta(days=d.weekday())
+    elif period == "month":
+        d = d.replace(day=1)
+    return int(d.timestamp())
+
+
+def _next_bucket(start, period):
+    d = _dt.datetime.fromtimestamp(start, _dt.timezone.utc)
+    if period == "day":
+        d += _dt.timedelta(days=1)
+    elif period == "week":
+        d += _dt.timedelta(days=7)
+    else:
+        d = (d.replace(day=28) + _dt.timedelta(days=4)).replace(day=1)
+    return int(d.timestamp())
+
+
+def _margin(profit, cost):
+    """Return on cost, in percent: profit over everything the sold (and written-
+    off) units cost to build. None when there's no cost basis to divide by."""
+    return (profit / cost * 100.0) if cost and cost > 0 else None
+
+
+def sales_stats(events, since=None, periods=("day", "week", "month")):
+    """Aggregate per-sale slices into the Statistics view's three answers.
+
+    ``events`` — one dict per sale slice (or write-off):
+    ``{build_id, type_id, name, ts, done_at, units, net, cost, writeoff}``.
+    ``net``/``cost`` are None for an uncostable lot (old snapshot): its units
+    count, its money doesn't (same as the tracker). ``writeoff`` is the frozen
+    cost of an abandoned remainder — a realized loss with no units.
+    ``since`` — drop slices before this epoch (the range filter); None = all.
+
+    Profit = net − cost − writeoff, so the totals equal the tracker's realized
+    profit over the same builds. Margin = profit ÷ (cost + writeoff): the return
+    on everything that batch's sold-or-written-off units cost to make.
+
+    Returns ``{totals, products, timeline}``:
+      * ``totals``  — blueprints (distinct products sold), batches, units, revenue
+        (net of sales tax), cost, writeoff, profit, margin.
+      * ``products`` — one row per product, sorted by profit desc: the totals'
+        fields plus ``profit_per_unit``, ``avg_days_to_sell`` (unit-weighted
+        delivery → sale), ``first_sale`` / ``last_sale``.
+      * ``timeline`` — ``{period: [{start, blueprints, units, revenue, profit,
+        products:[{type_id, name, units, profit}]}]}`` for each period, gap-
+        filled with empty buckets so the time axis is continuous.
+    """
+    evs = [e for e in (events or []) if e.get("ts") is not None
+           and (since is None or e["ts"] >= since)]
+    prods = {}
+    for e in evs:
+        p = prods.setdefault(e["type_id"], {
+            "type_id": e["type_id"], "name": e.get("name") or "?",
+            "units": 0.0, "revenue": 0.0, "cost": 0.0, "writeoff": 0.0,
+            "_builds": set(), "_wait": 0.0, "_wait_units": 0.0,
+            "first_sale": None, "last_sale": None})
+        u = e.get("units") or 0
+        p["units"] += u
+        if e.get("net") is not None and e.get("cost") is not None:
+            p["revenue"] += e["net"]
+            p["cost"] += e["cost"]
+        p["writeoff"] += e.get("writeoff") or 0.0
+        if u > 0:
+            p["_builds"].add(e.get("build_id"))
+            p["first_sale"] = e["ts"] if p["first_sale"] is None else min(p["first_sale"], e["ts"])
+            p["last_sale"] = e["ts"] if p["last_sale"] is None else max(p["last_sale"], e["ts"])
+            if e.get("done_at") is not None:
+                p["_wait"] += u * max(0, e["ts"] - e["done_at"])
+                p["_wait_units"] += u
+    products = []
+    for p in prods.values():
+        p["profit"] = p["revenue"] - p["cost"] - p["writeoff"]
+        p["margin"] = _margin(p["profit"], p["cost"] + p["writeoff"])
+        p["batches"] = len(p.pop("_builds"))
+        p["profit_per_unit"] = p["profit"] / p["units"] if p["units"] else None
+        wu = p.pop("_wait_units")
+        w = p.pop("_wait")
+        p["avg_days_to_sell"] = (w / wu / _DAY) if wu else None
+        products.append(p)
+    products.sort(key=lambda p: p["profit"], reverse=True)
+
+    sold = [p for p in products if p["units"] > 0]
+    tot = {k: sum(p[k] for p in products)
+           for k in ("units", "revenue", "cost", "writeoff", "profit")}
+    tot["blueprints"] = len(sold)
+    tot["batches"] = sum(p["batches"] for p in products)
+    tot["margin"] = _margin(tot["profit"], tot["cost"] + tot["writeoff"])
+
+    timeline = {}
+    for period in periods:
+        buckets = {}
+        for e in evs:
+            k = _bucket_start(e["ts"], period)
+            bk = buckets.setdefault(k, {"start": k, "units": 0.0, "revenue": 0.0,
+                                        "profit": 0.0, "_p": {}})
+            u = e.get("units") or 0
+            money = (e.get("net") is not None and e.get("cost") is not None)
+            prof = ((e["net"] - e["cost"]) if money else 0.0) - (e.get("writeoff") or 0.0)
+            bk["units"] += u
+            if money:
+                bk["revenue"] += e["net"]
+            bk["profit"] += prof
+            bp = bk["_p"].setdefault(e["type_id"], {
+                "type_id": e["type_id"], "name": e.get("name") or "?",
+                "units": 0.0, "profit": 0.0})
+            bp["units"] += u
+            bp["profit"] += prof
+        rows = []
+        if buckets:
+            cur, last = min(buckets), max(buckets)
+            while cur <= last:
+                bk = buckets.get(cur) or {"start": cur, "units": 0.0, "revenue": 0.0,
+                                          "profit": 0.0, "_p": {}}
+                plist = sorted(bk.pop("_p").values(), key=lambda x: x["profit"],
+                               reverse=True)
+                bk["products"] = plist
+                bk["blueprints"] = sum(1 for x in plist if x["units"] > 0)
+                rows.append(bk)
+                cur = _next_bucket(cur, period)
+        timeline[period] = rows
+    return {"totals": tot, "products": products, "timeline": timeline}

@@ -155,6 +155,7 @@
   <div class="exp-modeswitch">
     <button class="ind-mode-btn active" data-mode="planner">Planner</button>
     <button class="ind-mode-btn" data-mode="summary">Tracker<span id="ind-track-count" class="mode-count hidden"></span></button>
+    <button class="ind-mode-btn" data-mode="stats">Statistics</button>
   </div>
 </div>
 <div id="ind-controls" class="ctrlbar hidden">
@@ -281,6 +282,11 @@
     <div id="ind-summary-view" class="hidden">
       <div id="sum-body"></div>
       <div id="ind-builds" class="ind-builds hidden"></div>
+    </div>
+    <!-- Statistics: what's sold over time + margin by blueprint (stats.js →
+         #stats-body), off /api/ind/stats. -->
+    <div id="ind-stats-view" class="hidden">
+      <div id="stats-body" class="stats-body"></div>
     </div>
   </div>
   <div id="char-tablewrap" class="tablewrap hidden">
@@ -628,6 +634,7 @@
 <script src="/static/js/arb.js?v=__VERSION__"></script>
 <script src="/static/js/ind.js?v=__VERSION__"></script>
 <script src="/static/js/summary.js?v=__VERSION__"></script>
+<script src="/static/js/stats.js?v=__VERSION__"></script>
 <script src="/static/js/char.js?v=__VERSION__"></script>
 <script src="/static/js/track.js?v=__VERSION__"></script>
 <script src="/static/js/init.js?v=__VERSION__"></script>

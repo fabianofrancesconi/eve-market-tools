@@ -350,6 +350,9 @@ async function _doRefreshCharData(force){
   // roll-up when the Industry tab's Summary mode is showing so its totals stay live.
   if(ACTIVE_TAB==="ind" && typeof IND!=="undefined" && IND.mode==="summary"
      && typeof loadSummary==="function") loadSummary();
+  // Same for Statistics — a fresh fill can land in the current period.
+  if(ACTIVE_TAB==="ind" && typeof IND!=="undefined" && IND.mode==="stats"
+     && typeof loadStats==="function") loadStats();
   // Corp field was locked during the char-data fetch; unlock now that data
   // arrived. Clear the loading spinner on both fields — updateMyLpBadge() above
   // has already set the LP budget, and renderCharData() restored the corp value.

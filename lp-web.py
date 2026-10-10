@@ -2344,6 +2344,89 @@ def do_ind_summary(q):
     }
 
 
+def _ind_sale_events(builds, ledger):
+    """Every tracked build's realized sales as timestamped slices for the
+    Statistics view (see :func:`ind_track.sales_stats` for the event shape).
+
+    * **Live** builds replay reconcile's exact wallet money pass (same lots, same
+      fills, :func:`ind_track.money_lots`) with ``events`` on, so their slices sum
+      to the tracker's realized net/cost to the ISK.
+    * **Dead** builds (archived/stopped) have frozen money and no timestamps. An
+      all-lots replay — dead lots included, as they were when they sold —
+      recovers when their units went; :func:`ind_track.scale_to_frozen` then pins
+      the amounts to the frozen snapshot, so closed history never drifts.
+    * An abandoned remainder's write-off is a realized loss with no sale behind
+      it; it lands at the build's last sale (else delivery) so it shows up in the
+      period the batch wound down."""
+    groups = {}
+    for b in builds:
+        if b.get("product_type_id") is None:
+            continue
+        groups.setdefault(str(b.get("product_type_id")), []).append(b)
+    out = []
+    for pid, group in groups.items():
+        fills = ledger.get(pid, [])
+        lots = {b.get("id"): _build_lot(b) for b in group}
+        live_ev = []
+        ind_track.allocate_fifo(
+            ind_track.money_lots([lots[b.get("id")] for b in group if not _is_dead(b)]),
+            fills, events=live_ev)
+        hist_ev = []
+        if any(_is_dead(b) for b in group):
+            ind_track.allocate_fifo(ind_track.money_lots(list(lots.values())),
+                                    fills, events=hist_ev)
+        for b in group:
+            bid = b.get("id")
+            lot = lots[bid]
+            base = {"build_id": bid, "type_id": b.get("product_type_id"),
+                    "name": b.get("product_name", "?"), "done_at": lot["done_at"]}
+            fallback = lot["done_at"] or b.get("created_at")
+            if _is_dead(b):
+                mine = [e for e in hist_ev if e["lot_id"] == bid]
+                last = max((e["ts"] for e in mine if e.get("ts") is not None),
+                           default=fallback)
+                slices = ind_track.scale_to_frozen(mine, b.get("frozen"), last)
+                writeoff = (b.get("frozen") or {}).get("writeoff") or 0.0
+            else:
+                slices = [e for e in live_ev if e["lot_id"] == bid]
+                writeoff = _build_realized(b, None)["writeoff"] if b.get("abandoned") else 0.0
+            for e in slices:
+                out.append(dict(base, ts=e.get("ts") if e.get("ts") is not None else fallback,
+                                units=e.get("units") or 0, net=e.get("net"),
+                                cost=e.get("cost"), writeoff=0.0))
+            if writeoff:
+                last = max((e["ts"] for e in slices if e.get("ts") is not None),
+                           default=fallback)
+                out.append(dict(base, ts=last, units=0, net=None, cost=None,
+                                writeoff=writeoff))
+    return out
+
+
+def do_ind_stats(q):
+    """Industry → Statistics: what's sold over time and which blueprints pay.
+    ``range`` = days to look back (``all`` / missing = everything). Built from
+    the same wallet money as :func:`do_ind_summary` (see :func:`_ind_sale_events`),
+    so all-time totals equal the tracker's realized profit."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    _migrate_sell_state(acct)
+    _migrate_freeze_archived(acct)
+    builds = _load_tracked_builds(acct)
+    ledger = _load_sell_ledger(acct)
+    raw = (q.get("range", ["all"])[0] or "all").lower()
+    since = None
+    if raw != "all":
+        try:
+            since = time.time() - max(1, int(raw)) * 86400
+        except ValueError:
+            since = None
+    stats = ind_track.sales_stats(_ind_sale_events(builds, ledger), since=since)
+    stats["range"] = raw if since is not None else "all"
+    stats["tracked_builds"] = len(builds)
+    return stats
+
+
 def _account_wallet_tx_expires(acct):
     """Soonest wallet-transactions ``Expires`` epoch across the account's linked
     characters (None if none known). The wallet feed is what a ⏳ settling build
@@ -4517,6 +4600,7 @@ _GET_ROUTES = {
     "/api/ind/bpo-search": do_ind_bpo_search,
     "/api/ind/builds": do_ind_builds_list,
     "/api/ind/summary": do_ind_summary,
+    "/api/ind/stats": do_ind_stats,
     "/api/auth/login": do_auth_login,
     "/api/auth/switch": do_auth_switch,
     "/api/char/data": do_char_data,

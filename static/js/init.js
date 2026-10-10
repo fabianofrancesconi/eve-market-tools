@@ -180,7 +180,7 @@ async function loadSettings(){
       if(typeof loadTrackMinDwell==="function"){ loadTrackMinDwell(); if(typeof syncMinDwellInputs==="function") syncMinDwellInputs(); }
       // View modes (Industry Planner/Summary, Exploration Guides/Journal) and the
       // Abyss selections are all server-authoritative now.
-      if(typeof IND!=="undefined" && (s.ind_mode==="summary"||s.ind_mode==="planner")) IND.mode=s.ind_mode;
+      if(typeof IND!=="undefined" && (s.ind_mode==="summary"||s.ind_mode==="planner"||s.ind_mode==="stats")) IND.mode=s.ind_mode;
       if(typeof abyApplyStored==="function") abyApplyStored(s.aby_state);
       // Restore the last-used tab saved server-side. A tab URL overrides this
       // just below; don't re-push history for either.

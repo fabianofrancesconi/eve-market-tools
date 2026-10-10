@@ -353,6 +353,9 @@ async function _doRefreshCharData(force){
   // Same for Statistics — a fresh fill can land in the current period.
   if(ACTIVE_TAB==="ind" && typeof IND!=="undefined" && IND.mode==="stats"
      && typeof loadStats==="function") loadStats();
+  // …and Research — a job may have finished or a new one started.
+  if(ACTIVE_TAB==="ind" && typeof IND!=="undefined" && IND.mode==="research"
+     && typeof loadResearch==="function") loadResearch();
   // Corp field was locked during the char-data fetch; unlock now that data
   // arrived. Clear the loading spinner on both fields — updateMyLpBadge() above
   // has already set the LP budget, and renderCharData() restored the corp value.

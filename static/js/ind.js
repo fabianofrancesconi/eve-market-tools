@@ -1877,14 +1877,15 @@ function reconcileBuilds(){
 }
 
 // ── Industry Planner ⇄ Tracker mode ──────────────────────────────────────────
-// The Industry tab has three modes sharing one tablewrap: the Planner (the
+// The Industry tab has four modes sharing one tablewrap: the Planner (the
 // blueprint catalogue — what to build), the Tracker (the portfolio P&L
 // dashboard from summary.js plus the tracked-build cards for everything crafted
-// and sold) and Statistics (stats.js — sales over time + margin by blueprint). A build leaves the Planner and lives in the Tracker the moment it's
+// and sold), Statistics (stats.js — sales over time + margin by blueprint) and
+// Research (research.js — ME/TE jobs in the lab and what each level is worth). A build leaves the Planner and lives in the Tracker the moment it's
 // tracked. data-mode stays "summary" internally so saved prefs keep working.
 // The last-used mode is server-authoritative.
 function indSetMode(mode){
-  IND.mode = (mode==="summary"||mode==="stats") ? mode : "planner";
+  IND.mode = (mode==="summary"||mode==="stats"||mode==="research") ? mode : "planner";
   if(typeof setPref==="function") setPref('ind_mode', IND.mode);
   indApplyMode();
 }
@@ -1893,22 +1894,25 @@ function indSetMode(mode){
 // the scan-filter controls bar in Tracker mode, and (re)load the roll-up +
 // build cards on entry. Safe to call whenever the Industry tab or auth changes.
 function indApplyMode(){
-  const tracker = IND.mode==="summary", stats = IND.mode==="stats";
+  const tracker = IND.mode==="summary", stats = IND.mode==="stats", research = IND.mode==="research";
   document.querySelectorAll(".ind-mode-btn").forEach(b=>
     b.classList.toggle("active", b.dataset.mode===IND.mode));
-  const planV=$("#ind-planner-view"), sumV=$("#ind-summary-view"), statV=$("#ind-stats-view");
-  if(planV) planV.classList.toggle("hidden", tracker||stats);
+  const planV=$("#ind-planner-view"), sumV=$("#ind-summary-view"), statV=$("#ind-stats-view"),
+        resV=$("#ind-research-view");
+  if(planV) planV.classList.toggle("hidden", tracker||stats||research);
   if(sumV) sumV.classList.toggle("hidden", !tracker);
   if(statV) statV.classList.toggle("hidden", !stats);
+  if(resV) resV.classList.toggle("hidden", !research);
   // The scan-filter controls belong to the Planner only.
   const ctrls=$("#ind-controls");
-  if(ctrls && ACTIVE_TAB==="ind" && AUTH.loggedIn) ctrls.classList.toggle("hidden", tracker||stats);
+  if(ctrls && ACTIVE_TAB==="ind" && AUTH.loggedIn) ctrls.classList.toggle("hidden", tracker||stats||research);
   _updateTrackCount();
   if(tracker){
     renderIndBuilds();                                  // cards live in the Tracker now
     if(typeof loadSummary==="function") loadSummary();  // dashboard above them
   }
   if(stats && typeof loadStats==="function") loadStats();
+  if(research && typeof loadResearch==="function") loadResearch();
 }
 
 // Keep the Tracker button's (N) badge in sync with the count of ACTIVE builds.

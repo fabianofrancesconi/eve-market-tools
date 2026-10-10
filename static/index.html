@@ -156,6 +156,7 @@
     <button class="ind-mode-btn active" data-mode="planner">Planner</button>
     <button class="ind-mode-btn" data-mode="summary">Tracker<span id="ind-track-count" class="mode-count hidden"></span></button>
     <button class="ind-mode-btn" data-mode="stats">Statistics</button>
+    <button class="ind-mode-btn" data-mode="research">Research<span id="ind-research-count" class="mode-count hidden"></span></button>
   </div>
 </div>
 <div id="ind-controls" class="ctrlbar hidden">
@@ -287,6 +288,11 @@
          #stats-body), off /api/ind/stats. -->
     <div id="ind-stats-view" class="hidden">
       <div id="stats-body" class="stats-body"></div>
+    </div>
+    <!-- Research: ME/TE jobs in the lab + done, and what each level is worth
+         (research.js → #research-body), off /api/ind/research. -->
+    <div id="ind-research-view" class="hidden">
+      <div id="research-body" class="stats-body"></div>
     </div>
   </div>
   <div id="char-tablewrap" class="tablewrap hidden">
@@ -635,6 +641,7 @@
 <script src="/static/js/ind.js?v=__VERSION__"></script>
 <script src="/static/js/summary.js?v=__VERSION__"></script>
 <script src="/static/js/stats.js?v=__VERSION__"></script>
+<script src="/static/js/research.js?v=__VERSION__"></script>
 <script src="/static/js/char.js?v=__VERSION__"></script>
 <script src="/static/js/track.js?v=__VERSION__"></script>
 <script src="/static/js/init.js?v=__VERSION__"></script>

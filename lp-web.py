@@ -54,6 +54,7 @@ from urllib3.util.retry import Retry
 import arb_core
 import ind_core
 import ind_track
+import ind_research
 import sso_core
 import pg_store
 from lp_core import (
@@ -96,6 +97,8 @@ IND_OBSERVED_LEDGER_PATH = CACHE_DIR / "ind_observed_ledger.json"  # per-product
 IND_LISTED_UNITS_PATH = CACHE_DIR / "ind_listed_units.json"  # per-char open sell-order volume
 IND_TRACK_MIGRATED_PATH = CACHE_DIR / "ind_track_migrated.json"  # one-time migration sentinel
 IND_ARCHIVED_FROZEN_PATH = CACHE_DIR / "ind_archived_frozen.json"  # archived-freeze sentinel
+IND_RESEARCH_JOBS_PATH = CACHE_DIR / "ind_research_jobs.json"  # ME/TE research-job ledger
+IND_BP_LEVELS_PATH = CACHE_DIR / "ind_bp_levels.json"  # per-item last-known blueprint ME/TE
 WALLET_HISTORY_PATH = CACHE_DIR / "wallet_history.json"  # ISK balance time-series
 LOCATION_TRAIL_PATH = CACHE_DIR / "location_trail.json"  # exploration system trail
 LOCATION_TRACK_PATH = CACHE_DIR / "location_tracking.json"  # live-session state
@@ -888,6 +891,7 @@ def _refresh_char_blueprints(acct, cid):
         token = _access_token(acct, cid)
         bps = sso_core.fetch_character_blueprints(token, cid, SESSION)
         bp_map = sso_core.owned_blueprint_lookup(bps)
+        _record_bp_levels(acct, cid, bps)
         try:
             with acct.lock:
                 prev_map = dict(acct.bp_me_tes.get(cid, {}))
@@ -2427,6 +2431,113 @@ def do_ind_stats(q):
     return stats
 
 
+# ── Blueprint research (Industry → Research) ────────────────────────────────
+# Two small append-only stores (see ind_research): the ME/TE research-job
+# ledger, which outlives ESI's 90-day job window, and each blueprint item's
+# last-known ME/TE, which survives the blueprint vanishing from /blueprints/
+# while it sits in a job. Both are written from the per-character sweep.
+_RESEARCH_LOCK = threading.Lock()
+
+
+def _record_bp_levels(acct, cid, bps):
+    """Persist one character's per-item blueprint levels after a successful
+    ``/blueprints/`` pull (lets a research job know where it started)."""
+    with _RESEARCH_LOCK:
+        store = _acct_kv_load(acct, "ind_bp_levels", IND_BP_LEVELS_PATH, {})
+        if not isinstance(store, dict):
+            store = {}
+        ind_research.merge_bp_levels(store, cid, bps, time.time())
+        _acct_kv_save(acct, "ind_bp_levels", IND_BP_LEVELS_PATH, store)
+
+
+def _record_research_jobs(acct, cid, char_name, jobs, names, locations):
+    """Fold this sweep's ME/TE research jobs into the account's research ledger
+    (only written when something actually changed)."""
+    if not any(j.get("activity_id") in ind_research.RESEARCH_ACTIVITIES for j in jobs or []):
+        return
+    with _RESEARCH_LOCK:
+        store = _acct_kv_load(acct, "ind_research_jobs", IND_RESEARCH_JOBS_PATH, {})
+        if not isinstance(store, dict):
+            store = {}
+        levels = _acct_kv_load(acct, "ind_bp_levels", IND_BP_LEVELS_PATH, {})
+        store, changed = ind_research.merge_jobs(
+            store, jobs, cid, char_name, names, locations,
+            levels if isinstance(levels, dict) else {}, _parse_iso_ts)
+        if changed:
+            _acct_kv_save(acct, "ind_research_jobs", IND_RESEARCH_JOBS_PATH, store)
+
+
+_RESEARCH_PRICE_CACHE = {"ts": 0.0, "prices": {}}
+_RESEARCH_PRICE_TTL = 900
+
+
+def _research_prices(type_ids):
+    """Jita best-sell per material, cached 15 min — the Research view's benefit
+    estimates don't need the planner's live order books. Missing → absent."""
+    cache = _RESEARCH_PRICE_CACHE
+    if time.time() - cache["ts"] > _RESEARCH_PRICE_TTL:
+        cache["prices"], cache["ts"] = {}, time.time()
+    missing = [t for t in set(type_ids) if t not in cache["prices"]]
+    if missing:
+        try:
+            got = fetch_prices(missing, SESSION)
+        except requests.RequestException:
+            got = {}
+        for t in missing:
+            cache["prices"][t] = (got.get(t) or {}).get("sell_min")
+    return {t: cache["prices"].get(t) for t in type_ids if cache["prices"].get(t) is not None}
+
+
+def _research_bp_info(type_ids):
+    """``{blueprint_type_id: {name, product_name, isk_per_me_level, me0_cost,
+    base_time, priced}}`` from the SDE + Jita prices — what one ME level saves
+    per run and the build time TE shaves (see ind_research)."""
+    ids = sorted({int(t) for t in type_ids if t is not None})
+    if not ids:
+        return {}
+    try:
+        ind_core.load_sde_industry(CACHE_DIR, SESSION)
+        conn = ind_core.connect_sde(CACHE_DIR)
+    except Exception:
+        return {}
+    try:
+        products = {c["blueprint_id"]: c for c in ind_core.candidates_for_blueprints(conn, ids)}
+        marks = ", ".join("?" for _ in ids)
+        bp_names = {r["type_id"]: r["type_name"] for r in conn.execute(
+            f"SELECT type_id, type_name FROM types WHERE type_id IN ({marks})", ids)}
+        mats = {t: ind_core.materials_for(conn, t) for t in ids}
+        times = {t: ind_core.activity_time(conn, t) for t in ids}
+    finally:
+        conn.close()
+    prices = _research_prices([m for ms in mats.values() for m, _ in ms])
+    out = {}
+    for t in ids:
+        per, me0, priced = ind_research.me_cost_per_level(mats[t], prices)
+        out[t] = {"name": bp_names.get(t) or "?",
+                  "product_name": (products.get(t) or {}).get("type_name"),
+                  "isk_per_me_level": per if mats[t] else None,
+                  "me0_cost": me0, "base_time": times.get(t), "priced": priced}
+    return out
+
+
+def do_ind_research(q):
+    """Industry → Research: ME/TE jobs in the lab and done, and what each level
+    of research is worth (see :func:`ind_research.research_report`)."""
+    acct = current_account()
+    if not acct:
+        return {"error": "not available"}
+    jobs = _acct_kv_load(acct, "ind_research_jobs", IND_RESEARCH_JOBS_PATH, {})
+    levels = _acct_kv_load(acct, "ind_bp_levels", IND_BP_LEVELS_PATH, {})
+    jobs = list(jobs.values()) if isinstance(jobs, dict) else []
+    levels = levels if isinstance(levels, dict) else {}
+    tids = {j.get("blueprint_type_id") for j in jobs}
+    tids |= {it["type_id"] for it in ind_research.owned_items(levels) if it.get("bpo")}
+    report = ind_research.research_report(
+        jobs, levels, _research_bp_info(tids), _load_tracked_builds(acct), time.time())
+    report["levels_known"] = bool(levels)
+    return report
+
+
 def _account_wallet_tx_expires(acct):
     """Soonest wallet-transactions ``Expires`` epoch across the account's linked
     characters (None if none known). The wallet feed is what a ⏳ settling build
@@ -2741,6 +2852,8 @@ def _fetch_one_char_data_uncached(acct, cid):
                                           token=token)
 
     runs_tracked = _track_delivered_jobs(acct, cid, jobs, names)
+    if jobs_ok:
+        _record_research_jobs(acct, cid, char_name, jobs, names, station_names)
 
     activity_label = {1: "Manufacturing",
                       3: "TE Research",
@@ -4601,6 +4714,7 @@ _GET_ROUTES = {
     "/api/ind/builds": do_ind_builds_list,
     "/api/ind/summary": do_ind_summary,
     "/api/ind/stats": do_ind_stats,
+    "/api/ind/research": do_ind_research,
     "/api/auth/login": do_auth_login,
     "/api/auth/switch": do_auth_switch,
     "/api/char/data": do_char_data,

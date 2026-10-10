@@ -12,6 +12,28 @@ let STATS = { data:null, loading:false, range:"all", period:"week",
               metric:"blueprints", marginView:"pct", sort:"profit", dir:-1, seq:0, sig:null };
 let _statsTimeChart=null, _statsMarginChart=null, _statsChartRetry=0;
 
+// The view's chart settings survive a reload (server pref ``ind_stats_view``):
+// saved on every change, restored by loadSettings via statsApplyStored before
+// the first fetch so the saved range is the one requested.
+const _STATS_SAVED_KEYS=["range","period","metric","marginView","sort","dir"];
+function _statsSaveView(){
+  if(typeof setPref!=="function") return;
+  const v={}; _STATS_SAVED_KEYS.forEach(k=>v[k]=STATS[k]);
+  setPref("ind_stats_view", v);
+}
+function statsApplyStored(v){
+  if(!v || typeof v!=="object") return;
+  const ok={range:k=>_STATS_RANGES.some(r=>r[0]===k), period:k=>_STATS_PERIODS.some(r=>r[0]===k),
+            metric:k=>k in _STATS_METRICS, marginView:k=>k in _STATS_MARGIN_VIEWS,
+            sort:k=>typeof k==="string", dir:k=>k===1||k===-1};
+  const before=JSON.stringify(_STATS_SAVED_KEYS.map(k=>STATS[k])), range=STATS.range;
+  _STATS_SAVED_KEYS.forEach(k=>{ if(v[k]!==undefined && ok[k](v[k])) STATS[k]=v[k]; });
+  // Already on screen with the defaults (auth beat the settings fetch)? Catch up.
+  if(STATS.seq && JSON.stringify(_STATS_SAVED_KEYS.map(k=>STATS[k]))!==before){
+    if(STATS.range!==range) loadStats(); else if(STATS.data) renderStats();
+  }
+}
+
 const _STATS_RANGES=[["30","30d"],["90","90d"],["365","1y"],["all","All"]];
 const _STATS_PERIODS=[["day","Day"],["week","Week"],["month","Month"]];
 // The by-blueprint ranking reads either as a margin (%) or as ISK profit — a
@@ -44,7 +66,9 @@ function loadStats(){
     const next=(res && !res.error) ? res : null;
     // Background sweeps re-pull every few minutes; skip the rebuild (and the
     // chart redraw under the user's cursor) when nothing actually moved.
-    const sig=JSON.stringify(next);
+    // The range is part of the signature: a new range can return identical
+    // data (every sale already inside it) yet still needs its button redrawn.
+    const sig=STATS.range+"|"+JSON.stringify(next);
     const wasLoading=STATS.loading;
     STATS.loading=false;
     if(!wasLoading && sig===STATS.sig && $("#stats-body .stats-head")) return;
@@ -279,9 +303,10 @@ function _statsTableHtml(products){
     const btn=e.target.closest&&e.target.closest(".stats-seg-btn");
     if(btn){
       const group=btn.parentElement.dataset.group, k=btn.dataset.k;
-      if(group==="range"){ if(STATS.range!==k){ STATS.range=k; loadStats(); } return; }
+      if(group==="range"){ if(STATS.range!==k){ STATS.range=k; _statsSaveView(); loadStats(); } return; }
       if(group==="marginView"){
         STATS.marginView=k;
+        _statsSaveView();
         btn.parentElement.querySelectorAll(".stats-seg-btn").forEach(b=>b.classList.toggle("active", b===btn));
         const mv=_statsMarginView();
         $("#stats-margin-title").textContent=mv.title;
@@ -293,6 +318,7 @@ function _statsTableHtml(products){
       }
       if(group==="metric") STATS.metric=k;
       if(group==="period") STATS.period=k;
+      _statsSaveView();
       // Only the time chart depends on these — redraw it in place.
       btn.parentElement.querySelectorAll(".stats-seg-btn").forEach(b=>b.classList.toggle("active", b===btn));
       const title=$("#stats-time-title");
@@ -306,6 +332,7 @@ function _statsTableHtml(products){
     if(th && STATS.data){
       const col=th.dataset.sort;
       if(STATS.sort===col) STATS.dir*=-1; else { STATS.sort=col; STATS.dir=(col==="name"||col==="wait")?1:-1; }
+      _statsSaveView();
       $("#stats-table").innerHTML=_statsTableHtml(STATS.data.products||[]);
     }
   });

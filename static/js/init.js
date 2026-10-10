@@ -181,6 +181,10 @@ async function loadSettings(){
       // View modes (Industry Planner/Summary, Exploration Guides/Journal) and the
       // Abyss selections are all server-authoritative now.
       if(typeof IND!=="undefined" && (s.ind_mode==="summary"||s.ind_mode==="planner"||s.ind_mode==="stats"||s.ind_mode==="research")) IND.mode=s.ind_mode;
+      // Statistics / Research chart + table settings — applied before the tab
+      // switch below triggers their first load, so the saved range is fetched.
+      if(typeof statsApplyStored==="function") statsApplyStored(s.ind_stats_view);
+      if(typeof researchApplyStored==="function") researchApplyStored(s.ind_research_view);
       if(typeof abyApplyStored==="function") abyApplyStored(s.aby_state);
       // Restore the last-used tab saved server-side. A tab URL overrides this
       // just below; don't re-push history for either.

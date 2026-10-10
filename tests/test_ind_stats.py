@@ -212,3 +212,15 @@ def test_stats_js_is_in_docker_image():
     df = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "Dockerfile")).read()
     assert "COPY static/ ./static/" in df
+
+
+def test_stats_and_research_view_settings_persist():
+    src = lp_web.FRONTEND_SOURCE
+    # Saved on change…
+    assert 'setPref("ind_stats_view"' in src
+    assert 'setPref("ind_research_view"' in src
+    # …and restored from server prefs on load.
+    assert "statsApplyStored(s.ind_stats_view)" in src
+    assert "researchApplyStored(s.ind_research_view)" in src
+    for k in ('"range"', '"period"', '"metric"', '"marginView"'):
+        assert k in src

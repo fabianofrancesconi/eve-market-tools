@@ -12,6 +12,15 @@
 let RESEARCH = { data:null, loading:false, seq:0, sig:null, sort:"left", dir:-1 };
 let _researchChart=null, _researchChartRetry=0;
 
+// The blueprint table's sort survives a reload (server pref ``ind_research_view``).
+function researchApplyStored(v){
+  if(!v || typeof v!=="object") return;
+  if(typeof v.sort==="string") RESEARCH.sort=v.sort;
+  if(v.dir===1 || v.dir===-1) RESEARCH.dir=v.dir;
+  const t=$("#research-bp-table");
+  if(t && RESEARCH.data) t.innerHTML=_researchBpTableHtml(RESEARCH.data.blueprints||[]);
+}
+
 function loadResearch(){
   if(!AUTH.loggedIn) return;
   const seq=++RESEARCH.seq;
@@ -255,6 +264,7 @@ function _researchHistoryHtml(hist){
     if(!th || !RESEARCH.data) return;
     const col=th.dataset.sort;
     if(RESEARCH.sort===col) RESEARCH.dir*=-1; else { RESEARCH.sort=col; RESEARCH.dir=col==="name"?1:-1; }
+    if(typeof setPref==="function") setPref("ind_research_view", {sort:RESEARCH.sort, dir:RESEARCH.dir});
     $("#research-bp-table").innerHTML=_researchBpTableHtml(RESEARCH.data.blueprints||[]);
   });
 })();

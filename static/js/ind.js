@@ -1140,6 +1140,7 @@ function renderIndDetail(d, container){
       <span class="ind-d-acts">
         <button class="ind-fav-btn${IND.favorites.has(d.blueprint_id)?" on":""}" title="${esiOwned?"Owned blueprints appear in My Blueprints automatically":"Add to Watchlist — track blueprints you don't own yet"}">${IND.favorites.has(d.blueprint_id)?"★ Watchlist":"☆ Watchlist"}</button>
         <button class="ind-copy" title="Copy item name to clipboard">⧉ Copy name</button>
+        <button class="ind-hist-btn" title="Open the price history for ${d.product.name} at ${d.station_name}: trend over days, weeks and months, moving averages, RSI and volume">📈 Price history</button>
         ${(()=>{
           // Persistent "already tracking" state: most players own one blueprint,
           // so an in-progress build for it should read as already-tracked on
@@ -1313,6 +1314,10 @@ function renderIndDetail(d, container){
   }
   const trackBtn=box.querySelector(".ind-track-btn");
   if(trackBtn) trackBtn.onclick=()=>trackThisBuild(d, Math.max(1, IND.detailRuns||1), trackBtn);
+  const histBtn=box.querySelector(".ind-hist-btn");
+  if(histBtn) histBtn.onclick=()=>openPriceHistory({typeId:d.product.type_id,
+    regionId:_STATION_TO_REGION[d.station_id]||10000002, name:d.product.name,
+    live:d.ask||null, hub:d.station_name});
   const copyBtn=box.querySelector(".ind-copy");
   copyBtn.onclick=()=>{
     const done=()=>{ copyBtn.textContent="✓ Copied"; setTimeout(()=>{copyBtn.textContent="⧉ Copy";},1200); };
@@ -1507,7 +1512,7 @@ document.addEventListener("keydown", e=>{
   if(e.key!=="Escape" || !IND.focusedBuild || typeof ACTIVE_TAB==="undefined" || ACTIVE_TAB!=="ind") return;
   const t=e.target, tag=t&&t.tagName;
   if(tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT"||(t&&t.isContentEditable)) return;
-  if(document.querySelector(".ind-modal:not(.hidden), #chartExpandModal:not(.hidden), #arbChartModal:not(.hidden)")) return;
+  if(document.querySelector(".ind-modal:not(.hidden), #chartExpandModal:not(.hidden), #arbChartModal:not(.hidden), #phModal:not(.hidden)")) return;
   IND.focusedBuild=null; renderIndBuilds();
 });
 

@@ -957,6 +957,9 @@ function renderIndDetail(d, container){
   // box and persisted across sessions (pref 'ind.cargo_cap').
   const cargoCap=(typeof getPref==="function")?getPref("ind.cargo_cap", null):null;
   const maxCargoRuns=cap=>(inVolRun>0 && cap>0)?Math.max(1, Math.floor(cap/inVolRun)):null;
+  // "Max both" — the binding limit: the fewer runs of the wallet and cargo caps.
+  const maxBothRuns=cap=>{ const c=maxCargoRuns(cap);
+    return (c!=null && maxIskRuns!=null)?Math.min(c, maxIskRuns):null; };
   // Cumulative runs delivered for this exact item, from the same tracker
   // backing the Character tab KPI — broken out per product there.
   const prodTrack=(AUTH.loggedIn && AUTH.data && AUTH.data.runs_tracked)
@@ -1163,7 +1166,7 @@ function renderIndDetail(d, container){
     </div>
     <div class="ind-d-controls">
       <span class="ind-d-runs-wrap"><span class="ind-d-ctl-lbl">Batch</span><input class="ind-d-runs" type="text" inputmode="numeric" pattern="[0-9]*" value="${n}" style="width:68px"><span class="ind-d-runs-step"><button class="ind-d-runs-inc" title="Increase runs" tabindex="-1">▲</button><button class="ind-d-runs-dec" title="Decrease runs" tabindex="-1">▼</button></span><button class="ind-d-runs-add" data-n="10" title="Add 10 runs">+10</button><button class="ind-d-runs-add" data-n="100" title="Add 100 runs">+100</button><button class="ind-d-runs-add" data-n="1000" title="Add 1000 runs">+1000</button><button class="ind-d-runs-mul" data-m="2" title="Double the runs">×2</button><button class="ind-d-runs-mul" data-m="5" title="5× the runs">×5</button><button class="ind-d-runs-mul" data-m="10" title="10× the runs">×10</button></span>
-      <span class="ind-d-maxwrap">${maxIskRuns!=null?`<button class="ind-d-max-isk" title="Set runs to the most this batch's wallet can afford — materials + job install + broker fee + sales tax at the suggested list price (${isk(costPerRun)}/run against ${isk(walletBal)} in ${maxWho}'s wallet)">💰 Max wallet (${fmtNum(maxIskRuns)})</button>`:""}<span class="ind-d-cargo-box" title="Set runs to the most whose input materials fit this cargo hold. Your m³ is saved across sessions."><span class="ind-d-cargo-ico">📦</span><input class="ind-d-cargo-cap" type="text" inputmode="decimal" placeholder="m³" value="${cargoCap!=null?cargoCap:""}"><button class="ind-d-max-cargo"${inVolRun>0?"":" disabled"}>Max cargo${(()=>{const r=maxCargoRuns(cargoCap);return r!=null?` (${fmtNum(r)})`:"";})()}</button></span></span>
+      <span class="ind-d-maxwrap">${maxIskRuns!=null?`<button class="ind-d-max-isk" title="Set runs to the most this batch's wallet can afford — materials + job install + broker fee + sales tax at the suggested list price (${isk(costPerRun)}/run against ${isk(walletBal)} in ${maxWho}'s wallet)">💰 Max wallet (${fmtNum(maxIskRuns)})</button>`:""}<span class="ind-d-cargo-box" title="Set runs to the most whose input materials fit this cargo hold. Your m³ is saved across sessions."><span class="ind-d-cargo-ico">📦</span><input class="ind-d-cargo-cap" type="text" inputmode="decimal" placeholder="m³" value="${cargoCap!=null?cargoCap:""}"><button class="ind-d-max-cargo"${inVolRun>0?"":" disabled"}>Max cargo${(()=>{const r=maxCargoRuns(cargoCap);return r!=null?` (${fmtNum(r)})`:"";})()}</button></span>${(maxIskRuns!=null&&inVolRun>0)?(()=>{const r=maxBothRuns(cargoCap);return `<button class="ind-d-max-both"${r==null?" hidden":""} title="Set runs to the most that BOTH your wallet can afford and your cargo hold can carry — the lower of Max wallet and Max cargo">⚖ Max both${r!=null?` (${fmtNum(r)})`:""}</button>`;})():""}</span>
       <span class="ind-d-source" title="Trade hub these prices come from">${d.station_name}</span>
     </div>
     ${(()=>{
@@ -1377,6 +1380,7 @@ function renderIndDetail(d, container){
   if(maxIskBtn && maxIskRuns!=null) maxIskBtn.onclick=()=>setRuns(maxIskRuns);
   const cargoInput=box.querySelector(".ind-d-cargo-cap");
   const maxCargoBtn=box.querySelector(".ind-d-max-cargo");
+  const maxBothBtn=box.querySelector(".ind-d-max-both");
   // Parse the cargo box, persist it (across sessions), and fit runs to it. The
   // box is the source of truth; the button just applies whatever it holds.
   const applyCargo=()=>{
@@ -1399,10 +1403,21 @@ function renderIndDetail(d, container){
         const runs=maxCargoRuns(cap);
         maxCargoBtn.textContent=`Max cargo${runs!=null?` (${fmtNum(runs)})`:""}`;
       }
+      if(maxBothBtn){
+        const both=maxBothRuns(cap);
+        maxBothBtn.hidden=both==null;
+        maxBothBtn.textContent=`⚖ Max both${both!=null?` (${fmtNum(both)})`:""}`;
+      }
     });
     cargoInput.addEventListener("keydown", ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); applyCargo(); } });
   }
   if(maxCargoBtn && inVolRun>0) maxCargoBtn.onclick=applyCargo;
+  // Reads the box live (like applyCargo) so a just-typed m³ counts.
+  if(maxBothBtn) maxBothBtn.onclick=()=>{
+    const cap=parseFloat(((cargoInput&&cargoInput.value)||"").replace(/[, ]/g,""));
+    const runs=maxBothRuns(cap);
+    if(runs!=null) setRuns(runs);
+  };
 
   // ── Simulate ME/TE ──────────────────────────────────────────────────────
   // Enter what-if mode: seed the override with the current values and re-render

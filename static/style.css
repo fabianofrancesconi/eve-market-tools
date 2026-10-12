@@ -1070,10 +1070,11 @@
     margin-left:auto; white-space:nowrap; }
   .ind-d-source::before { content:"⌖ "; color:var(--cyan); }
   .ind-d-maxwrap { display:inline-flex; gap:8px; align-items:center; }
-  .ind-d-max-isk { font-size:11.5px; padding:3px 10px; cursor:pointer;
+  .ind-d-max-isk, .ind-d-max-both { font-size:11.5px; padding:3px 10px; cursor:pointer;
     background:var(--panel2); border:1px solid var(--line2); border-radius:5px; color:var(--cyan);
     white-space:nowrap; font-variant-numeric:tabular-nums; }
-  .ind-d-max-isk:hover { border-color:var(--cyan2); background:var(--cyan2); color:var(--bg); }
+  .ind-d-max-isk:hover, .ind-d-max-both:hover { border-color:var(--cyan2); background:var(--cyan2); color:var(--bg); }
+  .ind-d-max-both[hidden] { display:none; }
   /* Cargo box: icon + m³ input + "Max cargo" button joined as one pill. */
   .ind-d-cargo-box { display:inline-flex; align-items:stretch; border:1px solid var(--line2);
     border-radius:5px; overflow:hidden; background:var(--panel2); }

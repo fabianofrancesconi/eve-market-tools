@@ -1530,6 +1530,15 @@ class TestCharDataOrdersIsolation:
         # Live update on input without re-rendering.
         assert "maxCargoBtn.textContent=`Max cargo${runs!=null?` (${fmtNum(runs)})`:\"\"}`" in html
 
+    def test_max_both_button_takes_the_binding_limit(self):
+        """"Max both (N)" sets runs to the lower of Max wallet and Max cargo, is
+        only offered when both limits exist, and live-updates as the m³ is typed."""
+        html = lp_web.FRONTEND_SOURCE
+        assert "return (c!=null && maxIskRuns!=null)?Math.min(c, maxIskRuns):null;" in html
+        assert '(maxIskRuns!=null&&inVolRun>0)?(()=>{const r=maxBothRuns(cargoCap);' in html
+        assert "maxBothBtn.hidden=both==null;" in html
+        assert "const runs=maxBothRuns(cap);\n    if(runs!=null) setRuns(runs);" in html
+
     def test_built_stage_shows_both_exit_routes_with_profit(self):
         """The Built decider shows BOTH exit routes side by side, each with its
         own profit: list at the chosen price (patient) vs. dump into buy orders

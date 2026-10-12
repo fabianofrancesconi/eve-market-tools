@@ -1908,6 +1908,7 @@
   .ind-ins-copy:hover { background:var(--panel3); }
   .ind-ins-sub { font-size:12px; color:var(--dim); line-height:1.45; }
   .ind-ins-sub b { color:var(--fg); font-weight:600; }
+  .ind-ins-outlook { margin-top:4px; color:var(--fg); }
   .ind-ins-warn { font-size:12px; line-height:1.45; color:var(--red); font-weight:600;
     background:color-mix(in srgb, var(--red) 10%, transparent); border-radius:4px; padding:5px 8px; }
   .ind-ins-bar { height:4px; border-radius:99px; background:var(--panel3); overflow:hidden; }

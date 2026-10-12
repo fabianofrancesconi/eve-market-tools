@@ -176,7 +176,7 @@ class TestClientLiveBoard:
         assert "if(!ok && quiet && st.market) return" in _sim_fn("_fetchDeciderMarket")
         # The board's fetch entry points go through it.
         assert "_deciderEnsure(b, true)" in _sim_fn("_prefetchListedFlags")
-        assert "_deciderEnsure(b, stage!==\"building\")" in _sim_fn("_wireInsight")
+        assert "_deciderEnsure(b, stage!==\"building\" || _buildJobReady(b))" in _sim_fn("_wireInsight")
 
     def test_sweep_refresh_targets_only_what_is_shown(self):
         fn = _sim_fn("indRefreshLiveMarket")
@@ -265,7 +265,7 @@ class TestClientRobustness:
 
     def test_building_countdown_zero_repaints_the_insight(self):
         i = _IND_JS.index("else if(inBuildCard){")
-        assert "_renderInsight(bb)" in _IND_JS[i:i + 400]
+        assert "_renderInsight(bb)" in _IND_JS[i:i + 600]
         ins = _sim_fn("_insightInner")
         assert '(ready?"Finished ":"ETA ")' in ins
 

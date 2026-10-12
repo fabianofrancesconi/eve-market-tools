@@ -1496,7 +1496,9 @@ setInterval(()=>{
         // (title, colour, full bar); other card countdowns just say so.
         const ins=el.closest(".ind-insight");
         const bb=ins&&IND.builds.find(x=>x.id===ins.dataset.id);
-        if(bb) _renderInsight(bb); else el.textContent="Ready for delivery";
+        // It now wants the sales outlook too, so kick the order-book fetch.
+        if(bb){ _renderInsight(bb); _deciderEnsure(bb, true); }
+        else el.textContent="Ready for delivery";
       }
       else if(IND.openDetail) renderIndDetail(IND.openDetail);
     } else {
@@ -1653,7 +1655,7 @@ function indRefreshLiveMarket(){
     if(b.archived || b.stopped) return;
     const stage=_buildStage(b), focused=b.id===IND.focusedBuild;
     if(stage==="listed" || (focused && (stage==="built" || stage==="building")))
-      _deciderEnsure(b, stage!=="building");
+      _deciderEnsure(b, stage!=="building" || _buildJobReady(b));
   });
 }
 
@@ -2621,7 +2623,7 @@ function _beWarn(ctx, price, lead){
     +(n>1?`, ${fmtISK(per*n)} on the ${n.toLocaleString()} left.`:".");
 }
 // The shared shell every stage fills — the single source of the insight layout.
-function _insightShell({eyebrow, title, titleCls, sub, warn, bar, stats, actions}){
+function _insightShell({eyebrow, title, titleCls, sub, outlook, warn, bar, stats, actions}){
   const stat=x=>`<div class="ind-ins-stat"${x.tip?` title="${String(x.tip).replace(/"/g,"&quot;")}"`:""}>
       <span class="ind-ins-k">${x.k}</span><span class="ind-ins-v ${x.cls||""}">${x.v}</span></div>`;
   const list=(stats||[]).filter(Boolean);
@@ -2631,6 +2633,7 @@ function _insightShell({eyebrow, title, titleCls, sub, warn, bar, stats, actions
       ${actions?`<div class="ind-ins-acts">${actions}</div>`:""}
     </div>
     ${sub?`<div class="ind-ins-sub">${sub}</div>`:""}
+    ${outlook?`<div class="ind-ins-sub ind-ins-outlook">${outlook}</div>`:""}
     ${warn?`<div class="ind-ins-warn">⚠ ${warn}</div>`:""}
     ${bar!=null?`<div class="ind-ins-bar"><i style="width:${Math.max(0,Math.min(100,bar)).toFixed(1)}%"></i></div>`:""}
     ${list.length?`<div class="ind-ins-stats">${list.map(stat).join("")}</div>`:""}`;
@@ -2690,6 +2693,14 @@ function _insightInner(b, stage, close){
     const bctx=_deciderCtx(b);
     const warn=(w&&w.now!=null&&bctx.be.list!=null&&w.now<bctx.be.list-0.005)
       ? _beWarn(bctx, w.now, "Today's ask is under your break-even"):"";
+    // Finished but not yet delivered: preview the Built call — the price it'd list
+    // at and what to expect from the sale — so it's ready the moment it lands.
+    if(ready){
+      const o=_readyOutlook(b);
+      return _insightShell({eyebrow:"In production", title, titleCls:"pos",
+        sub:meta||"Manufacturing job finished.", outlook:o.text, warn:o.warn||warn, bar:100,
+        stats:o.stats.concat([drift]), actions:o.actions});
+    }
     return _insightShell({eyebrow:"In production", title, titleCls:ready?"pos":"live",
       sub:meta||"Manufacturing job running.", warn, bar:ready?100:pct,
       stats:[pct!=null?{k:"Progress", v:`${Math.max(0,Math.min(100,pct)).toFixed(0)}%`}:null, profit, drift]});
@@ -2861,7 +2872,51 @@ function _wireInsight(card, b){
   });
   const stage=root.dataset.stage;
   if(stage!=="building"&&stage!=="built"&&stage!=="listed") return;
-  _deciderEnsure(b, stage!=="building");
+  _deciderEnsure(b, stage!=="building" || _buildJobReady(b));
+}
+// A building job whose end time has passed — finished in EVE, awaiting delivery.
+function _buildJobReady(b){
+  const end=b.job_end?Date.parse(b.job_end):null;
+  return !!(end&&isFinite(end)&&end<=Date.now());
+}
+// "Days to clear" for an ETA in days: hours under a day, "90+ days" past the
+// longest order duration (it won't clear on one listing).
+function _fmtEtaDays(d){
+  if(d==null||!isFinite(d)) return "—";
+  if(d<1) return `~${Math.max(1, Math.round(d*24))}h`;
+  if(d>90) return "90+ days";
+  return `~${d<10?d.toFixed(1):Math.round(d)} day${d>=0.95&&d<1.05?"":"s"}`;
+}
+// The ready-for-delivery sales outlook: the same read the Built insight acts on
+// (_builtRead), framed as a preview — what it'll list at, what that earns, how
+// fast the batch should sell — plus the price to copy ahead of delivery.
+function _readyOutlook(b){
+  const full=v=>v==null?"—":fmtISKFull(v);
+  const pn=v=>v==null?"":(v>0?"pos":(v<0?"neg":""));
+  const r=_builtRead(b);
+  if(r.loading) return {text:"Reading the market for a sales outlook…", stats:[]};
+  if(r.price==null && r.bid==null) return {text:"No live market read — open Details once it's delivered to price it by hand.", stats:[]};
+  const odds=r.weekAll!=null
+    ? {k:"Sells within a week", v:`${(r.weekAll*100).toFixed(0)}%`, cls:r.weekAll>=0.66?"pos":(r.weekAll<0.33?"neg":"warn"),
+       tip:"Odds the whole batch sells within 7 days at the suggested price, from recent trading volume and the queue ahead of you"}
+    : {k:"Sells within a week", v:r.marketLoading?"…":"—"};
+  const eta={k:"Time to clear", v:r.marketLoading&&r.eta==null?"…":_fmtEtaDays(r.eta),
+    tip:"Expected time for the whole batch to sell at the suggested price: the queue at or under it plus your units, over recent daily volume"};
+  const copy=(price, label)=>price==null?"":
+    `<button class="ind-ins-copy" data-price="${price}" title="Copy ${full(price)}, ready to paste into EVE">⧉ ${label}</button>`;
+  if(r.dump){
+    return {text:`Once delivered: buy orders pay ${full(r.bid)}/unit for the whole batch${r.price!=null?` — at least what a listing at ${full(r.price)} would net`:""}, so dumping is the call.`,
+      stats:[{k:"Profit if dumped", v:_signIsk(r.instProfit), cls:pn(r.instProfit)}, odds],
+      actions:copy(r.bid, "Copy bid")};
+  }
+  const parts=[`Once delivered, list at <b>${full(r.price)}</b>${r.bestAsk!=null?" (just under the best ask)":" (your planned ask — no live quote)"}`];
+  if(r.weekAll!=null) parts.push(`${(r.weekAll*100).toFixed(0)}% odds the whole batch sells within a week`);
+  if(r.eta!=null) parts.push(`${_fmtEtaDays(r.eta)} to clear at recent volume`);
+  const warn=(r.price!=null && r.be.list!=null && r.price<r.be.list-0.005)
+    ? _beWarn(r.ctx, r.price, "The market is under your break-even"):"";
+  return {text:parts.join(" · ")+".",
+    stats:[{k:"Profit if listed", v:_signIsk(r.listProfit), cls:pn(r.listProfit), tip:"At the suggested price, after sales tax + broker fee"}, odds, eta],
+    warn, actions:copy(r.price, "Copy list price")};
 }
 // The Built insight's numbers: the suggested list price (undercut the live best
 // ask — the same default the Details slider opens on), both exits' profit over
@@ -2877,11 +2932,14 @@ function _builtRead(b){
   const listProfit=(price!=null&&cpu!=null)?(price*(1-stax-bfee)-cpu)*qty:null;
   const dq=_dumpQuote(st, ctx.s.bid, qty);
   const instProfit=(dq.bid!=null&&cpu!=null)?(dq.bid*(1-stax)-cpu)*dq.fillQty:null;
-  let weekAll=null;
+  let weekAll=null, eta=null;
   const m=st.market;
   if(price!=null && st.marketState==="done" && m && m.series && m.series.length){
     const rate=_priceConditionedDailyRate(m.series, price);
-    if(rate!=null) weekAll=_sellThroughProb(_unitsAheadInQueue(m.sell_book, price), rate, qty, 7).all;
+    if(rate!=null){
+      const sp=_sellThroughProb(_unitsAheadInQueue(m.sell_book, price), rate, qty, 7);
+      weekAll=sp.all; eta=sp.eta;
+    }
   }
   const driftPct=(bestAsk!=null&&frozen)?(bestAsk-frozen)/frozen*100:null;
   // Dump beats listing when buy orders pay at least what a listing would net per
@@ -2892,7 +2950,7 @@ function _builtRead(b){
   const dumpUnit=dq.bid!=null?dq.bid*(1-stax):null;
   const dump=dumpUnit!=null && dq.fillQty>=qty && (listUnit==null || dumpUnit>=listUnit);
   return {price, bestAsk, bid:dq.bid, fillQty:dq.fillQty, qty, listProfit, instProfit,
-          weekAll, driftPct, dump, be:ctx.be, ctx,
+          weekAll, eta, driftPct, dump, be:ctx.be, ctx,
           marketLoading:st.marketState==="loading"||st.marketState==="idle"};
 }
 // Plan vs reality for a finished build: real profit against the frozen list

@@ -421,3 +421,13 @@ class TestStoppedStage:
         assert 'if(stage==="stopped") return {key:"stopped"' in _sim_fn("_buildBadge")
         assert '"stopped"' in _sim_fn("_buildStepperHtml")
         assert ".ind-build-status.stopped" in _CSS
+
+
+class TestArchiveClosesDetail:
+    def test_archiving_closes_the_focused_detail_view(self):
+        fn = _sim_fn("archiveBuild")
+        close = fn.index("if(IND.focusedBuild===b.id) IND.focusedBuild=null")
+        # Only on archive (not unarchive), and before the board re-renders.
+        assert "if(b.archived){" in fn[:close]
+        assert "IND.buildsExpanded.delete(b.id)" in fn
+        assert close < fn.index("renderIndBuilds()")

@@ -1989,6 +1989,12 @@ function archiveBuild(b, archived){
     if(res && res.ok){
       b.archived=!!(res.build&&res.build.archived);
       if(res.build) b.frozen=res.build.frozen;
+      // Archiving files the build away — close its detailed view rather than
+      // leaving the panel open on a card that just moved into the drawer.
+      if(b.archived){
+        if(IND.focusedBuild===b.id) IND.focusedBuild=null;
+        IND.buildsExpanded.delete(b.id);
+      }
       renderIndBuilds();
       if(typeof loadSummary==="function") loadSummary(); else _refreshSummary();
     } else if(res && res.error){ alert(res.error); }

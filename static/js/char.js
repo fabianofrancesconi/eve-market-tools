@@ -92,6 +92,7 @@ function renderAuthChip(){
     renderSettingsPanel();
   }
   if(typeof renderPageCharBadges==="function") renderPageCharBadges();
+  updateGlobalWallet();
   if(ACTIVE_TAB==="char" && !AUTH.loggedIn) switchTab("ind");
   else updateIndGate();
 }
@@ -112,7 +113,7 @@ async function switchActiveChar(cid){
   await fetch(`/api/auth/switch?active_char_id=${cid}`);
   await checkAuth();
   // The default character drives every page left on "Use default" (plus the
-  // header wallet + Overview). Re-run the visible page if it's following the
+  // Overview). Re-run the visible page if it's following the
   // default, so a table/journal already on screen reflects the new character.
   PAGE_CHAR_PAGES.forEach(p=>{ if(!pageHasAssignment(p)) applyPageChar(p); });
 }
@@ -174,31 +175,36 @@ function renderPageCharBadges(){
 }
 
 // Wallet balance for a character id, read from the live per-character bundle the
-// Character data fetch caches (auth-status characters carry no balance). Falls
-// back to the account-wide wallet when the bundle isn't split per character.
+// Character data fetch caches (auth-status characters carry no balance). Only
+// use the legacy top-level balance when it belongs to the requested character.
 function charWallet(cid){
   const d=AUTH.data; if(!d) return null;
-  const bundle=(d.characters||[]).find(c=>c.character_id===cid);
-  return bundle&&bundle.wallet!=null ? bundle.wallet : (d.wallet!=null?d.wallet:null);
+  if(d.characters){
+    const bundle=d.characters.find(c=>c.character_id===cid);
+    return bundle&&bundle.wallet!=null ? bundle.wallet : null;
+  }
+  return d.character_id===cid&&d.wallet!=null ? d.wallet : null;
 }
 
 // Show the wallet of the character the current tool is spending from — right in
-// the shared cost bar, next to the fees, so the money you have sits beside the
-// money each sale costs. The tool pages (Industry / LP / Arbitrage) can run on a
-// per-page character, so mirror assignedCharId; other tabs show the active one.
+// the header and shared cost bar. Follow the page's Settings assignment, or the
+// default character on pages without one.
 function updateGlobalWallet(){
+  const chip=$("#chip-wallet");
   const field=$("#g-wallet-field"), val=$("#g-wallet");
-  if(!field||!val) return;
-  if(!AUTH.loggedIn){ field.classList.add("hidden"); return; }
-  const page=(ACTIVE_TAB==="ind"||ACTIVE_TAB==="lp"||ACTIVE_TAB==="arb")?ACTIVE_TAB:null;
-  const cid=page&&typeof assignedCharId==="function"?assignedCharId(page):AUTH.activeCharId;
-  const bal=charWallet(cid);
-  if(bal==null){ field.classList.add("hidden"); return; }
-  field.classList.remove("hidden");
-  val.textContent=fmtISK(bal);
+  const cid=PAGE_CHAR_PAGES.includes(ACTIVE_TAB)?assignedCharId(ACTIVE_TAB):AUTH.activeCharId;
+  const bal=AUTH.loggedIn?charWallet(cid):null;
   const who=(typeof charName==="function"&&charName(cid))||"the active character";
-  field.setAttribute("data-tip",
-    `${who}'s wallet — ${Math.round(bal).toLocaleString()} ISK to spend on materials, job installs and listing fees.`);
+  const tip=bal==null?`${who}'s wallet is unavailable.`:
+    `${who}'s wallet — ${Math.round(bal).toLocaleString()} ISK to spend on materials, job installs and listing fees.`;
+  if(chip){
+    chip.textContent=!AUTH.loggedIn?"":bal==null?"Wallet unavailable":fmtISK(bal)+" ISK";
+    chip.title=AUTH.loggedIn?tip:"";
+  }
+  if(!field||!val) return;
+  field.classList.toggle("hidden", !AUTH.loggedIn);
+  val.textContent=bal==null?"—":fmtISK(bal);
+  field.setAttribute("data-tip", tip);
 }
 
 async function checkAuth(){
@@ -868,7 +874,6 @@ function renderCharData(){
   const multiChar=chars.length>1;
   const events=d.order_events||[];
 
-  $("#chip-wallet").textContent=d.wallet!=null?fmtISK(d.wallet)+" ISK":"";
   updateGlobalWallet();
 
   let html='';
@@ -1940,7 +1945,7 @@ function renderSettingsPanel(){
         +`<button id="set-logout-all" class="auth-btn-sm set-danger">Logout all</button>`
       +`</div></div>`
     +`<div class="set-section"><div class="set-head">Default character</div>`
-      +`<div class="set-assign-hint">Used for the header wallet, the Overview tab, and any page below left on “Use default”.</div>`
+      +`<div class="set-assign-hint">Used for the Overview tab and any page below left on “Use default”. The wallet follows the current page's character.</div>`
       +`<div class="set-assign-row"><span class="set-assign-page">Default</span>`
         +`<select id="set-default-sel">${charOpts(AUTH.activeCharId)}</select></div></div>`
     +`<div class="set-section"><div class="set-head">Page assignments</div>`
@@ -2271,4 +2276,3 @@ $("#ind-search-clear").addEventListener("click", ()=>{
   renderIndTable();
   $("#ind-search").focus();
 });
-

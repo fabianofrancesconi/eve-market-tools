@@ -8,6 +8,8 @@ in-memory fake so the account/session logic can be exercised deterministically.
 """
 import time
 from pathlib import Path
+from unittest.mock import Mock
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -362,8 +364,9 @@ class _FakeHandler(lp_web.Handler):
         self.headers = {"Cookie": cookie}
         self.sent = None
 
-    def _send_json(self, obj, status=200):
+    def _send_json(self, obj, status=200, set_cookie=None):
         self.sent = (status, obj)
+        self.set_cookie = set_cookie
 
 
 class TestGate:
@@ -437,6 +440,148 @@ class TestAuthStatus:
         assert st["needs_login"] is False
 
 
+class _OAuthHandler(_FakeHandler):
+    def _send_html(self, html):
+        self.html = html
+
+    def _redirect(self, location, set_sid=None, oauth_state=None):
+        self.redirect = (location, set_sid, oauth_state)
+
+
+class TestOAuthBinding:
+    @pytest.fixture
+    def exchange(self, pg, monkeypatch):
+        monkeypatch.setenv("EVE_CLIENT_ID", "test-client")
+        monkeypatch.setenv("EVE_CALLBACK_URL", "https://example.test/callback")
+        monkeypatch.setattr(lp_web, "_PKCE", {})
+        exchange = Mock(return_value={
+            "access_token": "test-token", "refresh_token": "test-refresh",
+        })
+        monkeypatch.setattr(lp_web.sso_core, "exchange_code", exchange)
+        monkeypatch.setattr(lp_web.sso_core, "decode_jwt_payload", lambda token: {
+            "character_id": 999, "name": "New character", "scopes": [],
+        })
+        monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda *a: None)
+        monkeypatch.setattr(lp_web, "_refresh_char_blueprints", lambda *a: None)
+        return exchange
+
+    def _begin(self, cookie=""):
+        h = _OAuthHandler(cookie)
+        h.path = "/api/auth/login"
+        h.do_GET()
+        state = parse_qs(urlparse(h.sent[1]["url"]).query)["state"][0]
+        assert "HttpOnly" in h.set_cookie
+        assert "Secure" in h.set_cookie
+        assert "SameSite=Lax" in h.set_cookie
+        assert "Path=/callback" in h.set_cookie
+        assert f"Max-Age={lp_web._PKCE_TTL}" in h.set_cookie
+        return state, h.set_cookie.split(";")[0]
+
+    def _callback(self, state, cookie):
+        h = _OAuthHandler(cookie)
+        h._setup_request()
+        h._handle_callback({"state": [state], "code": ["test-code"]})
+        return h
+
+    @pytest.mark.parametrize("mode", ["new", "returning", "link", "legacy"])
+    def test_same_browser_callback_preserves_login_and_linking(self, pg, monkeypatch,
+                                                             exchange, mode):
+        cookie = ""
+        expected = None
+        if mode == "legacy":
+            expected = lp_web.Account()
+            monkeypatch.setattr(lp_web, "_LEGACY_ACCOUNT", expected)
+            monkeypatch.setattr(pg, "enabled", lambda: False)
+            monkeypatch.setattr(lp_web, "_persist_account", lambda acct: None)
+        elif mode == "returning":
+            expected = _acct(pg, 999)
+        elif mode == "link":
+            expected = _acct(pg, 100)
+            cookie = f"emt_sid={lp_web._new_session(expected)}"
+        state, nonce_cookie = self._begin(cookie)
+        h = self._callback(state, f"{cookie}; {nonce_cookie}")
+        exchange.assert_called_once()
+        assert h.redirect[0] == "/"
+        assert h.redirect[2] == state
+        assert state not in lp_web._PKCE
+        if expected is None:
+            expected = lp_web._ACCOUNTS[999]
+        assert 999 in expected.characters
+        if mode != "legacy":
+            assert pg.char_account_get(999) == expected.account_id
+        if mode in ("new", "returning"):
+            assert lp_web._resolve_session(h.redirect[1]) is expected
+
+    @pytest.mark.parametrize("victim_logged_in", [False, True])
+    def test_attacker_callback_cannot_be_used_in_another_browser(
+            self, pg, exchange, victim_logged_in):
+        state, attacker_cookie = self._begin()
+        victim = _acct(pg, 100)
+        cookie = f"emt_sid={lp_web._new_session(victim)}" if victim_logged_in else ""
+        h = self._callback(state, cookie)
+        assert "Invalid or expired" in h.html
+        exchange.assert_not_called()
+        assert 999 not in victim.characters
+        assert pg.char_account_get(999) is None
+        # A rejected foreign request must not burn the real browser's handshake.
+        assert state in lp_web._PKCE
+        assert self._callback(state, attacker_cookie).redirect[0] == "/"
+
+    @pytest.mark.parametrize("change", ["logout", "account", "session", "login", "nonce"])
+    def test_changed_browser_or_session_context_is_rejected(self, pg, exchange, change):
+        acct = _acct(pg, 100)
+        sid = lp_web._new_session(acct)
+        initial = "" if change == "login" else f"emt_sid={sid}"
+        state, nonce_cookie = self._begin(initial)
+        cookie = f"emt_sid={sid}"
+        if change == "logout":
+            cookie = ""
+        elif change == "account":
+            cookie = f"emt_sid={lp_web._new_session(_acct(pg, 200))}"
+        elif change == "session":
+            cookie = f"emt_sid={lp_web._new_session(acct)}"
+        elif change == "nonce":
+            nonce_cookie = f"{lp_web._OAUTH_COOKIE_PREFIX}{state}=wrong"
+        h = self._callback(state, f"{cookie}; {nonce_cookie}")
+        assert "Invalid or expired" in h.html
+        exchange.assert_not_called()
+        assert 999 not in acct.characters
+
+    def test_expired_handshake_is_rejected_without_waiting_for_sweep(self, pg, exchange):
+        state, cookie = self._begin()
+        lp_web._PKCE[state]["ts"] -= lp_web._PKCE_TTL + 1
+        assert "Invalid or expired" in self._callback(state, cookie).html
+        exchange.assert_not_called()
+
+    def test_callback_is_single_use(self, pg, exchange):
+        state, cookie = self._begin()
+        self._callback(state, cookie)
+        assert "Invalid or expired" in self._callback(state, cookie).html
+        exchange.assert_called_once()
+
+    def test_parallel_logins_have_independent_browser_cookies(self, pg, exchange):
+        first_state, first_cookie = self._begin()
+        second_state, second_cookie = self._begin()
+        cookies = f"{first_cookie}; {second_cookie}"
+        assert self._callback(first_state, cookies).redirect[0] == "/"
+        assert self._callback(second_state, cookies).redirect[0] == "/"
+        assert exchange.call_count == 2
+
+    def test_success_redirect_sets_session_and_expires_only_completed_handshake(self, pg):
+        h = _FakeHandler()
+        h.send_response = Mock()
+        h.send_header = Mock()
+        h.end_headers = Mock()
+        h._redirect("/", set_sid="new-session", oauth_state="completed")
+        cookies = [call.args[1] for call in h.send_header.call_args_list
+                   if call.args[0] == "Set-Cookie"]
+        assert len(cookies) == 2
+        assert cookies[0].startswith("emt_sid=new-session;")
+        assert cookies[1].startswith("emt_oauth_completed=;")
+        assert "Path=/callback" in cookies[1]
+        assert "Max-Age=0" in cookies[1]
+
+
 class TestStaticCacheBusting:
     def test_assets_carry_version_query(self):
         # Static assets are served Cache-Control: immutable, so their URLs must
@@ -468,6 +613,15 @@ class TestStaticCacheBusting:
         assert pg.session_get(sid) is None      # session row gone
         assert pg.account_get(100) is None      # account row gone
         assert sid not in lp_web._SESSIONS      # dropped from cache
+
+    def test_logout_cannot_unlink_another_accounts_character(self, pg):
+        caller = _acct(pg, 100)
+        other = _acct(pg, 200)
+        lp_web._REQUEST.account = caller
+        with pytest.raises(LPError, match="does not belong"):
+            lp_web.do_auth_logout({"char_id": ["200"]})
+        assert pg.char_account_get(200) == other.account_id
+        assert 100 in caller.characters
 
 
 class TestScanCap:

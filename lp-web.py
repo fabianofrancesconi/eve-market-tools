@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.160.4"
+__version__ = "1.160.5"
 
 import argparse
 import base64
@@ -940,7 +940,7 @@ def _refresh_all_blueprints(acct, force=False):
             list(pool.map(lambda c: _refresh_char_blueprints(acct, c), char_ids))
 
 
-def do_auth_login(q):
+def do_auth_login(q, *, browser_nonce, session_id=None):
     """Begin the PKCE handshake — returns the authorize URL to send the browser to."""
     client_id = _eve_client_id()
     if not client_id:
@@ -949,9 +949,13 @@ def do_auth_login(q):
     verifier, challenge = sso_core.make_pkce()
     state = secrets.token_urlsafe(16)
     redirect_uri = _callback_url()
+    acct = current_account()
     with _PKCE_LOCK:
         _PKCE[state] = {"verifier": verifier, "redirect_uri": redirect_uri,
-                        "ts": time.time()}
+                        "ts": time.time(), "browser_nonce": browser_nonce,
+                        "session_id": session_id,
+                        "account_id": acct.account_id if acct is not None else None,
+                        "intent": "link" if acct is not None else "login"}
     url = sso_core.build_authorize_url(client_id, redirect_uri, sso_core.SCOPES, state, challenge)
     return {"url": url}
 
@@ -1024,6 +1028,8 @@ def do_auth_logout(q):
     with acct.lock:
         if char_id:
             cid = int(char_id)
+            if cid not in acct.characters:
+                raise LPError("Character does not belong to this account.")
             acct.characters.pop(cid, None)
             acct.skill_profiles.pop(cid, None)
             acct.bp_me_tes.pop(cid, None)
@@ -4715,7 +4721,6 @@ _GET_ROUTES = {
     "/api/ind/summary": do_ind_summary,
     "/api/ind/stats": do_ind_stats,
     "/api/ind/research": do_ind_research,
-    "/api/auth/login": do_auth_login,
     "/api/auth/switch": do_auth_switch,
     "/api/char/data": do_char_data,
     "/api/char/wallet-history": do_wallet_history,
@@ -4724,8 +4729,8 @@ _GET_ROUTES = {
     "/api/track/session": do_track_session,
     "/api/notes": do_notes_list,
     "/api/settings": do_settings,
-    # /api/auth/status and /api/auth/logout are handled explicitly in do_GET so
-    # they can refresh / clear the session cookie.
+    # Auth login/status/logout are handled explicitly in do_GET so they can
+    # issue, refresh, or clear browser cookies.
 }
 
 # Uniform POST endpoints: take the merged query/body params, return a JSON dict.
@@ -4760,6 +4765,7 @@ _POST_ROUTES = {
 # Session cookie + the endpoints reachable without one (multi-user mode). The app
 # shell and the login handshake must stay public; everything else needs a session.
 _COOKIE_NAME = "emt_sid"
+_OAUTH_COOKIE_PREFIX = "emt_oauth_"
 # /api/auth/logout is public so it always clears the browser cookie, even when
 # the session is already gone/expired (otherwise a stale cookie could never be
 # cleared — the gate would 401 the logout before it ran).
@@ -4778,6 +4784,12 @@ def _expire_cookie_header():
     """A Set-Cookie that clears the session cookie in the browser (logout)."""
     secure = "; Secure" if _callback_url().startswith("https") else ""
     return f"{_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0{secure}"
+
+
+def _oauth_cookie_header(state, nonce, max_age=_PKCE_TTL):
+    secure = "; Secure" if _callback_url().startswith("https") else ""
+    return (f"{_OAUTH_COOKIE_PREFIX}{state}={nonce}; HttpOnly; Path=/callback; "
+            f"SameSite=Lax; Max-Age={max_age}{secure}")
 
 
 # Cap concurrent scans so a burst / crawler on the public URL can't pile up
@@ -4836,11 +4848,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _redirect(self, location, set_sid=None):
+    def _redirect(self, location, set_sid=None, oauth_state=None):
         self.send_response(302)
         self.send_header("Location", location)
         if set_sid:
             self.send_header("Set-Cookie", _cookie_header(set_sid))
+        if oauth_state:
+            self.send_header("Set-Cookie", _oauth_cookie_header(oauth_state, "", 0))
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -4879,6 +4893,13 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _handle_auth_login(self, q):
+        nonce = secrets.token_urlsafe(32)
+        sid = self._cookies().get(_COOKIE_NAME) if pg_store.enabled() else None
+        result = do_auth_login(q, browser_nonce=nonce, session_id=sid)
+        state = parse_qs(urlparse(result["url"]).query)["state"][0]
+        self._send_json(result, set_cookie=_oauth_cookie_header(state, nonce))
+
     def _handle_callback(self, q):
         """EVE SSO redirect target: validate state, exchange the code for tokens,
         attach the character to an account, mint a session cookie, bounce back."""
@@ -4888,9 +4909,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         state = q.get("state", [""])[0]
         code = q.get("code", [""])[0]
+        cookies = self._cookies()
+        acct = current_account()
+        sid = cookies.get(_COOKIE_NAME) if pg_store.enabled() else None
         with _PKCE_LOCK:
-            handshake = _PKCE.pop(state, None)
-        if not handshake or not code:
+            handshake = _PKCE.get(state)
+            valid = (
+                handshake is not None and bool(code)
+                and 0 <= time.time() - handshake["ts"] <= _PKCE_TTL
+                and secrets.compare_digest(
+                    handshake["browser_nonce"],
+                    cookies.get(_OAUTH_COOKIE_PREFIX + state, ""))
+                and handshake["session_id"] == sid
+                and handshake["account_id"] == (
+                    acct.account_id if acct is not None else None)
+                and handshake["intent"] == ("link" if acct is not None else "login")
+            )
+            if valid:
+                _PKCE.pop(state)
+        if not valid:
             self._send_html("<h2>EVE login failed</h2><p>Invalid or expired login "
                             "request. Please try again.</p><p><a href='/'>Back to app</a></p>")
             return
@@ -4937,7 +4974,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(f"<h2>EVE login failed</h2><p>{html.escape(f'{type(e).__name__}: {e}')}</p>"
                             "<p><a href='/'>Back to app</a></p>")
             return
-        self._redirect("/", set_sid)
+        self._redirect("/", set_sid, oauth_state=state)
 
     def _sse_emit(self, data):
         """Write one SSE ``data:`` frame. Returns False once the socket is gone
@@ -5085,6 +5122,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_sse_scan(q, do_ind_scan, "ind")
             elif parsed.path == "/callback":
                 self._handle_callback(q)
+            elif parsed.path == "/api/auth/login":
+                self._handle_auth_login(q)
             elif parsed.path == "/api/auth/status":
                 st = do_auth_status(q)
                 # Sliding expiration: re-issue the cookie with a fresh Max-Age on

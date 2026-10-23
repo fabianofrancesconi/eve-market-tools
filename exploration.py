@@ -432,12 +432,17 @@ class Exploration:
 
     def _track_target_cid(self, acct, q):
         raw = q.get("char_id", [None])[0]
-        if raw:
+        if raw is not None:
             try:
-                return int(raw)
-            except (TypeError, ValueError):
-                pass
-        return acct.active_char_id
+                cid = int(raw)
+            except (TypeError, ValueError) as e:
+                raise LPError("Invalid character ID.") from e
+        else:
+            cid = acct.active_char_id
+        with acct.lock:
+            if cid is not None and cid not in acct.characters:
+                raise LPError("Character does not belong to this account.")
+        return cid
 
     def _live_state(self, cid):
         """(state, pause_reason, run_id, online, error) for a character's live session."""

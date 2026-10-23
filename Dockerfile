@@ -2,7 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir requests "psycopg[binary,pool]>=3.2"
+COPY requirements-runtime.txt ./
+# Use a patched installer at build time, but omit its vendored libraries at runtime.
+RUN pip install --no-cache-dir --upgrade pip==26.2.2 \
+    && pip install --no-cache-dir -r requirements-runtime.txt \
+    && python -m pip uninstall --yes pip
 
 COPY lp_core.py arb_core.py ind_core.py ind_track.py ind_research.py sso_core.py pg_store.py pg_migrations.py exploration.py lp-web.py ./
 COPY static/ ./static/

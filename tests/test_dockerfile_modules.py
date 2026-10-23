@@ -63,3 +63,12 @@ def test_all_local_modules_imported_by_web_are_in_dockerfile():
 
 def test_web_entrypoint_itself_is_copied():
     assert "lp-web.py" in _dockerfile_copied_files()
+
+
+def test_container_and_local_installs_share_runtime_requirements():
+    runtime = "requirements-runtime.txt"
+    assert runtime in _dockerfile_copied_files()
+    dockerfile = (_ROOT / "Dockerfile").read_text().replace("\\\n", " ")
+    assert re.search(rf"RUN\s+(?:python\s+-m\s+)?pip\s+install\b[^\n]*-r\s+{runtime}",
+                     dockerfile)
+    assert f"-r {runtime}" in (_ROOT / "requirements.txt").read_text().splitlines()

@@ -13,6 +13,8 @@ import importlib
 lp_web = importlib.import_module("lp-web")
 
 import requests
+import pytest
+from lp_core import LPError
 
 
 def _acct(chars=None):
@@ -233,6 +235,43 @@ class TestSessionRecords:
 
 
 # ── session lifecycle via the route handlers ────────────────────────────────
+
+@pytest.mark.parametrize("handler", [
+    "do_track_status", "do_track_sessions", "do_track_session",
+    "do_track_start", "do_track_pause", "do_track_resume", "do_track_stop",
+    "do_track_scanned", "do_track_cargo", "do_track_cargo_fetch",
+    "do_track_note", "do_track_hide",
+    "do_track_session_update", "do_track_session_delete",
+])
+def test_tracking_rejects_another_accounts_character(monkeypatch, tmp_path, handler):
+    _isolate(monkeypatch, tmp_path)
+    caller = _acct()
+    other = _acct({2: "Other explorer"})
+    other.account_id = 2
+    monkeypatch.setattr(lp_web, "require_account", lambda: other)
+    run_id = lp_web.do_track_start({})["run_id"]
+    lp_web.do_track_pause({})
+    monkeypatch.setattr(lp_web, "require_account", lambda: caller)
+    with pytest.raises(LPError, match="does not belong"):
+        getattr(lp_web, handler)({"char_id": ["2"], "run_id": [run_id]})
+    assert lp_web._TRACK_SESSIONS[2]["state"] == "paused"
+    assert lp_web._session_record_get(other, 2, run_id) is not None
+
+
+@pytest.mark.parametrize("raw", ["invalid", "", "0", "-1"])
+def test_invalid_tracking_target_does_not_fall_back_to_active_character(raw):
+    with pytest.raises(LPError):
+        lp_web._track_target_cid(_acct(), {"char_id": [raw]})
+
+
+def test_tracking_allows_an_owned_inactive_character(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    acct = _acct({1: "Main", 2: "Alt"})
+    monkeypatch.setattr(lp_web, "require_account", lambda: acct)
+    assert lp_web.do_track_start({"char_id": ["2"]})["char_id"] == 2
+    assert lp_web.do_track_pause({"char_id": ["2"]})["state"] == "paused"
+    assert lp_web.do_track_resume({"char_id": ["2"]})["state"] == "active"
+
 
 class TestSessionLifecycle:
     def test_start_creates_record_and_live_state(self, monkeypatch, tmp_path):

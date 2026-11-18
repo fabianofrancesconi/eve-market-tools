@@ -564,7 +564,12 @@ class TestCombinedCharData:
         monkeypatch.setattr(lp_web.sso_core, "fetch_loyalty_points", lambda *a, **k: ([], {}))
         monkeypatch.setattr(lp_web.sso_core, "fetch_industry_jobs", lambda *a, **k: [])
         monkeypatch.setattr(lp_web.sso_core, "fetch_market_orders", lambda *a, **k: ([], {}))
-        monkeypatch.setattr(lp_web.sso_core, "fetch_character_blueprints", lambda *a, **k: [])
+        monkeypatch.setattr(lp_web.sso_core, "fetch_character_blueprints",
+                            lambda token, cid, session: [{
+                                "type_id": 100, "quantity": -1, "runs": -1,
+                                "material_efficiency": cid,
+                                "time_efficiency": cid * 2,
+                            }])
 
         out = lp_web.do_char_data({})
         assert out["combined_wallet"] == 1_000_000.0  # 500k × 2 characters
@@ -573,6 +578,8 @@ class TestCombinedCharData:
         assert out["active_char_id"] == 1
         assert out["combined_jobs"] == []
         assert out["combined_orders"] == []
+        assert [c["bp_levels"][100] for c in out["characters"]] == [
+            (1, 2, True, -1), (2, 4, True, -1)]
 
     def test_combined_runs_tracked_merges_by_product(self, monkeypatch):
         """The combined bundle must sum each character's per-product delivered

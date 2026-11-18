@@ -83,7 +83,7 @@ const IND_COLS = [
   {k:"margin_instant",     t:"Margin instant", w: 75, tip:"Profit as % of cost when selling instantly at the highest bid.", f:fmtPct1, pn:true},
   {k:"build_time",         t:"Build time",     w: 72, tip:"Time for one run after TE + skills.", f:fmtDur},
   {k:"total_cost",         t:"Cost/run",       w: 98, tip:"Materials + job install + blueprint, per run.", f:fmtISK},
-  {k:"bp_price",           t:"BP price",       w:108, tip:"For blueprints you own: the type — BPO (green) or BPC (cyan, with its remaining runs in parentheses) — plus, for a researched original, an ME/TE pill. If only another of your characters owns it, their name is shown below the type. Otherwise the cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention.", f:_bpPriceCell},
+  {k:"bp_price",           t:"BP price",       w:108, tip:"For blueprints you own: the type — BPO (green) or BPC (cyan, with its remaining runs in parentheses). Current BPO ME/TE levels appear under the item name. If only another of your characters owns it, their name is shown below the type. Otherwise the cheapest BPO sell price in The Forge (open an item to see WHERE it's sold). 'invent' = T2, obtained by invention.", f:_bpPriceCell},
   {k:"payback_runs",       t:"Payback",        w: 88, tip:"Runs of profit needed to recoup the BPO purchase (T1 you don't own).", f:(v,r)=> r.owned_bp_me_te?"—":(v==null?"—":fmtNum(v)+" runs")},
   {k:"ask",                t:"Sell price",     w: 98, tip:"Item's lowest sell order at the source hub.", f:v=>v===null?"—":fmtISK(v)},
   {k:"in_vol_run",         t:"Cargo in",       w: 85, tip:"m³ of materials to haul in per run.", f:v=>v?fmtVol(v):"—"},
@@ -213,24 +213,33 @@ function indResearchTip(rz){
   return `Blueprint busy: ${rz.activity||"research"}${who}${when}`.replace(/"/g,'&quot;');
 }
 
-// The "BP price" cell. For a blueprint you (or an alt) own, the concrete type IS
-// the ownership indicator: a green "BPO" or a cyan "BPC (N)" showing its remaining
-// runs, plus a small ME/TE pill for a researched original. When only another of
-// your characters owns it, that character's name sits on a sub-line below the type.
-// When an actual market price is involved the cell uses the regular text colour.
+function indBpoLevelsHtml(bpId){
+  const chars=AUTH.loggedIn&&AUTH.data ? (AUTH.data.characters||[AUTH.data]) : [];
+  const cid=assignedCharId("ind");
+  const owners=chars.map(c=>({name:c.name, cid:c.character_id, levels:(c.bp_levels||{})[bpId]}))
+    .filter(o=>o.levels && o.levels[2]===true
+      && Number.isInteger(o.levels[0]) && o.levels[0]>=0 && o.levels[0]<=10
+      && Number.isInteger(o.levels[1]) && o.levels[1]>=0 && o.levels[1]<=20);
+  // Prefer the Industry character's original, otherwise the best linked alt's.
+  owners.sort((a,b)=>(b.cid===cid)-(a.cid===cid)
+    || b.levels[0]-a.levels[0] || b.levels[1]-a.levels[1]);
+  const owner=owners[0];
+  if(!owner) return `<span class="ind-bpo-levels unavailable">BPO levels unavailable</span>`;
+  const bars=[["ME",owner.levels[0],10],["TE",owner.levels[1],20]].map(([label,value,max])=>
+    `<span class="ind-bpo-stat ${label.toLowerCase()}"><span>${label} ${value}</span>`
+    +`<span class="ind-bpo-bar" role="progressbar" aria-label="BPO ${label}" aria-valuemin="0" aria-valuemax="${max}" aria-valuenow="${value}">`
+    +`<span style="width:${value/max*100}%"></span></span></span>`).join("");
+  return `<span class="ind-bpo-levels" title="${_indEsc(owner.name||"Character")}'s current BPO: ME ${owner.levels[0]}/10, TE ${owner.levels[1]}/20. Research levels, not job progress.">${bars}</span>`;
+}
+
 function _bpPriceCell(v, r){
   if(r.owned_bp_me_te){
     const bpo=r.owned_is_bpo||r.owned_max_runs===-1;
     const type=bpo?"BPO":`BPC (${r.owned_max_runs})`;
     const kind=bpo?"bp-bpo":"bp-bpc";
-    const me=r.me_used||0, te=r.te_used||0;
-    // Only originals get researched — a BPC's ME/TE are baked in and not "yours".
-    const pill=(bpo && (me>0||te>0))
-      ? `<span class="ind-group-sub"><span class="bp-research-pill" title="Researched blueprint — Material Efficiency ${me}, Time Efficiency ${te}">ME ${me} · TE ${te}</span></span>`
-      : "";
     // The type IS the ownership indicator (green BPO / cyan BPC). Owned by the
     // selected industry character, so no owner name below.
-    return `<span class="bp-owned ${kind}">${type}</span>${pill}`;
+    return `<span class="bp-owned ${kind}">${type}</span>`;
   }
   if(r.other_owners&&r.other_owners.length){
     // Owned only by other characters of yours — show the type (coloured) with the
@@ -328,6 +337,7 @@ function indRowHtml(r, idx){
       const nt=indNote(r.blueprint_id);
       if(nt) txt+=` <span class="ind-note-mark" title="${nt.replace(/"/g,'&quot;')}">📝</span>`;
       txt+=indFlagPills(r.blueprint_id, false);
+      txt+=indBpoLevelsHtml(r.blueprint_id);
       if(r.group_name) txt+=`<span class="ind-group-sub">${r.group_name}</span>`;
     }
     let cls=c.cls||"";
@@ -2406,6 +2416,7 @@ function _buildTileHtml(b, linked){
   return `<div class="ind-tile stage-${stage}${focused?" focused":""}${ready?" ready":""}" role="listitem"
       tabindex="0" data-id="${b.id}" data-stage="${stage}" title="${_indEsc(b.product_name)} — click for full detail">
     <div class="ind-tile-name">${_indEsc(b.product_name||"?")}</div>
+    ${indBpoLevelsHtml(b.blueprint_id)}
     <div class="ind-tile-runs">${n.toLocaleString()} run${n===1?"":"s"}</div>
     <div class="ind-tile-line">${line}</div>
     ${bar}
@@ -2519,7 +2530,7 @@ function _buildCardHtml(b, linked){
   return `<div class="ind-build-card ${badge.key} stage-${stage}" data-id="${b.id}">
     <div class="ind-build-row">
       <span class="ind-build-status ${badge.key}">${badge.label}</span>
-      <span class="ind-build-name">${_indEsc(b.product_name||"?")}</span>
+      <span class="ind-build-name">${_indEsc(b.product_name||"?")}${indBpoLevelsHtml(b.blueprint_id)}</span>
       <span class="ind-build-runs">${n.toLocaleString()} run${n===1?"":"s"}</span>
       <button class="ind-build-toggle${expanded?" open":""}" aria-expanded="${expanded}" title="Show or hide the nitty gritty — pricing tools, cost basis, materials and build management">${expanded?"Hide details ▴":"Details ▾"}</button>
       <button class="ind-focus-close" title="Close (Esc)">✕</button>

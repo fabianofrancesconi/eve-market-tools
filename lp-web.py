@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.160.5"
+__version__ = "1.160.6"
 
 import argparse
 import base64
@@ -2742,7 +2742,8 @@ def _char_data_signature(result):
     orders = sorted((o.get("order_id"), o.get("price"), o.get("volume_remain"))
                     for o in (result.get("market_orders") or []))
     return json.dumps([result.get("wallet"), result.get("total_sp"),
-                       result.get("unallocated_sp"), loyalty, queue, jobs, orders],
+                       result.get("unallocated_sp"), loyalty, queue, jobs, orders,
+                       result.get("bp_levels")],
                       sort_keys=True, default=str)
 
 
@@ -2988,12 +2989,14 @@ def _fetch_one_char_data_uncached(acct, cid):
 
     with acct.lock:
         skill_profile = acct.skill_profiles.get(cid, {})
+        bp_levels = dict(acct.bp_me_tes.get(cid, {}))
     accounting_lvl = skill_profile.get(16622, 0)
     broker_rel_lvl = skill_profile.get(3446, 0)
 
     return {
         "name": char_name,
         "character_id": cid,
+        "bp_levels": bp_levels,
         "wallet": wallet,
         "total_sp": skills.get("total_sp"),
         "unallocated_sp": skills.get("unallocated_sp"),

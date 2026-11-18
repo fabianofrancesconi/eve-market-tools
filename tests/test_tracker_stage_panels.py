@@ -17,6 +17,10 @@ don't lose an in-flight fetch or a dialled-in price. These are static-source
 guards (no headless browser in CI); _sim_fn slices a named JS function body.
 """
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
 _IND_JS = (_ROOT / "static" / "js" / "ind.js").read_text()
@@ -29,6 +33,97 @@ def _sim_fn(name, src=_IND_JS):
     rest = src[start + 1:]
     end = rest.find("\nfunction ")
     return rest if end < 0 else rest[:end]
+
+
+def _bpo_js(body):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    names = ("indBpoLevelsHtml", "_indEsc", "indRowHtml",
+             "_buildTileHtml", "_buildCardHtml")
+    source = "\n".join("f" + _sim_fn(name) for name in names)
+    script = """
+const assert = require("node:assert/strict");
+const AUTH = {loggedIn:true, data:{characters:[
+  {character_id:1, name:"Main", bp_levels:{100:[8,14,true,-1]}},
+  {character_id:2, name:"Alt", bp_levels:{100:[10,20,true,-1]}}
+]}};
+let cid=1;
+function assignedCharId(){ return cid; }
+const IND = {favorites:new Set(), hidden:new Set(), research:{},
+             buildsExpanded:new Set(), sim:{100:{me:10,te:20}}};
+function indVisCols(){ return [{k:"product_name"}]; }
+function indNote(){ return ""; }
+function indFlagPills(){ return ""; }
+function _buildStage(){ return "planned"; }
+function _buildStatus(){ return {key:"awaiting"}; }
+function _batchEconomics(){ return {}; }
+function _buildBadge(){ return {key:"awaiting",label:"Planned"}; }
+function _findCloseJobForBuild(){ return null; }
+function _buildStepperHtml(){ return ""; }
+function _buildInsightHtml(){ return ""; }
+"""
+    out = subprocess.run([node, "-e", script + source + "\n" + body],
+                         capture_output=True, text=True, timeout=20)
+    assert out.returncode == 0, out.stderr
+
+
+class TestBpoLevels:
+    def test_current_levels_render_under_names_in_planner_and_tracker(self):
+        _bpo_js("""
+const b={id:"a",blueprint_id:100,product_name:"Drake",snapshot:{me:1,te:2}};
+for(const html of [indRowHtml(b,0), _buildTileHtml(b), _buildCardHtml(b)]){
+  assert.ok(html.indexOf("Drake") < html.indexOf("ind-bpo-levels"));
+  assert.ok(html.includes("ME 8") && html.includes("TE 14"));
+  assert.ok(html.includes('width:80%') && html.includes('width:70%'));
+  assert.ok(html.includes('aria-valuemax="10" aria-valuenow="8"'));
+  assert.ok(html.includes('aria-valuemax="20" aria-valuenow="14"'));
+}
+AUTH.data.characters[0].bp_levels[100]=[9,16,true,-1];
+assert.ok(_buildTileHtml(b).includes("ME 9"));
+""")
+
+    def test_assigned_character_first_then_best_owned_original(self):
+        _bpo_js("""
+cid=2;
+assert.ok(indBpoLevelsHtml(100).includes("Alt's current BPO"));
+cid=1;
+AUTH.data.characters[0].bp_levels[100]=[10,20,false,100];
+assert.ok(indBpoLevelsHtml(100).includes("Alt's current BPO"));
+delete AUTH.data.characters[0].bp_levels[100];
+assert.ok(indBpoLevelsHtml(100).includes("ME 10"));
+""")
+
+    def test_zero_and_max_levels_are_valid(self):
+        _bpo_js("""
+for(const [me,te,pct] of [[0,0,0],[10,20,100]]){
+  AUTH.data.characters[0].bp_levels[100]=[me,te,true,-1];
+  const html=indBpoLevelsHtml(100);
+  assert.ok(html.includes(`ME ${me}`) && html.includes(`TE ${te}`));
+  assert.equal((html.match(new RegExp(`width:${pct}%`, "g"))||[]).length,2);
+}
+""")
+
+    @pytest.mark.parametrize("levels", [
+        "undefined", "[10,20,false,5]", "[null,null,true,-1]",
+        "[-1,20,true,-1]", "[11,20,true,-1]", "[8,21,true,-1]",
+    ])
+    def test_unknown_copy_or_invalid_levels_never_fabricate_progress(self, levels):
+        _bpo_js(f"""
+AUTH.data.characters.length=1;
+AUTH.data.characters[0].bp_levels[100]={levels};
+const html=indBpoLevelsHtml(100);
+assert.ok(html.includes("BPO levels unavailable"));
+assert.ok(!html.includes('role="progressbar"'));
+""")
+
+    def test_logout_hides_cached_levels_and_owner_name_is_escaped(self):
+        _bpo_js("""
+AUTH.data.characters[0].name='<Main "pilot">';
+assert.ok(indBpoLevelsHtml(100).includes('&lt;Main &quot;pilot&quot;&gt;'));
+AUTH.loggedIn=false;
+assert.ok(indBpoLevelsHtml(100).includes("BPO levels unavailable"));
+""")
 
 
 class TestStagePanels:

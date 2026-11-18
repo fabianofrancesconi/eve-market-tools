@@ -60,6 +60,12 @@ class TestSignature:
         a = self._base(); b = self._base(); b["wallet"] = 2_000.0
         assert lp_web._char_data_signature(a) != lp_web._char_data_signature(b)
 
+    def test_blueprint_research_change_bumps_signature(self):
+        a = self._base(); b = self._base()
+        a["bp_levels"] = {100: (8, 14, True, -1)}
+        b["bp_levels"] = {100: (9, 14, True, -1)}
+        assert lp_web._char_data_signature(a) != lp_web._char_data_signature(b)
+
     def test_loyalty_change_bumps_signature(self):
         a = self._base(); b = self._base()
         b["loyalty"] = [{"corp_id": 1, "loyalty_points": 60_000}]

@@ -74,13 +74,15 @@ class TestBpoLevels:
 const b={id:"a",blueprint_id:100,product_name:"Drake",snapshot:{me:1,te:2}};
 for(const html of [indRowHtml(b,0), _buildTileHtml(b), _buildCardHtml(b)]){
   assert.ok(html.indexOf("Drake") < html.indexOf("ind-bpo-levels"));
-  assert.ok(html.includes("ME 8") && html.includes("TE 14"));
+  assert.ok(html.includes('ME</span><span class="ind-bpo-v">8<'));
+  assert.ok(html.includes('TE</span><span class="ind-bpo-v">14<'));
+  assert.ok(!html.includes(" zero"));
   assert.ok(html.includes('width:80%') && html.includes('width:70%'));
   assert.ok(html.includes('aria-valuemax="10" aria-valuenow="8"'));
   assert.ok(html.includes('aria-valuemax="20" aria-valuenow="14"'));
 }
 AUTH.data.characters[0].bp_levels[100]=[9,16,true,-1];
-assert.ok(_buildTileHtml(b).includes("ME 9"));
+assert.ok(_buildTileHtml(b).includes('aria-valuemax="10" aria-valuenow="9"'));
 """)
 
     def test_assigned_character_first_then_best_owned_original(self):
@@ -91,16 +93,19 @@ cid=1;
 AUTH.data.characters[0].bp_levels[100]=[10,20,false,100];
 assert.ok(indBpoLevelsHtml(100).includes("Alt's current BPO"));
 delete AUTH.data.characters[0].bp_levels[100];
-assert.ok(indBpoLevelsHtml(100).includes("ME 10"));
+assert.ok(indBpoLevelsHtml(100).includes('aria-valuemax="10" aria-valuenow="10"'));
 """)
 
     def test_zero_and_max_levels_are_valid(self):
         _bpo_js("""
-for(const [me,te,pct] of [[0,0,0],[10,20,100]]){
+for(const [me,te,pct,zeros] of [[0,0,0,2],[10,20,100,0]]){
   AUTH.data.characters[0].bp_levels[100]=[me,te,true,-1];
   const html=indBpoLevelsHtml(100);
-  assert.ok(html.includes(`ME ${me}`) && html.includes(`TE ${te}`));
+  assert.ok(html.includes(`aria-valuemax="10" aria-valuenow="${me}"`));
+  assert.ok(html.includes(`aria-valuemax="20" aria-valuenow="${te}"`));
   assert.equal((html.match(new RegExp(`width:${pct}%`, "g"))||[]).length,2);
+  // Unresearched stats are muted, researched ones keep their colour.
+  assert.equal((html.match(/ zero"/g)||[]).length,zeros);
 }
 """)
 
@@ -108,13 +113,15 @@ for(const [me,te,pct] of [[0,0,0],[10,20,100]]){
         "undefined", "[10,20,false,5]", "[null,null,true,-1]",
         "[-1,20,true,-1]", "[11,20,true,-1]", "[8,21,true,-1]",
     ])
-    def test_unknown_copy_or_invalid_levels_never_fabricate_progress(self, levels):
+    def test_unowned_copy_or_invalid_levels_render_nothing(self, levels):
         _bpo_js(f"""
 AUTH.data.characters.length=1;
 AUTH.data.characters[0].bp_levels[100]={levels};
-const html=indBpoLevelsHtml(100);
-assert.ok(html.includes("BPO levels unavailable"));
-assert.ok(!html.includes('role="progressbar"'));
+assert.equal(indBpoLevelsHtml(100), "");
+const b={{id:"a",blueprint_id:100,product_name:"Drake",snapshot:{{}}}};
+for(const html of [indRowHtml(b,0), _buildTileHtml(b), _buildCardHtml(b)]){{
+  assert.ok(!html.includes("ind-bpo-levels") && !html.includes("unavailable"));
+}}
 """)
 
     def test_logout_hides_cached_levels_and_owner_name_is_escaped(self):
@@ -122,7 +129,7 @@ assert.ok(!html.includes('role="progressbar"'));
 AUTH.data.characters[0].name='<Main "pilot">';
 assert.ok(indBpoLevelsHtml(100).includes('&lt;Main &quot;pilot&quot;&gt;'));
 AUTH.loggedIn=false;
-assert.ok(indBpoLevelsHtml(100).includes("BPO levels unavailable"));
+assert.equal(indBpoLevelsHtml(100), "");
 """)
 
 

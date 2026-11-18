@@ -224,11 +224,13 @@ function indBpoLevelsHtml(bpId){
   owners.sort((a,b)=>(b.cid===cid)-(a.cid===cid)
     || b.levels[0]-a.levels[0] || b.levels[1]-a.levels[1]);
   const owner=owners[0];
-  if(!owner) return `<span class="ind-bpo-levels unavailable">BPO levels unavailable</span>`;
+  if(!owner) return "";
+  // Fixed label/value/bar slots so the bars line up row to row; an unresearched
+  // stat is muted so researched originals stand out.
   const bars=[["ME",owner.levels[0],10],["TE",owner.levels[1],20]].map(([label,value,max])=>
-    `<span class="ind-bpo-stat ${label.toLowerCase()}"><span>${label} ${value}</span>`
-    +`<span class="ind-bpo-bar" role="progressbar" aria-label="BPO ${label}" aria-valuemin="0" aria-valuemax="${max}" aria-valuenow="${value}">`
-    +`<span style="width:${value/max*100}%"></span></span></span>`).join("");
+    `<span class="ind-bpo-stat ${label.toLowerCase()}${value?"":" zero"}" role="progressbar" aria-label="BPO ${label}" aria-valuemin="0" aria-valuemax="${max}" aria-valuenow="${value}">`
+    +`<span class="ind-bpo-k">${label}</span><span class="ind-bpo-v">${value}</span>`
+    +`<span class="ind-bpo-bar"><span style="width:${value/max*100}%"></span></span></span>`).join("");
   return `<span class="ind-bpo-levels" title="${_indEsc(owner.name||"Character")}'s current BPO: ME ${owner.levels[0]}/10, TE ${owner.levels[1]}/20. Research levels, not job progress.">${bars}</span>`;
 }
 

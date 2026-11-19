@@ -297,10 +297,10 @@ def test_research_chart_flags_blocked_names_and_explains_on_hover():
 const assert = require("node:assert/strict");
 // Minimal DOM: the chart's y-axis labels (SVG text with a native <title>) and body.
 function mkNode(tag){ return {tag, children:[], dataset:{}, style:{}, attrs:{}, textContent:"",
-  setAttribute(k,v){ this.attrs[k]=v; }, appendChild(c){ this.children.push(c); c.parent=this; },
+  setAttribute(k,v){ this.attrs[k]=v; }, getAttribute(k){ return this.attrs[k]; }, appendChild(c){ this.children.push(c); c.parent=this; },
   remove(){ const s=this.parent.children; s.splice(s.indexOf(this),1); },
   querySelectorAll(sel){ return sel==="title" ? this.children.filter(c=>c.tag==="title") : []; }}; }
-const labels=[0,1,2].map(()=>{ const t=mkNode("text"); t.appendChild(mkNode("title")); return t; });
+const labels=[0,1,2].map(()=>{ const t=mkNode("text"); t.attrs.x="-15"; t.appendChild(mkNode("title")); return t; });
 const listeners={};
 const el = {clientWidth:800, innerHTML:"", addEventListener(k,f){ listeners[k]=f; },
   querySelectorAll: sel => sel===".apexcharts-yaxis-label" ? labels : []};
@@ -326,7 +326,11 @@ assert.deepEqual(opts.xaxis.categories, ["Blocked", "Fine", "Unknown"]);
 assert.ok(opts.series.every(s => s.data.every(v => typeof v === "number")));
 assert.equal(opts.yaxis.labels.style.colors, "#fff");
 assert.deepEqual(labels.map(t => t.children.map(c => c.tag)), [["tspan"], [], []]);
-assert.equal(labels[0].children[0].textContent, " ⚠");
+assert.equal(labels[0].children[0].textContent, "⚠");
+// Every name shifts by the same gutter (so they stay aligned); the ⚠ gets its
+// own fixed x column between the names and the axis.
+assert.deepEqual(labels.map(t => t.attrs.x), [-21, -21, -21]);
+assert.equal(labels[0].children[0].attrs.x, -7);
 assert.deepEqual(labels.map(t => t.dataset.resIdx), [0, 1, 2]);
 assert.ok(!opts.tooltip.custom({dataPointIndex:0}).includes("⚠"));
 // The name popup carries the per-activity detail.
@@ -334,6 +338,7 @@ const pop = i => _resSkillPopHtml(RESEARCH.data.blueprints.slice().sort((a,b)=>b
 assert.ok(pop(0).includes("⚠ 1 skill missing"));
 assert.ok(pop(0).includes("Skill &quot;&lt;x&gt;"));
 assert.ok(pop(0).includes("1 → <b>3</b>"));
+assert.ok(pop(0).includes("Based on Alt's skills"));
 assert.ok(pop(0).includes('<i class="on"></i><i class="need"></i><i class="need"></i><i class=""></i>'));
 assert.ok(pop(0).includes("✓ Ready"));
 assert.ok(pop(1).includes("Maxed"));                  // TE 20: not blocking

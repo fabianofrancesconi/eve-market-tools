@@ -175,12 +175,12 @@ function _researchBlockedNote(d){
 
 // Skill level pips: trained levels filled, the levels still to train outlined.
 function _resSkillPips(cur, req){
-  let h=`<span class="res-pop-pips">`;
+  let h=`<span class="res-pips">`;
   for(let v=1; v<=5; v++) h+=`<i class="${v<=cur?"on":(v<=req?"need":"")}"></i>`;
   return h+`</span>`;
 }
 function _resPopSection(b, act){
-  const head=state=>`<div class="res-pop-act"><span class="res-act ${act.toLowerCase()}">${act} research</span>${state}</div>`;
+  const head=state=>`<div class="res-pop-act"><span class="res-pop-k">${act} research</span>${state}</div>`;
   if(act==="ME"?b.me===10:b.te===20) return head(`<span class="res-pop-state ok">Maxed</span>`);
   const s=(b.research||{})[act];
   if(!s || s.can_research==null) return head(`<span class="res-pop-state">Skills unknown</span>`);
@@ -191,50 +191,56 @@ function _resPopSection(b, act){
         ${_resSkillPips(m.current, m.required)}<span class="res-pop-lv">${m.current} → <b>${m.required}</b></span></div>`).join("");
 }
 function _resSkillPopHtml(b, who){
-  return `<div class="res-pop-top">${_resIcon(b.type_id, 64)}<div class="res-pop-title">
-      <div class="res-pop-name">${authEsc(b.name.replace(/ Blueprint$/,""))}</div>
-      <div class="res-pop-sub">ME ${b.me??"?"} · TE ${b.te??"?"}${who?` · ${authEsc(who)}'s skills`:""}</div></div></div>
-    <div class="res-pop-sec">${_resPopSection(b, "ME")}</div>
-    <div class="res-pop-sec">${_resPopSection(b, "TE")}</div>`;
+  return `<div class="res-pop-h"><b>${authEsc(b.name.replace(/ Blueprint$/,""))}</b>
+      <span class="res-pop-sub">ME ${b.me??"?"} · TE ${b.te??"?"}</span></div>
+    ${_resPopSection(b, "ME")}${_resPopSection(b, "TE")}
+    ${who?`<div class="res-pop-foot">Based on ${authEsc(who)}'s skills</div>`:""}`;
 }
-function _resPopHide(){ const p=$("#res-skill-pop"); if(p) p.remove(); }
+// Same look and cursor-following placement as the site-wide #tooltip.
+function _resPopHide(){ const p=$("#res-skill-pop"); if(p) p.classList.remove("show"); }
 if(typeof window!=="undefined" && window.addEventListener) window.addEventListener("scroll", _resPopHide, true);
-function _resPopShow(label, b){
+function _resPopShow(b, e){
   let pop=$("#res-skill-pop");
   if(!pop){ pop=document.createElement("div"); pop.id="res-skill-pop"; pop.className="res-pop"; document.body.appendChild(pop); }
-  pop.innerHTML=_resSkillPopHtml(b, RESEARCH.data&&RESEARCH.data.character_name);
-  const r=label.getBoundingClientRect(), pw=pop.offsetWidth, ph=pop.offsetHeight;
-  const left=Math.max(8, Math.min(r.left, window.innerWidth-pw-8));
-  const below=r.bottom+8;
-  pop.style.left=`${left}px`;
-  pop.style.top=`${below+ph>window.innerHeight-8 ? Math.max(8, r.top-ph-8) : below}px`;
+  if(pop._resFor!==b){ pop._resFor=b; pop.innerHTML=_resSkillPopHtml(b, RESEARCH.data&&RESEARCH.data.character_name); }
+  pop.classList.add("show");
+  const pad=14, w=pop.offsetWidth, h=pop.offsetHeight;
+  let x=e.clientX+pad, y=e.clientY+pad;
+  if(x+w>window.innerWidth-8) x=Math.max(8, e.clientX-w-pad);
+  if(y+h>window.innerHeight-8) y=Math.max(8, e.clientY-h-pad);
+  pop.style.left=`${x}px`; pop.style.top=`${y}px`;
 }
-// ApexCharts draws the category names as SVG text with a native <title>
-// tooltip; swap that for our popup and tag the blocked ones with a small ⚠.
+// ApexCharts draws the category names as right-aligned SVG text with a
+// native <title> tooltip; swap that for our popup and tag the blocked ones
+// with a ⚠ in a fixed column between the names and the axis, so the names
+// themselves stay aligned.
+const _RES_WARN_GUTTER=6;
 function _researchDecorateLabels(el, rows, blocked){
+  const any=blocked.some(Boolean);
   el.querySelectorAll(".apexcharts-yaxis-label").forEach((t, i)=>{
     if(!rows[i] || t.dataset.resIdx!=null) return;
     t.dataset.resIdx=i;
     t.querySelectorAll("title").forEach(x=>x.remove());
     t.style.cursor="help";
+    if(!any) return;
+    const x=parseFloat(t.getAttribute("x"))||0;
+    t.setAttribute("x", x-_RES_WARN_GUTTER);
     if(blocked[i]){
       const w=document.createElementNS("http://www.w3.org/2000/svg", "tspan");
       w.setAttribute("class", "res-warn-svg");
-      w.textContent=" ⚠";
+      w.setAttribute("x", x+_RES_WARN_GUTTER+2);
+      w.textContent="⚠";
       t.appendChild(w);
     }
   });
 }
 function _researchBindLabelHover(el, rows){
-  el.addEventListener("mouseover", e=>{
+  el.addEventListener("mousemove", e=>{
     const t=e.target.closest&&e.target.closest(".apexcharts-yaxis-label");
     const b=t&&rows[+t.dataset.resIdx];
-    if(b) _resPopShow(t, b);
+    if(b) _resPopShow(b, e); else _resPopHide();
   });
-  el.addEventListener("mouseout", e=>{
-    const t=e.target.closest&&e.target.closest(".apexcharts-yaxis-label");
-    if(t && !(e.relatedTarget&&t.contains(e.relatedTarget))) _resPopHide();
-  });
+  el.addEventListener("mouseleave", _resPopHide);
 }
 
 function _researchDrawChart(){

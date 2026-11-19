@@ -12,7 +12,7 @@ Three apps in one local server:
     python lp-web.py            # opens http://localhost:8765
     python lp-web.py --port 9000 --no-browser
 """
-__version__ = "1.160.7"
+__version__ = "1.160.8"
 
 import argparse
 import base64
@@ -2513,6 +2513,16 @@ def _research_bp_info(type_ids):
             f"SELECT type_id, type_name FROM types WHERE type_id IN ({marks})", ids)}
         mats = {t: ind_core.materials_for(conn, t) for t in ids}
         times = {t: ind_core.activity_time(conn, t) for t in ids}
+        research_skills = {t: {"ME": [], "TE": []} for t in ids}
+        for r in conn.execute(
+                f"SELECT s.blueprint_id, s.activity_id, s.skill_id, s.level, t.type_name "
+                f"FROM skills s LEFT JOIN types t ON t.type_id = s.skill_id "
+                f"WHERE s.blueprint_id IN ({marks}) AND s.activity_id IN (3, 4) "
+                f"ORDER BY s.skill_id", ids):
+            act = "TE" if r["activity_id"] == ind_research.ACT_TE else "ME"
+            research_skills[r["blueprint_id"]][act].append({
+                "skill_id": r["skill_id"], "name": r["type_name"] or str(r["skill_id"]),
+                "required": r["level"]})
     finally:
         conn.close()
     prices = _research_prices([m for ms in mats.values() for m, _ in ms])
@@ -2522,7 +2532,8 @@ def _research_bp_info(type_ids):
         out[t] = {"name": bp_names.get(t) or "?",
                   "product_name": (products.get(t) or {}).get("type_name"),
                   "isk_per_me_level": per if mats[t] else None,
-                  "me0_cost": me0, "base_time": times.get(t), "priced": priced}
+                  "me0_cost": me0, "base_time": times.get(t), "priced": priced,
+                  "research_skills": research_skills[t]}
     return out
 
 
@@ -2538,9 +2549,19 @@ def do_ind_research(q):
     levels = levels if isinstance(levels, dict) else {}
     tids = {j.get("blueprint_type_id") for j in jobs}
     tids |= {it["type_id"] for it in ind_research.owned_items(levels) if it.get("bpo")}
+    cid = _ind_target_cid(acct, q)
+    with acct.lock:
+        needs_skills = cid and cid not in acct.skill_profiles
+    if needs_skills:
+        _refresh_skill_profile(acct, cid)
+    with acct.lock:
+        profile = dict(acct.skill_profiles.get(cid) or {}) or None
+        character_name = (acct.characters.get(cid) or {}).get("name")
     report = ind_research.research_report(
-        jobs, levels, _research_bp_info(tids), _load_tracked_builds(acct), time.time())
+        jobs, levels, _research_bp_info(tids), _load_tracked_builds(acct), time.time(),
+        skill_profile=profile)
     report["levels_known"] = bool(levels)
+    report["character_name"] = character_name
     return report
 
 

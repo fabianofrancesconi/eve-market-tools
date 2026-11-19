@@ -149,7 +149,10 @@ function setPageChar(page, cid){
   applyPageChar(page);
 }
 function applyPageChar(page){
-  if(page==="ind"){ if(ACTIVE_TAB==="ind" && IND.rows && IND.rows.length) scanInd(false); }
+  if(page==="ind"){
+    if(ACTIVE_TAB==="ind" && IND.rows && IND.rows.length) scanInd(false);
+    if(ACTIVE_TAB==="ind" && IND.mode==="research" && typeof loadResearch==="function") loadResearch();
+  }
   else if(page==="lp"){ updateMyLpBadge(); }
   else if(page==="exp"){ if(typeof refreshJournal==="function") refreshJournal(); }
   renderPageCharBadges();

@@ -289,7 +289,7 @@ def _job_row(j, frm, to, info, now):
     return row
 
 
-def research_report(jobs, levels, bp_info, builds, now):
+def research_report(jobs, levels, bp_info, builds, now, skill_profile=None):
     """The Research view's payload.
 
     ``jobs`` — research-job ledger records (:func:`merge_jobs`).
@@ -297,6 +297,8 @@ def research_report(jobs, levels, bp_info, builds, now):
     ``bp_info`` — ``{blueprint_type_id: {name, product_name, isk_per_me_level,
     me0_cost, base_time, priced}}`` (SDE + prices, built by ``lp-web``).
     ``builds`` — tracked builds (for the realized-savings figure).
+    ``skill_profile`` — Industry character's skill levels; None if unavailable.
+    ``bp_info.research_skills`` holds the SDE requirements for ME and TE.
 
     Returns ``{totals, active, history, blueprints}``:
       * ``active``  — jobs in the lab (running / paused / ready to deliver).
@@ -377,6 +379,17 @@ def research_report(jobs, levels, bp_info, builds, now):
         if r["te"] is not None and info.get("base_time"):
             r["seconds_per_run_left"] = info["base_time"] * max(0, TE_MAX - r["te"]) / 100.0
         r["maxed"] = (r["me"] == ME_MAX and r["te"] == TE_MAX)
+        r["research"] = {}
+        for act in ("ME", "TE"):
+            requirements = (info.get("research_skills") or {}).get(act)
+            known = skill_profile is not None and requirements is not None
+            missing = [dict(s, current=skill_profile.get(s["skill_id"], 0))
+                       for s in requirements
+                       if skill_profile.get(s["skill_id"], 0) < s["required"]] if known else []
+            r["research"][act] = {
+                "can_research": not missing if known else None,
+                "missing_skills": missing,
+            }
     blueprints = sorted(bps.values(),
                         key=lambda r: (-(r["jobs"]), -(r["isk_per_run_left"] or 0), r["name"]))
 

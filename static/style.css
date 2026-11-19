@@ -3138,6 +3138,11 @@
     padding:1px 6px; border-radius:99px; text-transform:uppercase; letter-spacing:.3px; }
   .res-lab-chip { color:var(--cyan); border:1px solid var(--cyan); }
   .res-max-chip { color:var(--green2); border:1px solid var(--green2); }
+  .res-skill-note { color:var(--dim); font-size:11.5px; margin-bottom:10px; }
+  .res-table tr.res-skill-blocked { background:color-mix(in srgb, var(--amber,#d9a441) 7%, transparent); }
+  .res-skill-chip { display:block; width:fit-content; margin-top:4px; padding:1px 6px;
+    color:var(--amber,#d9a441); border:1px solid currentColor; border-radius:99px; font-size:10px; }
+  .res-skill-unknown { display:block; margin-top:4px; }
   .res-table td .res-dim { font-size:11.5px; }
   .res-table td:not(.num), .res-table th:not(.num) { text-align:left; }
   .res-table td.lg-item { max-width:none; }

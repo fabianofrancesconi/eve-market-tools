@@ -2,7 +2,13 @@
 maths behind the Research view, plus its wiring."""
 import importlib
 import os
+from pathlib import Path
+import shutil
+import sqlite3
+import subprocess
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 lp_web = importlib.import_module("lp-web")
@@ -165,6 +171,7 @@ def _acct():
     a = lp_web.Account(1)
     a.characters[1] = {"character_id": 1, "name": "Tester"}
     a.active_char_id = 1
+    a.skill_profiles[1] = {3402: 3}
     return a
 
 
@@ -215,3 +222,133 @@ def test_in_lab_blueprint_keeps_last_known_other_level():
              "runs": 2, "status": "active", "start": 0, "end": 10**12, "from_level": 2}]
     bp = R.research_report(jobs, levels, {}, [], now=100)["blueprints"][0]
     assert bp["me"] == 2 and bp["te"] == 14 and bp["in_lab"]
+
+
+def test_research_skill_requirements_are_activity_specific():
+    info = {900: {"research_skills": {
+        "ME": [{"skill_id": 3409, "name": "Metallurgy", "required": 3},
+               {"skill_id": 3402, "name": "Science", "required": 1}],
+        "TE": [{"skill_id": 3403, "name": "Research", "required": 2}]}}}
+    def row(profile):
+        return R.research_report([], _levels(0, 0), info, [], 100,
+                                 skill_profile=profile)["blueprints"][0]["research"]
+    status = row({3409: 2, 3403: 2})
+    assert status["ME"] == {"can_research": False, "missing_skills": [
+        {"skill_id": 3409, "name": "Metallurgy", "required": 3, "current": 2},
+        {"skill_id": 3402, "name": "Science", "required": 1, "current": 0}]}
+    assert status["TE"] == {"can_research": True, "missing_skills": []}
+    assert row(None)["ME"]["can_research"] is None
+    assert row({3409: 3, 3402: 1})["ME"]["can_research"] is True
+    unknown = R.research_report([], _levels(0, 0), {}, [], 100,
+                                skill_profile={3402: 3})["blueprints"][0]
+    assert unknown["research"]["ME"]["can_research"] is None
+
+
+def test_research_bp_info_loads_research_not_manufacturing_skills(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE types (type_id INTEGER, type_name TEXT);
+        CREATE TABLE skills (blueprint_id INTEGER, activity_id INTEGER, skill_id INTEGER, level INTEGER);
+        INSERT INTO types VALUES (900, 'Test Blueprint'), (3409, 'Metallurgy'), (3403, 'Research');
+        INSERT INTO skills VALUES (900, 1, 3380, 5), (900, 3, 3403, 2), (900, 4, 3409, 3);
+    """)
+    monkeypatch.setattr(lp_web.ind_core, "load_sde_industry", lambda *a: None)
+    monkeypatch.setattr(lp_web.ind_core, "connect_sde", lambda *a: conn)
+    monkeypatch.setattr(lp_web.ind_core, "candidates_for_blueprints", lambda *a: [])
+    monkeypatch.setattr(lp_web.ind_core, "materials_for", lambda *a: [])
+    monkeypatch.setattr(lp_web.ind_core, "activity_time", lambda *a: None)
+    monkeypatch.setattr(lp_web, "_research_prices", lambda *a: {})
+    skills = lp_web._research_bp_info({900})[900]["research_skills"]
+    assert skills == {
+        "ME": [{"skill_id": 3409, "name": "Metallurgy", "required": 3}],
+        "TE": [{"skill_id": 3403, "name": "Research", "required": 2}]}
+
+
+def test_research_uses_industry_character_and_handles_unavailable_skills(monkeypatch):
+    acct = _acct()
+    acct.characters[2] = {"character_id": 2, "name": "Research Alt"}
+    acct.skill_profiles[2] = {3409: 3}
+    monkeypatch.setattr(lp_web, "current_account", lambda: acct)
+    monkeypatch.setattr(lp_web, "_acct_kv_load", lambda *a: _levels(0, 0) if a[1] == "ind_bp_levels" else {})
+    monkeypatch.setattr(lp_web, "_load_tracked_builds", lambda *a: [])
+    monkeypatch.setattr(lp_web, "_research_bp_info", lambda *a: {
+        900: {"research_skills": {
+            "ME": [{"skill_id": 3409, "name": "Metallurgy", "required": 3}], "TE": []}}})
+    def status(q):
+        rep = lp_web.do_ind_research(q)
+        return rep["character_name"], rep["blueprints"][0]["research"]["ME"]["can_research"]
+    assert status({}) == ("Tester", False)
+    assert status({"char_id": ["2"]}) == ("Research Alt", True)
+    assert status({"char_id": ["999"]}) == ("Tester", False)
+    acct.skill_profiles.pop(2)
+    refreshed = []
+    monkeypatch.setattr(lp_web, "_refresh_skill_profile", lambda a, cid: refreshed.append(cid))
+    assert status({"char_id": ["2"]}) == ("Research Alt", None)
+    assert refreshed == [2]
+
+
+def test_research_table_highlights_missing_skills_and_escapes_tooltips():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    source = (Path(__file__).resolve().parent.parent / "static/js/research.js").read_text()
+    script = """
+const assert = require("node:assert/strict");
+const $ = () => null;
+const authEsc = s => String(s).replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+const fmtISK = String;
+"""
+    checks = """
+const b = {name:"Test Blueprint", me:0, te:0, research:{
+  ME:{can_research:false, missing_skills:[{name:'Skill "<x>',current:1,required:3}]},
+  TE:{can_research:true, missing_skills:[]}}};
+let html = _researchBpTableHtml([b]);
+assert.ok(html.includes('class="res-skill-blocked"'));
+assert.ok(html.includes("ME skills missing"));
+assert.ok(!html.includes("TE skills missing"));
+assert.ok(html.includes('title="Skill &quot;&lt;x&gt;: 1 → 3"'));
+b.me=10;
+html = _researchBpTableHtml([b]);
+assert.ok(!html.includes("res-skill-blocked"));
+assert.ok(!html.includes("skills missing"));
+delete b.research;
+assert.ok(_researchBpTableHtml([b]).includes("skills unknown"));
+assert.ok(!_researchBpTableHtml([b]).includes("res-skill-blocked"));
+"""
+    result = subprocess.run([node, "-e", script + source + checks],
+                            capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+
+
+def test_research_refreshes_for_assigned_character():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    root = Path(__file__).resolve().parent.parent
+    research = (root / "static/js/research.js").read_text()
+    chars = (root / "static/js/char.js").read_text()
+    apply_char = chars.split("function applyPageChar(", 1)[1].split("\n}\n", 1)[0]
+    script = """
+const assert = require("node:assert/strict");
+const $ = () => null;
+const AUTH = {loggedIn:true};
+const ACTIVE_TAB = "ind";
+const IND = {mode:"research", rows:[]};
+let cid=2, urls=[];
+const assignedCharId = page => { assert.equal(page,"ind"); return cid; };
+const fetch = url => { urls.push(url); return new Promise(()=>{}); };
+const renderPageCharBadges = () => {};
+const updateGlobalWallet = () => {};
+"""
+    checks = """
+applyPageChar("ind");
+assert.deepEqual(urls, ["/api/ind/research?char_id=2"]);
+cid=1;
+applyPageChar("ind");
+assert.deepEqual(urls, ["/api/ind/research?char_id=2", "/api/ind/research?char_id=1"]);
+"""
+    result = subprocess.run(
+        [node, "-e", script + research + "\nfunction applyPageChar(" + apply_char + "\n}\n" + checks],
+        capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr

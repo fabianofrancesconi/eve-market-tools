@@ -26,7 +26,8 @@ function loadResearch(){
   const seq=++RESEARCH.seq;
   RESEARCH.loading=!RESEARCH.data;
   if(RESEARCH.loading) renderResearch();
-  fetch("/api/ind/research").then(r=>r.json()).then(res=>{
+  const cid=assignedCharId("ind");
+  fetch(`/api/ind/research${cid?`?char_id=${encodeURIComponent(cid)}`:""}`).then(r=>r.json()).then(res=>{
     if(seq!==RESEARCH.seq) return;
     const next=(res && !res.error) ? res : null;
     const sig=JSON.stringify(next);
@@ -133,6 +134,7 @@ function renderResearch(){
     <section class="stats-card">
       <div class="stats-card-head"><h3>Your blueprints</h3>
         <span class="stats-card-note">${(t.bpos_owned||0).toLocaleString()} originals · ${(t.bpos_maxed||0).toLocaleString()} fully researched</span></div>
+      <div class="res-skill-note">Skill requirements for ${authEsc(d.character_name||"your Industry character")} · hover highlighted levels for missing skills.</div>
       <div id="research-bp-table" class="stats-table-wrap">${_researchBpTableHtml(d.blueprints||[])}</div>
     </section>
     ${_researchHistoryHtml(d.history||[])}`;
@@ -210,6 +212,17 @@ function _researchDrawChart(){
   _researchChart.render();
 }
 
+function _resSkillStatus(b, act){
+  if((act==="ME"?b.me===10:b.te===20)) return "";
+  const status=(b.research||{})[act];
+  if(!status || status.can_research==null){
+    return `<span class="res-dim res-skill-unknown" title="Character skills or research requirements are not available yet">skills unknown</span>`;
+  }
+  if(status.can_research) return "";
+  const missing=(status.missing_skills||[]).map(s=>`${s.name}: ${s.current} → ${s.required}`).join("; ");
+  return `<span class="res-skill-chip" title="${authEsc(missing)}">${act} skills missing</span>`;
+}
+
 function _researchBpTableHtml(rows){
   const key={
     name:b=>b.name.toLowerCase(), me:b=>b.me??-1, te:b=>b.te??-1, jobs:b=>b.jobs,
@@ -226,17 +239,21 @@ function _researchBpTableHtml(rows){
     <thead><tr>${th("name","Blueprint","lg-item")}${th("me","ME","")}${th("te","TE","")}
       ${th("jobs","Jobs","num")}${th("fees","Fees","num")}${th("gained","Gained / run","num")}
       ${th("left","Left to ME 10 / run","num")}${th("saved","ME saved on builds","num")}</tr></thead>
-    <tbody>${rows.map(b=>`<tr>
+    <tbody>${rows.map(b=>{
+      const me=_resSkillStatus(b, "ME"), te=_resSkillStatus(b, "TE");
+      const blocked=["ME","TE"].some(act=>
+        (act==="ME"?b.me<10:b.te<20) && (b.research||{})[act]?.can_research===false);
+      return `<tr${blocked?' class="res-skill-blocked"':""}>
       <td class="lg-item"><span class="res-bp">${_resIcon(b.type_id)}<span>${authEsc(b.name.replace(/ Blueprint$/,""))}
         ${b.in_lab?`<span class="res-lab-chip">in lab</span>`:""}${b.maxed?`<span class="res-max-chip">maxed</span>`:""}</span></span></td>
-      <td>${_resPips(b.me, 10, 1)} <span class="res-lv">${b.me??"?"}</span></td>
-      <td>${_resPips(b.te, 20, 2)} <span class="res-lv">${b.te??"?"}</span></td>
+      <td>${_resPips(b.me, 10, 1)} <span class="res-lv">${b.me??"?"}</span>${me}</td>
+      <td>${_resPips(b.te, 20, 2)} <span class="res-lv">${b.te??"?"}</span>${te}</td>
       <td class="num">${b.jobs||"—"}</td>
       <td class="num lg-dimval">${b.fees?fmtISK(b.fees):"—"}</td>
       <td class="num lg-prof ${b.isk_per_run_gained>0?"pos":""}">${b.isk_per_run_gained?fmtISK(b.isk_per_run_gained):"—"}</td>
       <td class="num">${b.isk_per_run_left==null?"—":(b.isk_per_run_left?fmtISK(b.isk_per_run_left):"✓")}${b.priced===false?` <span class="res-dim" title="Some materials have no Jita price — this is a lower bound">*</span>`:""}</td>
       <td class="num lg-prof ${b.realized_savings>0?"pos":""}">${b.realized_savings?fmtISK(b.realized_savings):"—"}</td>
-    </tr>`).join("")}</tbody></table>`;
+    </tr>`; }).join("")}</tbody></table>`;
 }
 
 function _researchHistoryHtml(hist){

@@ -352,6 +352,20 @@ assert.ok(pop(0).includes("✓ Ready"));
 assert.ok(pop(1).includes("Maxed"));                  // TE 20: not blocking
 assert.ok(!pop(1).includes("missing"));
 assert.ok(pop(2).includes("Skills unknown"));
+// A blueprint with a job in the lab shows that job (level change, progress,
+// ETA) in place of the "Ready"/skills state for that activity.
+RESEARCH.data.active = [{blueprint_type_id:9, activity:"TE", from:0, to:4, status:"active",
+  progress:0.25, end:Date.now()/1000 + 2*86400 + 600}];
+const lab = pop(0);
+assert.ok(lab.includes("In the lab"));
+assert.ok(lab.includes("TE 0→<b>4</b>"));
+assert.ok(lab.includes('style="width:25%"'));
+assert.ok(lab.includes("2d left"));
+assert.ok(lab.includes("1 skill missing"));            // ME still blocked
+assert.ok(!pop(1).includes("In the lab"));             // other blueprints unaffected
+RESEARCH.data.active[0].status = "ready";
+assert.ok(pop(0).includes("Ready — deliver to apply"));
+delete RESEARCH.data.active;
 assert.ok(_researchBlockedNote(RESEARCH.data).replace(/<[^>]+>/g, "").replace(/\\s+/g, " ").includes("1 blueprint Alt can't research yet"));
 assert.equal(_researchBlockedNote({blueprints:[ok]}), "");
 """

@@ -3161,6 +3161,12 @@
   .res-pop-state { color:var(--dim); font-size:12px; }
   .res-pop-state.ok { color:var(--green2); }
   .res-pop-state.bad { color:var(--yellow); }
+  .res-pop-state.lab { color:var(--cyan); }
+  .res-pop-job + .res-pop-job { margin-top:5px; }
+  .res-pop-job-row { display:flex; justify-content:space-between; gap:12px; }
+  .res-pop-job .res-prog { height:4px; margin:3px 0 2px; }
+  .res-prog.ready .res-prog-fill { background:var(--green2); }
+  .res-pop-eta { font-size:12px; }
   .res-pop-skill { display:grid; grid-template-columns:1fr auto 36px; align-items:center; gap:10px; }
   .res-pop-skill-name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .res-pop-lv { color:var(--dim); font-size:12px; text-align:right; font-variant-numeric:tabular-nums; }

@@ -131,6 +131,12 @@ function renderResearch(){
   _researchDrawChart();
 }
 
+// "13d 15h left · Dec 3" / "Ready — deliver to apply" / "Paused" for a lab job.
+function _resJobEta(j, now){
+  if(j.status==="ready") return `<span class="res-ready">Ready — deliver to apply</span>`;
+  if(j.status==="paused") return `<span class="res-dim">Paused</span>`;
+  return `${_resDur(j.end?Math.max(0, j.end-now):null)} left <span class="res-dim">· ${_resDate(j.end)}</span>`;
+}
 function _researchLabHtml(active){
   if(!active.length) return `<section class="stats-card"><div class="stats-card-head"><h3>In the lab</h3></div>
     <div class="res-none">Nothing researching right now.</div></section>`;
@@ -138,10 +144,8 @@ function _researchLabHtml(active){
   const cards=active.map(j=>{
     const ready=j.status==="ready", paused=j.status==="paused";
     const pct=Math.round((j.progress||0)*100);
-    const left=j.end?Math.max(0, j.end-now):null;
     const max=j.activity==="TE"?20:10, step=j.activity==="TE"?2:1;
-    const eta=ready?`<span class="res-ready">Ready — deliver to apply</span>`
-      :(paused?`<span class="res-dim">Paused</span>`:`${_resDur(left)} left <span class="res-dim">· ${_resDate(j.end)}</span>`);
+    const eta=_resJobEta(j, now);
     return `<div class="res-job${ready?" ready":""}">
       <div class="res-job-top">${_resIcon(j.blueprint_type_id, 64)}
         <div class="res-job-title"><div class="res-job-name">${authEsc(j.blueprint_name)}</div>
@@ -179,8 +183,19 @@ function _resSkillPips(cur, req){
   for(let v=1; v<=5; v++) h+=`<i class="${v<=cur?"on":(v<=req?"need":"")}"></i>`;
   return h+`</span>`;
 }
-function _resPopSection(b, act){
+function _resPopSection(b, act, jobs){
   const head=state=>`<div class="res-pop-act"><span class="res-pop-k">${act} research</span>${state}</div>`;
+  const inLab=jobs.filter(j=>j.activity===act);
+  if(inLab.length){
+    const now=Date.now()/1000;
+    return head(`<span class="res-pop-state lab">In the lab</span>`) + inLab.map(j=>{
+      const pct=Math.round((j.progress||0)*100);
+      return `<div class="res-pop-job"><div class="res-pop-job-row"><span>${_resLevel(act, j.from, j.to)}</span>
+          <span class="res-dim">${pct}%</span></div>
+        <div class="res-prog${j.status==="ready"?" ready":""}"><div class="res-prog-fill" style="width:${pct}%"></div></div>
+        <div class="res-pop-eta">${_resJobEta(j, now)}</div></div>`;
+    }).join("");
+  }
   if(act==="ME"?b.me===10:b.te===20) return head(`<span class="res-pop-state ok">Maxed</span>`);
   const s=(b.research||{})[act];
   if(!s || s.can_research==null) return head(`<span class="res-pop-state">Skills unknown</span>`);
@@ -191,15 +206,16 @@ function _resPopSection(b, act){
         ${_resSkillPips(m.current, m.required)}<span class="res-pop-lv">${m.current} → <b>${m.required}</b></span></div>`).join("");
 }
 function _resSkillPopHtml(b, who){
+  const jobs=((RESEARCH.data&&RESEARCH.data.active)||[]).filter(j=>j.blueprint_type_id===b.type_id);
   return `<div class="res-pop-h"><b>${authEsc(b.name.replace(/ Blueprint$/,""))}</b>
-      <span class="res-pop-sub">ME ${b.me??"?"} · TE ${b.te??"?"}${b.in_lab?" · in lab":""}</span></div>
+      <span class="res-pop-sub">ME ${b.me??"?"} · TE ${b.te??"?"}</span></div>
     <table class="res-pop-vals">
       <tr><td>Gained / run</td><td class="num pos">${fmtISK(b.isk_per_run_gained||0)}</td></tr>
       <tr><td>Left to ME 10 / run</td><td class="num">${b.isk_per_run_left==null?"—":fmtISK(b.isk_per_run_left)}${b.priced===false?" *":""}</td></tr>
       <tr><td>Research fees</td><td class="num">${fmtISK(b.fees||0)}</td></tr>
       ${b.realized_savings?`<tr><td>ME saved on builds</td><td class="num pos">${fmtISK(b.realized_savings)}</td></tr>`:""}
     </table>
-    ${_resPopSection(b, "ME")}${_resPopSection(b, "TE")}
+    ${_resPopSection(b, "ME", jobs)}${_resPopSection(b, "TE", jobs)}
     ${who?`<div class="res-pop-foot">Based on ${authEsc(who)}'s skills</div>`:""}`;
 }
 // Same look and cursor-following placement as the site-wide #tooltip.

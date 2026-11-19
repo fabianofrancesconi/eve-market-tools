@@ -12,7 +12,6 @@
 
 let RESEARCH = { data:null, loading:false, seq:0, sig:null };
 let _researchChart=null, _researchChartRetry=0;
-const _RES_BLOCKED="#d9a441";
 
 function loadResearch(){
   if(!AUTH.loggedIn) return;
@@ -93,6 +92,7 @@ function _resPayback(j){
 function renderResearch(){
   const body=$("#research-body"); if(!body) return;
   if(_researchChart){ _researchChart.destroy(); _researchChart=null; }
+  _resPopHide();
   const head=`<div class="stats-head"><div class="stats-head-title">Blueprint research
       <span class="stats-head-sub">ME / TE jobs and what each level is worth</span></div></div>`;
   if(RESEARCH.loading){ body.innerHTML=head+`<div class="sum-loading">Loading research…</div>`; return; }
@@ -165,20 +165,76 @@ function _resBlocked(b){
   return ["ME","TE"].some(act=>(act==="ME"?b.me!==10:b.te!==20)
     && ((b.research||{})[act]||{}).can_research===false);
 }
-function _resSkillLine(b, act){
-  if(act==="ME"?b.me===10:b.te===20) return `<span class="res-dim">maxed</span>`;
-  const s=(b.research||{})[act];
-  if(!s || s.can_research==null) return `<span class="res-dim">skills unknown</span>`;
-  if(s.can_research) return `<span class="res-tip-ok">✓ can research</span>`;
-  return `<span class="res-tip-miss">⚠ ${(s.missing_skills||[])
-    .map(m=>`${authEsc(m.name)} ${m.current} → ${m.required}`).join("<br>")}</span>`;
-}
 function _researchBlockedNote(d){
   const n=(d.blueprints||[]).filter(_resBlocked).length;
+  if(!n) return "";
   const who=authEsc(d.character_name||"your Industry character");
-  return `<div class="res-skill-note">${n
-    ? `<span class="res-skill-key"><i></i>⚠ ${n} blueprint${n===1?"":"s"} ${who} can't research yet</span> — hover a bar for the missing skills`
-    : `Skill requirements checked for ${who}`}</div>`;
+  return `<div class="res-skill-note"><span class="res-warn">⚠</span> ${n} blueprint${n===1?"":"s"}
+    ${who} can't research yet — hover the name for the missing skills</div>`;
+}
+
+// Skill level pips: trained levels filled, the levels still to train outlined.
+function _resSkillPips(cur, req){
+  let h=`<span class="res-pop-pips">`;
+  for(let v=1; v<=5; v++) h+=`<i class="${v<=cur?"on":(v<=req?"need":"")}"></i>`;
+  return h+`</span>`;
+}
+function _resPopSection(b, act){
+  const head=state=>`<div class="res-pop-act"><span class="res-act ${act.toLowerCase()}">${act} research</span>${state}</div>`;
+  if(act==="ME"?b.me===10:b.te===20) return head(`<span class="res-pop-state ok">Maxed</span>`);
+  const s=(b.research||{})[act];
+  if(!s || s.can_research==null) return head(`<span class="res-pop-state">Skills unknown</span>`);
+  if(s.can_research) return head(`<span class="res-pop-state ok">✓ Ready</span>`);
+  const miss=s.missing_skills||[];
+  return head(`<span class="res-pop-state bad">⚠ ${miss.length} skill${miss.length===1?"":"s"} missing</span>`)
+    + miss.map(m=>`<div class="res-pop-skill"><span class="res-pop-skill-name">${authEsc(m.name)}</span>
+        ${_resSkillPips(m.current, m.required)}<span class="res-pop-lv">${m.current} → <b>${m.required}</b></span></div>`).join("");
+}
+function _resSkillPopHtml(b, who){
+  return `<div class="res-pop-top">${_resIcon(b.type_id, 64)}<div class="res-pop-title">
+      <div class="res-pop-name">${authEsc(b.name.replace(/ Blueprint$/,""))}</div>
+      <div class="res-pop-sub">ME ${b.me??"?"} · TE ${b.te??"?"}${who?` · ${authEsc(who)}'s skills`:""}</div></div></div>
+    <div class="res-pop-sec">${_resPopSection(b, "ME")}</div>
+    <div class="res-pop-sec">${_resPopSection(b, "TE")}</div>`;
+}
+function _resPopHide(){ const p=$("#res-skill-pop"); if(p) p.remove(); }
+if(typeof window!=="undefined" && window.addEventListener) window.addEventListener("scroll", _resPopHide, true);
+function _resPopShow(label, b){
+  let pop=$("#res-skill-pop");
+  if(!pop){ pop=document.createElement("div"); pop.id="res-skill-pop"; pop.className="res-pop"; document.body.appendChild(pop); }
+  pop.innerHTML=_resSkillPopHtml(b, RESEARCH.data&&RESEARCH.data.character_name);
+  const r=label.getBoundingClientRect(), pw=pop.offsetWidth, ph=pop.offsetHeight;
+  const left=Math.max(8, Math.min(r.left, window.innerWidth-pw-8));
+  const below=r.bottom+8;
+  pop.style.left=`${left}px`;
+  pop.style.top=`${below+ph>window.innerHeight-8 ? Math.max(8, r.top-ph-8) : below}px`;
+}
+// ApexCharts draws the category names as SVG text with a native <title>
+// tooltip; swap that for our popup and tag the blocked ones with a small ⚠.
+function _researchDecorateLabels(el, rows, blocked){
+  el.querySelectorAll(".apexcharts-yaxis-label").forEach((t, i)=>{
+    if(!rows[i] || t.dataset.resIdx!=null) return;
+    t.dataset.resIdx=i;
+    t.querySelectorAll("title").forEach(x=>x.remove());
+    t.style.cursor="help";
+    if(blocked[i]){
+      const w=document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+      w.setAttribute("class", "res-warn-svg");
+      w.textContent=" ⚠";
+      t.appendChild(w);
+    }
+  });
+}
+function _researchBindLabelHover(el, rows){
+  el.addEventListener("mouseover", e=>{
+    const t=e.target.closest&&e.target.closest(".apexcharts-yaxis-label");
+    const b=t&&rows[+t.dataset.resIdx];
+    if(b) _resPopShow(t, b);
+  });
+  el.addEventListener("mouseout", e=>{
+    const t=e.target.closest&&e.target.closest(".apexcharts-yaxis-label");
+    if(t && !(e.relatedTarget&&t.contains(e.relatedTarget))) _resPopHide();
+  });
 }
 
 function _researchDrawChart(){
@@ -191,40 +247,38 @@ function _researchDrawChart(){
   if(typeof ApexCharts==="undefined"){ el.innerHTML=`<div class="wallet-chart-none">Chart unavailable (no internet).</div>`; return; }
   if(!el.clientWidth){ if(_researchChartRetry++<30) requestAnimationFrame(_researchDrawChart); return; }
   const blocked=rows.map(_resBlocked);
-  const label=(b,i)=>(blocked[i]?"⚠ ":"")+b.name.replace(/ Blueprint$/,"");
+  const decorate=()=>_researchDecorateLabels(el, rows, blocked);
   const opts={
     chart:{type:"bar", stacked:true, height:Math.max(140, rows.length*30+70), background:"transparent",
-      fontFamily:"inherit", toolbar:{show:false}, zoom:{enabled:false}, animations:{enabled:false}},
+      fontFamily:"inherit", toolbar:{show:false}, zoom:{enabled:false}, animations:{enabled:false},
+      events:{mounted:decorate, updated:decorate}},
     theme:{mode:"dark"},
-    series:[{name:"Gained by your research",
-             data:rows.map((b,i)=>({x:label(b,i), y:Math.round(b.isk_per_run_gained||0)}))},
-            {name:"Left on the table (to ME 10)",
-             data:rows.map((b,i)=>({x:label(b,i), y:Math.round(b.isk_per_run_left||0),
-               fillColor:blocked[i]?_RES_BLOCKED:"#3d5a70"}))}],
+    series:[{name:"Gained by your research", data:rows.map(b=>Math.round(b.isk_per_run_gained||0))},
+            {name:"Left on the table (to ME 10)", data:rows.map(b=>Math.round(b.isk_per_run_left||0))}],
     colors:[_STATS_INK.pos, "#3d5a70"],
     stroke:{width:2, colors:["#162130"]},
     plotOptions:{bar:{horizontal:true, barHeight:"62%", borderRadius:3, borderRadiusApplication:"end",
       borderRadiusWhenStacked:"last"}},
-    xaxis:{labels:{style:{colors:_STATS_INK.axis, fontSize:"10px"}, formatter:v=>fmtISK(v)},
+    xaxis:{categories:rows.map(b=>b.name.replace(/ Blueprint$/,"")),
+      labels:{style:{colors:_STATS_INK.axis, fontSize:"10px"}, formatter:v=>fmtISK(v)},
       axisBorder:{color:_STATS_INK.grid}, axisTicks:{color:_STATS_INK.grid}},
-    yaxis:{labels:{maxWidth:240, style:{colors:blocked.map(x=>x?_RES_BLOCKED:_STATS_INK.fg), fontSize:"11.5px"}}},
+    yaxis:{labels:{maxWidth:240, style:{colors:_STATS_INK.fg, fontSize:"11.5px"}}},
     grid:{borderColor:_STATS_INK.grid, strokeDashArray:3, xaxis:{lines:{show:true}}, yaxis:{lines:{show:false}}},
     dataLabels:{enabled:false},
     legend:{show:true, position:"top", horizontalAlign:"left", fontSize:"11px",
       labels:{colors:_STATS_INK.fg}, markers:{size:5}},
     tooltip:{theme:"dark", custom:({dataPointIndex})=>{
       const b=rows[dataPointIndex]; if(!b) return "";
-      return `<div class="stats-tip"><div class="stats-tip-h">${blocked[dataPointIndex]?"⚠ ":""}${authEsc(b.name)}</div><table>
+      return `<div class="stats-tip"><div class="stats-tip-h">${authEsc(b.name)}</div><table>
         <tr><td>Now</td><td class="num">ME ${b.me??"?"} · TE ${b.te??"?"}${b.in_lab?" · in lab":""}</td></tr>
         <tr><td>Gained / run</td><td class="num pos">${fmtISK(b.isk_per_run_gained||0)}</td></tr>
         <tr><td>Left to ME 10 / run</td><td class="num">${b.isk_per_run_left==null?"—":fmtISK(b.isk_per_run_left)}${b.priced===false?" *":""}</td></tr>
         <tr><td>Research fees</td><td class="num">${fmtISK(b.fees||0)}</td></tr>
         ${b.realized_savings?`<tr><td>ME saved on builds</td><td class="num pos">${fmtISK(b.realized_savings)}</td></tr>`:""}
-        <tr><td>ME research</td><td class="num">${_resSkillLine(b, "ME")}</td></tr>
-        <tr><td>TE research</td><td class="num">${_resSkillLine(b, "TE")}</td></tr>
       </table></div>`;
     }},
   };
+  _researchBindLabelHover(el, rows);
   _researchChart=new ApexCharts(el, opts);
   _researchChart.render();
 }

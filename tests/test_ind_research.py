@@ -288,33 +288,40 @@ def test_research_uses_industry_character_and_handles_unavailable_skills(monkeyp
     assert refreshed == [2]
 
 
-def test_research_table_highlights_missing_skills_and_escapes_tooltips():
+def test_research_chart_marks_blocked_blueprints_and_explains_on_hover():
     node = shutil.which("node")
     if not node:
         pytest.skip("node not installed")
     source = (Path(__file__).resolve().parent.parent / "static/js/research.js").read_text()
     script = """
 const assert = require("node:assert/strict");
-const $ = () => null;
+const el = {clientWidth:800, innerHTML:""};
+const $ = sel => sel === "#research-chart" ? el : null;
 const authEsc = s => String(s).replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 const fmtISK = String;
+const _STATS_INK = {pos:"#0f0", fg:"#fff", axis:"#888", grid:"#333"};
+let opts;
+class ApexCharts { constructor(_, o){ opts = o; } render(){} }
 """
     checks = """
-const b = {name:"Test Blueprint", me:0, te:0, research:{
+const blocked = {name:"Blocked Blueprint", me:0, te:0, isk_per_run_left:500, research:{
   ME:{can_research:false, missing_skills:[{name:'Skill "<x>',current:1,required:3}]},
   TE:{can_research:true, missing_skills:[]}}};
-let html = _researchBpTableHtml([b]);
-assert.ok(html.includes('class="res-skill-blocked"'));
-assert.ok(html.includes("ME skills missing"));
-assert.ok(!html.includes("TE skills missing"));
-assert.ok(html.includes('title="Skill &quot;&lt;x&gt;: 1 → 3"'));
-b.me=10;
-html = _researchBpTableHtml([b]);
-assert.ok(!html.includes("res-skill-blocked"));
-assert.ok(!html.includes("skills missing"));
-delete b.research;
-assert.ok(_researchBpTableHtml([b]).includes("skills unknown"));
-assert.ok(!_researchBpTableHtml([b]).includes("res-skill-blocked"));
+const ok = {name:"Fine Blueprint", me:2, te:20, isk_per_run_left:100, research:{
+  ME:{can_research:true, missing_skills:[]}, TE:{can_research:false, missing_skills:[]}}};
+const unknown = {name:"Unknown Blueprint", me:0, te:0, isk_per_run_left:50};
+RESEARCH.data = {blueprints:[ok, unknown, blocked], character_name:"Alt"};
+_researchDrawChart();
+const left = opts.series[1].data;
+assert.deepEqual(left.map(d => d.x), ["⚠ Blocked", "Fine", "Unknown"]);
+assert.deepEqual(left.map(d => d.fillColor), [_RES_BLOCKED, "#3d5a70", "#3d5a70"]);
+assert.deepEqual(opts.yaxis.labels.style.colors, [_RES_BLOCKED, "#fff", "#fff"]);
+const tip = i => opts.tooltip.custom({dataPointIndex:i});
+assert.ok(tip(0).includes("⚠ Skill &quot;&lt;x&gt; 1 → 3"));
+assert.ok(tip(0).includes("✓ can research"));
+assert.ok(tip(1).includes("maxed"));                 // TE 20: not blocking
+assert.ok(tip(2).includes("skills unknown"));
+assert.ok(_researchBlockedNote(RESEARCH.data).includes("1 blueprint Alt can't research yet"));
 """
     result = subprocess.run([node, "-e", script + source + checks],
                             capture_output=True, text=True, timeout=20)

@@ -6,20 +6,13 @@
 // base build time per level).
 //
 // Layout: KPI strip · jobs in the lab (progress + what they'll unlock) · a
-// "value of research" chart (ISK/run gained vs still on the table) · the owned-
-// blueprint table · the completed-job history.
+// "value of research" chart (ISK/run gained vs still on the table, with
+// blueprints the Industry character lacks the skills to research marked ⚠) ·
+// the completed-job history.
 
-let RESEARCH = { data:null, loading:false, seq:0, sig:null, sort:"left", dir:-1 };
+let RESEARCH = { data:null, loading:false, seq:0, sig:null };
 let _researchChart=null, _researchChartRetry=0;
-
-// The blueprint table's sort survives a reload (server pref ``ind_research_view``).
-function researchApplyStored(v){
-  if(!v || typeof v!=="object") return;
-  if(typeof v.sort==="string") RESEARCH.sort=v.sort;
-  if(v.dir===1 || v.dir===-1) RESEARCH.dir=v.dir;
-  const t=$("#research-bp-table");
-  if(t && RESEARCH.data) t.innerHTML=_researchBpTableHtml(RESEARCH.data.blueprints||[]);
-}
+const _RES_BLOCKED="#d9a441";
 
 function loadResearch(){
   if(!AUTH.loggedIn) return;
@@ -128,14 +121,10 @@ function renderResearch(){
     ${_researchLabHtml(d.active||[])}
     <section class="stats-card">
       <div class="stats-card-head"><h3>Value of research by blueprint</h3>
-        <span class="stats-card-note">material ISK saved per run — gained by your research vs still left up to ME 10</span></div>
+        <span class="stats-card-note">material ISK saved per run — gained by your research vs still left up to ME 10
+          · ${(t.bpos_owned||0).toLocaleString()} originals · ${(t.bpos_maxed||0).toLocaleString()} fully researched</span></div>
+      ${_researchBlockedNote(d)}
       <div id="research-chart" class="stats-chart"></div>
-    </section>
-    <section class="stats-card">
-      <div class="stats-card-head"><h3>Your blueprints</h3>
-        <span class="stats-card-note">${(t.bpos_owned||0).toLocaleString()} originals · ${(t.bpos_maxed||0).toLocaleString()} fully researched</span></div>
-      <div class="res-skill-note">Skill requirements for ${authEsc(d.character_name||"your Industry character")} · hover highlighted levels for missing skills.</div>
-      <div id="research-bp-table" class="stats-table-wrap">${_researchBpTableHtml(d.blueprints||[])}</div>
     </section>
     ${_researchHistoryHtml(d.history||[])}`;
   _researchChartRetry=0;
@@ -170,6 +159,28 @@ function _researchLabHtml(active){
     <div class="res-jobs">${cards}</div></section>`;
 }
 
+// Not researchable yet: a level is still open on ME or TE and the Industry
+// character lacks a skill that activity needs.
+function _resBlocked(b){
+  return ["ME","TE"].some(act=>(act==="ME"?b.me!==10:b.te!==20)
+    && ((b.research||{})[act]||{}).can_research===false);
+}
+function _resSkillLine(b, act){
+  if(act==="ME"?b.me===10:b.te===20) return `<span class="res-dim">maxed</span>`;
+  const s=(b.research||{})[act];
+  if(!s || s.can_research==null) return `<span class="res-dim">skills unknown</span>`;
+  if(s.can_research) return `<span class="res-tip-ok">✓ can research</span>`;
+  return `<span class="res-tip-miss">⚠ ${(s.missing_skills||[])
+    .map(m=>`${authEsc(m.name)} ${m.current} → ${m.required}`).join("<br>")}</span>`;
+}
+function _researchBlockedNote(d){
+  const n=(d.blueprints||[]).filter(_resBlocked).length;
+  const who=authEsc(d.character_name||"your Industry character");
+  return `<div class="res-skill-note">${n
+    ? `<span class="res-skill-key"><i></i>⚠ ${n} blueprint${n===1?"":"s"} ${who} can't research yet</span> — hover a bar for the missing skills`
+    : `Skill requirements checked for ${who}`}</div>`;
+}
+
 function _researchDrawChart(){
   const el=$("#research-chart"); if(!el) return;
   const rows=(RESEARCH.data.blueprints||[])
@@ -177,83 +188,45 @@ function _researchDrawChart(){
     .sort((a,b)=>((b.isk_per_run_gained||0)+(b.isk_per_run_left||0))-((a.isk_per_run_gained||0)+(a.isk_per_run_left||0)))
     .slice(0,15);
   if(!rows.length){ el.innerHTML=`<div class="wallet-chart-none">No priced blueprints to compare yet.</div>`; return; }
-  if(typeof ApexCharts==="undefined"){ el.innerHTML=`<div class="wallet-chart-none">Chart unavailable (no internet) — the table below has every figure.</div>`; return; }
+  if(typeof ApexCharts==="undefined"){ el.innerHTML=`<div class="wallet-chart-none">Chart unavailable (no internet).</div>`; return; }
   if(!el.clientWidth){ if(_researchChartRetry++<30) requestAnimationFrame(_researchDrawChart); return; }
+  const blocked=rows.map(_resBlocked);
+  const label=(b,i)=>(blocked[i]?"⚠ ":"")+b.name.replace(/ Blueprint$/,"");
   const opts={
     chart:{type:"bar", stacked:true, height:Math.max(140, rows.length*30+70), background:"transparent",
       fontFamily:"inherit", toolbar:{show:false}, zoom:{enabled:false}, animations:{enabled:false}},
     theme:{mode:"dark"},
-    series:[{name:"Gained by your research", data:rows.map(b=>Math.round(b.isk_per_run_gained||0))},
-            {name:"Left on the table (to ME 10)", data:rows.map(b=>Math.round(b.isk_per_run_left||0))}],
+    series:[{name:"Gained by your research",
+             data:rows.map((b,i)=>({x:label(b,i), y:Math.round(b.isk_per_run_gained||0)}))},
+            {name:"Left on the table (to ME 10)",
+             data:rows.map((b,i)=>({x:label(b,i), y:Math.round(b.isk_per_run_left||0),
+               fillColor:blocked[i]?_RES_BLOCKED:"#3d5a70"}))}],
     colors:[_STATS_INK.pos, "#3d5a70"],
     stroke:{width:2, colors:["#162130"]},
     plotOptions:{bar:{horizontal:true, barHeight:"62%", borderRadius:3, borderRadiusApplication:"end",
       borderRadiusWhenStacked:"last"}},
-    xaxis:{categories:rows.map(b=>b.name.replace(/ Blueprint$/,"")),
-      labels:{style:{colors:_STATS_INK.axis, fontSize:"10px"}, formatter:v=>fmtISK(v)},
+    xaxis:{labels:{style:{colors:_STATS_INK.axis, fontSize:"10px"}, formatter:v=>fmtISK(v)},
       axisBorder:{color:_STATS_INK.grid}, axisTicks:{color:_STATS_INK.grid}},
-    yaxis:{labels:{maxWidth:240, style:{colors:_STATS_INK.fg, fontSize:"11.5px"}}},
+    yaxis:{labels:{maxWidth:240, style:{colors:blocked.map(x=>x?_RES_BLOCKED:_STATS_INK.fg), fontSize:"11.5px"}}},
     grid:{borderColor:_STATS_INK.grid, strokeDashArray:3, xaxis:{lines:{show:true}}, yaxis:{lines:{show:false}}},
     dataLabels:{enabled:false},
     legend:{show:true, position:"top", horizontalAlign:"left", fontSize:"11px",
       labels:{colors:_STATS_INK.fg}, markers:{size:5}},
     tooltip:{theme:"dark", custom:({dataPointIndex})=>{
       const b=rows[dataPointIndex]; if(!b) return "";
-      return `<div class="stats-tip"><div class="stats-tip-h">${authEsc(b.name)}</div><table>
-        <tr><td>Now</td><td class="num">ME ${b.me??"?"} · TE ${b.te??"?"}</td></tr>
+      return `<div class="stats-tip"><div class="stats-tip-h">${blocked[dataPointIndex]?"⚠ ":""}${authEsc(b.name)}</div><table>
+        <tr><td>Now</td><td class="num">ME ${b.me??"?"} · TE ${b.te??"?"}${b.in_lab?" · in lab":""}</td></tr>
         <tr><td>Gained / run</td><td class="num pos">${fmtISK(b.isk_per_run_gained||0)}</td></tr>
-        <tr><td>Left to ME 10 / run</td><td class="num">${b.isk_per_run_left==null?"—":fmtISK(b.isk_per_run_left)}</td></tr>
+        <tr><td>Left to ME 10 / run</td><td class="num">${b.isk_per_run_left==null?"—":fmtISK(b.isk_per_run_left)}${b.priced===false?" *":""}</td></tr>
         <tr><td>Research fees</td><td class="num">${fmtISK(b.fees||0)}</td></tr>
         ${b.realized_savings?`<tr><td>ME saved on builds</td><td class="num pos">${fmtISK(b.realized_savings)}</td></tr>`:""}
+        <tr><td>ME research</td><td class="num">${_resSkillLine(b, "ME")}</td></tr>
+        <tr><td>TE research</td><td class="num">${_resSkillLine(b, "TE")}</td></tr>
       </table></div>`;
     }},
   };
   _researchChart=new ApexCharts(el, opts);
   _researchChart.render();
-}
-
-function _resSkillStatus(b, act){
-  if((act==="ME"?b.me===10:b.te===20)) return "";
-  const status=(b.research||{})[act];
-  if(!status || status.can_research==null){
-    return `<span class="res-dim res-skill-unknown" title="Character skills or research requirements are not available yet">skills unknown</span>`;
-  }
-  if(status.can_research) return "";
-  const missing=(status.missing_skills||[]).map(s=>`${s.name}: ${s.current} → ${s.required}`).join("; ");
-  return `<span class="res-skill-chip" title="${authEsc(missing)}">${act} skills missing</span>`;
-}
-
-function _researchBpTableHtml(rows){
-  const key={
-    name:b=>b.name.toLowerCase(), me:b=>b.me??-1, te:b=>b.te??-1, jobs:b=>b.jobs,
-    fees:b=>b.fees, gained:b=>b.isk_per_run_gained||0, left:b=>b.isk_per_run_left??-1,
-    saved:b=>b.realized_savings||0,
-  }[RESEARCH.sort]||(b=>b.isk_per_run_left??-1);
-  rows=rows.slice().sort((a,b)=>{ const ka=key(a), kb=key(b); return ka<kb?-RESEARCH.dir:(ka>kb?RESEARCH.dir:0); });
-  const th=(col,label,cls)=>{
-    const on=RESEARCH.sort===col;
-    return `<th class="${cls||""} ${on?"sorted":""}" data-sort="${col}">${label}${on?(RESEARCH.dir<0?" ▾":" ▴"):""}</th>`;
-  };
-  if(!rows.length) return `<div class="res-none">No blueprint originals found.</div>`;
-  return `<table class="ledger-table stats-table res-table">
-    <thead><tr>${th("name","Blueprint","lg-item")}${th("me","ME","")}${th("te","TE","")}
-      ${th("jobs","Jobs","num")}${th("fees","Fees","num")}${th("gained","Gained / run","num")}
-      ${th("left","Left to ME 10 / run","num")}${th("saved","ME saved on builds","num")}</tr></thead>
-    <tbody>${rows.map(b=>{
-      const me=_resSkillStatus(b, "ME"), te=_resSkillStatus(b, "TE");
-      const blocked=["ME","TE"].some(act=>
-        (act==="ME"?b.me<10:b.te<20) && (b.research||{})[act]?.can_research===false);
-      return `<tr${blocked?' class="res-skill-blocked"':""}>
-      <td class="lg-item"><span class="res-bp">${_resIcon(b.type_id)}<span>${authEsc(b.name.replace(/ Blueprint$/,""))}
-        ${b.in_lab?`<span class="res-lab-chip">in lab</span>`:""}${b.maxed?`<span class="res-max-chip">maxed</span>`:""}</span></span></td>
-      <td>${_resPips(b.me, 10, 1)} <span class="res-lv">${b.me??"?"}</span>${me}</td>
-      <td>${_resPips(b.te, 20, 2)} <span class="res-lv">${b.te??"?"}</span>${te}</td>
-      <td class="num">${b.jobs||"—"}</td>
-      <td class="num lg-dimval">${b.fees?fmtISK(b.fees):"—"}</td>
-      <td class="num lg-prof ${b.isk_per_run_gained>0?"pos":""}">${b.isk_per_run_gained?fmtISK(b.isk_per_run_gained):"—"}</td>
-      <td class="num">${b.isk_per_run_left==null?"—":(b.isk_per_run_left?fmtISK(b.isk_per_run_left):"✓")}${b.priced===false?` <span class="res-dim" title="Some materials have no Jita price — this is a lower bound">*</span>`:""}</td>
-      <td class="num lg-prof ${b.realized_savings>0?"pos":""}">${b.realized_savings?fmtISK(b.realized_savings):"—"}</td>
-    </tr>`; }).join("")}</tbody></table>`;
 }
 
 function _researchHistoryHtml(hist){
@@ -273,15 +246,3 @@ function _researchHistoryHtml(hist){
       <td class="num">${_resPayback(j)}</td>
     </tr>`).join("")}</tbody></table></div></section>`;
 }
-
-(function wireResearch(){
-  const body=$("#research-body"); if(!body) return;
-  body.addEventListener("click", e=>{
-    const th=e.target.closest&&e.target.closest("#research-bp-table th[data-sort]");
-    if(!th || !RESEARCH.data) return;
-    const col=th.dataset.sort;
-    if(RESEARCH.sort===col) RESEARCH.dir*=-1; else { RESEARCH.sort=col; RESEARCH.dir=col==="name"?1:-1; }
-    if(typeof setPref==="function") setPref("ind_research_view", {sort:RESEARCH.sort, dir:RESEARCH.dir});
-    $("#research-bp-table").innerHTML=_researchBpTableHtml(RESEARCH.data.blueprints||[]);
-  });
-})();

@@ -297,10 +297,11 @@ def test_research_chart_flags_blocked_names_and_explains_on_hover():
 const assert = require("node:assert/strict");
 // Minimal DOM: the chart's y-axis labels (SVG text with a native <title>) and body.
 function mkNode(tag){ return {tag, children:[], dataset:{}, style:{}, attrs:{}, textContent:"",
+  classes:[], classList:{add(c){ this.owner.classes.push(c); }},
   setAttribute(k,v){ this.attrs[k]=v; }, getAttribute(k){ return this.attrs[k]; }, appendChild(c){ this.children.push(c); c.parent=this; },
   remove(){ const s=this.parent.children; s.splice(s.indexOf(this),1); },
   querySelectorAll(sel){ return sel==="title" ? this.children.filter(c=>c.tag==="title") : []; }}; }
-const labels=[0,1,2].map(()=>{ const t=mkNode("text"); t.attrs.x="-15"; t.appendChild(mkNode("title")); return t; });
+const labels=[0,1,2].map(()=>{ const t=mkNode("text"); t.classList.owner=t; t.appendChild(mkNode("title")); return t; });
 const listeners={};
 const el = {clientWidth:800, innerHTML:"", addEventListener(k,f){ listeners[k]=f; },
   querySelectorAll: sel => sel===".apexcharts-yaxis-label" ? labels : []};
@@ -321,21 +322,28 @@ const ok = {name:"Fine Blueprint", me:2, te:20, isk_per_run_left:100, research:{
 const unknown = {name:"Unknown Blueprint", me:0, te:0, isk_per_run_left:50};
 RESEARCH.data = {blueprints:[ok, unknown, blocked], character_name:"Alt"};
 _researchDrawChart();
-// Bars and names keep their normal colours — only a ⚠ marks the blocked name.
+// Bars keep their normal colours; only the blocked name is tinted (via a class),
+// with no extra glyphs and the native <title> tooltip removed.
 assert.deepEqual(opts.xaxis.categories, ["Blocked", "Fine", "Unknown"]);
 assert.ok(opts.series.every(s => s.data.every(v => typeof v === "number")));
 assert.equal(opts.yaxis.labels.style.colors, "#fff");
-assert.deepEqual(labels.map(t => t.children.map(c => c.tag)), [["tspan"], [], []]);
-assert.equal(labels[0].children[0].textContent, "⚠");
-// Every name shifts by the same gutter (so they stay aligned); the ⚠ gets its
-// own fixed x column between the names and the axis.
-assert.deepEqual(labels.map(t => t.attrs.x), [-21, -21, -21]);
-assert.equal(labels[0].children[0].attrs.x, -7);
+assert.deepEqual(labels.map(t => t.classes), [["res-blocked"], [], []]);
+assert.deepEqual(labels.map(t => t.children.length), [0, 0, 0]);
 assert.deepEqual(labels.map(t => t.dataset.resIdx), [0, 1, 2]);
-assert.ok(!opts.tooltip.custom({dataPointIndex:0}).includes("⚠"));
-// The name popup carries the per-activity detail.
+// Apex's own tooltip is off; hovering a name or a bar opens the same popup.
+assert.equal(opts.tooltip.enabled, false);
+const shown = [];
+_resPopShow = b => shown.push(b.name);
+_resPopHide = () => shown.push("hide");
+const bar = j => ({getAttribute: k => k === "j" ? String(j) : null, dataset:{}});
+const hover = t => listeners.mousemove({target:{closest: () => t}});
+hover(labels[0]); hover(bar(2)); hover(null);
+assert.deepEqual(shown, ["Blocked Blueprint", "Unknown Blueprint", "hide"]);
+// The popup carries the values and the per-activity skill detail.
 const pop = i => _resSkillPopHtml(RESEARCH.data.blueprints.slice().sort((a,b)=>b.isk_per_run_left-a.isk_per_run_left)[i], "Alt");
-assert.ok(pop(0).includes("⚠ 1 skill missing"));
+assert.ok(pop(0).includes("1 skill missing"));
+assert.ok(!pop(0).includes("⚠"));
+assert.ok(pop(0).includes("Left to ME 10 / run</td><td class=\\"num\\">500"));
 assert.ok(pop(0).includes("Skill &quot;&lt;x&gt;"));
 assert.ok(pop(0).includes("1 → <b>3</b>"));
 assert.ok(pop(0).includes("Based on Alt's skills"));
@@ -344,7 +352,7 @@ assert.ok(pop(0).includes("✓ Ready"));
 assert.ok(pop(1).includes("Maxed"));                  // TE 20: not blocking
 assert.ok(!pop(1).includes("missing"));
 assert.ok(pop(2).includes("Skills unknown"));
-assert.ok(_researchBlockedNote(RESEARCH.data).replace(/\\s+/g, " ").includes("1 blueprint Alt can't research yet"));
+assert.ok(_researchBlockedNote(RESEARCH.data).replace(/<[^>]+>/g, "").replace(/\\s+/g, " ").includes("1 blueprint Alt can't research yet"));
 assert.equal(_researchBlockedNote({blueprints:[ok]}), "");
 """
     result = subprocess.run([node, "-e", script + source + checks],

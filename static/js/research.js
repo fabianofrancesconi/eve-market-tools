@@ -7,7 +7,7 @@
 //
 // Layout: KPI strip · jobs in the lab (progress + what they'll unlock) · a
 // "value of research" chart (ISK/run gained vs still on the table, with
-// blueprints the Industry character lacks the skills to research marked ⚠) ·
+// blueprints the Industry character lacks the skills to research in yellow) ·
 // the completed-job history.
 
 let RESEARCH = { data:null, loading:false, seq:0, sig:null };
@@ -169,8 +169,8 @@ function _researchBlockedNote(d){
   const n=(d.blueprints||[]).filter(_resBlocked).length;
   if(!n) return "";
   const who=authEsc(d.character_name||"your Industry character");
-  return `<div class="res-skill-note"><span class="res-warn">⚠</span> ${n} blueprint${n===1?"":"s"}
-    ${who} can't research yet — hover the name for the missing skills</div>`;
+  return `<div class="res-skill-note"><span class="res-warn">${n} blueprint${n===1?"":"s"}</span>
+    ${who} can't research yet — hover a name or bar for the missing skills</div>`;
 }
 
 // Skill level pips: trained levels filled, the levels still to train outlined.
@@ -186,13 +186,19 @@ function _resPopSection(b, act){
   if(!s || s.can_research==null) return head(`<span class="res-pop-state">Skills unknown</span>`);
   if(s.can_research) return head(`<span class="res-pop-state ok">✓ Ready</span>`);
   const miss=s.missing_skills||[];
-  return head(`<span class="res-pop-state bad">⚠ ${miss.length} skill${miss.length===1?"":"s"} missing</span>`)
+  return head(`<span class="res-pop-state bad">${miss.length} skill${miss.length===1?"":"s"} missing</span>`)
     + miss.map(m=>`<div class="res-pop-skill"><span class="res-pop-skill-name">${authEsc(m.name)}</span>
         ${_resSkillPips(m.current, m.required)}<span class="res-pop-lv">${m.current} → <b>${m.required}</b></span></div>`).join("");
 }
 function _resSkillPopHtml(b, who){
   return `<div class="res-pop-h"><b>${authEsc(b.name.replace(/ Blueprint$/,""))}</b>
-      <span class="res-pop-sub">ME ${b.me??"?"} · TE ${b.te??"?"}</span></div>
+      <span class="res-pop-sub">ME ${b.me??"?"} · TE ${b.te??"?"}${b.in_lab?" · in lab":""}</span></div>
+    <table class="res-pop-vals">
+      <tr><td>Gained / run</td><td class="num pos">${fmtISK(b.isk_per_run_gained||0)}</td></tr>
+      <tr><td>Left to ME 10 / run</td><td class="num">${b.isk_per_run_left==null?"—":fmtISK(b.isk_per_run_left)}${b.priced===false?" *":""}</td></tr>
+      <tr><td>Research fees</td><td class="num">${fmtISK(b.fees||0)}</td></tr>
+      ${b.realized_savings?`<tr><td>ME saved on builds</td><td class="num pos">${fmtISK(b.realized_savings)}</td></tr>`:""}
+    </table>
     ${_resPopSection(b, "ME")}${_resPopSection(b, "TE")}
     ${who?`<div class="res-pop-foot">Based on ${authEsc(who)}'s skills</div>`:""}`;
 }
@@ -210,34 +216,24 @@ function _resPopShow(b, e){
   if(y+h>window.innerHeight-8) y=Math.max(8, e.clientY-h-pad);
   pop.style.left=`${x}px`; pop.style.top=`${y}px`;
 }
-// ApexCharts draws the category names as right-aligned SVG text with a
-// native <title> tooltip; swap that for our popup and tag the blocked ones
-// with a ⚠ in a fixed column between the names and the axis, so the names
-// themselves stay aligned.
-const _RES_WARN_GUTTER=6;
+// ApexCharts draws the category names as SVG text with a native <title>
+// tooltip; swap that for our popup and colour the blocked names.
 function _researchDecorateLabels(el, rows, blocked){
-  const any=blocked.some(Boolean);
   el.querySelectorAll(".apexcharts-yaxis-label").forEach((t, i)=>{
     if(!rows[i] || t.dataset.resIdx!=null) return;
     t.dataset.resIdx=i;
     t.querySelectorAll("title").forEach(x=>x.remove());
     t.style.cursor="help";
-    if(!any) return;
-    const x=parseFloat(t.getAttribute("x"))||0;
-    t.setAttribute("x", x-_RES_WARN_GUTTER);
-    if(blocked[i]){
-      const w=document.createElementNS("http://www.w3.org/2000/svg", "tspan");
-      w.setAttribute("class", "res-warn-svg");
-      w.setAttribute("x", x+_RES_WARN_GUTTER+2);
-      w.textContent="⚠";
-      t.appendChild(w);
-    }
+    if(blocked[i]) t.classList.add("res-blocked");
   });
 }
-function _researchBindLabelHover(el, rows){
+// One popup for both the name and its bar (Apex's own tooltip is off — it
+// parks itself in a corner on wide horizontal charts).
+function _researchBindHover(el, rows){
   el.addEventListener("mousemove", e=>{
-    const t=e.target.closest&&e.target.closest(".apexcharts-yaxis-label");
-    const b=t&&rows[+t.dataset.resIdx];
+    const t=e.target.closest&&e.target.closest(".apexcharts-yaxis-label, .apexcharts-bar-area");
+    const i=!t ? -1 : t.dataset.resIdx!=null ? +t.dataset.resIdx : +t.getAttribute("j");
+    const b=rows[i];
     if(b) _resPopShow(b, e); else _resPopHide();
   });
   el.addEventListener("mouseleave", _resPopHide);
@@ -273,18 +269,9 @@ function _researchDrawChart(){
     dataLabels:{enabled:false},
     legend:{show:true, position:"top", horizontalAlign:"left", fontSize:"11px",
       labels:{colors:_STATS_INK.fg}, markers:{size:5}},
-    tooltip:{theme:"dark", custom:({dataPointIndex})=>{
-      const b=rows[dataPointIndex]; if(!b) return "";
-      return `<div class="stats-tip"><div class="stats-tip-h">${authEsc(b.name)}</div><table>
-        <tr><td>Now</td><td class="num">ME ${b.me??"?"} · TE ${b.te??"?"}${b.in_lab?" · in lab":""}</td></tr>
-        <tr><td>Gained / run</td><td class="num pos">${fmtISK(b.isk_per_run_gained||0)}</td></tr>
-        <tr><td>Left to ME 10 / run</td><td class="num">${b.isk_per_run_left==null?"—":fmtISK(b.isk_per_run_left)}${b.priced===false?" *":""}</td></tr>
-        <tr><td>Research fees</td><td class="num">${fmtISK(b.fees||0)}</td></tr>
-        ${b.realized_savings?`<tr><td>ME saved on builds</td><td class="num pos">${fmtISK(b.realized_savings)}</td></tr>`:""}
-      </table></div>`;
-    }},
+    tooltip:{enabled:false},
   };
-  _researchBindLabelHover(el, rows);
+  _researchBindHover(el, rows);
   _researchChart=new ApexCharts(el, opts);
   _researchChart.render();
 }
